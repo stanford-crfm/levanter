@@ -47,6 +47,7 @@ class TrainLmConfig:
     hf_save_steps: int = 10000
 
     update_hessian_steps: int = 10
+    data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
 
 
 def main(config: TrainLmConfig):
@@ -90,6 +91,10 @@ def main(config: TrainLmConfig):
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
+
+        if config.data_seed is not None:
+            logger.info(f"Overriding data seed with {config.data_seed}")
+            data_key = jrandom.PRNGKey(config.data_seed)
 
         # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
         # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
