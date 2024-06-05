@@ -121,9 +121,7 @@ def test_estimate_mixture_weights():
 
     datasets = {"d1": ds1, "d2": ds2, "d3": ds3}
 
-    ref_model, ref_loss = fit_to_dataset(
-        MixtureDataset(datasets, weights={k: 1 / 3.0 for k in datasets.keys()}, key=next(keys))
-    )
+    ref_model, ref_loss = fit_to_dataset(MixtureDataset(datasets, weights={k: 1 / 3.0 for k in datasets.keys()}))
 
     # let's see the loss on each dataset
     l1_ref = eval_loss_loop(

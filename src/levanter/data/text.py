@@ -37,7 +37,7 @@ from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizer
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
-from levanter.data.dataset import ShardableDataset, ShuffleDataset  # noqa
+from levanter.data.dataset import ShardableDataset  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import CacheLedger  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
@@ -558,7 +558,6 @@ class LMTaskConfig(abc.ABC):
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     ignore_token_id: Optional[int] = None
-    shuffle_buffer_size: Optional[int] = None
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
@@ -569,7 +568,7 @@ class LMTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> ShardableDataset[np.ndarray]:
         pass
 
@@ -598,17 +597,11 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> ShardableDataset[np.ndarray]:
         ds = self.token_seq_dataset("train", seq_len, monitors)
         if ds is None:
             raise ValueError("No training set!")
-
-        if self.shuffle_buffer_size is not None:
-            if key is None:
-                key = jax.random.PRNGKey(0)
-            return ShuffleDataset(ds, key, self.shuffle_buffer_size)
-
         return ds
 
     def validation_set(
@@ -727,7 +720,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
-    stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+    stop_strategy: str = field(default=StopStrategy.FIRST_STOP_STRATEGY)
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -740,23 +733,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> ShardableDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
-        if key is None:
-            key = jax.random.PRNGKey(0)
-
-        mix_key, shuffle_key = jax.random.split(key)
-
-        mixture = MixtureDataset(
-            datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy, key=mix_key
-        )
-
-        if self.shuffle_buffer_size is not None:
-            return ShuffleDataset(mixture, shuffle_key, self.shuffle_buffer_size)
-
-        return mixture
+        return MixtureDataset(datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy)
 
     def training_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True

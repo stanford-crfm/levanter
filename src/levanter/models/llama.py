@@ -305,20 +305,17 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return state_dict
 
 
-class LlamaRMSNorm(eqx.Module):
+class LlamaRMSNorm(hnn.LayerNorm):
+    """It is a modified version of LayerNorm.
+    The main changes are:
+    1. The variance is defined as the average of square, versus the original
+    definition as the average of the squared deviations from the mean.
+    2. The output is defined as x * inv, without minusing the mean.
+    3. The default value of eps is set to 1e-6 and use_bias to False.
     """
-    Similar to LayerNorm, but uses the RMS of the input along the specified axis (or axes) instead of variance.
-    """
-
-    axis: AxisSpec = eqx.static_field()
-    weight: Optional[NamedArray]
-    bias: Optional[NamedArray]
-
-    eps: float = eqx.static_field(default=1e-5)
-    dtype: Optional[jnp.dtype] = eqx.static_field(default=jnp.float32)
 
     @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True, dtype=jnp.float32):
+    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False):
         if use_weight:
             weight = hax.ones(axis)
         else:
@@ -328,25 +325,20 @@ class LlamaRMSNorm(eqx.Module):
         else:
             bias = None
 
-        return LlamaRMSNorm(axis, weight, bias, eps, dtype)
+        return LlamaRMSNorm(axis, weight, bias, eps)
 
     def __call__(self, x: NamedArray) -> NamedArray:
         # This gives a different result than jnp.var(), which is
         # defined as the average of the squared deviations from the mean
-        in_dtype = x.dtype
-        x = x.astype(self.dtype)
         var = hax.mean(hax.square(x), axis=self.axis)
         inv = hax.rsqrt(var + self.eps)
         out = x * inv
-        out = out.astype(in_dtype)
 
         if self.weight is not None:
             out = self.weight * out
         if self.bias is not None:
             out = out + self.bias
-
-        # second cast in case params are in float32
-        return out.astype(in_dtype)
+        return out
 
 
 class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
