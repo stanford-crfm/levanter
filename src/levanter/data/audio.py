@@ -263,6 +263,9 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         self.chunk_cache = chunk_cache.with_batch_size(1)
 
     def __iter__(self):
+        chunk_index = self.chunk_cache.get_resume_shard()
+        row_index = self.chunk_cache.get_resume_row()
+        logger.debug(f"Starting Real Iterator at Shard {chunk_index}, Row {row_index}.")
         for batch in self._chunks():
             unarrow = dict_from_record_batch(batch)
             # Flatten Singleton Batch Dimension
@@ -271,8 +274,11 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
             del singleton_dict["audio_shape"]
             yield singleton_dict
 
+    def seek(self):
+        yield from self.chunk_cache.scan_batches_from_chunks()
+
     def _chunks(self):
-        return self.chunk_cache.iter_batches_from_chunks()
+        return self.chunk_cache.iter_batches_from_chunks(should_resume=True)
 
     @staticmethod
     def build_or_load(
@@ -473,3 +479,6 @@ class AudioTextDataset(ShardableDataset[AudioTextExample]):
             for example in self.dataset:
                 converted_example = _convert_example(example)
                 yield converted_example
+
+    def seek(self):
+        yield from self.dataset.seek()
