@@ -6,7 +6,7 @@ model:
   type: llama
 # TODO: uncomment this once we resolve the resource exhaustion issue
 hf_checkpoint: "meta-llama/Llama-2-70b-hf"
-second_hf_checkpoint: "meta-llama/Llama-2-70b-hf"
+second_hf_checkpoint: "152334H/miqu-1-70b-sf"
 
 trainer:
   wandb:
@@ -14,7 +14,7 @@ trainer:
     tags: ["openwebtext", "llama", "mistral-medium-70b"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 64  # set for v4-64 TPU
+  train_batch_size: 128  # set for v4-64 TPU
   num_train_steps: 2
   steps_per_eval: 1
   tensor_parallel_axes: ["mlp", "heads"]
