@@ -104,7 +104,7 @@ def main(config: TrainLmConfig):
 
         tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
