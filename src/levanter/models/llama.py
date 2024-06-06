@@ -76,6 +76,7 @@ class LlamaConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
+    use_layer_norm_weight: bool = True
     rope_scaling: Optional[dict] = None
 
     # Axis
@@ -149,6 +150,11 @@ class LlamaConfig(HFCompatConfig):
     @property
     def model_type(cls) -> Type["LlamaLMHeadModel"]:
         return LlamaLMHeadModel
+
+    def mk_LayerNorm(self, axis: Axis) -> "LlamaRMSNorm":
+        return LlamaRMSNorm.init(
+            axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
+        )
 
 
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
@@ -368,8 +374,8 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_1 = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        ln_2 = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_1 = config.mk_LayerNorm(config.Embed)
+        ln_2 = config.mk_LayerNorm(config.Embed)
 
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
@@ -407,7 +413,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_f = config.mk_LayerNorm(config.Embed)
 
         return LlamaTransformer(config, layers, ln_f)
 
