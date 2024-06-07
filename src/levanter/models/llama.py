@@ -173,9 +173,9 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias)
-        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias)
+        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
+        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias, out_first=True)
+        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias, out_first=True)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -244,11 +244,17 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
+            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias, out_first=True
         )
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
-        o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
+        k_proj = hnn.Linear.init(
+            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
+        )
+        v_proj = hnn.Linear.init(
+            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
+        )
+        o_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True
+        )
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
 
     @named_call
@@ -450,28 +456,26 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
     """
 
     Vocab: Axis = eqx.static_field()
-    config: LlamaConfig = eqx.static_field()
-    token_embeddings: NamedArray
+    token_embeddings: hnn.Embedding
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        token_embeddings = hax.random.normal(key, (Vocab, config.Embed))
-        return LlamaEmbedding(Vocab, config, token_embeddings)
+        return LlamaEmbedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key))
 
     @named_call
     def embed(self, input_ids, *args):
-        input_embeds = self.token_embeddings.take("vocab", input_ids)
+        input_embeds = self.token_embeddings(input_ids)
         x = input_embeds
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot(x, self.token_embeddings, axis="embed")
+        return self.token_embeddings.unembed(x)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "model.embed_tokens.weight"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
-        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
+        new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
