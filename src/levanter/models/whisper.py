@@ -192,10 +192,10 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
 
         k_q, k_k, k_v, k_out = haliax.jax_utils.maybe_rng_split(key, 4)
-        q_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_q, use_bias=use_bias)
-        k_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_k, use_bias=False)
-        v_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_v, use_bias=use_bias)
-        out_proj = hnn.Linear.init(In=(Heads, HeadSize), Out=Embed, key=k_out, use_bias=use_bias)
+        q_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_q, use_bias=use_bias, out_first=False)
+        k_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_k, use_bias=False, out_first=False)
+        v_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_v, use_bias=use_bias, out_first=False)
+        out_proj = hnn.Linear.init(In=(Heads, HeadSize), Out=Embed, key=k_out, use_bias=use_bias, out_first=False)
 
         return WhisperAttention(config, q_proj, k_proj, v_proj, out_proj, inference=False)
 
