@@ -72,7 +72,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "WillHeld/llama3-via-v0")
+        return HFCheckpointConverter(cls, "WillHeld/via-llama")
 
 
 def connector_only(model):
@@ -80,7 +80,7 @@ def connector_only(model):
     return eqx.tree_at(
         lambda tree: (tree.query_tokens, tree.projection.weight, tree.projection.bias, tree.connector),
         frozen_tree,
-        (True, True, True, True),
+        (True, True, True, False),
     )
 
 
