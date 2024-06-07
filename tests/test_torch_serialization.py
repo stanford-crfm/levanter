@@ -16,7 +16,7 @@ def test_unflatten_linear_layers(out_dims_first: bool):
     W = hax.Axis("W", 20)
     D = hax.Axis("D", 30)
     B = hax.Axis("B", 40)
-    linear = hax.nn.Linear.init((H, W), (D, B), key=jax.random.PRNGKey(0), use_bias=True)
+    linear = hax.nn.Linear.init((H, W), (D, B), key=jax.random.PRNGKey(0), use_bias=True, out_first=False)
 
     assert linear.weight.axes == (H, W, D, B)
 
