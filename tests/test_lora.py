@@ -139,12 +139,12 @@ def test_merge_lora():
             second = hnn.Linear.init(Mid, In, key=k2)
             return Module(first, second)
 
-    Layers = hax.Axis("Layers", 3)
+    Layers = hax.Axis("Layers", 2)
 
     k0 = jax.random.PRNGKey(0)
-    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, 3))
+    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, Layers.size))
 
-    loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
+    loraized = loraize(module, LoraConfig(r=8, target_modules=["second"]), key=k0)
     assert isinstance(loraized, hnn.Stacked)
 
     merged = merge_lora_modules(loraized)
