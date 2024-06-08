@@ -5,6 +5,7 @@ import equinox as eqx
 import jax
 import numpy as np
 import optax
+from chex import assert_trees_all_close
 from transformers import AutoModelForCausalLM
 
 import haliax as hax
@@ -151,7 +152,7 @@ def test_merge_lora():
     assert isinstance(merged, hnn.Stacked)
 
     input = hax.random.normal(k0, (In,))
-    assert hax.all(hax.isclose(loraized.fold(input), merged.fold(input)))
+    assert_trees_all_close(merged.fold(input), module.fold(input), rtol=1e-4, atol=1e-4)
 
 
 @skip_if_no_torch
