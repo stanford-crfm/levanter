@@ -152,7 +152,7 @@ def test_merge_lora():
     assert isinstance(merged, hnn.Stacked)
 
     input = hax.random.normal(k0, (In,))
-    assert_trees_all_close(merged.fold(input), module.fold(input), rtol=1e-4, atol=1e-4)
+    assert_trees_all_close(merged.fold(input), loraized.fold(input), rtol=1e-4, atol=1e-4)
 
 
 @skip_if_no_torch
