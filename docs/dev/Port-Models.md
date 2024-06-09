@@ -111,7 +111,7 @@ You can read [PyTorch's State Dict docs](https://pytorch.org/tutorials/recipes/r
 if you want to learn more.
 
 [Haliax has machinery for (de)serializing to and from state dicts](https://haliax.readthedocs.io/state-dict/).
-Simple cases are handled automatically, but often times custom logic is needed.
+Simple cases are handled automatically, but sometimes custom logic is needed.
 
 #### Easy Case: Identical Module Structure
 If your module has exactly the same fields with the same names and same shapes as the Hugging Face state dict (e.g. Gpt2Mlp), you don't need to do anything.
