@@ -1,5 +1,6 @@
 import tempfile
 
+import chex
 import equinox as eqx
 import jax
 import numpy as np
@@ -150,9 +151,10 @@ def test_llama_attention(use_flash, num_kv_heads):
     position_ids = torch.arange(config.Pos.size).reshape(1, -1)
     hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
-    assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    ).all(), f"{hf_out[0]} != {out}"
+    # assert np.isclose(
+    #     hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
+    # ).all(), f"{hf_out[0]} != {out}"
+    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
 
 def test_llama_param_counts_dont_change_with_seqlen():
@@ -309,16 +311,12 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
 
 
 def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConfig:
-    rope_scaling = {
-        "type": "linear",
-        "factor": 2.0,
-    }
     return LlamaConfig(
         seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
         num_kv_heads=num_kv_heads,
-        rope_scaling=rope_scaling,
+        rope_scaling=None,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,

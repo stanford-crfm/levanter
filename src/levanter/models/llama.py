@@ -211,6 +211,13 @@ class LlamaAttention(eqx.Module):
         )
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
 
+    def _rope_scale_factor(self) -> float:
+        # hasattr for gemma and I'm feeling lazy
+        if hasattr(self.config, "rope_scaling") and self.config.rope_scaling is not None:
+            assert self.config.rope_scaling["type"] == "linear"
+            return self.config.rope_scaling["factor"]
+        return 1.0
+
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
@@ -220,7 +227,9 @@ class LlamaAttention(eqx.Module):
         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = llama_rotary_pos_emb(self.config.HeadSize, x.resolve_axis("position"))
+        cos, sin = llama_rotary_pos_emb(
+            self.config.HeadSize, x.resolve_axis("position"), scale=self._rope_scale_factor()
+        )
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
         k = k.rename({"position": "key_position"})
@@ -386,7 +395,7 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
         return self.token_embeddings.unembed(x)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "model.embed_tokens.weight"}
+        return {"token_embeddings": "model.embed_tokens"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
@@ -473,12 +482,14 @@ def _apply_rotary_pos_emb(
     return q_embed, k_embed
 
 
-def llama_rotary_pos_emb(HeadSize: Axis, Pos: Axis, base: int = 10000) -> Tuple[NamedArray, NamedArray]:
+def llama_rotary_pos_emb(
+    HeadSize: Axis, Pos: Axis, base: float = 10000, scale: float = 1.0
+) -> Tuple[NamedArray, NamedArray]:
     with jax.ensure_compile_time_eval():
         HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
         inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
 
-        position_ids: NamedArray = hax.arange(Pos)
+        position_ids: NamedArray = hax.arange(Pos) / scale
 
         freqs = position_ids * inv_freq.broadcast_axis(Pos)
         # This is different from the paper but aligns with HF implementation:

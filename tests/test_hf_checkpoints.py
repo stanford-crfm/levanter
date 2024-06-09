@@ -38,7 +38,7 @@ def test_save_backpack_model_with_code():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         lev_config = converter.config_from_hf_config(config)
-        model.save_pretrained(tmpdir, safe_serialization=False)
+        model.save_pretrained(tmpdir, safe_serialization=False)  # unsafe b/c weight tying
         loaded_checkpoint = converter.load_state_dict(tmpdir)
 
     roundtrip_hf_config = converter.hf_config_from_config(lev_config)
