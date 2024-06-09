@@ -10,6 +10,7 @@ from transformers import AutoModelForCausalLM
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.quantization import DefaultDotGeneralOp, DotGeneralOp
 
 from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
@@ -141,6 +142,17 @@ def test_merge_lora():
 
     Layers = hax.Axis("Layers", 2)
 
+    # tpu matmuls are very imprecise, so we force higher precision
+    class PreciseDotGeneralOp(DotGeneralOp):
+        def __call__(self, lhs, rhs, dimension_numbers, precision=None, preferred_element_type=None):
+            return jax.lax.dot_general(
+                lhs,
+                rhs,
+                dimension_numbers,
+                precision=jax.lax.Precision.HIGHEST,
+                preferred_element_type=preferred_element_type,
+            )
+
     k0 = jax.random.PRNGKey(0)
     module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, Layers.size))
 
@@ -150,6 +162,14 @@ def test_merge_lora():
     merged = merge_lora_modules(loraized)
 
     assert isinstance(merged, hnn.Stacked)
+
+    def replace_dot_general(x):
+        if isinstance(x, DefaultDotGeneralOp):
+            return PreciseDotGeneralOp()
+        return x
+
+    merged = jax.tree_map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    loraized = jax.tree_map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
 
     input = hax.random.normal(k0, (In,))
     # light tolerances for TPU
