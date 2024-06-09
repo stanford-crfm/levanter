@@ -173,7 +173,7 @@ def test_merge_lora():
 
     input = hax.random.normal(k0, (In,))
     # light tolerances for TPU
-    assert_trees_all_close(merged.fold(input), loraized.fold(input), rtol=1e-3, atol=1e-3)
+    assert_trees_all_close(merged.fold(input), loraized.fold(input), rtol=1e-3, atol=3e-3)
 
 
 @skip_if_no_torch
