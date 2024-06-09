@@ -1,0 +1,5 @@
+flake8
+pytest
+soundfile
+librosa
+pytest-forked

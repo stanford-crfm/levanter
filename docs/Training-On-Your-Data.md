@@ -447,5 +447,5 @@ tokenizer = AutoTokenizer.from_pretrained("/tmp/my_exported_model")
 After training, you can run a separate script to export levanter checkpoints to Huggingface:
 
 ```bash
-python -m levanter.main.export_to_hf --config_path my_config.yaml --output_dir gs://path/to/output
+python -m levanter.main.export_lm_to_hf --config_path my_config.yaml --output_dir gs://path/to/output
 ```

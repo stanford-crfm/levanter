@@ -158,7 +158,7 @@ W = hax.random.uniform(PRNGKey(2), (Feature,))
 def mse(pred, target):
     return hax.mean((pred - target) * (pred - target), axis=Batch)
 
-y_pred = hax.dot(Feature, x, W)
+y_pred = hax.dot(x, W, axis=Feature)
 mse(y_pred, y)
 ```
 
@@ -218,7 +218,7 @@ Embed = hax.Axis("embed", 512)  # embedding size
 
 def attention(Key, KPos, query, key, value, mask):
     # how similar is each query to each key
-    scores = hax.dot(Key, query, key) / jnp.sqrt(Key.size)
+    scores = hax.dot(query, key, axis=Key) / jnp.sqrt(Key.size)
 
     # mask out invalid positions
     if mask is not None:
@@ -228,7 +228,7 @@ def attention(Key, KPos, query, key, value, mask):
     scores = hax.nn.softmax(scores, axis=KPos)
 
     # weighted sum of values
-    return hax.dot(KPos, scores, value)
+    return hax.dot(scores, value, axis=KPos)
 ```
 
 With named tensors, we can write the code in a way that conveys the semantics of the operation, rather than the

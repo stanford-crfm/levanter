@@ -49,8 +49,9 @@ def log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optiona
 def _no_throw_log_metrics(metrics: dict[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
     try:
         if _global_tracker is None:
-            raise RuntimeError("No global tracker set")
-        _global_tracker.log(metrics, step=step, commit=False)
+            warnings.warn("No global tracker set")
+        else:
+            _global_tracker.log(metrics, step=step, commit=False)
     except Exception:
         logger.exception("Error logging metrics")
 
@@ -69,7 +70,9 @@ def log_summary(metrics: dict[str, Any]):
     """
     global _global_tracker
     if _global_tracker is None:
-        raise RuntimeError("No global tracker set")
+        warnings.warn("No global tracker set")
+        return
+
     _global_tracker.log_summary(metrics)
 
 
@@ -82,7 +85,8 @@ def log_hyperparameters(hparams: dict[str, Any]):
     """
     global _global_tracker
     if _global_tracker is None:
-        raise RuntimeError("No global tracker set")
+        warnings.warn("No global tracker set")
+        return
 
     _global_tracker.log_hyperparameters(hparams)
 
@@ -97,7 +101,8 @@ def log_configuration(hparams: Any, config_name: Optional[str] = None):
     """
     global _global_tracker
     if _global_tracker is None:
-        raise RuntimeError("No global tracker set")
+        warnings.warn("No global tracker set")
+        return
 
     hparams_dict = hparams_to_dict(hparams)
     _global_tracker.log_hyperparameters(hparams_dict)

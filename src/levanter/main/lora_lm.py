@@ -85,7 +85,7 @@ def main(config: LoraLmConfig):
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=data_key), Pos, KeyPos)
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # load the underlying hf model
