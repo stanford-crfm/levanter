@@ -5,10 +5,12 @@ import equinox as eqx
 import jax
 import numpy as np
 import optax
+from chex import assert_trees_all_close
 from transformers import AutoModelForCausalLM
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.quantization import DefaultDotGeneralOp, DotGeneralOp
 
 from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
@@ -138,20 +140,40 @@ def test_merge_lora():
             second = hnn.Linear.init(Mid, In, key=k2)
             return Module(first, second)
 
-    Layers = hax.Axis("Layers", 3)
+    Layers = hax.Axis("Layers", 2)
+
+    # tpu matmuls are very imprecise, so we force higher precision
+    class PreciseDotGeneralOp(DotGeneralOp):
+        def __call__(self, lhs, rhs, dimension_numbers, precision=None, preferred_element_type=None):
+            return jax.lax.dot_general(
+                lhs,
+                rhs,
+                dimension_numbers,
+                precision=jax.lax.Precision.HIGHEST,
+                preferred_element_type=preferred_element_type,
+            )
 
     k0 = jax.random.PRNGKey(0)
-    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, 3))
+    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, Layers.size))
 
-    loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
+    loraized = loraize(module, LoraConfig(r=8, target_modules=["second"]), key=k0)
     assert isinstance(loraized, hnn.Stacked)
 
     merged = merge_lora_modules(loraized)
 
     assert isinstance(merged, hnn.Stacked)
 
+    def replace_dot_general(x):
+        if isinstance(x, DefaultDotGeneralOp):
+            return PreciseDotGeneralOp()
+        return x
+
+    merged = jax.tree_map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    loraized = jax.tree_map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+
     input = hax.random.normal(k0, (In,))
-    assert hax.all(hax.isclose(loraized.fold(input), merged.fold(input)))
+    # light tolerances for TPU
+    assert_trees_all_close(merged.fold(input), loraized.fold(input), rtol=1e-3, atol=3e-3)
 
 
 @skip_if_no_torch

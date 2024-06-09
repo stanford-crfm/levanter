@@ -133,7 +133,7 @@ class GemmaConfig(HFCompatConfig):
             activation_function = hf_config.hidden_act
 
         if activation_function == "gelu_pytorch_tanh":
-            activation_function = "gelu"
+            activation_function = "gelu_new"
 
         assert activation_function is not None, "No activation function found in HF configuration."
         return GemmaConfig(
@@ -171,7 +171,7 @@ class GemmaConfig(HFCompatConfig):
             num_key_value_heads=self.num_kv_heads,
             head_dim=self.hidden_dim // self.num_heads,
             hidden_activation=(
-                "gelu_pytorch_tanh" if self.activation_function == "gelu" else self.activation_function
+                "gelu_pytorch_tanh" if self.activation_function == "gelu_new" else self.activation_function
             ),
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
