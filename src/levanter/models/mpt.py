@@ -193,7 +193,7 @@ class MptConfig(HFCompatConfig):
         )
 
 
-class MptMlp(eqx.Module, ModuleWithStateDictSerialization):
+class MptMlp(eqx.Module):
     up_proj: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     down_proj: hnn.Linear  # projection from Intermediate to Embed
 
@@ -349,7 +349,7 @@ class MptTransformer(eqx.Module):
         return hidden_states
 
 
-class MptLmHeadModel(ModuleWithStateDictSerialization, LmWithHfSerializationMixin):
+class MptLmHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSerialization):
     wte: hnn.Embedding
     transformer: MptTransformer
     _config: MptConfig = eqx.static_field()

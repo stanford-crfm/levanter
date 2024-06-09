@@ -94,7 +94,7 @@ class BackpackConfig(Gpt2Config):
         )
 
 
-class BackpackMlp(eqx.Module, ModuleWithStateDictSerialization):
+class BackpackMlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
     act: Callable = eqx.static_field()
@@ -110,8 +110,8 @@ class BackpackMlp(eqx.Module, ModuleWithStateDictSerialization):
         use_bias: bool = True,
     ) -> "BackpackMlp":
         k_fc, k_proj = jrandom.split(key, 2)
-        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias)
+        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
+        c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -146,7 +146,7 @@ class WeightsOnlyAttention(ModuleWithStateDictSerialization):
         Embed = config.Embed
 
         k_c, _ = jrandom.split(key, 2)
-        c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
+        c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias, out_first=True)
         dropout = hnn.Dropout(config.attn_pdrop)
 
         return WeightsOnlyAttention(config, c_attn, dropout)
@@ -305,7 +305,7 @@ class BackpackGpt2Embeddings(eqx.Module):
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
-class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
+class BackpackLMHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSerialization):
     transformer: Gpt2Transformer
     embeddings: BackpackGpt2Embeddings
     sense_net: BackpackSenses

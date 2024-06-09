@@ -38,7 +38,7 @@ def test_save_backpack_model_with_code():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         lev_config = converter.config_from_hf_config(config)
-        model.save_pretrained(tmpdir)
+        model.save_pretrained(tmpdir, safe_serialization=False)
         loaded_checkpoint = converter.load_state_dict(tmpdir)
 
     roundtrip_hf_config = converter.hf_config_from_config(lev_config)
@@ -48,7 +48,7 @@ def test_save_backpack_model_with_code():
 
     Vocab = converter.Vocab
     lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
-    lev_model = lev_model.from_state_dict(loaded_checkpoint)
+    lev_model = haliax.state_dict.from_torch_compatible_state_dict(lev_model, loaded_checkpoint)
     lev_model = inference_mode(lev_model, True)
 
     with tempfile.TemporaryDirectory() as tmpdir:

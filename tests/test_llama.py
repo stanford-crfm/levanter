@@ -132,7 +132,7 @@ def test_llama_attention(use_flash, num_kv_heads):
 
     attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
 
-    state = attention.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_attention = HFLlamaAttention(config.to_hf_config(32000))
     hf_attention.load_state_dict(state, strict=True)
