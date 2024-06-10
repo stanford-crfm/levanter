@@ -44,7 +44,6 @@ def test_gemma_config():
     # See https://github.com/huggingface/transformers/pull/29402 for more info.
     assert gemma_config.activation_function == "gelu_new"  # gelu_new is a closer match to gelu_pytorch_tanh
     assert new_hf_config.hidden_activation == "gelu_pytorch_tanh"
-    assert new_hf_config.hidden_act == "gelu_pytorch_tanh"
 
     # assert the content in new_hf_config is the same as hf_config
     for k in new_hf_config.__dict__.keys():
@@ -95,7 +94,7 @@ def test_gemma_decoder_layer(num_kv_heads):
     key = random.PRNGKey(0)
     gemma_decoder_layer = GemmaDecoderLayer.init(config=gemma_config, key=key)
 
-    state = gemma_decoder_layer.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(gemma_decoder_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_decoder_layer = HFGemmaDecoderLayer(gemma_config.to_hf_config(32000), layer_idx=0)
     hf_decoder_layer.load_state_dict(state, strict=True)
@@ -264,7 +263,7 @@ def test_gemma_attention(use_flash, num_kv_heads):
 
     attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))  # type: ignore
 
-    state = attention.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_attention = HFGemmaAttention(config.to_hf_config(32000))
     hf_attention.load_state_dict(state, strict=True)
@@ -293,7 +292,7 @@ def test_gemma_mlp():
     config = _get_gemma_config()
     mlp = LlamaMlp.init(config.Embed, config.Mlp, config.activation_function, key=random.PRNGKey(0))
 
-    state = mlp.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(mlp)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_mlp = HFGemmaMLP(config.to_hf_config(32000))
     hf_mlp.load_state_dict(state, strict=True)

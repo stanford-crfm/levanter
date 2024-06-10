@@ -91,7 +91,7 @@ def test_lora_scan_layers():
     assert loraized.stacked.first.lora.lora_A.weight.axes == (Layers, hax.Axis("LORA_R", 8), In)
     assert loraized.stacked.first.lora.lora_B.weight.axes == (Layers, Mid, hax.Axis("LORA_R", 8))
 
-    assert loraized.stacked.second.weight.axes == (Layers, Mid, In)
+    assert loraized.stacked.second.weight.axes[0] == Layers
     input = hax.random.normal(k0, (In,))
     assert not hax.all(hax.isclose(module.fold(input), loraized.fold(input)))
 

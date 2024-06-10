@@ -121,10 +121,10 @@ class GemmaConfig(HFCompatConfig):
     # See https://github.com/huggingface/transformers/pull/29402 for more detail.
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
-        if hf_config.hidden_activation:
-            activation_function = hf_config.hidden_activation
+        if hf_config.hidden_activation is None:
+            activation_function = "gelu_pytorch_tanh"
         else:
-            activation_function = hf_config.hidden_act
+            activation_function = hf_config.hidden_activation
 
         if activation_function == "gelu_pytorch_tanh":
             activation_function = "gelu_new"
