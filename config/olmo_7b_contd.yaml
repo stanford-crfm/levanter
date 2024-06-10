@@ -93,3 +93,4 @@ optimizer:
 
 hf_save_steps: 10000
 hf_save_path: "gs://levanter-checkpoints/olmo_trace_hf/"  # TODO
+data_seed: 0
