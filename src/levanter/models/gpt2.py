@@ -132,8 +132,8 @@ class Gpt2Mlp(eqx.Module):
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "Gpt2Mlp":
         k_fc, k_proj = jrandom.split(key, 2)
-        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        c_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
+        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
+        c_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -163,8 +163,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
 
         k_c, k_proj = jrandom.split(key, 2)
-        c_attn = hnn.Linear.init(In=Embed, Out=(Qkv, config.Heads, config.HeadSize), key=k_c, use_bias=use_bias)
-        c_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_proj, use_bias=use_bias)
+        c_attn = hnn.Linear.init(
+            In=Embed, Out=(Qkv, config.Heads, config.HeadSize), key=k_c, use_bias=use_bias, out_first=False
+        )
+        c_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize), Out=Embed, key=k_proj, use_bias=use_bias, out_first=False
+        )
 
         return Gpt2Attention(config, c_attn, c_proj, inference=False)
 

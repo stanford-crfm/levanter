@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import mergedeep
 import safetensors
 import safetensors.numpy
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import HfApi, hf_hub_download, repo_exists, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
@@ -725,7 +725,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         Saves a Levanter model to a huggingface "pretrained model" checkpoint.
 
         If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
-        any additional kwargs to the huggingface_hub.upload_folder function.
+        any additional kwargs to the huggingface_hub.upload_folder function. A new private model
+        repository will be created in the huggingface hub if one does not exist already.
 
         :param path: the path to save the checkpoint to. path may be a GCS bucket path or other fsspec path,
         in which case the checkpoint will be uploaded to GCS after being written to a tmpdir
@@ -757,6 +758,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 upload_to_hf = self.reference_checkpoint
             if not isinstance(upload_to_hf, bool):
                 assert isinstance(upload_to_hf, (str, RepoRef))
+                if isinstance(upload_to_hf, str) and not repo_exists(upload_to_hf, repo_type="model"):
+                    api = HfApi()
+                    api.create_repo(repo_id=upload_to_hf, repo_type="model", exist_ok=True, private=True)
                 upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
 
     def _save_code_local(self, path):

@@ -16,9 +16,9 @@ from haliax import NamedArray
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
-import levanter.mesh
 from levanter.data import Dataset
 from levanter.data.dataset import ShardableDataset
+from levanter.mesh import local_devices_mapping, process_mesh_mapping
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
 from levanter.utils.py_utils import non_caching_cycle
@@ -172,8 +172,10 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.mesh = mesh
         self.Batch = Batch
 
-        process_data_pos = override_process_data_pos or levanter.mesh.process_mesh_position(mesh)[0]
-        num_data_process_groups = override_process_data_groups or levanter.mesh.process_mesh_size(mesh)[0]
+        process_mesh_map = process_mesh_mapping(self.mesh)
+        local_devices_map = local_devices_mapping(self.mesh)
+        process_data_pos = override_process_data_pos or process_mesh_map[jax.process_index()]
+        num_data_process_groups = override_process_data_groups or max(process_mesh_map.values()) + 1
 
         if not override_process_data_groups:
             assert num_data_process_groups <= jax.process_count()
@@ -182,6 +184,10 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         self.num_data_process_groups = num_data_process_groups
         assert self.Batch.size % num_data_process_groups == 0
 
+        self.process_mesh_map = process_mesh_map
+        self.local_devices_map = local_devices_map
+        self.per_device_batch_size = self.batch_size // self.mesh.devices.shape[0] // self.mesh.devices.shape[1]
+
         self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
         super().__init__(max_capacity, axis_resources)
 
@@ -189,13 +195,22 @@ class ShardedBatchLoader(BatchLoader[Ex]):
         one_item_generator = non_caching_cycle(self.item_dataset)
         batched = _batched(one_item_generator, self.local_batch_size)
 
+        def batch_callback(global_begin, _):
+            # global_begin is uid for DP/FSDP
+            # DP_id * per_device_bs = global_begin
+            device_pos = global_begin // self.per_device_batch_size
+
+            begin = self.local_devices_map[device_pos] * self.per_device_batch_size
+            end = begin + self.per_device_batch_size
+
+            return local_batch[begin:end]
+
         while True:
-            batch_offset = self.process_data_pos * self.local_batch_size
             local_batch: List[PyTree] = next(batched)
 
             batch = self._construct_global_array_for_tree(
                 item_exemplar=local_batch[0],
-                get_batch_items=lambda begin, end: local_batch[(begin - batch_offset) : (end - batch_offset)],
+                get_batch_items=batch_callback,
             )
 
             yield batch
