@@ -67,7 +67,7 @@ class LlamaConfig(HFCompatConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: Optional[bool] = True
+    use_flash_attention: Optional[bool] = False
     attn_backend: Optional[AttentionBackend] = AttentionBackend.JAX_FLASH
     flash_attention_block_size: Optional[int] = None
 
