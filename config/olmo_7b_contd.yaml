@@ -1,7 +1,7 @@
 data: !include data/dolma_olmo_paloma.yaml
 model:
   type: olmo
-initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step1000-tokens4B"
+initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step0-tokens0B"
 use_hf_model_config: true
 
 trainer:
@@ -10,10 +10,8 @@ trainer:
   seed: 42
   checkpointer:
     keep:
-      - every: 1
-        until: 20
       - every: 100
-        until: 1000
+        until: 200
       - every: 1000
         until: 10000
       - every: 10000
@@ -26,7 +24,7 @@ trainer:
   model_axis_size: 1
   per_device_eval_parallelism: -1
   max_eval_batches: 2
-  train_batch_size: 256
+  train_batch_size: 1024
   num_train_steps: 50000
   steps_per_eval: 10
   tensor_parallel_axes: ["mlp", "heads"]
@@ -35,7 +33,7 @@ trainer:
 
 optimizer:
 # lr from olmo (they decay up to 21 billion tokens from 3E-4)
-  learning_rate: 2.994E-4
+  learning_rate: 3E-4
   weight_decay: 0.1
   min_lr_ratio: 0.1
 
