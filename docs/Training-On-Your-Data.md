@@ -398,7 +398,6 @@ This will spin up a TPU VM instance and install Levanter on it. You can then run
 
 ```
 cat > .config <<EOF
-cat > .config <<EOF
 env:
     WANDB_API_KEY: 
     WANDB_ENTITY: 

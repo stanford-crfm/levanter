@@ -18,7 +18,6 @@ def add_ssh_key(ssh_key_filename):
     existing_keys = subprocess.check_output(["ssh-add", "-l"]).decode("utf-8").split("\n")
     for key in existing_keys:
         if key_hash in key:
-            print('Found existing key in ssh-agent, skipping "ssh-add"')
             return
 
     subprocess.check_call(["ssh-add", ssh_key_filename])

@@ -46,6 +46,7 @@ def configure_gcp_docker(project_id, region, repository):
             ["gcloud", "artifacts", "repositories", "describe", f"--location={region}", repository],
             stderr=subprocess.STDOUT,
         )
+        print(f"Found existing artifact registry repository `{repository}`, skipping setup.")
         return
     except subprocess.CalledProcessError as e:
         if b"NOT_FOUND" not in e.output:

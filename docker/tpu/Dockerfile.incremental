@@ -14,5 +14,4 @@ WORKDIR /opt/levanter
 
 ADD pyproject.toml README.md /opt/levanter/
 RUN pip install -e '.[test]'
-RUN pip install librosa soundfile
 ADD . /opt/levanter

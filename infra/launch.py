@@ -21,14 +21,6 @@ def setup_vm_docker(tpu_name, zone, docker_base_image):
         getpass.getuser(),
     )
 
-    cli.tpu_ssh(
-        tpu_name,
-        zone,
-        "docker",
-        "pull",
-        docker_base_image,
-    )
-
     cli.tpu_ssh(tpu_name, zone, "docker", "volume", "create", "--driver=local", "levanter")
 
 
