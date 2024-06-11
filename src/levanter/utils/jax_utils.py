@@ -7,11 +7,15 @@ from typing import Any, Callable, Optional, TypeVar
 import equinox as eqx
 import jax
 import numpy as np
+from jax import NamedSharding
 from jax import numpy as jnp
-from jax.sharding import PositionalSharding
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, PartitionSpec, PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
+import haliax
 from haliax.jax_utils import is_jax_array_like
+from haliax.partitioning import ResourceAxis
 
 
 X = TypeVar("X")
@@ -239,24 +243,73 @@ def as_arrayish(x):
         return jnp.asarray(x)
 
 
-def best_effort_sharding(shape, devices=None):
+def best_effort_sharding(shape, *, devices=None, mesh=None):
     if hasattr(shape, "shape"):
         shape = shape.shape
 
     if devices is None:
         devices = jax.devices()
-    device_shape = (len(devices),)
-    # we want to shard an array with shape shape across len(devices)
-    # each axis in the array has to be divisible by the corresponding axis in device_shape, so
-    # we iterate from the right, taking the gcd of the shape and the left-most axis of device_shape
-    for i in range(len(shape) - 1, -1, -1):
-        shape_i = shape[i]
-        device_shape_i = device_shape[0]
-        gcd = np.gcd(shape_i, device_shape_i)
-        device_shape_i //= gcd
-        device_shape = (device_shape_i, gcd) + device_shape[1:]
-    sharding = PositionalSharding(devices).reshape(list(device_shape)).replicate(axis=0, keepdims=True)
-    return sharding
+
+    if mesh is None:
+        mesh = haliax.partitioning._get_mesh()
+        if not mesh.devices:
+            mesh = None
+
+    if mesh is None:
+        device_shape = (len(devices),)
+        # we want to shard an array with shape shape across len(devices)
+        # each axis in the array has to be divisible by the corresponding axis in device_shape, so
+        # we iterate from the right, taking the gcd of the shape and the left-most axis of device_shape
+        num_devices = device_shape[0]
+
+        for i in range(len(shape) - 1, -1, -1):
+            shape_i = shape[i]
+            gcd = np.gcd(shape_i, num_devices)
+            num_devices //= gcd
+            device_shape = (num_devices, gcd) + device_shape[1:]
+        sharding = PositionalSharding(devices).reshape(list(device_shape)).replicate(axis=0, keepdims=True)
+        return sharding
+    else:
+        # get the existing mesh and find the FSDP axis
+        fsdp_axis = mesh.axis_names.index(haliax.partitioning.ResourceAxis.DATA)
+        num_devices = mesh.devices.shape[fsdp_axis]
+
+        for i in range(len(shape) - 1, -1, -1):
+            shape_i = shape[i]
+            if shape_i % num_devices == 0:
+                sharded_axis = i
+                break
+        else:
+            return NamedSharding(mesh, PartitionSpec(None))
+
+        axis_sharding = [None] * len(shape)
+        axis_sharding[sharded_axis] = haliax.partitioning.ResourceAxis.DATA
+        sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
+
+        return sharding
+
+
+def create_fsdp_mesh(
+    replica_ici_axis_size: int,
+    data_ici_axis_size: int,
+    model_axis_size: int,
+    replica_dcn_axis_size: int = 1,
+    data_dcn_axis_size: int = 1,
+):
+    is_multislice = hasattr(jax.devices()[0], "slice_index")
+    if is_multislice:
+        devices = mesh_utils.create_hybrid_device_mesh(
+            (replica_ici_axis_size, data_ici_axis_size, model_axis_size),
+            (replica_dcn_axis_size, data_dcn_axis_size, 1),
+            allow_split_physical_axes=True,
+        )
+    else:
+        devices = mesh_utils.create_device_mesh(
+            (replica_ici_axis_size, data_ici_axis_size, model_axis_size),
+            allow_split_physical_axes=True,
+        )
+
+    return Mesh(devices, (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL))
 
 
 def estimated_free_device_memory(device) -> Optional[float]:
