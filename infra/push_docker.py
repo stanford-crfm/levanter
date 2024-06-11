@@ -42,10 +42,13 @@ def configure_gcp_docker(project_id, region, repository):
     """Setup Artifact registry repository and configure permissions to enable TPU access."""
     # check if the repository already exists
     try:
-        _run(["gcloud", "artifacts", "repositories", "describe", f"--location={region}", repository])
+        _run(
+            ["gcloud", "artifacts", "repositories", "describe", f"--location={region}", repository],
+            stderr=subprocess.STDOUT,
+        )
         return
     except subprocess.CalledProcessError as e:
-        if b"NOT_FOUND" not in e.stderr:
+        if b"NOT_FOUND" not in e.output:
             raise
 
     # Activate artifact registry and setup the repository.
