@@ -410,7 +410,6 @@ env:
 
 docker_repository: levanter
 zone: us-west4-a
-tpu_name: test-spin-up-32
 tpu_type: "v5litepod-16"
 vm_image: "tpu-ubuntu2204-base"
 preemptible: true
@@ -421,7 +420,7 @@ EOF
 ```
 
 ```bash
-python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
+python infra/launch.py --tpu_name=my_tpu -- python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
 
 ## Monitoring
