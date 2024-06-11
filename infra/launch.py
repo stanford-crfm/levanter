@@ -6,7 +6,6 @@ import subprocess
 import time
 
 from infra import push_docker
-
 from infra.helpers import cli
 
 
@@ -41,6 +40,7 @@ def list_tpus(zone):
             "tpus",
             "tpu-vm",
             "list",
+            "--zone=" + zone,
         ]
     )
     rows = tpus.decode("utf-8").split("\n")
@@ -67,6 +67,7 @@ def start_tpu_vm(
             "alpha",
             "compute",
             "tpus",
+            "tpu-vm",
             "delete",
             "--quiet",
             f"--zone={zone}",
@@ -74,7 +75,7 @@ def start_tpu_vm(
         )
 
     print(f"Creating new TPU {tpu_name} in {zone} of type {tpu_type}...")
-    cli.run_command(
+    command = [
         "gcloud",
         "alpha",
         "compute",
@@ -85,9 +86,11 @@ def start_tpu_vm(
         f"--accelerator-type={tpu_type}",
         f"--version={version}",
         "--zone=" + zone,
-        "--preemptible" if preemptible else "",
         "--quiet",
-    )
+    ]
+    if preemptible:
+        command.append("--preemptible")
+    cli.run_command(*command)
 
 
 if __name__ == "__main__":
@@ -205,7 +208,7 @@ if __name__ == "__main__":
 
             print(f"Running on tpu_name... {tpu_name}")
             cli.tpu_ssh(tpu_name, zone, *docker_command)
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError as e:  # noqa: F841
             print("Error running command.")
             if i < retries - 1:
                 print("Retrying... %d/%d" % (i + 1, retries))

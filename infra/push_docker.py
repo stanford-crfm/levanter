@@ -8,12 +8,11 @@ script will automatically build and deploy an image based on your current code.
 """
 
 import argparse
-from calendar import c
 import json
-import os
 import subprocess
 
 from infra.helpers import cli
+
 
 GCP_CLEANUP_POLICY = [
     {
@@ -43,10 +42,13 @@ def configure_gcp_docker(project_id, region, repository):
     """Setup Artifact registry repository and configure permissions to enable TPU access."""
     # check if the repository already exists
     try:
-        _run(["gcloud", "artifacts", "repositories", "describe", f"--location={region}", repository])
+        _run(
+            ["gcloud", "artifacts", "repositories", "describe", f"--location={region}", repository],
+            stderr=subprocess.STDOUT,
+        )
         return
     except subprocess.CalledProcessError as e:
-        if "NOT_FOUND" not in e.output:
+        if b"NOT_FOUND" not in e.output:
             raise
 
     # Activate artifact registry and setup the repository.
