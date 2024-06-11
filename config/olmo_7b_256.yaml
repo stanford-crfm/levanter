@@ -1,4 +1,7 @@
-data: !include data/dolma_olmo_paloma.yaml
+data: 
+  stop_strategy: restart
+  shuffle_buffer_size: 100000
+  !include data/dolma_olmo_paloma_shuf.yaml
 model:
   type: olmo
 initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step0-tokens0B"
@@ -7,7 +10,6 @@ use_hf_model_config: true
 trainer:
   ray:
     auto_start_cluster: false
-  seed: 42
   checkpointer:
     keep:
       - every: 25
