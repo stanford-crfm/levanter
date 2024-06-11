@@ -398,15 +398,25 @@ This will spin up a TPU VM instance and install Levanter on it. You can then run
 
 ```
 cat > .config <<EOF
+cat > .config <<EOF
 env:
-    WANDB_API_KEY:  ...
-    WANDB_ENTITY: ...
-    WANDB_PROJECT: levanter
-    HF_TOKEN: ...
+    WANDB_API_KEY: 
+    WANDB_ENTITY: 
+    WANDB_PROJECT: 
+    HF_TOKEN: 
+    TPU_STDERR_LOG_LEVEL: 0
+    TPU_MIN_LOG_LEVEL: 0
+    LIBTPU_INIT_ARGS: <extra args to libtpu>
 
 docker_repository: levanter
 zone: us-west4-a
-tpu: test-tpu
+tpu_name: test-spin-up-32
+tpu_type: "v5litepod-16"
+vm_image: "tpu-ubuntu2204-base"
+preemptible: true
+autodelete: false
+subnetwork: "default"
+
 EOF
 ```
 

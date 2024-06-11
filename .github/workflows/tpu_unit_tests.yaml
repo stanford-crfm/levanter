@@ -31,12 +31,14 @@ jobs:
           export TPU_NAME=ci-run-${{ github.run_id }}
           eval "$(ssh-agent -s)"
           TRUE_SHA=${{ github.event.pull_request.head.sha }}
-          bash infra/spin-up-vm.sh $TPU_NAME -z ${TPU_ZONE} -t v4-8 --preemptible --retries 1
+          bash infra/spin-up-vm.sh $TPU_NAME -z ${TPU_ZONE} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${TRUE_SHA} --retries 1
+#          infra/babysit-tpu-vm.sh $TPU_NAME -z ${{ TPU_ZONE }} -t v4-8 --preemptible -s infra/helpers/setup-tpu-vm-tests.sh -b ${{ github.sha }} --retries 1 -- \
+#            PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests -m "not entry"
 
       - name: Run most tests
         run: |
           export TPU_NAME=ci-run-${{ github.run_id }}
-          python infra/launch.py --foreground --tpu=$TPU_NAME --zone=$TPU_ZONE -- /opt/levanter/.venv/bin/pytest tests -m "not entry"
+          gcloud compute tpus tpu-vm ssh $TPU_NAME --zone ${TPU_ZONE} --command "PYTHONPATH=$PYTHONPATH:levanter/tests bash levanter/infra/run.sh pytest levanter/tests -m 'not entry'"
 # Something's wrong with these
 #
 #      - name: Run forked tests

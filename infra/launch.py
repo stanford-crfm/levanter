@@ -10,6 +10,7 @@ from infra.helpers import cli
 
 
 def setup_vm_docker(tpu_name, zone, docker_base_image):
+    """Change docker permissions on `tpu_name` and setup the cache volume."""
     cli.tpu_ssh(
         tpu_name,
         zone,
@@ -52,9 +53,7 @@ def list_tpus(zone):
     return tpus
 
 
-def start_tpu_vm(
-    tpu_name, *, tpu_type, preemptible, version, zone, autodelete, project, docker_repository, docker_base_image
-):
+def start_tpu_vm(tpu_name, *, tpu_type, preemptible, version, zone, autodelete):
     tpu_exists = any([tpu["NAME"] == tpu_name for tpu in list_tpus(zone)])
     if tpu_exists:
         if not autodelete:
@@ -104,11 +103,12 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
     cli.add_arg(parser, config, ["--preemptible"], default=False, action="store_true")
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
-    cli.add_arg(parser, config, ["--tpu"], required=True)
-    cli.add_arg(parser, config, ["--tpu_type"])
+    cli.add_arg(parser, config, ["--tpu_name"], required=True)
+    cli.add_arg(parser, config, ["--tpu_type"], required=True)
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
     cli.add_arg(parser, config, ["--zone"], required=True)
     cli.add_arg(parser, config, ["--retries"], default=0, type=int)
+    cli.add_arg(parser, config, ["--run_id"], default=int(time.time()), type=int)
 
     parser.add_argument(
         "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=config.get("env", {}).items()
@@ -129,10 +129,11 @@ if __name__ == "__main__":
         retries = 10000000
     else:
         retries = args.retries
-    tpu_name = args.tpu
+    tpu_name = args.tpu_name
     tpu_type = args.tpu_type
     version = args.version
     zone = args.zone
+    run_id = args.run_id
 
     region = "-".join(zone.split("-")[:-1])
     env = {k: v for k, v in args.env}
@@ -152,11 +153,10 @@ if __name__ == "__main__":
                 version=version,
                 zone=zone,
                 autodelete=autodelete,
-                project=project,
-                docker_repository=docker_repository,
-                docker_base_image=docker_base_image,
             )
 
+            # We don't technically need to setup on every run, but if we are working on a
+            # stale VM or a VM from e.g. spin-up-vm.sh, this ensures things always work.
             setup_vm_docker(
                 tpu_name=tpu_name,
                 zone=zone,
@@ -164,7 +164,7 @@ if __name__ == "__main__":
             )
 
             # make an image tag based on the unix timestamp to ensure we always pull the latest image
-            tag = run_id = int(time.time())
+            tag = int(time.time())
 
             full_image_id = push_docker.push_to_gcp(
                 project_id=project,

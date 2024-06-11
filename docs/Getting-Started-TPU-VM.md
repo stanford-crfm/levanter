@@ -95,24 +95,31 @@ First create a configuration file for future launches in your Levanter directory
 ```
 cat > .config <<EOF
 env:
-    WANDB_API_KEY:  ...
-    WANDB_ENTITY: ...
-    WANDB_PROJECT: levanter
-    HF_TOKEN: ...
+    WANDB_API_KEY: 
+    WANDB_ENTITY: 
+    WANDB_PROJECT: 
+    HF_TOKEN: 
+    TPU_STDERR_LOG_LEVEL: 0
+    TPU_MIN_LOG_LEVEL: 0
+    LIBTPU_INIT_ARGS: <extra args to libtpu>
 
 docker_repository: levanter
 zone: us-west4-a
-tpu: test-tpu
+tpu_name: test-spin-up-32
+tpu_type: "v5litepod-16"
+vm_image: "tpu-ubuntu2204-base"
+preemptible: true
+autodelete: false
+subnetwork: "default"
+
 EOF
 ```
 
-Everything after the `--` is run on each worker.
+Now run `launch.py`. This will package your current directory into a Docker image and run it on your workers. Everything after the `--` is run on each worker.
 
 ```bash
 python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
-
-`launch.py` will package your directory and create and deploy a Docker image  on each worker.
 
 ### Launch a GPT-2 Small in interactive mode
 
@@ -124,18 +131,11 @@ python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config
 ### Babysitting Script
 
 If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
-the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. The babysitting
-script handles both the creation of the node and the running of a job, and also relaunches the TPU VM if it gets preempted.
-It keeps running the command (and relaunching) until the command exits successfully.
-
-Note that the babysitting-script will automatically set the `RUN_ID` environment variable if not set, and pass it to the
-training command. This ensures that restarted jobs have the same run id, which is important for resumes to work.
-
-You can run it like this:
+the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. You can run `launch.py` with the `--retries` and `--foreground` parameter to accomplish this. If `--retries` is greater than 1, `launch.py` will automatically attempt to re-create the VM and re-run the command if it fails. (`--foreground` is necessary to keep the script from returning immediately.)
 
 ```bash
-infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible]  -- \
-    python infra/launch.py -- levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml
+    python infra/launch.py --retries=100 --foreground --tpu_name=my_tpu -- python src/levanter/main/train_lm.py --config_path config/my_config.yaml \
+    --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 
 That `--` is important! It separates the spin up args from the running args.
@@ -144,27 +144,25 @@ background mode will always return immediately.
 
 ### Running your own config
 
-If you want to run your own config, we suggest you start from one of the existing configs. Then, if you're not using
-an NFS server or similar, you should upload your config to GCS:
+If you want to run your own config, we suggest you start from one of the existing configs. Just copy it to
+a new file:
 
-```bash
-gsutil cp my_config.yaml gs://my_bucket//my_config.yaml
+`cp config/gpt2_small.yaml config/my_config.yaml`
+
+If you're using `launch.py`, the config will be automatically uploaded as part of your Docker image, so you
+can just reference the local config path in your command line:
+
 ```
 
 Afterward, you can use the config directly from the TPU VM instance, e.g.:
 
 ```bash
-infra/babysit-tpu-vm <name> -z <zone> -t <type> [--preemptible] -- \
-    python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path gs://my_bucket/my_config.yaml \
+    python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/my_config.yaml \
     --trainer.checkpointer.base_path gs://path/to/checkpoints/
 ```
 
-The `--config_path` argument can be a local path, a GCS path, or any URL loadable by fsspec.
 With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
 try to load the latest checkpoint if it exists.
-
-Tokenizers are also loaded via fsspec, so you can use the same trick to load them from GCS if you have a custom
-tokenizer, or you can use an HF tokenizer.
 
 ## Common Issues
 ### (CRFM) Permission denied on `/files`
