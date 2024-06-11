@@ -164,6 +164,10 @@ Afterward, you can use the config directly from the TPU VM instance, e.g.:
 With this configuration (unless `trainer.load_checkpoint` is false), Levanter will automatically
 try to load the latest checkpoint if it exists.
 
+Tokenizers and configuration files are loaded via `fsspec` which supports remote
+filesystems , so you can also copy your tokenizer or config file to GCS and use
+a `gs://` path to access it.
+
 ## Common Issues
 ### (CRFM) Permission denied on `/files`
 
