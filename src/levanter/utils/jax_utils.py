@@ -7,10 +7,9 @@ from typing import Any, Callable, Optional, TypeVar
 import equinox as eqx
 import jax
 import numpy as np
-from jax import NamedSharding
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
-from jax.sharding import Mesh, PartitionSpec, PositionalSharding
+from jax.sharding import Mesh, NamedSharding, PartitionSpec, PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
 import haliax
