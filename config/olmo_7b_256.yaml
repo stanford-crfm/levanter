@@ -1,6 +1,4 @@
 data: 
-  stop_strategy: restart
-  shuffle_buffer_size: 100000
   !include data/dolma_olmo_paloma_shuf.yaml
 model:
   type: olmo
