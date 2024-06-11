@@ -30,7 +30,7 @@ dependencies = [
     "equinox>=0.11.4",
     "jaxtyping>=0.2.20",
     "tokenizers>=0.15.2",
-    "transformers>=4.39.3",
+    "transformers>=4.41.2",
     "optax>=0.1.9",
     "wandb>=0.16.6,<0.18.0",
     # We don't actually directly depend on scipy, but recent JAX had an issue
