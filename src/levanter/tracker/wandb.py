@@ -208,6 +208,9 @@ class WandbConfig(TrackerConfig):
         return other_settings
 
     def _get_git_sha(self, code_dir) -> Optional[str]:
+        if "GIT_COMMIT" in os.environ:
+            return os.environ["GIT_COMMIT"]
+
         try:
             repo = Repo(code_dir)
             git_sha = repo.head.commit.hexsha

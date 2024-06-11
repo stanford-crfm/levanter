@@ -1,3 +1,5 @@
+.git
+
 scratch
 cache
 wandb
@@ -44,6 +46,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/figures/
 
 # PyBuilder
 target/
@@ -104,7 +107,6 @@ dmypy.json
 
 # JetBrains
 .idea/
-
 
 # dataset cache files
 **/*.parquet
