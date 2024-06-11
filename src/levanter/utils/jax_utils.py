@@ -251,7 +251,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
 
     if mesh is None:
         mesh = haliax.partitioning._get_mesh()
-        if not mesh.devices:
+        if mesh.devices.shape != ():
             mesh = None
 
     if mesh is None:
