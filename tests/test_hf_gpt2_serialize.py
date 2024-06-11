@@ -132,7 +132,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     state_dict = torch_model.transformer.state_dict(keep_vars=True)
     state_dict = {k: v.grad for k, v in state_dict.items()}
 
-    jax_grad_dict = jax_grad.to_state_dict()
+    jax_grad_dict = hax.state_dict.to_torch_compatible_state_dict(jax_grad)
 
     for jax_key, jax_g in jax_grad_dict.items():
         if jax_key not in state_dict:
@@ -162,7 +162,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     updates, state = jax_optimizer.update(updates=jax_grad, state=state, params=model)
     new_model = equinox.apply_updates(model, updates)
 
-    new_model_dict = new_model.to_state_dict()
+    new_model_dict = hax.state_dict.to_torch_compatible_state_dict(new_model)
     state_dict = torch_model.transformer.state_dict(keep_vars=True)
 
     # now compare new params

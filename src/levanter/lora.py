@@ -56,14 +56,14 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis
 from haliax.jax_utils import shaped_rng_split
+from haliax.state_dict import (
+    ModuleWithStateDictSerialization,
+    StateDict,
+    save_state_dict,
+    to_torch_compatible_state_dict,
+)
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    save_state_dict,
-    to_numpy_state_dict,
-)
 from levanter.logging import silence_transformer_nag
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
@@ -153,7 +153,7 @@ class LowRankLinear(eqx.Module):
         return hax.dot(self.lora_A.weight, self.lora_B.weight, axis=LORA_R) * self.scale
 
 
-class LoraLinear(eqx.Module, StateDictSerializationMixin):
+class LoraLinear(ModuleWithStateDictSerialization):
     """
     Linear layer with LoRA transform.
     """
@@ -518,5 +518,5 @@ def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> St
     Returns a state dict of the LoRA parameters of the given model without other parameters.
     This method attempts to return a state dict compatible with PEFT's import method.
     """
-    state_dict = to_numpy_state_dict(filter_lora_params(model), prefix=prefix)
+    state_dict = to_torch_compatible_state_dict(filter_lora_params(model), prefix=prefix)
     return {k: v for k, v in state_dict.items() if v is not None}
