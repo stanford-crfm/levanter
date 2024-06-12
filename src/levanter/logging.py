@@ -80,7 +80,8 @@ def capture_time():
             return time.perf_counter() - start
 
     yield fn
-    end = time.time()
+    end = time.perf_counter()
+    done = True
 
 
 def silence_transformer_nag():
