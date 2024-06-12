@@ -10,7 +10,7 @@ from infra.helpers import cli
 
 
 def setup_vm_docker(tpu_name, zone, docker_base_image):
-    """Change docker permissions on `tpu_name` and setup the cache volume."""
+    """Change docker permissions on `tpu_name`, remove any old runs, and setup the cache volume."""
     cli.tpu_ssh(
         tpu_name,
         zone,
@@ -19,10 +19,17 @@ def setup_vm_docker(tpu_name, zone, docker_base_image):
         "-aG",
         "docker",
         getpass.getuser(),
+        "&&" "docker",
+        "volume",
+        "create",
+        "--driver=local",
+        "levanter",
+        "&&",
+        "docker",
+        "rm",
+        "-f",
+        "levanter",
     )
-
-    cli.tpu_ssh(tpu_name, zone, "docker", "volume", "create", "--driver=local", "levanter")
-
 
 def list_tpus(zone):
     tpus = subprocess.check_output(
@@ -168,9 +175,6 @@ if __name__ == "__main__":
             )
 
             git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
-
-            cli.tpu_ssh(tpu_name, zone, "docker", "stop", "levanter", "-t", "1", ignore_failure=True)
-            cli.tpu_ssh(tpu_name, zone, "docker", "rm", "-f", "levanter", ignore_failure=True)
 
             docker_command = [
                 "docker",
