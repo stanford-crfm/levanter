@@ -201,6 +201,7 @@ class TaggedEvaluator:
         mean_losses_per_tag = hax.zeros(self.dataset.Tag, dtype=np.float32)
 
         state = (RunningMean.zeros_like(total_loss), RunningMean.zeros_like(mean_losses_per_tag))
+        state = hax.shard(state)
 
         for batch, tags in tqdm.tqdm(self.loader, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
@@ -224,6 +225,9 @@ class TaggedEvaluator:
             mask = np.zeros(self.dataset.Tag.size, dtype=bool)
             mask[children] = 1
             assert total_tokens_per_tag_cpu.shape == mask.shape
+
+            # don't consider tags with no tokens in macro average
+            mask = mask & (total_tokens_per_tag_cpu > 0)
 
             # macro is the average of the averages
             tag_macro_loss[parent] = np.mean(mean_loss_per_tag_cpu, where=mask)
