@@ -50,7 +50,6 @@ class TrainLmConfig:
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     eval_harness: Optional[LmEvalHarnessConfig] = None
     eval_harness_steps: int = 10000
-    num_eval_harness_samples: Optional[int] = None
 
 
 def main(config: TrainLmConfig):

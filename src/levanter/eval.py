@@ -201,6 +201,7 @@ class TaggedEvaluator:
         mean_losses_per_tag = hax.zeros(self.dataset.Tag, dtype=np.float32)
 
         state = (RunningMean.zeros_like(total_loss), RunningMean.zeros_like(mean_losses_per_tag))
+        state = hax.shard(state)
 
         for batch, tags in tqdm.tqdm(self.loader, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
