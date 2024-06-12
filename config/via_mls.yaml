@@ -27,7 +27,7 @@ trainer:
     base_path: gs://audio-via/levanter-tpu-via-mls/lev_checkpoints
     save_interval: 15m
 optimizer:
-  learning_rate: 3E-4
+  learning_rate: 3E-5
   weight_decay: 0.1
   warmup: 0.01
 via_init: True

@@ -72,7 +72,7 @@ class ViaConfig(HFCompatConfig, ASRConfig):
 
     @cached_classproperty
     def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["ViaModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "WillHeld/via-llama3-mls")
+        return HFCheckpointConverter(cls, "WillHeld/via-llama")
 
 
 def connector_only(model):
@@ -228,17 +228,17 @@ class ViaASRModel(ViaModel, ASRMixin):
 
         # Compute Contrastive Loss on Input
         # Correct for Normal Autoregressive Loss Mask
-        corrected_loss_mask = hax.roll(example.loss_mask, 1, LocalPos) + hax.nn.one_hot(
-            0, LocalPos, dtype=jax.numpy.float32
-        )
-        # Mask Final Tokens So That Initial Tokens can be used for extra computation
-        reversed_loss_mask = corrected_loss_mask["position", -1::-1]
-        diff_contrast = virtual_embeds - real_embeds
-        loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
+        # corrected_loss_mask = hax.roll(example.loss_mask, 1, LocalPos) + hax.nn.one_hot(
+        #     0, LocalPos, dtype=jax.numpy.float32
+        # )
+        # # Mask Final Tokens So That Initial Tokens can be used for extra computation
+        # reversed_loss_mask = corrected_loss_mask["position", -1::-1]
+        # diff_contrast = virtual_embeds - real_embeds
+        # loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
 
         if reduction is None:
             return kl_proxy_loss
         else:
-            return reduction(kl_proxy_loss, axis=reduction_axis) + reduction(
-                loss2, axis=reduction_axis, where=reversed_loss_mask
-            )
+            return reduction(kl_proxy_loss, axis=reduction_axis)  # + reduction(
+        # loss2, axis=reduction_axis, where=reversed_loss_mask
+        #   )

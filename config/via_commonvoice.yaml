@@ -22,12 +22,12 @@ trainer:
   model_axis_size: 1
   per_device_parallelism: -1
   train_batch_size: 512
-  num_train_steps: 5000
+  num_train_steps: 4300
   checkpointer:
     base_path: gs://audio-via/levanter-tpu-via-cv/lev_checkpoints
     save_interval: 60m
 optimizer:
-  learning_rate: 3E-4
+  learning_rate: 3E-5
   weight_decay: 0.1
   warmup: 0.01
 via_init: True
