@@ -76,6 +76,7 @@ class LlamaConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
+    use_layer_norm_weight: bool = True
     rope_scaling: Optional[dict] = None
 
     # Axis
@@ -150,6 +151,11 @@ class LlamaConfig(HFCompatConfig):
     def model_type(cls) -> Type["LlamaLMHeadModel"]:
         return LlamaLMHeadModel
 
+    def mk_LayerNorm(self, axis: Axis) -> "LlamaRMSNorm":
+        return LlamaRMSNorm.init(
+            axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
+        )
+
 
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     """Multi-layer Perceptron
@@ -167,9 +173,9 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias)
-        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias)
+        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
+        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias, out_first=True)
+        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias, out_first=True)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -238,12 +244,25 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
 
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
+            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias, out_first=True
         )
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
-        o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
+        k_proj = hnn.Linear.init(
+            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
+        )
+        v_proj = hnn.Linear.init(
+            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
+        )
+        o_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True
+        )
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
+
+    def _rope_scale_factor(self) -> float:
+        # hasattr for gemma and I'm feeling lazy
+        if hasattr(self.config, "rope_scaling") and self.config.rope_scaling is not None:
+            assert self.config.rope_scaling["type"] == "linear"
+            return self.config.rope_scaling["factor"]
+        return 1.0
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
@@ -254,7 +273,9 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = llama_rotary_pos_emb(self.config.HeadSize, x.resolve_axis("position"))
+        cos, sin = llama_rotary_pos_emb(
+            self.config.HeadSize, x.resolve_axis("position"), scale=self._rope_scale_factor()
+        )
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
         k = k.rename({"position": "key_position"})
@@ -305,17 +326,20 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         return state_dict
 
 
-class LlamaRMSNorm(hnn.LayerNorm):
-    """It is a modified version of LayerNorm.
-    The main changes are:
-    1. The variance is defined as the average of square, versus the original
-    definition as the average of the squared deviations from the mean.
-    2. The output is defined as x * inv, without minusing the mean.
-    3. The default value of eps is set to 1e-6 and use_bias to False.
+class LlamaRMSNorm(eqx.Module):
+    """
+    Similar to LayerNorm, but uses the RMS of the input along the specified axis (or axes) instead of variance.
     """
 
+    axis: AxisSpec = eqx.static_field()
+    weight: Optional[NamedArray]
+    bias: Optional[NamedArray]
+
+    eps: float = eqx.static_field(default=1e-5)
+    dtype: Optional[jnp.dtype] = eqx.static_field(default=jnp.float32)
+
     @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False):
+    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True, dtype=jnp.float32):
         if use_weight:
             weight = hax.ones(axis)
         else:
@@ -325,20 +349,25 @@ class LlamaRMSNorm(hnn.LayerNorm):
         else:
             bias = None
 
-        return LlamaRMSNorm(axis, weight, bias, eps)
+        return LlamaRMSNorm(axis, weight, bias, eps, dtype)
 
     def __call__(self, x: NamedArray) -> NamedArray:
         # This gives a different result than jnp.var(), which is
         # defined as the average of the squared deviations from the mean
+        in_dtype = x.dtype
+        x = x.astype(self.dtype)
         var = hax.mean(hax.square(x), axis=self.axis)
         inv = hax.rsqrt(var + self.eps)
         out = x * inv
+        out = out.astype(in_dtype)
 
         if self.weight is not None:
             out = self.weight * out
         if self.bias is not None:
             out = out + self.bias
-        return out
+
+        # second cast in case params are in float32
+        return out.astype(in_dtype)
 
 
 class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
@@ -360,8 +389,8 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_1 = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        ln_2 = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_1 = config.mk_LayerNorm(config.Embed)
+        ln_2 = config.mk_LayerNorm(config.Embed)
 
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
@@ -399,7 +428,7 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_f = config.mk_LayerNorm(config.Embed)
 
         return LlamaTransformer(config, layers, ln_f)
 
@@ -436,28 +465,26 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
     """
 
     Vocab: Axis = eqx.static_field()
-    config: LlamaConfig = eqx.static_field()
-    token_embeddings: NamedArray
+    token_embeddings: hnn.Embedding
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        token_embeddings = hax.random.normal(key, (Vocab, config.Embed))
-        return LlamaEmbedding(Vocab, config, token_embeddings)
+        return LlamaEmbedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key))
 
     @named_call
     def embed(self, input_ids, *args):
-        input_embeds = self.token_embeddings.take("vocab", input_ids)
+        input_embeds = self.token_embeddings(input_ids)
         x = input_embeds
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot(x, self.token_embeddings, axis="embed")
+        return self.token_embeddings.unembed(x)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "model.embed_tokens.weight"}
+        return {"token_embeddings": "model.embed_tokens"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
-        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
+        new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
@@ -562,12 +589,14 @@ def _apply_rotary_pos_emb(
     return q_embed, k_embed
 
 
-def llama_rotary_pos_emb(HeadSize: Axis, Pos: Axis, base: int = 10000) -> Tuple[NamedArray, NamedArray]:
+def llama_rotary_pos_emb(
+    HeadSize: Axis, Pos: Axis, base: float = 10000, scale: float = 1.0
+) -> Tuple[NamedArray, NamedArray]:
     with jax.ensure_compile_time_eval():
         HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
         inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
 
-        position_ids: NamedArray = hax.arange(Pos)
+        position_ids: NamedArray = hax.arange(Pos) / scale
 
         freqs = position_ids * inv_freq.broadcast_axis(Pos)
         # This is different from the paper but aligns with HF implementation:
