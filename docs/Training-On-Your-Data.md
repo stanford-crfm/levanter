@@ -399,10 +399,10 @@ This will spin up a TPU VM instance and install Levanter on it. You can then run
 ```
 cat > .config <<EOF
 env:
-    WANDB_API_KEY: 
-    WANDB_ENTITY: 
-    WANDB_PROJECT: 
-    HF_TOKEN: 
+    WANDB_API_KEY:
+    WANDB_ENTITY:
+    WANDB_PROJECT:
+    HF_TOKEN:
     TPU_STDERR_LOG_LEVEL: 0
     TPU_MIN_LOG_LEVEL: 0
     LIBTPU_INIT_ARGS: <extra args to libtpu>
