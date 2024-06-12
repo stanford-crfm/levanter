@@ -13,7 +13,9 @@ trainer:
       - every: 25
         until: 100
       - every: 50
-        until: 2000
+        until: 1000
+      - every: 1000
+        until: 10000
   tracker:
     type: wandb
     project: "trace-train"
