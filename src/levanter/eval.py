@@ -225,6 +225,9 @@ class TaggedEvaluator:
             mask[children] = 1
             assert total_tokens_per_tag_cpu.shape == mask.shape
 
+            # don't consider tags with no tokens in macro average
+            mask = mask & (total_tokens_per_tag_cpu > 0)
+
             # macro is the average of the averages
             tag_macro_loss[parent] = np.mean(mean_loss_per_tag_cpu, where=mask)
             # micro is the total loss for the parent tag
