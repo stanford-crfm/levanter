@@ -3,8 +3,8 @@ import os
 import subprocess
 import typing
 
-from google.cloud import storage
 import yaml
+from google.cloud import storage
 
 
 def run_command(*args, **kwargs):

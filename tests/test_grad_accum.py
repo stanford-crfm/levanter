@@ -4,6 +4,7 @@ import pytest
 from chex import assert_trees_all_close
 from jax.sharding import Mesh
 
+import haliax
 import haliax as hax
 import haliax.nn as hnn
 
@@ -65,6 +66,8 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
         return acc_v, acc_g
 
     with mesh:
+        mlp = haliax.shard(mlp, axis_mapping)
+        x = haliax.shard(x, axis_mapping)
         grad_fn = eqx.filter_value_and_grad(loss_fn)
         acc_v, acc_g = jit_grad_accum(mlp, x)
         v, g = grad_fn(mlp, x)
