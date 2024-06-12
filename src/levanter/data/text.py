@@ -47,8 +47,7 @@ from levanter.data.shard_cache import (  # noqa
     LoggingMetricsMonitor,
     MetricsMonitor,
     ShardCache,
-    _serialize_json_and_commit,
-    build_cache,
+    build_or_load_cache,
 )
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
@@ -160,6 +159,7 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
 
     @staticmethod
     def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
+        # Maybe force the cache to be built ahead of time?
         doc_cache = TokenizedDocumentCache.load(cache_dir, True)
         return TokenSeqDataset(doc_cache, seq_len, stride)
 
@@ -244,7 +244,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos, override_resources=override_resources
         )
         monitors = monitors or []
-        cache = build_cache(
+        cache = build_or_load_cache(
             cache_dir,
             source,
             bt,
@@ -252,13 +252,32 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             batch_size=batch_size,
             rows_per_chunk=rows_per_chunk,
             monitors=monitors,
+            cache_config={
+                "tokenizer": tokenizer.name_or_path,
+                "vocab_size": tokenizer.vocab_size,
+            },
         )
+
         if cache.is_finished:
             logger.info(f"Cache {cache_dir} is complete.")
         else:
             logger.info(
                 f"Cache {cache_dir} is incomplete. This will block until at least one chunk per process is complete."
             )
+
+        if cache.ledger and "tokenizer" in cache.ledger.metadata:
+            cached_tokenizer = cache.ledger.metadata["tokenizer"]
+            cached_vocab_size = cache.ledger.metadata["vocab_size"]
+            if cached_tokenizer != tokenizer.name_or_path:
+                raise ValueError(
+                    f"Cache {cache_dir} was built with tokenizer {cached_tokenizer}, but current tokenizer is"
+                    f" {tokenizer.name_or_path}."
+                )
+            if cached_vocab_size != tokenizer.vocab_size:
+                raise ValueError(
+                    f"Cache {cache_dir} was built with vocab size {cached_vocab_size}, but current vocab size is"
+                    f" {tokenizer.vocab_size}."
+                )
 
         return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
 
@@ -381,6 +400,14 @@ class BatchTokenizer(BatchProcessor[str]):
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
 
         return encoding
+
+    @property
+    def name_or_path(self):
+        return self.tokenizer.name_or_path
+
+    @property
+    def vocab_size(self):
+        return self.tokenizer.vocab_size
 
     @property
     def num_cpus(self) -> int:

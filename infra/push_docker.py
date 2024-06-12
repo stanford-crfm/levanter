@@ -11,8 +11,8 @@ import argparse
 import json
 import os
 import pty
-import sys
 import subprocess
+import sys
 
 from infra.helpers import cli
 

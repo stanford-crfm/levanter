@@ -52,7 +52,7 @@ LEDGER_FILE_NAME = "cache_ledger.json"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
-def build_cache(
+def build_or_load_cache(
     cache_dir: str,
     input_shards: ShardedDataset[T],
     processor: BatchProcessor[T],
@@ -60,6 +60,7 @@ def build_cache(
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
+    cache_config: Optional[Dict[str, Any]] = None,
 ) -> "ShardCache":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
@@ -91,7 +92,14 @@ def build_cache(
 
     """
     # first see if we need to do anything
-    cache = ShardCache.build_or_load(cache_dir, input_shards, processor, batch_size, rows_per_chunk)
+    cache = ShardCache.build_or_load(
+        cache_dir=cache_dir,
+        shard_source=input_shards,
+        processor=processor,
+        batch_size=batch_size,
+        rows_per_chunk=rows_per_chunk,
+        cache_config=cache_config,
+    )
 
     if cache.is_finished:
         logger.info("Cache already finished. Skipping.")
@@ -142,6 +150,7 @@ class CacheLedger:
     """Written at the end of the cache build process. Contains the global chunk order."""
 
     chunks: List[ChunkMetadata] = dataclasses.field(default_factory=list)
+    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 class SerialCacheWriter(AbstractContextManager):
@@ -155,10 +164,16 @@ class SerialCacheWriter(AbstractContextManager):
         ...         writer.write_batch(batch)
     """
 
-    def __init__(self, cache_dir: str, rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK):
+    def __init__(
+        self,
+        cache_dir: str,
+        rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
+        cache_config: Optional[Dict[str, Any]] = None,
+    ):
         if rows_per_chunk <= 0:
             raise ValueError("rows_per_chunk must be positive")
         self.cache_dir = cache_dir
+        self.cache_config = cache_config
         self._rows_per_chunk = rows_per_chunk
         self._chunks: List[ChunkMetadata] = []
         self._current_chunk_writer: Optional[_ChunkWriter] = None
@@ -175,7 +190,9 @@ class SerialCacheWriter(AbstractContextManager):
             self._current_chunk_writer = None
 
         if exc_type is None:
-            _serialize_json_and_commit(os.path.join(self.cache_dir, LEDGER_FILE_NAME), CacheLedger(self._chunks))
+            _serialize_json_and_commit(
+                os.path.join(self.cache_dir, LEDGER_FILE_NAME), CacheLedger(self._chunks, self.cache_config)
+            )
             logger.info(f"Cache ledger written to {self.cache_dir}")
             self._is_closed = True
 
@@ -1347,7 +1364,14 @@ class ChunkCacheBroker:
     _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
     _finished_promise: asyncio.Future[None]
 
-    def __init__(self, cache_dir: str, source: ShardedDataset[T], processor: BatchProcessor[T], rows_per_chunk: int):
+    def __init__(
+        self,
+        cache_dir: str,
+        source: ShardedDataset[T],
+        processor: BatchProcessor[T],
+        rows_per_chunk: int,
+        cache_config: Optional[Dict[str, Any]],
+    ):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.chunks = []
         self._reader_promises = {}
@@ -1360,6 +1384,7 @@ class ChunkCacheBroker:
         # used to subscribe to metrics updates
         self._latest_metrics = InProgressCacheMetrics()
         self._metrics_condition = asyncio.Condition()
+        self._cache_config = cache_config
         path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
         name = f"broker::{path_for_name}"
         self.logger = pylogging.getLogger(f"{name}")
@@ -1395,6 +1420,7 @@ class ChunkCacheBroker:
             return self._latest_metrics
 
     async def get_chunk(self, chunk_idx: int) -> Optional[ChunkMetadata]:
+        assert isinstance(self.chunks, list), self.chunks
         if chunk_idx < len(self.chunks):
             return self.chunks[chunk_idx]
         elif self._is_finished:
@@ -1452,7 +1478,9 @@ class ChunkCacheBroker:
             future.set_result(None)
 
         # write ledger
-        _serialize_json_and_commit(os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self.chunks))
+        _serialize_json_and_commit(
+            os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self.chunks, self._cache_config)
+        )
 
         self._reader_promises = {}
         # TODO: For some reason this crashes other actors with weird reference counting assertion errors.
@@ -1464,13 +1492,14 @@ class ChunkCacheBroker:
         self._do_notify()
 
 
-def _get_broker_actor(cache_dir, input_shards, processor, rows_per_chunk=DEFAULT_ROWS_PER_CHUNK):
+def _get_broker_actor(cache_dir, input_shards, processor, cache_config=None, rows_per_chunk=DEFAULT_ROWS_PER_CHUNK):
     return ChunkCacheBroker.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
         # type: ignore
-        cache_dir,
-        input_shards,
-        processor,
-        rows_per_chunk,
+        cache_dir=cache_dir,
+        source=input_shards,
+        processor=processor,
+        cache_config=cache_config,
+        rows_per_chunk=rows_per_chunk,
     )
 
 
@@ -1542,7 +1571,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         of tokens.
     """
 
-    _ledger: Optional[CacheLedger]
+    ledger: Optional[CacheLedger]
     _broker: Optional[ActorHandle]
     # We use a thread here instead of an actor because we want to ensure it's on the same process as the ShardCache
     # object.
@@ -1553,13 +1582,13 @@ class ShardCache(Iterable[pa.RecordBatch]):
         self,
         cache_dir: str,
         batch_size: int,
-        _ledger: Optional[CacheLedger],
+        ledger: Optional[CacheLedger],
         _broker: Optional[ActorHandle],
         reader_offset: int = 0,
         num_readers: int = 1,
     ):
         self.cache_dir = cache_dir
-        self._ledger = _ledger
+        self.ledger = ledger
         self._broker = _broker
         self._batch_size = batch_size
 
@@ -1585,12 +1614,19 @@ class ShardCache(Iterable[pa.RecordBatch]):
         processor: BatchProcessor[T],
         batch_size: int,
         rows_per_chunk: int,
+        cache_config: Optional[Dict[str, Any]] = None,
     ):
         try:
             return ShardCache.load(cache_dir, batch_size)
         except FileNotFoundError:
-            broker = _get_broker_actor(cache_dir, shard_source, processor, rows_per_chunk)
-            return ShardCache(cache_dir, batch_size, None, broker)
+            broker = _get_broker_actor(
+                cache_dir=cache_dir,
+                input_shards=shard_source,
+                processor=processor,
+                cache_config=cache_config,
+                rows_per_chunk=rows_per_chunk,
+            )
+            return ShardCache(cache_dir=cache_dir, batch_size=batch_size, ledger=None, _broker=broker)
 
     def finished_sentinel(self):
         """Returns a Ray-awaitable object that will be set when the cache is finished"""
@@ -1621,8 +1657,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
         return self._get_chunk_unmapped(mapped_index, timeout=timeout)
 
     def _get_chunk_unmapped(self, mapped_index: int, *, timeout: Optional[float] = None) -> ChunkMetadata:
-        if self._ledger is not None:
-            return self._ledger.chunks[mapped_index]
+        if self.ledger is not None:
+            return self.ledger.chunks[mapped_index]
         else:
             assert self._broker is not None
             time_in = time.time()
@@ -1661,8 +1697,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
     async def get_chunk_async(self, index: int) -> ChunkMetadata:
         """Returns the metadata for a given chunk index"""
         mapped_index = self._map_index(index)
-        if self._ledger is not None:
-            return self._ledger.chunks[mapped_index]
+        if self.ledger is not None:
+            return self.ledger.chunks[mapped_index]
         else:
             assert self._broker is not None
             chunk = await self._broker.get_chunk.remote(mapped_index)
@@ -1672,8 +1708,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
     def final_chunk_count(self) -> Optional[int]:
         """Returns the number of chunks in the cache, if known"""
-        if self._ledger is not None:
-            return len(self._ledger.chunks)
+        if self.ledger is not None:
+            return len(self.ledger.chunks)
         else:
             assert self._broker is not None
             return ray.get(self._broker.final_chunk_count.remote())
@@ -1681,8 +1717,8 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def iter_batches_from_chunks(self, loop: bool = False):
         shard_offset = self._reader_offset
 
-        if self._ledger is not None:
-            num_chunks = len(self._ledger.chunks)
+        if self.ledger is not None:
+            num_chunks = len(self.ledger.chunks)
 
             if num_chunks == 0:
                 return
@@ -1690,13 +1726,13 @@ class ShardCache(Iterable[pa.RecordBatch]):
             while True:
                 i = 0
                 for i in range(shard_offset, num_chunks, self._num_readers):
-                    chunk = self._ledger.chunks[i]
+                    chunk = self.ledger.chunks[i]
                     yield from self._read_chunk(chunk)
 
                 if not loop:
                     break
 
-                shard_offset = i % len(self._ledger.chunks)
+                shard_offset = i % len(self.ledger.chunks)
         else:
             assert self._broker is not None
             i = shard_offset
@@ -1740,17 +1776,17 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
         new_offset = self._reader_offset * num_readers + offset
         new_num_readers = self._num_readers * num_readers
-        return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, new_offset, new_num_readers)
+        return ShardCache(self.cache_dir, self._batch_size, self.ledger, self._broker, new_offset, new_num_readers)
 
     def unshard(self):
         """
         Gets the "base" shard cache that this shard cache is a shard of.
         """
-        return ShardCache(self.cache_dir, self._batch_size, self._ledger, self._broker, 0, 1)
+        return ShardCache(self.cache_dir, self._batch_size, self.ledger, self._broker, 0, 1)
 
     def with_batch_size(self, batch_size):
         return ShardCache(
-            self.cache_dir, batch_size, self._ledger, self._broker, self._reader_offset, self._num_readers
+            self.cache_dir, batch_size, self.ledger, self._broker, self._reader_offset, self._num_readers
         )
 
     def _read_chunk(self, chunk):
