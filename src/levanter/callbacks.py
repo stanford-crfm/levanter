@@ -345,28 +345,35 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
             return  # don't run eval on the first step
 
         model = inference_mode(step.model, True)
-        outputs = run_lm_eval_harness(model, config.task_spec_or_default(), tokenizer, EvalBatch, axis_resources, max_examples=config.max_examples)
+        outputs = run_lm_eval_harness(
+            model,
+            config.task_spec_or_default(),
+            tokenizer,
+            EvalBatch,
+            axis_resources,
+            max_examples=config.max_examples,
+        )
 
         if jax.process_index() == 0:
             with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as f:
                 import json
 
                 json.dump(outputs, f)
-                levanter.tracker.current_tracker().log_artifact(f.name, name=f"lm_eval_output.{step.step}", type="lm_eval_output")
+                levanter.tracker.current_tracker().log_artifact(
+                    f.name, name=f"lm_eval_output.{step.step}", type="lm_eval_output"
+                )
 
             # also log accuracy statistics etc
             metrics_to_log = {}
-            for task, metrics in outputs["results"]:
+            for task, metrics in outputs["results"].items():
                 for metric, value in metrics.items():
                     if metric.endswith(",none"):
-                        metric = metric[:-len(",none")]
+                        metric = metric[: -len(",none")]
 
                     if metric != "alias":
                         # levanter.tracker.log_metrics({f"lm_eval/{task}/{metric}": value}, step=step.step)
                         metrics_to_log[f"lm_eval/{task}/{metric}"] = value
 
-
             levanter.tracker.log_metrics(metrics_to_log, step=step.step)
-
 
     return lm_eval_harness

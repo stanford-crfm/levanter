@@ -73,7 +73,7 @@ class _RequestType:
     FINISHED = 3
 
 
-class _InternalLMAdaptor:
+class _InternalLMAdapter:
     def __init__(self, EvalBatch: hax.Axis, model: LmHeadModel, axis_resources):
         self.EvalBatch = EvalBatch
         self.model = model
@@ -129,7 +129,7 @@ class _InternalLMAdaptor:
 
 
 class LevanterHarnessLM(LM):
-    def __init__(self, adaptor: _InternalLMAdaptor, tokenizer):
+    def __init__(self, adaptor: _InternalLMAdapter, tokenizer):
         super().__init__()
         self.adaptor = adaptor
         self.tokenizer = tokenizer
@@ -211,16 +211,16 @@ class LevanterHarnessLM(LM):
 
 
 def run_lm_eval_harness(model, task_spec: list[str], tokenizer, EvalBatch, axis_resources, max_examples=None) -> dict:
-    adaptor = _InternalLMAdaptor(EvalBatch, model, axis_resources)
-    harness = LevanterHarnessLM(adaptor, tokenizer)
+    adapter = _InternalLMAdapter(EvalBatch, model, axis_resources)
+    harness = LevanterHarnessLM(adapter, tokenizer)
     tasks_to_run = tasks.get_task_dict(task_spec)
     if jax.process_index() == 0:
         try:
             outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples)
         finally:
-            adaptor.finish()
+            adapter.finish()
     else:
-        adaptor.worker_loop()
+        adapter.worker_loop()
         outputs = {}
 
     return outputs
@@ -297,8 +297,14 @@ def run_eval_harness_main(config: EvalHarnessConfig):
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
 
             logger.info("Running LM eval harness....")
-            outputs = run_lm_eval_harness(model, task_spec, tokenizer, config.EvalBatch,
-                                          axis_resources=compute_axis_mapping, max_examples=max_examples)
+            outputs = run_lm_eval_harness(
+                model,
+                task_spec,
+                tokenizer,
+                config.EvalBatch,
+                axis_resources=compute_axis_mapping,
+                max_examples=max_examples,
+            )
 
             logger.info("Finished running LM eval harness")
             # log the results as json
