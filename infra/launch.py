@@ -1,7 +1,9 @@
 #!/usr/bin/python
 
 import argparse
+import base64
 import getpass
+import os
 import subprocess
 import time
 
@@ -30,6 +32,7 @@ def setup_vm_docker(tpu_name, zone, docker_base_image):
         "-f",
         "levanter",
     )
+
 
 def list_tpus(zone):
     tpus = subprocess.check_output(
@@ -91,6 +94,20 @@ def start_tpu_vm(tpu_name, *, tpu_type, preemptible, version, zone, autodelete):
     cli.run_command(*command)
 
 
+def _default_run_id():
+    """Generate a run ID for wandb and continuation.
+
+    Wandb expects a base36 encoded ID of exactly 8 lowercase characters
+    or it won't generate a display name."""
+    rng_bytes = os.urandom(16)
+    run_id = base64.b32encode(rng_bytes)[:8].lower()
+    run_id = run_id.decode("utf-8")
+    assert len(run_id) == 8
+    for char in run_id:
+        assert char in "abcdefghijklmnopqrstuvwxyz0123456789"
+    return run_id
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     config = cli.load_config()
@@ -107,7 +124,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
     cli.add_arg(parser, config, ["--zone"], required=True)
     cli.add_arg(parser, config, ["--retries"], default=0, type=int)
-    cli.add_arg(parser, config, ["--run_id"], default=int(time.time()), type=int)
+    cli.add_arg(parser, config, ["--run_id"], default=_default_run_id(), type=str)
 
     parser.add_argument(
         "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=config.get("env", {}).items()
