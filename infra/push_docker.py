@@ -9,6 +9,9 @@ script will automatically build and deploy an image based on your current code.
 
 import argparse
 import json
+import os
+import pty
+import sys
 import subprocess
 
 from infra.helpers import cli
@@ -33,9 +36,17 @@ GCP_CLEANUP_POLICY = [
 ]
 
 
-def _run(*args, **kw):
-    print("Running ", " ".join(args[0]))
-    return subprocess.check_output(*args, **kw)
+def _run(argv, **kw):
+    buffer = []
+
+    def _read(fd):
+        data = os.read(fd, 1024)
+        os.write(sys.stdout.fileno(), data)
+        buffer.append(data)
+
+    exit_code = pty.spawn(argv)
+    if exit_code != 0:
+        raise subprocess.CalledProcessError(exit_code, argv, output=b"".join(buffer))
 
 
 def configure_gcp_docker(project_id, region, repository):
