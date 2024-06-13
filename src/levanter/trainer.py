@@ -557,11 +557,11 @@ class TrainerConfig:
     )  # overrides axis_mapping for parameter
     """logical->physical mapping for parameter/optimizer sharding. fsdp_axis and tensor_parallel_axes are preferred"""
 
-    """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction"""
-    replica_ici_axis_size: int = 1
-    model_axis_size: int = 1
-    """how many devices within each slice for sharding with DP. Fix TP=1, the rest of the devices is for FSDP."""
-    replica_dcn_axis_size: int = 1
+    # Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction
+    replica_ici_axis_size: int = 1  # how many parameter replicas there should be "within" each slice (ICI)
+    model_axis_size: int = 1  # axis size for tensor parallelism (TP)
+    replica_dcn_axis_size: Optional[int] = None  # how many parameter replicas there should be "across" slices (DCN)
+    auto_replicas: bool = True  # whether to automatically set replica_dcn_axis_size based on num_slices
     """how many slices in the multislice scheme for sharding with DP and TP. The rest of the devices is for FSDP."""
 
     # Config related to batch sizes
@@ -766,6 +766,12 @@ class TrainerConfig:
             and self.model_axis_size % jax.local_device_count() != 0
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
+
+        # handle replica_dcn_axis_size
+        if self.auto_replicas and self.replica_dcn_axis_size is None:
+            if self.num_slices > 1:
+                logger.info(f"Setting replica_dcn_axis_size to {self.num_slices}")
+            self.replica_dcn_axis_size = self.num_slices
 
         assert self.train_batch_size != -1 or self.per_device_parallelism != -1
 

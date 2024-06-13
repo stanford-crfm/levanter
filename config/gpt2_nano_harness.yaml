@@ -1,5 +1,5 @@
 eval_harness:
-  task_spec: ["lambada", "piqa", "hellaswag"]
+  task_spec: ["piqa", "hellaswag"]
   max_examples: 32
 eval_harness_steps: 50
 data:

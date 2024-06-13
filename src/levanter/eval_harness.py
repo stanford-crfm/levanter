@@ -38,7 +38,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.data import batched
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
-from levanter.utils.jax_utils import stack_tree, use_cpu_device
+from levanter.utils.jax_utils import local_cpu_mesh, stack_tree, use_cpu_device
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -79,9 +79,9 @@ class _InternalLMAdapter:
         self.model = model
         self.axis_resources = axis_resources
 
-        self.dummy_example: LmExample = LmExample.causal(
+        self.dummy_example: LmExample = hax.named_jit(lambda: LmExample.causal(
             tokens=hax.zeros(model.Pos, dtype=jnp.int32),
-        )
+        ))()
 
         def _eval_loglikelihood(model: LmHeadModel, example: LmExample):
             logits = model(example.tokens)
@@ -116,12 +116,19 @@ class _InternalLMAdapter:
     def worker_loop(self):
         dummy_example = self.dummy_example
         while True:
+            logger.info("Waiting for request")
             request_type, request = broadcast_one_to_all((_RequestType.FINISHED, dummy_example), is_source=False)
 
             if request_type == _RequestType.FINISHED:
                 break
 
+            logger.info("Doing request")
             self.do_request(request_type, request)
+
+    def dispatch(self, request_type, request):
+        print(self.dummy_example, request)
+        broadcast_one_to_all((request_type, request), is_source=True)
+        return self.do_request(request_type, request)
 
     def finish(self):
         assert jax.process_index() == 0
@@ -161,19 +168,23 @@ class LevanterHarnessLM(LM):
         completions = self.tokenizer([req.args[1] for req in requests])["input_ids"]
 
         examples: list[LmExample] = []
-        with use_cpu_device():
+        logger.info("Creating examples")
+        with local_cpu_mesh():
             for context, completion in zip(contexts, completions):
                 context, completion = self._truncate_or_pad(context, completion)
                 context, completion = hax.named(context, Pos.name), hax.named(completion, Pos.name)
-                example = LmExample.from_prompt_and_completion(
+                example = jax.jit(lambda: LmExample.from_prompt_and_completion(
                     context, completion, ignore_id=self.tokenizer.pad_token_id
-                )
+                ))()
                 examples.append(example)
+        logger.info("Created examples")
 
         result: list[tuple[float, bool]] = []
         for batch in batched(tqdm(examples, desc="examples", leave=False), self.adaptor.EvalBatch.size):
-            batch_example = self._stack_batch(batch)
-            out_lls, out_correct = self._dispatch(_RequestType.LOG_LIKELIHOOD, batch_example)
+            logger.info("Processing batch")
+            with local_cpu_mesh():
+                batch_example = self._stack_batch(batch)
+            out_lls, out_correct = self.adaptor.dispatch(_RequestType.LOG_LIKELIHOOD, batch_example)
             result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
 
         # skip padding
@@ -199,9 +210,6 @@ class LevanterHarnessLM(LM):
 
         return context, completion
 
-    def _dispatch(self, request_type, request):
-        broadcast_one_to_all((request_type, request), is_source=True)
-        return self.adaptor.do_request(request_type, request)
 
     def loglikelihood_rolling(self, requests) -> List[Tuple[float]]:
         raise NotImplementedError()
