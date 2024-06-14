@@ -16,7 +16,7 @@ from levanter.callbacks import eval_loss_loop
 from levanter.checkpoint import load_checkpoint_or_initialize
 from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
-from levanter.logging import capture_time
+from levanter.tracker import capture_time
 from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
 from levanter.types import ComputeLossFunction, ModuleComputeLoss
 from levanter.utils.tree_utils import inference_mode

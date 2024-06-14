@@ -13,6 +13,7 @@ from haliax.partitioning import ResourceMapping
 
 import levanter.tracker
 from levanter.data import Dataset, ReplicatedBatchLoader
+from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.stat_utils import RunningMean
@@ -32,6 +33,7 @@ class EvalResult:
     macro_avg_loss: float  # average of per-dataset average losses
     tag_macro_losses: dict[str, float]  # per tag average-per-token loss
     tag_micro_losses: dict[str, float]  # per tag total loss, for "parent" tags
+    total_eval_loading_time: float
 
 
 class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
@@ -111,21 +113,30 @@ def cb_tagged_lm_evaluate(
     evaluator = TaggedEvaluator(EvalBatch, tagged_eval_sets, device_mesh, axis_mapping, max_examples_per_dataset)
 
     def eval_callback(step: StepInfo):
-        result = evaluator.evaluate(step.model)
+        with levanter.tracker.capture_time() as time_fn:
+            result = evaluator.evaluate(step.model)
+
         log_dict = {
             # log micro average as just "loss"
             _join_prefix(prefix, "loss"): result.micro_avg_loss,
             _join_prefix(prefix, "macro_loss"): result.macro_avg_loss,
+            _join_prefix(prefix, "loading_time"): result.total_eval_loading_time,
+            _join_prefix(prefix, "total_time"): time_fn(),
         }
+
         logger.info(f"{prefix} loss: {result.micro_avg_loss:.3f}")
         for tag, loss in result.tag_macro_losses.items():
-            # don't loss leaf tag macro losses because it doesn't mean anything different than micro loss
+            # don't log leaf tag macro losses because it doesn't mean anything different than micro loss
             if tag in evaluator.dataset.tag_to_index:
+                continue
+            if not tag:
                 continue
             log_dict[_join_prefix(prefix, tag) + "/macro_loss"] = loss
             logger.info(f"{tag} macro loss: {loss:.3f}")
 
         for tag, loss in result.tag_micro_losses.items():
+            if not tag:
+                continue
             if tag in evaluator.dataset.tag_to_index:
                 log_dict[_join_prefix(prefix, tag) + "/loss"] = loss
                 logger.info(f"{tag} loss: {loss:.3f}")
@@ -201,8 +212,11 @@ class TaggedEvaluator:
         mean_losses_per_tag = hax.zeros(self.dataset.Tag, dtype=np.float32)
 
         state = (RunningMean.zeros_like(total_loss), RunningMean.zeros_like(mean_losses_per_tag))
+        state = hax.shard(state)
 
-        for batch, tags in tqdm.tqdm(self.loader, "eval"):
+        iterator = LoadingTimeTrackerIterator(self.loader)
+
+        for batch, tags in tqdm.tqdm(iterator, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
 
         total_loss, losses_per_tag = state
@@ -225,6 +239,9 @@ class TaggedEvaluator:
             mask[children] = 1
             assert total_tokens_per_tag_cpu.shape == mask.shape
 
+            # don't consider tags with no tokens in macro average
+            mask = mask & (total_tokens_per_tag_cpu > 0)
+
             # macro is the average of the averages
             tag_macro_loss[parent] = np.mean(mean_loss_per_tag_cpu, where=mask)
             # micro is the total loss for the parent tag
@@ -235,4 +252,4 @@ class TaggedEvaluator:
             tag_micro_loss[tag] = mean_loss_per_tag_cpu[index]
             # no macro loss for the leaf tags
 
-        return EvalResult(micro_avg_loss, macro_avg_loss, tag_macro_loss, tag_micro_loss)
+        return EvalResult(micro_avg_loss, macro_avg_loss, tag_macro_loss, tag_micro_loss, iterator.total_time)

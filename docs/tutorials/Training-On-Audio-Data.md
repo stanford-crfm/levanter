@@ -179,17 +179,30 @@ infra/babysit-tpu-vm my-tpu -z us-east1-d -t v3-128 -- \
 
 #### Spin up and manual launch
 
-You should probably use the automated setup script, as described in the [relevant section of the TPU guide](../Getting-Started-TPU-VM.md#automatic-setup).
-Here's what that looks like:
+You can start up a TPU VM and launch your instance with `launch.py`. To simplify your command for multiple launches, you can put common parameters into `.config` in your `levanter` directory:
+
+cat > .config <<EOF
+env:
+    WANDB_API_KEY:
+    WANDB_ENTITY:
+    WANDB_PROJECT:
+    HF_TOKEN:
+    TPU_STDERR_LOG_LEVEL: 0
+    TPU_MIN_LOG_LEVEL: 0
+    LIBTPU_INIT_ARGS: <extra args to libtpu>
+
+docker_repository: levanter
+zone: us-west4-a
+tpu_type: "v5litepod-16"
+vm_image: "tpu-ubuntu2204-base"
+preemptible: true
+autodelete: false
+subnetwork: "default"
+EOF
 
 ```bash
-bash infra/spin-up-tpu-vm.sh my-tpu -z us-east1-d -t v3-128
-```
 
-This will spin up a TPU VM instance and install Levanter on it. You can then run a command like so:
-
-```bash
-gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_asr.py --config_path gs://path/to/config.yaml"
+python infra/launch.py --tpu_name=my_tpu -- python levanter/src/levanter/main/train_asr.py --config_path gs://path/to/config.yaml"
 ```
 
 ### GPU
