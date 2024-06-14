@@ -5,10 +5,8 @@ from levanter.utils.py_utils import logical_cpu_core_count
 
 
 silence_transformer_nag()
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast  # noqa: E402
 
-
-HFTokenizer = PreTrainedTokenizer | PreTrainedTokenizerFast
+_HF_TOKENIZER_OFF_VALUES = {"off", "false", "f", "no", "n", "0"}
 
 
 def num_cpus_used_by_tokenizer(tokenizer) -> int:
@@ -22,6 +20,3 @@ def num_cpus_used_by_tokenizer(tokenizer) -> int:
             return min(max(1, logical_cpu_core_count() - 2), 12)
     else:
         return 1
-
-
-_HF_TOKENIZER_OFF_VALUES = {"off", "false", "f", "no", "n", "0"}

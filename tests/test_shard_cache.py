@@ -7,7 +7,7 @@ import pytest
 import ray
 
 from levanter.data._preprocessor import BatchProcessor
-from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_cache
+from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_or_load_cache
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.utils.py_utils import logical_cpu_core_count
 
@@ -67,7 +67,7 @@ def simple_process(processor, source):
 def test_cache_simple():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
-        ray_ds = build_cache(tmpdir, SimpleShardSource(), TestProcessor())
+        ray_ds = build_or_load_cache(tmpdir, SimpleShardSource(), TestProcessor())
 
         simple_processed = simple_process(TestProcessor(), SimpleShardSource())
 
@@ -78,7 +78,7 @@ def test_cache_simple():
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
-        ds1 = build_cache(tmpdir, SimpleShardSource(), TestProcessor())
+        ds1 = build_or_load_cache(tmpdir, SimpleShardSource(), TestProcessor())
 
         class ThrowingProcessor(BatchProcessor[Sequence[int]]):
             def __call__(self, batch: Sequence[Sequence[int]]) -> pa.RecordBatch:
@@ -93,7 +93,7 @@ def test_cache_remembers_its_cached():
                 return 1
 
         # testing this doesn't throw
-        ds2 = build_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
+        ds2 = build_or_load_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
         assert list(ds1) == list(ds2)
         # ensure we delete tmpdir, since something is holding onto it
@@ -125,23 +125,23 @@ def test_cache_recover_from_crash():
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
         with pytest.raises(_CustomException):
-            build_cache(tmpdir, source, TestProcessor())
+            build_or_load_cache(tmpdir, source, TestProcessor())
 
         # kill the broker actor so that we can test recovery
         ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
 
         source = CrashingShardSource(5)
         with pytest.raises(_CustomException):
-            build_cache(tmpdir, source, TestProcessor())
+            build_or_load_cache(tmpdir, source, TestProcessor())
 
         ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
-        reader1 = build_cache(tmpdir, source, TestProcessor(), batch_size=1, await_finished=True)
+        reader1 = build_or_load_cache(tmpdir, source, TestProcessor(), batch_size=1, await_finished=True)
 
         # compare to the original with no crash
-        reader2 = build_cache(tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True)
+        reader2 = build_or_load_cache(tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True)
 
         assert list(reader1) == list(reader2)
         assert len(list(reader1)) == 40
@@ -158,7 +158,7 @@ def test_no_hang_if_empty_shard_source():
             raise RuntimeError("This should not be called")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        reader = build_cache(tmpdir, EmptyShardSource(), TestProcessor(), batch_size=1)
+        reader = build_or_load_cache(tmpdir, EmptyShardSource(), TestProcessor(), batch_size=1)
         assert list(reader) == []
 
 
@@ -175,7 +175,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache = build_cache(
+        cache = build_or_load_cache(
             tmpdir, SlowShardSource(), TestProcessor(1), batch_size=1, rows_per_chunk=10, await_finished=False
         )
 
@@ -229,7 +229,7 @@ def test_can_get_chunk_before_finished():
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache = build_cache(
+        cache = build_or_load_cache(
             tmpdir, SlowShardSource(), TestProcessor(5), batch_size=1, rows_per_chunk=10, await_finished=False
         )
 
@@ -271,7 +271,7 @@ def test_shard_cache_crashes_if_processor_throws():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with pytest.raises(RuntimeError):
-            build_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
+            build_or_load_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
 
 @pytest.mark.ray
@@ -283,7 +283,7 @@ def test_map_batches_and_map_shard_cache():
             .map(lambda list: list * 2)
             .map_batches(TestProcessor(), 8)
             .map(lambda d: {"q": d["test"]})
-            .build_cache(tmpdir, await_finished=True)
+            .build_or_load_cache(tmpdir, await_finished=True)
         )
 
         def composite_fn(list):
@@ -313,7 +313,7 @@ def test_serial_cache_writer():
                     writer.write_batch(processor([batch]))
 
         serial = writer.result(batch_size=1)
-        ray_ds = build_cache(tmpdir2, source, processor, await_finished=True)
+        ray_ds = build_or_load_cache(tmpdir2, source, processor, await_finished=True)
 
         def freeze_batch(batch):
             # make it hashable
@@ -340,7 +340,7 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
                 [f"{tmpdir}/data.txt", f"{tmpdir}/data.txt.1"],
             )
 
-            build_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
+            build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
 @pytest.mark.ray
@@ -354,11 +354,11 @@ def test_shard_cache_fails_gracefully_with_unknown_file_type():
         )
 
         with pytest.raises(ValueError):
-            build_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
+            build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
         # now make sure it works in non-blocking mode
 
-        cache = build_cache(tmpdir, dataset, TestProcessor(), await_finished=False)
+        cache = build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=False)
 
         with pytest.raises(ValueError):
             cache.get_chunk(0, timeout=5)
