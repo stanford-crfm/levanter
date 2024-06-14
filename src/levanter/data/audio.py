@@ -27,7 +27,7 @@ from levanter.data.shard_cache import (
     LoggingMetricsMonitor,
     MetricsMonitor,
     ShardCache,
-    build_cache,
+    build_or_load_cache,
 )
 from levanter.data.sharded_dataset import AudioTextUrlDataset, ShardedDataset, WrappedHFDataset
 from levanter.data.text import BatchTokenizer
@@ -297,7 +297,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
             override_resources=override_resources,
         )
         monitors = monitors or []
-        cache = build_cache(
+        cache = build_or_load_cache(
             cache_dir,
             source,
             bp,
