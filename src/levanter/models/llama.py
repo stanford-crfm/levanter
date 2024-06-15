@@ -29,6 +29,7 @@ from levanter.models.attention import AttentionBackend, AttentionMask, dot_produ
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
+from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -157,19 +158,16 @@ class LlamaConfig(HFCompatConfig):
         )
 
     def flops_per_token(self, vocab_size: int):
-        kv_channels = self.hidden_dim / self.num_heads
-        mlp = 2 * 3 * self.hidden_dim * self.intermediate_dim
-        qkv_proj = 2 * self.hidden_dim * (self.num_heads * kv_channels + 2 * self.num_kv_heads * kv_channels)
-        dense_proj = 2 * self.hidden_dim * self.hidden_dim
-        # The following are across the whole sequence
-        key_query_logits = 2 * self.seq_len * (self.seq_len / 2) * self.num_heads * kv_channels
-        mask = 3 * self.seq_len * self.seq_len * self.num_heads
-        mask_value = 2 * self.seq_len * self.seq_len * kv_channels * self.num_heads
-        seq_flops = key_query_logits + mask + mask_value
-        # so we divide by the sequence length to get the per-token flops
-        attn = seq_flops / self.seq_len
-        lm_head = 2 * self.hidden_dim * vocab_size
-        return self.num_layers * (mlp + qkv_proj + dense_proj + attn) + lm_head
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=True,
+        )
 
 
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
