@@ -30,6 +30,7 @@ from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()

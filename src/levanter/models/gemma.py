@@ -30,6 +30,7 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
