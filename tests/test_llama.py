@@ -45,6 +45,15 @@ def test_llama_config():
         ), f"{k} {getattr(new_hf_config, k)} != {getattr(hf_config, k)}"
 
 
+def test_llama_flops():
+    # Check that the forward flops is within 10% of the naive calculation
+    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    llama_config = LlamaConfig.from_hf_config(hf_config)
+    n_params = 6.7e9
+    ratio = 2 * n_params / llama_config.flops_per_token(hf_config.vocab_size)
+    assert ratio > 0.85, f"ratio {ratio} < 0.9"
+
+
 @skip_if_no_torch
 def test_llama_rotary_embedding():
     import torch

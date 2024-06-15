@@ -156,6 +156,21 @@ class LlamaConfig(HFCompatConfig):
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
         )
 
+    def flops_per_token(self, vocab_size: int):
+        kv_channels = self.hidden_dim / self.num_heads
+        mlp = 2 * 3 * self.hidden_dim * self.intermediate_dim
+        qkv_proj = 2 * self.hidden_dim * (self.num_heads * kv_channels + 2 * self.num_kv_heads * kv_channels)
+        dense_proj = 2 * self.hidden_dim * self.hidden_dim
+        # The following are across the whole sequence
+        key_query_logits = 2 * self.seq_len * (self.seq_len / 2) * self.num_heads * kv_channels
+        mask = 3 * self.seq_len * self.seq_len * self.num_heads
+        mask_value = 2 * self.seq_len * self.seq_len * kv_channels * self.num_heads
+        seq_flops = key_query_logits + mask + mask_value
+        # so we divide by the sequence length to get the per-token flops
+        attn = seq_flops / self.seq_len
+        lm_head = 2 * self.hidden_dim * vocab_size
+        return self.num_layers * (mlp + qkv_proj + dense_proj + attn) + lm_head
+
 
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     """Multi-layer Perceptron
