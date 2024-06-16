@@ -29,6 +29,7 @@ from levanter.models.attention import AttentionBackend, AttentionMask, dot_produ
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
+from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -154,6 +155,18 @@ class LlamaConfig(HFCompatConfig):
     def mk_LayerNorm(self, axis: Axis) -> "LlamaRMSNorm":
         return LlamaRMSNorm.init(
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
+        )
+
+    def flops_per_token(self, vocab_size: int):
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=True,
         )
 
 

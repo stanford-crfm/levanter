@@ -29,6 +29,7 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
 )
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
+from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -183,6 +184,18 @@ class GemmaConfig(HFCompatConfig):
     @property
     def model_type(cls) -> Type["GemmaLMHeadModel"]:
         return GemmaLMHeadModel
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
+        )
 
 
 class GemmaRMSNorm(hnn.LayerNorm):

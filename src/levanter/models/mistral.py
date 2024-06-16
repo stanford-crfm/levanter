@@ -22,6 +22,7 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -137,6 +138,18 @@ class MistralConfig(LlamaConfig):
     @property
     def model_type(cls) -> Type["MistralLMHeadModel"]:
         return MistralLMHeadModel
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
+        )
 
 
 class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerializationMixin):
