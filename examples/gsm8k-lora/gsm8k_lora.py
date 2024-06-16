@@ -2,7 +2,7 @@
 import copy
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import equinox as eqx
@@ -16,6 +16,7 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import Dataset
+from levanter.data.dataset import ShuffleDataset
 from levanter.data.sharded_dataset import WrappedHFDataset
 from levanter.lora import (
     LoraConfig,
@@ -24,7 +25,8 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
-from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.models.llama import LlamaConfig
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
@@ -40,9 +42,12 @@ class TrainArgs:
     optimizer: OptimizerConfig
     trainer: TrainerConfig
     lora: LoraConfig = LoraConfig()
+    model: LmConfig = field(default_factory=LlamaConfig)
 
     max_tune_length: int = 2048  # maximum length of the input to the model during tuning
+
     data: str = "gsm8k"  # name of the dataset to use
+    data_seed: Optional[int] = None
     data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
 
     input_key: str = "question"  # key in the dataset for the input
@@ -131,7 +136,7 @@ def train(config: TrainArgs):
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
-    converter = HFCheckpointConverter.from_hf(config.model_name_or_path, trust_remote_code=config.trust_remote_code)
+    converter = config.model.default_hf_checkpoint_converter
     model_config = converter.default_config
 
     tokenizer = copy.deepcopy(converter.tokenizer)
@@ -142,9 +147,13 @@ def train(config: TrainArgs):
     tokenizer.model_max_length = config.max_tune_length
 
     # Randomness in JAX is tightly controlled. We pass around a key that is used to generate random numbers.
-    training_key, lora_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 2)
+    training_key, data_key, lora_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 3)
+
+    if config.data_seed is not None:
+        data_key = jrandom.PRNGKey(config.data_seed)
 
     train_dataset = mk_dataset(config, tokenizer)
+    train_dataset = ShuffleDataset(train_dataset, data_key, buffer_size=1000 * 1000)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
