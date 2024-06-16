@@ -159,7 +159,11 @@ def main(config: TrainLmConfig):
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
-        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
+        flops_per_token = config.model.flops_per_token(vocab_size)
+        flops_per_example = 3 * flops_per_token * Pos.size if flops_per_token is not None else None
+        trainer.add_hook(
+            callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
+        )
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
 

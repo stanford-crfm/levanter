@@ -28,6 +28,7 @@ from levanter.compat.torch_serialization import (
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
+from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.py_utils import cached_classproperty
 
 
@@ -121,6 +122,18 @@ class Gpt2Config(HFCompatConfig):
             activation_function=hf_config.activation_function,
             scale_attn_by_inverse_layer_idx=hf_config.scale_attn_by_inverse_layer_idx,
             upcast_attn=hf_config.reorder_and_upcast_attn,
+        )
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.hidden_dim * self.mlp_scale,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
         )
 
 

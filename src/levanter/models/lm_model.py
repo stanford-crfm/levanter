@@ -64,6 +64,9 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def Pos(self) -> Axis:
         pass
 
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return None
+
     def build(self, Vocab: Axis, *, key: PRNGKey) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 
