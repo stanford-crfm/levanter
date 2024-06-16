@@ -2,7 +2,7 @@ data:
   !include data/dolma_olmo_paloma_shuf.yaml
 model:
   type: olmo
-initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step0-tokens0B"
+initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step476000-tokens1995B"
 use_hf_model_config: true
 
 trainer:
@@ -16,6 +16,7 @@ trainer:
         until: 1000
       - every: 1000
         until: 10000
+        
   tracker:
     type: wandb
     project: "trace-train"
