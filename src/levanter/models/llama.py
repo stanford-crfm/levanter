@@ -5,6 +5,7 @@ from typing import Callable, Dict, Optional, Tuple, Type, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax import Array
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
 
@@ -37,6 +38,14 @@ silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
+def make_bins():
+    bins = jnp.logspace(-6, 6, 254, base=2.0)
+    inf = jnp.array([jnp.inf])
+    zero = jnp.array([0.0])
+    return jnp.concatenate([-inf, -bins[::-1], zero, bins, inf])
+    
+BINS = make_bins()
+BIN_AX = Axis("bins", len(BINS)-1)
 
 @LmConfig.register_subclass("llama")
 @dataclass(frozen=True)
@@ -79,6 +88,7 @@ class LlamaConfig(HFCompatConfig):
     use_bias: bool = False
     use_layer_norm_weight: bool = True
     rope_scaling: Optional[dict] = None
+    measure_act_stats: bool = False
 
     reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
@@ -172,6 +182,14 @@ class LlamaConfig(HFCompatConfig):
         )
 
 
+@jax.jit
+def histogram(a: Array, bins: Array) -> Array:
+  a = a.flatten()
+  bin_idx = jnp.searchsorted(bins, a, side='right')
+  bin_idx = jnp.where(a == bins[-1], len(bins) - 1, bin_idx)
+  counts = jnp.zeros(len(bins), jnp.int32).at[bin_idx].add(1)[1:]
+  return counts
+
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     """Multi-layer Perceptron
     In comparison with GPT2, LlamaMlp adds an up-proj that multiplies with activated gate_proj,
@@ -182,10 +200,11 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     up_proj: hnn.Linear  # projection from Embed to Mlp
     down_proj: hnn.Linear  # projection from Mlp to Embed
     act: Callable = eqx.static_field()
+    measure_act_stats: bool = False
 
     @staticmethod
     def init(
-        Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
+        Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False, measure_act_stats=True,
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
         gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
@@ -194,16 +213,19 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
-        return LlamaMlp(gate_proj, up_proj, down_proj, act)
+        return LlamaMlp(gate_proj, up_proj, down_proj, act, measure_act_stats)
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
         k_gate, k_up, k_down = maybe_rng_split(key, 3)
         hidden_states = self.gate_proj(x, key=k_gate)
+        stats = None
+        if self.measure_act_stats:
+            stats = NamedArray(histogram(hidden_states.array, bins=BINS), (BIN_AX,))
         hidden_states = self.act(hidden_states)
         hidden_states = hidden_states * self.up_proj(x, key=k_up)
         outputs = self.down_proj(hidden_states, key=k_down)
-        return outputs
+        return outputs, {"gate_hist": stats}
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
@@ -403,6 +425,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
             config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
+            measure_act_stats=config.measure_act_stats,
         )
         ln_1 = config.mk_LayerNorm(config.Embed)
         ln_2 = config.mk_LayerNorm(config.Embed)
@@ -421,9 +444,9 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
-        mlp_output = self.mlp(x, key=k_mlp)
+        mlp_output, stats = self.mlp(x, key=k_mlp)
         output = residual + mlp_output
-        return output
+        return output, stats
 
 
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
