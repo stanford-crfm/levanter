@@ -3,6 +3,7 @@ import os
 import typing
 from dataclasses import dataclass
 from typing import Any, Optional
+import numpy as np
 
 import fsspec
 
@@ -14,6 +15,7 @@ pylogger = logging.getLogger(__name__)
 if typing.TYPE_CHECKING:
     from tensorboardX import SummaryWriter  # noqa: F401
 
+HIST_WARNED = False
 
 class TensorboardTracker(Tracker):
     name: str = "tensorboard"
@@ -26,8 +28,14 @@ class TensorboardTracker(Tracker):
 
     def log(self, metrics: dict[str, Any], *, step, commit=None):
         del commit
+        global HIST_WARNED
         for k, v in metrics.items():
-            self.writer.add_scalar(k, v, step)
+            if isinstance(v, np.array):
+                if not HIST_WARNED:
+                    logging.warn("Tensorboard histograms are not supported. Skipping.")
+                    HIST_WARNED = True
+            else:
+                self.writer.add_scalar(k, v, step)
 
     def log_summary(self, metrics: dict[str, Any]):
         for k, v in metrics.items():

@@ -216,7 +216,7 @@ def test_llama_decoder_layer(num_kv_heads):
 
     position_ids = torch.arange(llama_config.Pos.size).reshape(1, -1)
 
-    out = llama_decoder_layer(x, mask)
+    out, _ = llama_decoder_layer(x, mask)
     hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
     assert np.isclose(
@@ -234,7 +234,7 @@ def test_llama_lm_head_model(num_kv_heads):
     mask = AttentionMask.causal()
 
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
-    out = llama_model(input_ids, mask)
+    out, _ = llama_model(input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
 
 
@@ -251,7 +251,7 @@ def test_llama_lm_head_model_bwd(use_flash, num_kv_heads):
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
 
     def f(llama_model, input_ids, mask):
-        out = llama_model(input_ids, mask)
+        out, _ = llama_model(input_ids, mask)
         return hax.sum(out).scalar()
 
     _, grads = eqx.filter_value_and_grad(f)(llama_model, input_ids, mask)
@@ -299,7 +299,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
         )
 
         def compute(input):
-            model_output = model(input, attn_mask=attn_mask)
+            model_output, _ = model(input, attn_mask=attn_mask)
             return hax.nn.softmax(model_output, axis=model.Vocab)
 
         compute = jax.jit(compute)

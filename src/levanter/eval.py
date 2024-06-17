@@ -15,6 +15,7 @@ import levanter.tracker
 from levanter.data import Dataset, ReplicatedBatchLoader
 from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.tracker.histograms import NBINS
 from levanter.trainer import StepInfo
 from levanter.utils.stat_utils import RunningMean
 from levanter.utils.tree_utils import inference_mode
@@ -34,6 +35,7 @@ class EvalResult:
     tag_macro_losses: dict[str, float]  # per tag average-per-token loss
     tag_micro_losses: dict[str, float]  # per tag total loss, for "parent" tags
     total_eval_loading_time: float
+    extras: dict[str, float]
 
 
 class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
@@ -123,6 +125,19 @@ def cb_tagged_lm_evaluate(
             _join_prefix(prefix, "loading_time"): result.total_eval_loading_time,
             _join_prefix(prefix, "total_time"): time_fn(),
         }
+        if (gate_hist := result.extras.get("gate_hist", None)) is not None:
+            layer_axis = [a for a in gate_hist.axes if a.name == "layers"][0]
+            pos_idx = NBINS // 2 + 1
+            log_dict[_join_prefix(prefix, "gate_hist/all")] = np.array(gate_hist.sum(axis="layers").array)
+            num_gt0 = gate_hist["bins", pos_idx:].sum().item()
+            total = gate_hist.sum().item()
+            log_dict[_join_prefix(prefix, "gate_gt0/all")] = num_gt0 / total
+            for i in range(layer_axis.size): #TODO: get layer index here
+                log_dict[_join_prefix(prefix, f"gate_hist/layer{i+1}")] = np.array(gate_hist["layers", i].array)
+                num_gt0 = gate_hist["layers", i, "bins", pos_idx:].sum().item()
+                total = gate_hist["layers", i].sum().item()
+                log_dict[_join_prefix(prefix, f"gate_gt0/layer{i+1}")] = num_gt0 / total
+            
 
         logger.info(f"{prefix} loss: {result.micro_avg_loss:.3f}")
         for tag, loss in result.tag_macro_losses.items():
@@ -185,12 +200,12 @@ class TaggedEvaluator:
 
         @hax.named_jit(out_axis_resources=axis_mapping)
         def accum_for_batch(
-            m: LmHeadModel, state: tuple[RunningMean, RunningMean], batch: LmExample, tags: hax.NamedArray
+            m: LmHeadModel, state: tuple[RunningMean, RunningMean, dict], batch: LmExample, tags: hax.NamedArray
         ):
             m = inference_mode(m, True)
             with hax.axis_mapping(axis_mapping):
-                total_mean, mean_per_tag = state
-                losses = m.compute_loss(batch, reduction=None, reduction_axis=())
+                total_mean, mean_per_tag, total_extras = state
+                losses, extras = m.compute_loss(batch, reduction=None, reduction_axis=())
                 mask = batch.loss_mask  # [Batch, Token]
                 this_tokens = hax.einsum("->", mask)
                 this_loss = hax.einsum("->", losses, mask)  # to scalar
@@ -203,7 +218,12 @@ class TaggedEvaluator:
                 safe_mean = hax.where(this_tokens_per_tag, this_loss_per_tag / this_tokens_per_tag, 0.0)
                 mean_per_tag = mean_per_tag.add(safe_mean, this_tokens_per_tag)
 
-            return mean, mean_per_tag
+                if extras:
+                    for key in extras:
+                        curr = total_extras.get(key, hax.zeros_like(extras[key]))
+                        total_extras[key] = extras[key] + curr
+
+            return mean, mean_per_tag, total_extras
 
         self.accum_for_batch = accum_for_batch
 
@@ -211,7 +231,7 @@ class TaggedEvaluator:
         total_loss = jnp.zeros(())
         mean_losses_per_tag = hax.zeros(self.dataset.Tag, dtype=np.float32)
 
-        state = (RunningMean.zeros_like(total_loss), RunningMean.zeros_like(mean_losses_per_tag))
+        state = (RunningMean.zeros_like(total_loss), RunningMean.zeros_like(mean_losses_per_tag), {})
         state = hax.shard(state)
 
         iterator = LoadingTimeTrackerIterator(self.loader)
@@ -219,7 +239,7 @@ class TaggedEvaluator:
         for batch, tags in tqdm.tqdm(iterator, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
 
-        total_loss, losses_per_tag = state
+        total_loss, losses_per_tag, extras = state
 
         micro_avg_loss = total_loss.mean.item()
         tag_avg_loss = losses_per_tag.mean
@@ -248,8 +268,9 @@ class TaggedEvaluator:
             # (average doesn't support where directly so we just 0 out the weights)
             tag_micro_loss[parent] = np.average(mean_loss_per_tag_cpu, weights=total_tokens_per_tag_cpu * mask)
 
+
         for tag, index in self.dataset.tag_to_index.items():
             tag_micro_loss[tag] = mean_loss_per_tag_cpu[index]
             # no macro loss for the leaf tags
 
-        return EvalResult(micro_avg_loss, macro_avg_loss, tag_macro_loss, tag_micro_loss, iterator.total_time)
+        return EvalResult(micro_avg_loss, macro_avg_loss, tag_macro_loss, tag_micro_loss, iterator.total_time, extras)

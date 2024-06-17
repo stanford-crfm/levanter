@@ -127,6 +127,10 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         reduced, and the result is a named array with axes (*batch axes, sequence_length).
         """
         logits = self(example.tokens, example.attn_mask, key=key)
+        extras = None
+        if isinstance(logits, tuple):
+            assert len(logits) == 2
+            logits, extras = logits
         # TODO: would be nice if we made the dtype configurable
         logits = logits.astype(jnp.float32)
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
@@ -135,7 +139,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )
 
-        return loss
+        return loss, extras
 
     @property
     def vocab_size(self) -> int:

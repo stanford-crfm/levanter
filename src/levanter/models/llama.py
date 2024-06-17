@@ -5,7 +5,6 @@ from typing import Callable, Dict, Optional, Tuple, Type, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import Array
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
 
@@ -32,20 +31,12 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.py_utils import cached_classproperty
+from levanter.tracker.histograms import get_bins, BIN_AX, histogram
 
 
 silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
-
-def make_bins():
-    bins = jnp.logspace(-6, 6, 254, base=2.0)
-    inf = jnp.array([jnp.inf])
-    zero = jnp.array([0.0])
-    return jnp.concatenate([-inf, -bins[::-1], zero, bins, inf])
-    
-BINS = make_bins()
-BIN_AX = Axis("bins", len(BINS)-1)
 
 @LmConfig.register_subclass("llama")
 @dataclass(frozen=True)
@@ -88,7 +79,7 @@ class LlamaConfig(HFCompatConfig):
     use_bias: bool = False
     use_layer_norm_weight: bool = True
     rope_scaling: Optional[dict] = None
-    measure_act_stats: bool = False
+    measure_act_stats: bool = True
 
     reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
@@ -182,13 +173,6 @@ class LlamaConfig(HFCompatConfig):
         )
 
 
-@jax.jit
-def histogram(a: Array, bins: Array) -> Array:
-  a = a.flatten()
-  bin_idx = jnp.searchsorted(bins, a, side='right')
-  bin_idx = jnp.where(a == bins[-1], len(bins) - 1, bin_idx)
-  counts = jnp.zeros(len(bins), jnp.int32).at[bin_idx].add(1)[1:]
-  return counts
 
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     """Multi-layer Perceptron
@@ -213,19 +197,20 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
+        get_bins() # initialize bins
         return LlamaMlp(gate_proj, up_proj, down_proj, act, measure_act_stats)
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
         k_gate, k_up, k_down = maybe_rng_split(key, 3)
         hidden_states = self.gate_proj(x, key=k_gate)
-        stats = None
+        extras = {}
         if self.measure_act_stats:
-            stats = NamedArray(histogram(hidden_states.array, bins=BINS), (BIN_AX,))
+            extras["gate_hist"] = NamedArray(histogram(hidden_states.array, bins=get_bins()), (BIN_AX,))
         hidden_states = self.act(hidden_states)
         hidden_states = hidden_states * self.up_proj(x, key=k_up)
         outputs = self.down_proj(hidden_states, key=k_down)
-        return outputs, {"gate_hist": stats}
+        return outputs, extras
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
@@ -473,10 +458,10 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, mask=attn_mask, key=keys)
+        x, extras = self.layers.scan(x, mask=attn_mask, key=keys)
         x = self.norm(x)
 
-        return x
+        return x, extras
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         if isinstance(self.layers, Stacked):
@@ -568,9 +553,9 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        x, extras = self.transformer(x, attn_mask=attn_mask, key=k_t)
         lm_logits = self.lm_head(x, key=k_head)
-        return lm_logits
+        return lm_logits, extras
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
         new_Vocab = self.Vocab.resize(new_size)

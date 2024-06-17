@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 
+import numpy as np
 import jax
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
@@ -13,6 +14,7 @@ from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 from levanter.tracker import Tracker
 from levanter.tracker.helpers import generate_pip_freeze, infer_experiment_git_root
 from levanter.tracker.tracker import TrackerConfig
+from levanter.tracker.histograms import get_bins
 from levanter.utils import jax_utils
 
 
@@ -59,6 +61,11 @@ class WandbTracker(Tracker):
             return
 
         step = int(step)
+
+        for k, v in metrics.items():
+            if isinstance(v, np.ndarray):
+                import wandb
+                metrics[k] = wandb.Histogram(np_histogram=(v, np.array(get_bins())))
 
         self.run.log(metrics, step=step, commit=commit)
 
