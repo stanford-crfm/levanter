@@ -2,10 +2,11 @@ import tempfile
 from typing import Iterator, List, Sequence
 
 import numpy as np
+import pytest
 
 from levanter.data import BatchProcessor, ShardedDataset
 from levanter.data.utils import batched
-from levanter.newstore.col_tree_store import TreeStoreBuilder
+from levanter.newstore.tree_store import TreeStoreBuilder
 
 
 class SimpleProcessor(BatchProcessor[Sequence[int]]):
@@ -38,9 +39,11 @@ class SimpleShardSource(ShardedDataset[List[int]]):
         return ([shard_num * 10 + i] * 10 for i in range(row, 10))
 
 
-def test_tree_builder():
+def test_tree_builder_with_processor():
     with tempfile.TemporaryDirectory() as tempdir:
-        builder = TreeStoreBuilder.open(tempdir, "w")
+        exemplar = {"data": np.array([0], dtype=np.int32)}
+
+        builder = TreeStoreBuilder.open(exemplar, tempdir, mode="w")
         processor = SimpleProcessor()
         source = SimpleShardSource()
 
@@ -65,3 +68,152 @@ def test_tree_builder():
 
         # double check columnar access
         assert len(builder.tree["data"].data) == 10 * 40
+
+
+def test_append_batch():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"a": np.array([0], dtype=np.float32), "b": np.array([0], dtype=np.float32)}
+        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+
+        batch1 = [
+            {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
+            {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
+        ]
+        builder.append_batch(batch1)
+
+        assert len(builder) == 2
+
+        result1 = builder[0]
+        assert np.all(result1["a"] == np.array([1.0, 2.0]))
+        assert np.all(result1["b"] == np.array([3.0, 4.0]))
+
+        result2 = builder[1]
+        assert np.all(result2["a"] == np.array([5.0, 6.0]))
+        assert np.all(result2["b"] == np.array([7.0, 8.0]))
+
+
+def test_append_batch_different_shapes():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"a": np.array([0], dtype=np.float32), "b": np.array([0], dtype=np.float32)}
+        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+
+        batch1 = [
+            {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
+            {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
+        ]
+        builder.append_batch(batch1)
+
+        batch2 = [
+            {"a": np.array([9.0]), "b": np.array([10.0])},
+            {"a": np.array([11.0, 12.0, 13.0]), "b": np.array([14.0, 15.0, 16.0])},
+        ]
+        builder.append_batch(batch2)
+
+        assert len(builder) == 4
+
+        result3 = builder[2]
+        assert np.all(result3["a"] == np.array([9.0]))
+        assert np.all(result3["b"] == np.array([10.0]))
+
+        result4 = builder[3]
+        assert np.all(result4["a"] == np.array([11.0, 12.0, 13.0]))
+        assert np.all(result4["b"] == np.array([14.0, 15.0, 16.0]))
+
+
+def test_len():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"a": np.array([0], dtype=np.float32), "b": np.array([0], dtype=np.float32)}
+        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+
+        assert len(builder) == 0
+
+        batch = [
+            {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
+            {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
+        ]
+        builder.append_batch(batch)
+
+        assert len(builder) == 2
+
+
+def test_getitem():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"a": np.array([0], dtype=np.float32), "b": np.array([0], dtype=np.float32)}
+        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+
+        batch = [
+            {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
+            {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
+        ]
+        builder.append_batch(batch)
+
+        result = builder[0]
+        assert np.all(result["a"] == np.array([1.0, 2.0]))
+        assert np.all(result["b"] == np.array([3.0, 4.0]))
+
+        result = builder[1]
+        assert np.all(result["a"] == np.array([5.0, 6.0]))
+        assert np.all(result["b"] == np.array([7.0, 8.0]))
+
+
+def test_getitem_out_of_bounds():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"a": np.array([0], dtype=np.float32), "b": np.array([0], dtype=np.float32)}
+        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+
+        batch = [
+            {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
+            {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
+        ]
+        builder.append_batch(batch)
+
+        with pytest.raises(IndexError):
+            builder[2]
+
+
+def test_iter():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"a": np.array([0], dtype=np.float32), "b": np.array([0], dtype=np.float32)}
+        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+
+        batch = [
+            {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
+            {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
+        ]
+        builder.append_batch(batch)
+
+        for i, result in enumerate(builder):
+            if i == 0:
+                assert np.all(result["a"] == np.array([1.0, 2.0]))
+                assert np.all(result["b"] == np.array([3.0, 4.0]))
+            elif i == 1:
+                assert np.all(result["a"] == np.array([5.0, 6.0]))
+                assert np.all(result["b"] == np.array([7.0, 8.0]))
+            else:
+                pytest.fail("Unexpected index")
+
+
+def test_reading_from_written():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"a": np.array([0], dtype=np.float32), "b": np.array([0], dtype=np.float32)}
+        builder = TreeStoreBuilder.open(exemplar, tmpdir, mode="w")
+
+        batch = [
+            {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
+            {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
+        ]
+        builder.append_batch(batch)
+
+        del builder
+
+        builder2 = TreeStoreBuilder.open(exemplar, tmpdir, mode="r")
+
+        for i, result in enumerate(builder2):
+            if i == 0:
+                assert np.all(result["a"] == np.array([1.0, 2.0]))
+                assert np.all(result["b"] == np.array([3.0, 4.0]))
+            elif i == 1:
+                assert np.all(result["a"] == np.array([5.0, 6.0]))
+                assert np.all(result["b"] == np.array([7.0, 8.0]))
+            else:
+                pytest.fail("Unexpected index")
