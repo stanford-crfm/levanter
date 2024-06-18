@@ -54,7 +54,10 @@ dependencies = [
     "pydantic<3",  # temporary pin until Ray supports pydantic 2.0
     "rich~=13.0",
     "filelock~=3.13",
+    "zarr~=2.18.2",
 ]
+
+
 
 [tool.hatch.build]
 include = ["config/*.yaml", "config/*/*.yaml", "*.py"]
@@ -113,8 +116,7 @@ markers = [
 test = [
     "pytest",
     "flake8",
-    "pytest",
     "soundfile",
     "librosa",
-    "pytest-forked"
+    "pytest-forked",
 ]
