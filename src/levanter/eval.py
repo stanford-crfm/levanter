@@ -126,16 +126,15 @@ def cb_tagged_lm_evaluate(
             _join_prefix(prefix, "total_time"): time_fn(),
         }
         if (gate_hist := result.extras.get("gate_hist", None)) is not None:
-            layer_axis = [a for a in gate_hist.axes if a.name == "layers"][0]
             pos_idx = NBINS // 2 + 1
-            log_dict[_join_prefix(prefix, "gate_hist/all")] = np.array(gate_hist.sum(axis="layers").array)
-            num_gt0 = gate_hist["bins", pos_idx:].sum().item()
+            log_dict[_join_prefix(prefix, "gate_hist/all")] = np.array(gate_hist.sum(axis=0))
+            num_gt0 = gate_hist[:, pos_idx:].sum().item()
             total = gate_hist.sum().item()
             log_dict[_join_prefix(prefix, "gate_gt0/all")] = num_gt0 / total
-            for i in range(layer_axis.size): #TODO: get layer index here
-                log_dict[_join_prefix(prefix, f"gate_hist/layer{i+1}")] = np.array(gate_hist["layers", i].array)
-                num_gt0 = gate_hist["layers", i, "bins", pos_idx:].sum().item()
-                total = gate_hist["layers", i].sum().item()
+            for i in range(gate_hist.shape[1]): #TODO: get layer index here
+                log_dict[_join_prefix(prefix, f"gate_hist/layer{i+1}")] = np.array(gate_hist[i])
+                num_gt0 = gate_hist[i, pos_idx:].sum().item()
+                total = gate_hist[i].sum().item()
                 log_dict[_join_prefix(prefix, f"gate_gt0/layer{i+1}")] = num_gt0 / total
             
 
@@ -220,7 +219,7 @@ class TaggedEvaluator:
 
                 if extras:
                     for key in extras:
-                        curr = total_extras.get(key, hax.zeros_like(extras[key]))
+                        curr = total_extras.get(key, jnp.zeros_like(extras[key]))
                         total_extras[key] = extras[key] + curr
 
             return mean, mean_per_tag, total_extras

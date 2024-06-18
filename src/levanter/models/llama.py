@@ -31,7 +31,7 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.py_utils import cached_classproperty
-from levanter.tracker.histograms import get_bins, BIN_AX, histogram
+from levanter.tracker.histograms import get_bins, sharded_histogram
 
 
 silence_transformer_nag()
@@ -206,7 +206,7 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         hidden_states = self.gate_proj(x, key=k_gate)
         extras = {}
         if self.measure_act_stats:
-            extras["gate_hist"] = NamedArray(histogram(hidden_states.array, bins=get_bins()), (BIN_AX,))
+            extras["gate_hist"] = sharded_histogram(hidden_states.array, bins=get_bins())
         hidden_states = self.act(hidden_states)
         hidden_states = hidden_states * self.up_proj(x, key=k_up)
         outputs = self.down_proj(hidden_states, key=k_down)

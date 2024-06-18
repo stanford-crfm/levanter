@@ -1,7 +1,11 @@
 import jax.numpy as jnp
 import jax
 from jax import Array
-from haliax import Axis
+from haliax import Axis, NamedArray
+from haliax.partitioning import ResourceAxis
+import haliax
+from jax.sharding import PartitionSpec
+from jax.experimental.shard_map import shard_map
 
 @jax.jit
 def histogram(a: Array, bins: Array) -> Array:
@@ -21,6 +25,31 @@ def histogram(a: Array, bins: Array) -> Array:
   counts = jnp.zeros(len(bins), jnp.int32).at[bin_idx].add(1)[1:]
   return counts
 
+@jax.jit
+def sharded_histogram(a: Array, bins: Array) -> Array:
+    """Compute the histogram of an array a, assuming it's sharded across the `ResourceAxis.DATA` axis.
+
+    Args:
+        a (Array): The input array to compute the histogram of 
+        bins (Array): The bins for the histogram
+
+    Returns:
+        Array: The resulting counts. Length is len(bins) - 1
+    """
+    P = PartitionSpec
+    in_specs = (P(ResourceAxis.DATA, None), P(None))
+    out_specs = (P(ResourceAxis.DATA, None))
+    mesh = haliax.partitioning._get_mesh()
+    def hist(a, bins):
+        a = a.flatten()
+        bin_idx = jnp.searchsorted(bins, a, side='right')
+        bin_idx = jnp.where(a == bins[-1], len(bins) - 1, bin_idx)
+        counts = jnp.zeros(len(bins), jnp.int32).at[bin_idx].add(1)[1:]
+        return jnp.expand_dims(counts, 0)
+    shard_h = shard_map(hist, mesh=mesh, in_specs=in_specs, out_specs=out_specs)
+    res = shard_h(a, bins)
+    res = res.sum(axis=0)
+    return res
 
 NSIDE = 254
 NBINS = 2*NSIDE + 3
