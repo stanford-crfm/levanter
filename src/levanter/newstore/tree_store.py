@@ -1,5 +1,5 @@
 import os
-from typing import List, Sequence, TypeVar
+from typing import Generic, List, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -25,9 +25,12 @@ def heuristic_is_leaf(x):
         return False
 
 
-class TreeStoreBuilder(Sequence[T]):
+class TreeStoreBuilder(Generic[T]):
     """
     A TreeStoreBuilder stores batched data as a tree of ragged arrays.
+
+    This class could implement MutableSequence, but that would probably give the wrong impression.
+    In particular, a slice returns a T with JaggedArrays as leaves, rather than a list of Ts.
     """
 
     path: str
@@ -57,7 +60,10 @@ class TreeStoreBuilder(Sequence[T]):
         """
         return TreeStoreBuilder(exemplar, path, mode)
 
-    def append_batch(self, batch: List[PyTree]):
+    def append(self, ex: T):
+        return self.extend([ex])
+
+    def extend(self, batch: List[T]):
         """
         Append a batch of data to the store.
         """

@@ -6,6 +6,7 @@ import pytest
 
 from levanter.data import BatchProcessor, ShardedDataset
 from levanter.data.utils import batched
+from levanter.newstore.jagged_array import JaggedArray
 from levanter.newstore.tree_store import TreeStoreBuilder
 
 
@@ -49,7 +50,7 @@ def test_tree_builder_with_processor():
 
         for batch in batched(source, processor.batch_size):
             processed = processor(batch)
-            builder.append_batch(processed)
+            builder.extend(processed)
 
         assert len(builder) == 40
 
@@ -79,7 +80,7 @@ def test_append_batch():
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
             {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
         ]
-        builder.append_batch(batch1)
+        builder.extend(batch1)
 
         assert len(builder) == 2
 
@@ -101,13 +102,13 @@ def test_append_batch_different_shapes():
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
             {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
         ]
-        builder.append_batch(batch1)
+        builder.extend(batch1)
 
         batch2 = [
             {"a": np.array([9.0]), "b": np.array([10.0])},
             {"a": np.array([11.0, 12.0, 13.0]), "b": np.array([14.0, 15.0, 16.0])},
         ]
-        builder.append_batch(batch2)
+        builder.extend(batch2)
 
         assert len(builder) == 4
 
@@ -131,7 +132,7 @@ def test_len():
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
             {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
         ]
-        builder.append_batch(batch)
+        builder.extend(batch)
 
         assert len(builder) == 2
 
@@ -145,7 +146,7 @@ def test_getitem():
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
             {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
         ]
-        builder.append_batch(batch)
+        builder.extend(batch)
 
         result = builder[0]
         assert np.all(result["a"] == np.array([1.0, 2.0]))
@@ -154,6 +155,11 @@ def test_getitem():
         result = builder[1]
         assert np.all(result["a"] == np.array([5.0, 6.0]))
         assert np.all(result["b"] == np.array([7.0, 8.0]))
+
+        # test slice
+        result = builder[0:2]
+        assert isinstance(result["a"], JaggedArray)
+        assert isinstance(result["b"], JaggedArray)
 
 
 def test_getitem_out_of_bounds():
@@ -165,7 +171,7 @@ def test_getitem_out_of_bounds():
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
             {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
         ]
-        builder.append_batch(batch)
+        builder.extend(batch)
 
         with pytest.raises(IndexError):
             builder[2]
@@ -180,7 +186,7 @@ def test_iter():
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
             {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
         ]
-        builder.append_batch(batch)
+        builder.extend(batch)
 
         for i, result in enumerate(builder):
             if i == 0:
@@ -202,7 +208,7 @@ def test_reading_from_written():
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
             {"a": np.array([5.0, 6.0]), "b": np.array([7.0, 8.0])},
         ]
-        builder.append_batch(batch)
+        builder.extend(batch)
 
         del builder
 
