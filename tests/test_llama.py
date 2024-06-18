@@ -264,7 +264,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
-    converter = LlamaConfig.default_hf_checkpoint_converter
+    converter = LlamaConfig().hf_checkpoint_converter()
 
     config = LlamaConfig(
         seq_len=128,
@@ -295,7 +295,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            LlamaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            LlamaLMHeadModel, config, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
         def compute(input):

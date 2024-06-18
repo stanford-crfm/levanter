@@ -90,7 +90,7 @@ def train(config: TrainArgs):
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         # load untrainable params in compute precision to save memory
         model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+            model_config.model_type, model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
         )
 
         # Major difference from Alpaca: we loraize the model.
@@ -119,7 +119,7 @@ def train(config: TrainArgs):
 
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3f}")
 
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large

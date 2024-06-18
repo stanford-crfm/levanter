@@ -29,7 +29,6 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.flop_utils import lm_flops_per_token
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -82,10 +81,9 @@ class Gpt2Config(HFCompatConfig):
     def model_type(self) -> Type["Gpt2LMHeadModel"]:
         return Gpt2LMHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
         # We trust this code because it's in our hub repo
-        return HFCheckpointConverter(cls, "gpt2", ignore_prefix="transformer")
+        return HFCheckpointConverter(self.__class__, reference_checkpoint="gpt2", ignore_prefix="transformer")
 
     def to_hf_config(self, vocab_size, config_overrides=None) -> HfGpt2Config:
         if config_overrides is None:

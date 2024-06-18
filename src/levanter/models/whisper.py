@@ -29,7 +29,6 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRConfig, ASRMixin
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -74,9 +73,8 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     def asr_model_type(self) -> Type["WhisperASRModel"]:
         return WhisperASRModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "openai/whisper-base", ignore_prefix="model")
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
+        return HFCheckpointConverter(self, "openai/whisper-base", ignore_prefix="model")
 
     # Axis
     MelPos = property(lambda self: Axis(name="position", size=self.max_source_positions * 2))

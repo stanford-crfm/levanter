@@ -23,7 +23,6 @@ from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.flop_utils import lm_flops_per_token
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -82,10 +81,9 @@ class MistralConfig(LlamaConfig):
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            cls,  # type: ignore
+            self,
             "mistralai/Mistral-7B-v0.1",
             trust_remote_code=True,
             tokenizer="mistralai/Mistral-7B-v0.1",
