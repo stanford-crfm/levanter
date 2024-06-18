@@ -8,14 +8,12 @@ import numpy as np
 import safetensors.numpy
 from jax import numpy as jnp
 from jax.experimental.multihost_utils import sync_global_devices
-from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import PyTree
 
 import haliax as hax
 import haliax.nn as hnn
 import haliax.partitioning
 from haliax import NamedArray
-from haliax._src.util import index_where
 from haliax.jax_utils import is_jax_array_like
 from haliax.util import ensure_tuple
 
@@ -402,7 +400,7 @@ def update_block_seq_state_dict(state_dict: StateDict, seq, prefix: Optional[str
     return state_dict
 
 
-def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
+def to_numpy_state_dict(model, prefix: Optional[str] = None, copy_chunk_size: int = 10 * 1000 * 1000) -> StateDict:
     """
     Convert a model to a state dict by first creating desharded copies of all parameters that reside in CPU
     memory.
@@ -421,29 +419,43 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
                 r = np.array(arr)
                 return r
             else:
-                # unfortunately, jax's allgather seems to replicate to every device rather than every host
-                # which doesn't work for ~7B parameter models on TPU (assuming we also have optimizer state)
-                # this approach limits us to <64B parameters, but that's good enough for now
-                # we're going to do something a bit fancy, where we shard the model into a (process, device) mesh,
-                # then look for some axis along which we can shard the array, and then we'll do an allgather
-                # via pjit. If we can't find one, we'll just fully replicate since it probably isn't that big.
-                # TODO: ensure that this mesh arranges devices correctly
-                # (jax seems to do this internally itself, so we should be fine?)
-                process_mesh = Mesh(np.array(jax.devices()).reshape((jax.process_count(), -1)), ("process", "device"))
-                # now we need to find an axis along which we can shard the array.
-                # for this, we need to find an axis s.t. size(axis) % local_devices == 0
+                # Replicating a large variable when tight on memory can push us over the TPU memory limit.
+                # We instead slice over the largest axis if necessary.
+                print("Array:", arr, type(arr), arr.shape, arr.sharding)
 
-                try:
-                    axis_to_shard = index_where(
-                        lambda axis_size: axis_size % process_mesh.devices.size == 0, arr.shape
-                    )
-                except ValueError:
-                    return np.array(arr)
+                # Construct a fully replicated mesh to copy our sliced arrays to
+                mesh = jax.sharding.Mesh(np.ravel(list(arr.sharding.device_set)), "r")
+                replicated_sharding = jax.sharding.NamedSharding(
+                    mesh, jax.sharding.PartitionSpec(*[None] * len(arr.shape))
+                )
 
-                shardings = [None if i != axis_to_shard else "device" for i in range(len(arr.shape))]
-                sharding = NamedSharding(process_mesh, PartitionSpec(*shardings))
-                out = jax.jit(_identity_fn, out_shardings=sharding)(arr)
-                return np.array(out)
+                def _slice_and_replicate(in_array, offset, size):
+                    in_array = jax.lax.dynamic_slice(in_array, offset, size)
+                    return in_array
+
+                axis = np.argmax(arr.shape)
+                elements_per_index = np.prod(arr.shape) / arr.shape[axis]
+                chunk_size = max(1, copy_chunk_size // elements_per_index)
+
+                slicer = jax.jit(_slice_and_replicate, static_argnums=(2,))
+                offset = 0
+                slices = []
+                while offset < arr.shape[axis]:
+                    size = min(chunk_size, arr.shape[axis] - offset)
+                    index = [0] * len(arr.shape)
+                    index[axis] = offset
+
+                    sizes = list(arr.shape)
+                    sizes[axis] = size
+                    sizes = tuple(sizes)
+
+                    slice = slicer(arr, index, sizes)
+                    slice = jax.device_put(slice, replicated_sharding)
+                    slices.append(np.array(slice))
+                    offset += chunk_size
+                cpu_arr = np.concatenate(slices, axis=axis)
+                cpu_arr = cpu_arr.reshape(arr.shape)
+                return cpu_arr
 
         # need to make sure the model is on *this machine* and *this machine's CPU* before saving
         model = jax.tree_util.tree_map(lambda arr: get_to_cpu(arr), model)
