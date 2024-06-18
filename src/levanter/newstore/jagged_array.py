@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 import equinox as eqx
 import jax
@@ -62,13 +62,13 @@ class JaggedArray(eqx.Module):
             return data
 
 
-def _zarr_open(path: Optional[str], dtype: jnp.dtype, shape):
+def _zarr_open(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
     if path is None:
         return zarr.zeros(shape, dtype=dtype.name)
 
     # TODO: groups?
     # TODO: set chunk sizes
-    return zarr.open_array(zarr.storage.FSStore(path), mode="a", shape=shape, dtype=jnp.dtype(dtype).name)
+    return zarr.open_array(zarr.storage.FSStore(path), mode=mode, shape=shape, dtype=jnp.dtype(dtype).name)
 
 
 def _extend_path(path: Optional[str], extra: str):
@@ -86,40 +86,47 @@ class JaggedArrayBuilder:
 
     offsets: zarr.Array
     data: zarr.Array
-    shapes: Optional[zarr.Array] = None  # (len(offsets), len(data.shape)-1)
+    shapes: Optional[zarr.Array]  # (len(offsets), len(data.shape)-1)
+    item_rank: int = 1
 
     @staticmethod
-    def open(path: Optional[str], *, item_rank=1, dtype):
+    def open(path: Optional[str], *, mode="a", item_rank=1, dtype):
         offset_path = _extend_path(path, "offsets")
-        offsets = _zarr_open(offset_path, jnp.int64, [1])
+        offsets = _zarr_open(offset_path, jnp.int64, [1], mode=mode)
 
         data_path = _extend_path(path, "data")
-        data = _zarr_open(data_path, dtype, [0])
+        data = _zarr_open(data_path, dtype, [0], mode=mode)
 
         if item_rank > 1:
             shape_path = _extend_path(path, "shapes")
-            shapes = _zarr_open(shape_path, jnp.int64, [0, item_rank - 1])
+            shapes = _zarr_open(shape_path, jnp.int64, [0, item_rank - 1], mode=mode)
         else:
             shapes = None
 
-        return JaggedArrayBuilder(offsets, data, shapes)
+        return JaggedArrayBuilder(offsets, data, shapes, item_rank)
 
     def append(self, data: jax.Array):
+        self.extend([data])
+
+    def extend(self, arrays: Sequence[jax.Array]):
+        """
+        Extends the jagged array with the given arrays. The arrays need not have the same shape, but should have
+        the same rank.
+        """
         if self.shapes is not None:
-            if data.ndim != self.shapes.shape[1] + 1:
-                raise ValueError(f"Expected data to have rank {self.shapes.ndim + 1}, got {data.ndim}")
-
-            shapes = np.array(data.shape[:-1], dtype=np.int64)
-            self.shapes.append(numpy.expand_dims(shapes, axis=0))
+            shapes = np.array([data.shape[:-1] for data in arrays], dtype=np.int64)
+            self.shapes.append(shapes)
         else:
-            if data.ndim > 1:
-                raise ValueError(f"Expected data to have rank 1, got {data.ndim}")
+            for data in arrays:
+                if data.ndim > 1:
+                    raise ValueError(f"Expected data to have rank 1, got {data.ndim}")
 
-        data = data.reshape(-1)
-        data = np.asarray(data, dtype=data.dtype)
+        new_offsets = np.array([data.size for data in arrays], dtype=np.int64)
+        new_offsets = np.cumsum(new_offsets) + self.data.shape[0]
+
+        data = np.concatenate([data.reshape(-1) for data in arrays])
         self.data.append(data)
-        new_offset = self.data.shape[0]
-        self.offsets.append(np.array([new_offset], dtype=np.int64))
+        self.offsets.append(new_offsets)
 
     def __len__(self):
         return self.offsets.shape[0] - 1

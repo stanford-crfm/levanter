@@ -93,6 +93,23 @@ class TestJaggedArrayBuilder:
             result_slice = builder[0:2]
             assert isinstance(result_slice, JaggedArray)
 
+    def test_extend_with_multiple(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder = JaggedArrayBuilder.open(tmpdir, item_rank=2, dtype=jnp.float32)
+
+            data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+            data2 = jnp.array([[5.0]])
+
+            builder.extend([data1, data2])
+
+            assert len(builder) == 2
+
+            result1 = builder[0]
+            assert jnp.all(result1 == data1)
+
+            result2 = builder[1]
+            assert jnp.all(result2 == data2)
+
     def test_append_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             builder = JaggedArrayBuilder.open(tmpdir, item_rank=1, dtype=jnp.float32)
