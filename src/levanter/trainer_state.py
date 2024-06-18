@@ -165,7 +165,7 @@ def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = Tr
     is_trainable_param = make_floating_point_trainable_filter(is_trainable_param)
 
     trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
-    saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
+    saveable_state = dataclasses.replace(trainer_state, student=is_trainable_param, teacher=False)  # type: ignore
     return saveable_state  # type: ignore
 
 

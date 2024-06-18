@@ -1,0 +1,51 @@
+data:
+  id: dlwh/wikitext_103_detokenized
+  tokenizer: "meta-llama/Meta-Llama-3-8B"
+  cache_dir: gs://wasabi-tpu-training/wikitext-103-detokenized
+
+teacher:
+  type: llama
+  reference_checkpoint: "meta-llama/Meta-Llama-3-8B"
+  gradient_checkpointing: True
+  seq_len: 4096
+  hidden_dim: 4096
+  intermediate_dim: 14336
+  num_layers: 32
+  num_heads: 32
+  num_kv_heads: 8
+  use_flash_attention: False
+
+student:
+  type: factorized_llama
+  reference_checkpoint: "meta-llama/Meta-Llama-3-8B"
+  gradient_checkpointing: True
+  seq_len: 4096
+  hidden_dim: 4096
+  intermediate_dim: 14336
+  num_layers: 32
+  num_heads: 32
+  num_kv_heads: 8
+  use_flash_attention: False
+  factor_dim: 128
+
+trainer:
+  mp: p=bf16,c=bfloat16
+  train_batch_size: 16
+  num_train_steps: 10000
+  steps_per_eval: 5000
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+  load_checkpoint_path: "gs://wasabi-tpu-training/distill-8b/checkpoints"
+  tracker:
+    type: wandb
+    project: "distill-8B"
+
+optimizer:
+  learning_rate: 1E-3
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
+  
+  
+init_from_hf: True
+  

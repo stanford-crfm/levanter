@@ -82,8 +82,10 @@ class CompositeTracker(Tracker):
             tracker.log_artifact(artifact_path, name=name, type=type)
 
 
+@dataclasses.dataclass
 class TrackerConfig(draccus.PluginRegistry, abc.ABC):
     discover_packages_path = "levanter.tracker"
+    id: Optional[str] = None
 
     @abc.abstractmethod
     def init(self, run_id: Optional[str]) -> Tracker:
@@ -94,8 +96,10 @@ class TrackerConfig(draccus.PluginRegistry, abc.ABC):
         return "wandb"
 
 
+@dataclasses.dataclass
 class NoopTracker(Tracker):
     name: str = "noop"
+    id: Optional[str] = None
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
         pass
@@ -104,7 +108,9 @@ class NoopTracker(Tracker):
         pass
 
     def log_summary(self, metrics: dict[str, Any]):
-        pass
+        print("Summary:")
+        for k, v in metrics.items():
+            print(f"-- {k}: {v}")
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         pass
@@ -114,4 +120,4 @@ class NoopTracker(Tracker):
 @dataclasses.dataclass
 class NoopConfig(TrackerConfig):
     def init(self, run_id: Optional[str]) -> Tracker:
-        return NoopTracker()
+        return NoopTracker(id=run_id)

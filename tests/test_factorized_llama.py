@@ -1,0 +1,281 @@
+import tempfile
+
+import draccus
+import equinox as eqx
+import jax
+import numpy as np
+import pytest
+import transformers
+from jax import random
+
+import haliax as hax
+
+from levanter.models.attention import AttentionMask
+from levanter.models.factorized_llama import (
+    FactorizedLlamaAttention,
+    FactorizedLlamaConfig,
+    FactorizedLlamaDecoderLayer,
+    FactorizedLlamaLMHeadModel,
+)
+from levanter.utils.jax_utils import parameter_count
+from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+
+def _get_config(use_flash=False, num_kv_heads=4, seq_len=128) -> FactorizedLlamaConfig:
+    rope_scaling = {
+        "type": "linear",
+        "factor": 2.0,
+    }
+    return FactorizedLlamaConfig(
+        seq_len=seq_len,
+        hidden_dim=16 * 4,
+        num_heads=4,
+        factor_dim=8,
+        num_kv_heads=num_kv_heads,
+        rope_scaling=rope_scaling,
+        gradient_checkpointing=False,  # disable for tests so debugging is easier
+        use_flash_attention=use_flash,
+        flash_attention_block_size=8 if use_flash else None,
+    )
+
+
+@skip_if_no_torch
+def test_factor_llama_config():
+    # load HF config and convert to levanter config
+    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/FactorizedLlama-2-7b-hf")
+    llama_config = FactorizedLlamaConfig.from_hf_config(hf_config)
+
+    # convert back to HF config
+    config_overrides = {
+        "_name_or_path": hf_config._name_or_path,
+        "architectures": hf_config.architectures,
+        "torch_dtype": hf_config.torch_dtype,
+    }
+    new_hf_config = llama_config.to_hf_config(
+        vocab_size=hf_config.vocab_size,
+        config_overrides=config_overrides,
+    )
+
+    # assert the content in new_hf_config is the same as hf_config
+    for k in new_hf_config.__dict__.keys():
+        if k in ["_commit_hash", "transformers_version"]:
+            continue
+        assert getattr(new_hf_config, k) == getattr(
+            hf_config, k
+        ), f"{k} {getattr(new_hf_config, k)} != {getattr(hf_config, k)}"
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("use_flash", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_factor_llama_attention(use_flash, num_kv_heads):
+    import torch
+    from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
+
+    config = _get_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+
+    attention = FactorizedLlamaAttention.init(config=config, key=random.PRNGKey(0))
+
+    state = attention.to_state_dict()
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_attention = HFLlamaAttention(config.to_hf_config(32000))
+    hf_attention.load_state_dict(state, strict=True)
+
+    x, mask = _get_random_inputs(config)
+    x_torch = torch.from_numpy(np.array(x.array))
+    batch_size = x_torch.shape[0]
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
+
+    # the torch mask is really a bias, so we need to invert it and make it a big negative number
+    mask_torch = (mask_torch == 0).float() * -1e9
+
+    out = attention(x, mask)
+    position_ids = torch.arange(config.Pos.size).reshape(1, -1)
+    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+    hf_out = hf_out[0].detach().cpu().numpy()
+    out = np.array(out.array)
+
+    assert np.isclose(
+        hf_out, out, rtol=1e-3, atol=1e-3
+    ).all(), f"Diff: {hf_out - out}, Max: {np.max(np.abs(hf_out - out))}"
+
+
+def test_factor_llama_param_counts_dont_change_with_seqlen():
+    model = FactorizedLlamaLMHeadModel.init(hax.Axis("v", 2048), _get_config(seq_len=128), key=random.PRNGKey(0))
+    model2 = FactorizedLlamaLMHeadModel.init(hax.Axis("v", 2048), _get_config(seq_len=256), key=random.PRNGKey(0))
+    assert parameter_count(model) == parameter_count(model2)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_factor_llama_decoder_layer(num_kv_heads):
+    import torch
+    from transformers.models.llama.modeling_llama import LlamaDecoderLayer as HFLlamaDecoderLayer
+
+    llama_config = _get_config(num_kv_heads=num_kv_heads)
+    key = random.PRNGKey(0)
+    llama_decoder_layer = FactorizedLlamaDecoderLayer.init(config=llama_config, key=key)
+
+    state = llama_decoder_layer.to_state_dict()
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    print(state.keys())
+    hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config(32000), layer_idx=0)
+    hf_decoder_layer.load_state_dict(state, strict=True)
+
+    x, mask = _get_random_inputs(llama_config)
+    x_torch = torch.from_numpy(np.array(x.array))
+    batch_size = x_torch.shape[0]
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(llama_config.Pos, llama_config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
+    mask_torch = (mask_torch == 0).float() * -1e9
+
+    position_ids = torch.arange(llama_config.Pos.size).reshape(1, -1)
+
+    out = llama_decoder_layer(x, mask)
+    hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+
+    assert np.isclose(
+        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-2, atol=1e-2
+    ).all(), f"{hf_out[0]} != {out}"
+
+
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_factor_llama_lm_head_model(num_kv_heads):
+    llama_config = _get_config(num_kv_heads=num_kv_heads)
+    Batch = hax.Axis("batch", 2)
+    Vocab = hax.Axis("vocab", 1000)
+    Pos = llama_config.Pos
+    input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
+    mask = AttentionMask.causal()
+
+    llama_model = FactorizedLlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
+    out = llama_model(input_ids, mask)
+    assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
+
+
+@pytest.mark.parametrize("use_flash", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_factor_llama_lm_head_model_bwd(use_flash, num_kv_heads):
+    llama_config = _get_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+    Batch = hax.Axis("batch", 2)
+    Vocab = hax.Axis("vocab", 1000)
+    Pos = llama_config.Pos
+    input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
+    mask = AttentionMask.causal()
+
+    llama_model = FactorizedLlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
+
+    def f(llama_model, input_ids, mask):
+        out = llama_model(input_ids, mask)
+        return hax.sum(out).scalar()
+
+    _, grads = eqx.filter_value_and_grad(f)(llama_model, input_ids, mask)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_factor_llama_roundtrip(scan_layers, num_kv_heads):
+    import torch
+    from transformers import AutoModelForCausalLM, LlamaForCausalLM
+
+    converter = FactorizedLlamaConfig.default_hf_checkpoint_converter
+
+    config = FactorizedLlamaConfig(
+        seq_len=128,
+        hidden_dim=64,
+        factor_dim=16,
+        num_heads=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+        num_layers=4,
+        scan_layers=scan_layers,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+    hf_config = config.to_hf_config(Vocab.size)
+
+    # Make input and attn_mask
+    input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
+    attn_mask = AttentionMask.causal()
+    input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
+
+    torch.random.manual_seed(0)
+
+    torch_model = LlamaForCausalLM(hf_config)
+    torch_model.eval()
+
+    torch_out = torch_model(input_torch)
+    torch_out = torch_out.logits[0].detach().cpu().numpy()
+    torch_out = jax.nn.softmax(torch_out, axis=-1)
+
+    tmpdir = tempfile.mkdtemp()
+    print("Temp dir: ", tmpdir)
+    torch_model.save_pretrained(f"{tmpdir}/torch_model")
+
+    model = converter.load_pretrained(
+        FactorizedLlamaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+    )
+
+    def compute(input):
+        model_output = model(input, attn_mask=attn_mask)
+        return hax.nn.softmax(model_output, axis=model.Vocab)
+
+    compute = jax.jit(compute)
+    jax_out = compute(input).array
+
+    assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+    assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
+
+    converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+    torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
+    torch_model2.eval()
+
+    torch_out2 = torch_model2(input_torch)
+    torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
+    torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
+    assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
+    assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
+
+
+def _get_random_inputs(config: FactorizedLlamaConfig):
+    Embed = config.Embed
+    Pos = config.Pos
+    Batch = hax.Axis("batch", 2)
+    x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
+    mask = AttentionMask.causal()
+    return x, mask
+
+
+@parameterize_with_configs("distill_llama*.yaml")
+def test_factor_llama_configs(config_file):
+    from levanter.main.train_distill_lm import TrainDistillLmConfig
+
+    check_load_config(config_class=TrainDistillLmConfig, config_file=config_file)
+
+
+@parameterize_with_configs("distill_llama*.yaml")
+def test_factor_llama_trainer_init(config_file):
+    from levanter.main.train_distill_lm import TrainDistillLmConfig, main
+
+    config = draccus.parse(TrainDistillLmConfig, config_file, args=[])
+    main(config)
+
+
+@pytest.mark.parametrize("num_kv_heads", [1, 2])
+def test_pass_different_length_seq(num_kv_heads):
+    config = FactorizedLlamaConfig(
+        seq_len=64,
+        hidden_dim=64,
+        factor_dim=16,
+        intermediate_dim=32,
+        num_layers=2,
+        num_heads=2,
+        num_kv_heads=num_kv_heads,
+        use_flash_attention=True,
+    )
+    check_model_works_with_seqlen(FactorizedLlamaLMHeadModel, config, 16)

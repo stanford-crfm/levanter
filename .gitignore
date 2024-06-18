@@ -1,4 +1,5 @@
 /scratch
+/cache
 
 # Configuration for TPU launches/secrets
 .config
