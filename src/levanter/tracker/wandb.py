@@ -65,6 +65,7 @@ class WandbTracker(Tracker):
         for k, v in metrics.items():
             if isinstance(v, np.ndarray):
                 import wandb
+
                 metrics[k] = wandb.Histogram(np_histogram=(v, np.array(get_bins())))
 
         self.run.log(metrics, step=step, commit=commit)

@@ -38,6 +38,7 @@ silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
+
 @LmConfig.register_subclass("llama")
 @dataclass(frozen=True)
 class LlamaConfig(HFCompatConfig):
@@ -173,7 +174,6 @@ class LlamaConfig(HFCompatConfig):
         )
 
 
-
 class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     """Multi-layer Perceptron
     In comparison with GPT2, LlamaMlp adds an up-proj that multiplies with activated gate_proj,
@@ -188,7 +188,13 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
 
     @staticmethod
     def init(
-        Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False, measure_act_stats=True,
+        Embed: Axis,
+        Mlp: Axis,
+        activation_fn: Union[str, Callable],
+        *,
+        key,
+        use_bias: bool = False,
+        measure_act_stats=True,
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
         gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
@@ -197,7 +203,7 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
-        get_bins() # initialize bins
+        get_bins()  # initialize bins
         return LlamaMlp(gate_proj, up_proj, down_proj, act, measure_act_stats)
 
     @named_call

@@ -131,12 +131,11 @@ def cb_tagged_lm_evaluate(
             num_gt0 = gate_hist[:, pos_idx:].sum().item()
             total = gate_hist.sum().item()
             log_dict[_join_prefix(prefix, "gate_gt0/all")] = num_gt0 / total
-            for i in range(gate_hist.shape[1]): #TODO: get layer index here
+            for i in range(gate_hist.shape[0]):
                 log_dict[_join_prefix(prefix, f"gate_hist/layer{i+1}")] = np.array(gate_hist[i])
                 num_gt0 = gate_hist[i, pos_idx:].sum().item()
                 total = gate_hist[i].sum().item()
                 log_dict[_join_prefix(prefix, f"gate_gt0/layer{i+1}")] = num_gt0 / total
-            
 
         logger.info(f"{prefix} loss: {result.micro_avg_loss:.3f}")
         for tag, loss in result.tag_macro_losses.items():
@@ -266,7 +265,6 @@ class TaggedEvaluator:
             # micro is the total loss for the parent tag
             # (average doesn't support where directly so we just 0 out the weights)
             tag_micro_loss[parent] = np.average(mean_loss_per_tag_cpu, weights=total_tokens_per_tag_cpu * mask)
-
 
         for tag, index in self.dataset.tag_to_index.items():
             tag_micro_loss[tag] = mean_loss_per_tag_cpu[index]

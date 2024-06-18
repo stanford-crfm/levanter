@@ -17,6 +17,7 @@ if typing.TYPE_CHECKING:
 
 HIST_WARNED = False
 
+
 class TensorboardTracker(Tracker):
     name: str = "tensorboard"
 

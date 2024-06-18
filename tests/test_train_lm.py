@@ -62,7 +62,7 @@ def test_train_lm_llama():
                 ),
                 trainer=train_lm.TrainerConfig(
                     num_train_steps=2,
-                    train_batch_size=2*len(jax.devices()),
+                    train_batch_size=2 * len(jax.devices()),
                     max_eval_batches=1,
                     wandb=WandbConfig(mode="offline"),
                     require_accelerator=False,
