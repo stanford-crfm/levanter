@@ -6,7 +6,7 @@ import pyarrow as pa
 import pytest
 import ray
 
-from levanter.data._preprocessor import BatchProcessor
+from levanter.data import BatchProcessor
 from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_or_load_cache
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.utils.py_utils import logical_cpu_core_count

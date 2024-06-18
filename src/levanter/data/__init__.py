@@ -1,8 +1,9 @@
-from levanter.data.dataset import Dataset, ShardableDataset, ShuffleDataset
-from levanter.data.loader import BatchLoader, ReplicatedBatchLoader, ShardedBatchLoader
-from levanter.data.shard_cache import SerialCacheWriter, ShardCache, build_or_load_cache
-from levanter.data.sharded_dataset import ShardedDataset, dataset_from_hf, dataset_from_jsonl
-from levanter.data.utils import batched
+from ._preprocessor import BatchProcessor
+from .dataset import Dataset, ShardableDataset, ShuffleDataset
+from .loader import BatchLoader, ReplicatedBatchLoader, ShardedBatchLoader
+from .shard_cache import SerialCacheWriter, ShardCache, build_or_load_cache
+from .sharded_dataset import ShardedDataset, dataset_from_hf, dataset_from_jsonl
+from .utils import batched
 
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "SerialCacheWriter",
     "dataset_from_hf",
     "dataset_from_jsonl",
+    "BatchProcessor",
 ]
