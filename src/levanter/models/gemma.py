@@ -30,7 +30,6 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -112,10 +111,9 @@ class GemmaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            cls,  # type: ignore
+            self,
             reference_checkpoint="google/gemma-2b",
             trust_remote_code=True,
             HfConfigClass=HfGemmaConfig,

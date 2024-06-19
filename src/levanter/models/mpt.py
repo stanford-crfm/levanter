@@ -32,7 +32,6 @@ from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -157,9 +156,8 @@ class MptConfig(HFCompatConfig):
     def model_type(self) -> Type["MptLmHeadModel"]:
         return MptLmHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MptConfig"]:  # type: ignore
-        return HFCheckpointConverter(cls, "mosaicml/mpt-7b", trust_remote_code=False)
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MptConfig"]:  # type: ignore
+        return HFCheckpointConverter(self, "mosaicml/mpt-7b", trust_remote_code=False)
 
     @classmethod
     def from_hf_config(cls, config):
