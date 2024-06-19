@@ -14,7 +14,6 @@ import transformers
 import haliax as hax
 
 import levanter
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import Dataset
 from levanter.data.dataset import ShuffleDataset
 from levanter.data.sharded_dataset import WrappedHFDataset
@@ -136,8 +135,7 @@ def train(config: TrainArgs):
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
-    converter = config.model.default_hf_checkpoint_converter
-    model_config = converter.default_config
+    converter = config.model.hf_checkpoint_converter()
 
     tokenizer = copy.deepcopy(converter.tokenizer)
     # if we don't have a pad token, just use the first token in the vocab, which is usually <unk>
@@ -164,7 +162,10 @@ def train(config: TrainArgs):
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+            config.model.model_type,
+            converter.default_config,
+            axis_mapping=parameter_axis_mapping,
+            dtype=trainer.mp.compute_dtype,
         )
 
         # Major difference from Alpaca: we loraize the model.
@@ -193,7 +194,7 @@ def train(config: TrainArgs):
 
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3f}")
 
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
