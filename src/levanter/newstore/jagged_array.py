@@ -11,6 +11,7 @@ import numpy as np
 import tensorstore as ts
 
 from levanter.utils import fsspec_utils
+from levanter.utils.py_utils import future_from_value
 
 
 class JaggedArray(eqx.Module):
@@ -76,9 +77,20 @@ async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
         spec = ser.get_tensorstore_spec(path)
         fsspec_utils.mkdirs(os.path.dirname(path))
 
+    # TODO: this is a bit of a hack
+    # Basically, we want to load the existing shape metadata if it exists
+    if not mode.get("delete_existing", False):
+        try:
+            return await ts.open(spec, **mode)
+        except FileNotFoundError:
+            pass
+        except ValueError:
+            pass
+
     # TODO: groups?
     # TODO: set chunk sizes
-    return await ts.open(spec, dtype=jnp.dtype(dtype).name, shape=shape, **mode)
+    return await ts.open(spec, dtype=jnp.dtype(dtype).name, shape=shape,
+                         chunk_layout=ts.ChunkLayout(chunk_shape = [2048, *shape[1:]]), **mode)
 
 
 def _mode_to_open_mode(mode: str):
@@ -162,6 +174,29 @@ class JaggedArrayBuilder:
     def extend(self, arrays: Sequence[jax.Array]):
         asyncio.run(self.extend_async(arrays))
 
+    async def reload_async(self) -> "JaggedArrayBuilder":
+        """
+        Calls `resolve` on the underlying tensorstore objects, updating size information
+
+        @return: new JaggedArrayBuilder with resolved tensorstores
+        """
+        # offsets = await self.offsets.resolve(fix_resizable_bounds=True)
+        # data = await self.data.resolve(fix_resizable_bounds=True)
+        # if self.shapes is not None:
+        #     shapes = await self.shapes.resolve(fix_resizable_bounds=True)
+        # else:
+        #     shapes = None
+        offsets = await ts.open(_unshaped_spec(self.offsets))
+        data = await ts.open(_unshaped_spec(self.data.spec()))
+        shapes = await (future_from_value(None) if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec())))
+
+        # offsets, data, shapes = await asyncio.gather(offsets, data, shapes)
+
+        return JaggedArrayBuilder(offsets, data, shapes, self.item_rank)
+
+    def reload(self) -> "JaggedArrayBuilder":
+        return asyncio.run(self.reload_async())
+
     def __len__(self):
         return self.offsets.shape[0] - 1
 
@@ -201,3 +236,9 @@ async def _append_ts_async(store: ts.TensorStore, data: np.ndarray):
     out_store = await store.resize(exclusive_max=[store.shape[0] + data.shape[0], *store.shape[1:]])
     await out_store[out_store.shape[0] - data.shape[0] :].write(data)
     return out_store
+
+
+
+def _unshaped_spec(store: ts.TensorStore) -> ts.Spec:
+    spec = store.spec(retain_context=True)
+    return spec

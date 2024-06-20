@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Generic, List, TypeVar
 
@@ -6,6 +7,8 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 import numpy as np
 from jaxtyping import PyTree
+
+from haliax.jax_utils import is_jax_array_like
 
 from .jagged_array import JaggedArrayBuilder
 
@@ -25,6 +28,13 @@ def heuristic_is_leaf(x):
         return False
 
 
+def heuristic_is_leaf_batched(x):
+    if isinstance(x, list):
+        return jnp.isscalar(x[0]) or is_jax_array_like(x[0])
+    else:
+        return False
+
+
 class TreeStoreBuilder(Generic[T]):
     """
     A TreeStoreBuilder stores batched data as a tree of ragged arrays.
@@ -37,28 +47,18 @@ class TreeStoreBuilder(Generic[T]):
     mode: str
     tree: PyTree[JaggedArrayBuilder]  # This starts as None, but is set to a list of JABuilders
 
-    def __init__(self, exemplar: T, path: str, mode: str):
+    def __init__(self, tree, path: str, mode: str):
         self.path = path
         self.mode = mode
-        self.tree = self._construct_builder_tree(exemplar)
-
-    def _construct_builder_tree(self, exemplar):
-        def open_builder(tree_path, item):
-            item = np.asarray(item)
-            rank = item.ndim
-            render_tree_path = "/".join(_render_path_elem(x) for x in tree_path)
-            return JaggedArrayBuilder.open(
-                os.path.join(self.path, render_tree_path), mode=self.mode, item_rank=rank, dtype=item.dtype
-            )
-
-        return jtu.tree_map_with_path(open_builder, exemplar, is_leaf=heuristic_is_leaf)
+        self.tree = tree
 
     @staticmethod
     def open(exemplar: T, path: str, *, mode="a") -> "TreeStoreBuilder":
         """
         Open a TreeStoreBuilder from a file.
         """
-        return TreeStoreBuilder(exemplar, path, mode)
+        tree = _construct_builder_tree(exemplar, path, mode)
+        return TreeStoreBuilder(tree, path, mode)
 
     def append(self, ex: T):
         return self.extend([ex])
@@ -74,6 +74,38 @@ class TreeStoreBuilder(Generic[T]):
             *batch,
             is_leaf=heuristic_is_leaf,
         )
+
+    def extend_with_batch(self, batch: T):
+        """
+        Append a batch of data (as a pytree with batched leaves) to the store.
+
+        This method works only when the "leaves" are lists of numpy arrays or scalars.
+        For instance, HF's BatchEncoding is a dict of lists of numpy arrays.
+        """
+        asyncio.run(self.extend_with_batch_async(batch))
+
+    async def extend_with_batch_async(self, batch: T):
+        """
+        Append a batch of data (as a pytree with batched leaves) to the store.
+
+        This method works only when the "leaves" are lists of numpy arrays or scalars.
+        For instance, HF's BatchEncoding is a dict of lists of numpy arrays.
+        """
+        futures = jtu.tree_map(
+            lambda writer, xs: writer.extend_async([np.asarray(x) for x in xs]),
+            self.tree,
+            batch,
+            is_leaf=heuristic_is_leaf_batched,
+        )
+
+        await asyncio.gather(*jax.tree_leaves(futures))
+
+    def reload(self) -> "TreeStoreBuilder":
+        """
+        Close the builder and return a TreeStore.
+        """
+        tree = jtu.tree_map(lambda builder: builder.resolve(), self.tree, is_leaf=heuristic_is_leaf)
+        return TreeStoreBuilder(tree, self.path, self.mode)
 
     def __len__(self):
         if self.tree is None:
@@ -93,6 +125,18 @@ class TreeStoreBuilder(Generic[T]):
         else:
             for i in range(len(self)):
                 yield self[i]
+
+
+def _construct_builder_tree(exemplar, path, mode):
+    def open_builder(tree_path, item):
+        item = np.asarray(item)
+        rank = item.ndim
+        render_tree_path = "/".join(_render_path_elem(x) for x in tree_path)
+        return JaggedArrayBuilder.open(
+            os.path.join(path, render_tree_path), mode=mode, item_rank=rank, dtype=item.dtype
+        )
+
+    return jtu.tree_map_with_path(open_builder, exemplar, is_leaf=heuristic_is_leaf)
 
 
 def _render_path_elem(x):
