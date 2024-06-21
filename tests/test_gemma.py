@@ -159,7 +159,6 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         seq_len=128,
         hidden_dim=16,
         intermediate_dim=64,
-        #head_dim=4,
         num_heads=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
@@ -220,6 +219,8 @@ def _get_gemma_config(use_flash=False, num_kv_heads=4, seq_len=128) -> GemmaConf
         seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
+        num_layers=4,
+        intermediate_dim=64,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
@@ -252,7 +253,6 @@ def test_pass_different_length_seq(num_kv_heads):
         hidden_dim=64,
         intermediate_dim=32,
         num_heads=2,
-        #head_dim=32,
         num_kv_heads=num_kv_heads,
         use_flash_attention=True,
     )

@@ -44,13 +44,12 @@ def test_mistral_gpt2_roundtrip():
 def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2Config] = None):
     import torch
 
-    config = config or Gpt2Config()
-    converter = config.hf_checkpoint_converter()
-
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    config = config or converter.default_config
+    config = config or Gpt2Config.from_hf_config(torch_model.config)
+    converter = config.hf_checkpoint_converter()
+
     model: Gpt2LMHeadModel = cast(
         Gpt2LMHeadModel,
         converter.load_pretrained(config.model_type, config, RepoRef(model_id, revision=revision)),
@@ -106,10 +105,11 @@ def test_hf_gradient_fa():
 def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2Config] = None):
     import torch
 
-    config = config or Gpt2Config()
-    converter = config.hf_checkpoint_converter()
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
+
+    config = config or Gpt2Config.from_hf_config(torch_model.config)
+    converter = config.hf_checkpoint_converter()
 
     model = cast(Gpt2LMHeadModel, converter.load_pretrained(config.model_type, config, RepoRef(model_id, revision)))
     model = inference_mode(model, True)

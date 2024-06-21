@@ -229,7 +229,11 @@ class TaggedEvaluator:
         total_loss = jnp.zeros(())
         mean_losses_per_tag = hax.zeros(self.dataset.Tag, dtype=np.float32)
 
-        state = (RunningMean.zeros_like(total_loss), RunningMean.zeros_like(mean_losses_per_tag), {})
+        state: tuple[RunningMean, RunningMean, dict] = (
+            RunningMean.zeros_like(total_loss),
+            RunningMean.zeros_like(mean_losses_per_tag),
+            {},
+        )
         state = hax.shard(state)
 
         iterator = LoadingTimeTrackerIterator(self.loader)

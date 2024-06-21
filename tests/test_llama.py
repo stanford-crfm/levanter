@@ -260,20 +260,42 @@ def test_llama_lm_head_model_bwd(use_flash, num_kv_heads):
 @skip_if_no_torch
 @pytest.mark.parametrize("scan_layers", [True, False])
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_llama_roundtrip(scan_layers, num_kv_heads):
-    import torch
-    from transformers import AutoModelForCausalLM, LlamaForCausalLM
-
-    converter = LlamaConfig().hf_checkpoint_converter()
+def test_state_dict_consistency(scan_layers, num_kv_heads):
+    from transformers import LlamaForCausalLM
 
     config = LlamaConfig(
         seq_len=128,
         hidden_dim=16,
         num_heads=4,
+        num_layers=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
         scan_layers=scan_layers,
     )
+    Vocab = hax.Axis("vocab", 1000)
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+    hf_config = config.to_hf_config(Vocab.size)
+    hf_model = LlamaForCausalLM(hf_config)
+    assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_llama_roundtrip(scan_layers, num_kv_heads):
+    import torch
+    from transformers import AutoModelForCausalLM, LlamaForCausalLM
+
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_layers=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+        scan_layers=scan_layers,
+    )
+    converter = config.hf_checkpoint_converter()
     Vocab = hax.Axis("vocab", 1000)
     hf_config = config.to_hf_config(Vocab.size)
 
@@ -324,6 +346,8 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
         seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
+        num_layers=4,
+        intermediate_dim=64,
         num_kv_heads=num_kv_heads,
         rope_scaling=None,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
