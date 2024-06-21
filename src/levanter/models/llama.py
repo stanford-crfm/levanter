@@ -194,7 +194,7 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         *,
         key,
         use_bias: bool = False,
-        measure_act_stats=True,
+        measure_act_stats=False,
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
         gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
@@ -435,9 +435,9 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
-        mlp_output, stats = self.mlp(x, key=k_mlp)
+        mlp_output, extras = self.mlp(x, key=k_mlp)
         output = residual + mlp_output
-        return output, stats
+        return output, extras
 
 
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):

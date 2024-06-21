@@ -76,7 +76,6 @@ class GemmaConfig(HFCompatConfig):
     vocab_size: int = 256_000
     num_layers: int = 18
     num_heads: int = 8
-    head_dim: int = 256
     num_kv_heads: int = 1
     attn_dropout = 0.0
     norm_eps = 1e-6
@@ -107,10 +106,14 @@ class GemmaConfig(HFCompatConfig):
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
+    @property
+    def head_dim(self) -> int: return self.hidden_dim // self.num_heads
+
     def __post_init__(self):
         assert (
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+        assert (self.head_dim * self.num_heads) == self.hidden_dim, "head_dim * num_heads must equal hidden_dim."
 
     def hf_checkpoint_converter(self) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
         return HFCheckpointConverter(
@@ -130,7 +133,9 @@ class GemmaConfig(HFCompatConfig):
         if hf_config.hidden_activation:
             activation_function = hf_config.hidden_activation
         else:
-            activation_function = hf_config.hidden_act
+            # This is the implementation in huggingface
+            # https://github.com/huggingface/transformers/blob/12b1620e615592fbf099d4ec44af7b9f2d1b48aa/src/transformers/models/gemma/modeling_gemma.py#L200
+            activation_function = "gelu_pytorch_tanh"
 
         if activation_function == "gelu_pytorch_tanh":
             activation_function = "gelu_new"
@@ -169,7 +174,7 @@ class GemmaConfig(HFCompatConfig):
             num_hidden_layers=self.num_layers,
             num_attention_heads=self.num_heads,
             num_key_value_heads=self.num_kv_heads,
-            head_dim=self.hidden_dim // self.num_heads,
+            head_dim=self.head_dim,
             hidden_activation=(
                 "gelu_pytorch_tanh" if self.activation_function == "gelu_new" else self.activation_function
             ),
@@ -264,9 +269,9 @@ class GemmaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
-        mlp_output = self.mlp(x, key=k_mlp)
+        mlp_output, extras = self.mlp(x, key=k_mlp)
         output = residual + mlp_output
-        return output
+        return output, extras
 
 
 class GemmaTransformer(StateDictSerializationMixin, eqx.Module):
@@ -293,10 +298,10 @@ class GemmaTransformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, mask=attn_mask, key=keys)
+        x, extras = self.layers.scan(x, mask=attn_mask, key=keys)
         x = self.norm(x)
 
-        return x
+        return x, extras
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         if isinstance(self.layers, Stacked):
@@ -359,9 +364,9 @@ class GemmaLMHeadModel(eqx.Module, LmHeadModel[GemmaConfig], StateDictSerializat
                 The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
         """
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=key)
+        x, extras = self.transformer(x, attn_mask=attn_mask, key=key)
         lm_logits = self.embeddings.unembed(x)
-        return lm_logits
+        return lm_logits, extras
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[GemmaConfig]":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)

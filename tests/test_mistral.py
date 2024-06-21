@@ -11,10 +11,11 @@ import haliax as hax
 
 from levanter.models.attention import AttentionMask
 from levanter.models.mistral import MistralConfig, MistralLMHeadModel
-from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch, skip_if_hf_model_not_accessible
 
 
 @skip_if_no_torch
+@skip_if_hf_model_not_accessible("mistralai/Mistral-7B-v0.1")
 def test_mistral_config():
     # load HF config and convert to levanter config
     hf_config = transformers.MistralConfig.from_pretrained("mistralai/Mistral-7B-v0.1")
@@ -50,7 +51,8 @@ def test_mistral_lm_head_model(num_kv_heads):
     mask = AttentionMask.causal()
 
     def fn(input_ids, mask):
-        return MistralLMHeadModel.init(Vocab=Vocab, config=mistral_config, key=random.PRNGKey(0))(input_ids, mask)
+        logits, _ = MistralLMHeadModel.init(Vocab=Vocab, config=mistral_config, key=random.PRNGKey(0))(input_ids, mask)
+        return  logits
 
     out = eqx.filter_eval_shape(fn, input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
@@ -69,7 +71,7 @@ def test_mistral_lm_head_model_bwd(use_flash, num_kv_heads):
     llama_model = MistralLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
 
     def f(llama_model, input_ids, mask):
-        out = llama_model(input_ids, mask)
+        out, _ = llama_model(input_ids, mask)
         return hax.sum(out).scalar()
 
     _, grads = eqx.filter_eval_shape(eqx.filter_value_and_grad(f), llama_model, input_ids, mask)
@@ -77,6 +79,7 @@ def test_mistral_lm_head_model_bwd(use_flash, num_kv_heads):
 
 @skip_if_no_torch
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+@skip_if_hf_model_not_accessible("mistralai/Mistral-7B-v0.1")
 def test_mistral_roundtrip(num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, MistralForCausalLM

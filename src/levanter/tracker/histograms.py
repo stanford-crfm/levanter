@@ -42,10 +42,13 @@ def sharded_histogram(a: Array, bins: Array) -> Array:
     in_specs = (P(ResourceAxis.DATA, None), P(None))
     out_specs = P(ResourceAxis.DATA, None)
     mesh = haliax.partitioning._get_mesh()
-    a = a.reshape(a.shape[0], -1)
-    shard_h = shard_map(histogram, mesh=mesh, in_specs=in_specs, out_specs=out_specs)
-    res = shard_h(a, bins)
-    res = res.sum(axis=0)
+    if mesh.axis_names and ResourceAxis.DATA in mesh.axis_names:
+        a = a.reshape(a.shape[0], -1)
+        shard_h = shard_map(histogram, mesh=mesh, in_specs=in_specs, out_specs=out_specs)
+        res = shard_h(a, bins)
+        res = res.sum(axis=0)
+    else:
+        res = histogram(a, bins)
     return res
 
 

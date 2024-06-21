@@ -109,7 +109,7 @@ def test_gemma_decoder_layer(num_kv_heads):
 
     position_ids = torch.arange(gemma_config.Pos.size).reshape(1, -1)
 
-    out = gemma_decoder_layer(x, mask)
+    out, _ = gemma_decoder_layer(x, mask)
     hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
@@ -125,7 +125,7 @@ def test_gemma_lm_head_model(num_kv_heads):
     mask = AttentionMask.causal()
 
     gemma_model = GemmaLMHeadModel.init(Vocab=Vocab, config=gemma_config, key=random.PRNGKey(0))
-    out = gemma_model(input_ids, mask)
+    out, _ = gemma_model(input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
 
 
@@ -142,7 +142,7 @@ def test_gemma_lm_head_model_bwd(use_flash, num_kv_heads):
     gemma_model = GemmaLMHeadModel.init(Vocab=Vocab, config=gemma_config, key=random.PRNGKey(0))
 
     def f(gemma_model, input_ids, mask):
-        out = gemma_model(input_ids, mask)
+        out, _ = gemma_model(input_ids, mask)
         return hax.sum(out).scalar()
 
     _, grads = eqx.filter_value_and_grad(f)(gemma_model, input_ids, mask)
@@ -158,6 +158,8 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
     config = GemmaConfig(
         seq_len=128,
         hidden_dim=16,
+        intermediate_dim=64,
+        #head_dim=4,
         num_heads=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
@@ -186,14 +188,14 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            converter.default_config.model_type,
-            converter.default_config,
+            config.model_type,
+            config,
             f"{tmpdir}/torch_model",
             resize_vocab_to_match_tokenizer=False,
         )
 
         def compute(input):
-            model_output = model(input, attn_mask=attn_mask)
+            model_output, _ = model(input, attn_mask=attn_mask)
             return hax.nn.softmax(model_output, axis=model.Vocab)
 
         compute = jax.jit(compute)
@@ -250,6 +252,7 @@ def test_pass_different_length_seq(num_kv_heads):
         hidden_dim=64,
         intermediate_dim=32,
         num_heads=2,
+        #head_dim=32,
         num_kv_heads=num_kv_heads,
         use_flash_attention=True,
     )
@@ -304,7 +307,7 @@ def test_gemma_mlp():
     x, _ = _get_random_inputs(config)
     x_torch = torch.from_numpy(np.array(x.array))
 
-    out = mlp(x)
+    out, _ = mlp(x)
     hf_out = hf_mlp(x_torch)
 
     chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
