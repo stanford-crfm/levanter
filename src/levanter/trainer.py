@@ -652,7 +652,7 @@ class TrainerConfig:
             self.replica_ici_axis_size,
             self.data_ici_axis_size,
             self.model_axis_size,
-            self.replica_dcn_axis_size,
+            self.replica_dcn_axis_size,  # type: ignore
             self.data_dcn_axis_size,
         )
 
@@ -768,10 +768,13 @@ class TrainerConfig:
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
         # handle replica_dcn_axis_size
-        if self.auto_replicas and self.replica_dcn_axis_size is None:
-            if self.num_slices > 1:
-                logger.info(f"Setting replica_dcn_axis_size to {self.num_slices}")
-            self.replica_dcn_axis_size = self.num_slices
+        if self.replica_dcn_axis_size is None:
+            if self.auto_replicas:
+                if self.num_slices > 1:
+                    logger.info(f"Setting replica_dcn_axis_size to {self.num_slices}")
+                self.replica_dcn_axis_size = self.num_slices
+            else:
+                self.replica_dcn_axis_size = 1
 
         assert self.train_batch_size != -1 or self.per_device_parallelism != -1
 

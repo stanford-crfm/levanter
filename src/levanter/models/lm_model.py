@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax.random import PRNGKey
 
 import haliax as hax
-from haliax import Axis, NamedArray
+from haliax import Axis, NamedArray, NamedOrNumeric
 from haliax.nn import cross_entropy_loss
 
 from levanter.models.attention import AttentionMask
@@ -48,16 +48,13 @@ class LmExample(eqx.Module):
 
     @staticmethod
     def from_prompt_and_completion(
-        prompt: hax.NamedArray, completion: hax.NamedArray, *, ignore_id: Optional[int] = None, all_causal: bool = True
+        Pos,
+        tokens: hax.NamedArray, prompt_length: NamedOrNumeric, *, ignore_id: Optional[int] = None, all_causal: bool = True
     ) -> "LmExample":
-        prompt_Pos = prompt.axes[0]
-        tokens = hax.concatenate(prompt_Pos.name, [prompt, completion])
-        tokens_Pos = tokens.resolve_axis(prompt_Pos.name)
-
         # mask out the prompt tokens
-        loss_mask = hax.arange(tokens_Pos) >= prompt_Pos.size
+        loss_mask = hax.arange(Pos) >= prompt_length
         # also mask out the last token
-        loss_mask *= 1 - hax.nn.one_hot(-1, tokens_Pos, dtype=jnp.float32)
+        loss_mask *= 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
 
         if ignore_id is not None:
             ignore_mask = tokens != ignore_id

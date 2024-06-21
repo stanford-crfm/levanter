@@ -1,3 +1,5 @@
+eval_harness:
+  task_spec: ["hellaswag"]
 tokenizer: "gpt2"
 model:
   type: gpt2
@@ -7,6 +9,7 @@ model:
 trainer:
   mp: f32
   num_train_steps: 100
+  profiler: true
 
   checkpointer:
     keep:

@@ -97,9 +97,9 @@ def main(config: EvalLmConfig):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             model_config = config.model
-            if not hasattr(model_config, "hf_checkpoint_converter"):
+            if not hasattr(model_config, "default_hf_checkpoint_converter"):
                 raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
-            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter
+            converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             model_from_hf_checkpoint = converter.load_pretrained(
                 model_config.model_type, config.hf_checkpoint, dtype=mp.compute_dtype

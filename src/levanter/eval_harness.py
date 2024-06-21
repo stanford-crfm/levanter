@@ -16,6 +16,8 @@ import jax.numpy as jnp
 import transformers
 from jax.experimental.multihost_utils import broadcast_one_to_all
 
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.models.gpt2 import Gpt2Config
 
 try:
     from lm_eval import evaluator, tasks
@@ -25,13 +27,15 @@ except ImportError:
     LM = object
     Instance = object
     evaluator = object
-    tasks = object
+    # tasks = object
 
 from tqdm import tqdm
 
 import haliax as hax
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import round_axis_for_partitioning
+
+from jax_sourceror import sourcerize
 
 import levanter.config
 from levanter.checkpoint import load_checkpoint
@@ -73,15 +77,13 @@ class _RequestType:
     FINISHED = 3
 
 
-class _InternalLMAdapter:
-    def __init__(self, EvalBatch: hax.Axis, model: LmHeadModel, axis_resources):
+class LevanterHarnessLM(LM):
+    def __init__(self,  EvalBatch: hax.Axis, model: LmHeadModel, axis_resources, tokenizer):
+        super().__init__()
         self.EvalBatch = EvalBatch
         self.model = model
         self.axis_resources = axis_resources
-
-        self.dummy_example: LmExample = hax.named_jit(lambda: LmExample.causal(
-            tokens=hax.zeros(model.Pos, dtype=jnp.int32),
-        ))()
+        self.tokenizer = tokenizer
 
         def _eval_loglikelihood(model: LmHeadModel, example: LmExample):
             logits = model(example.tokens)
@@ -100,55 +102,8 @@ class _InternalLMAdapter:
             _eval_loglikelihood, axis_resources=axis_resources, out_axis_resources={}
         )
 
-    def loglikelihood(self, examples: LmExample) -> tuple[hax.NamedArray, hax.NamedArray]:
-        return self._jit_loglikelihood(self.model, examples)
-
-    def do_request(self, request_type, example):
-        if request_type == _RequestType.LOG_LIKELIHOOD:
-            return self.loglikelihood(example)
-        elif request_type == _RequestType.GENERATE_UNTIL:
-            raise NotImplementedError()
-        elif request_type == _RequestType.LOG_LIKELIHOOD_ROLLING:
-            raise NotImplementedError()
-        else:
-            raise ValueError(f"Invalid request type {request_type}")
-
-    def worker_loop(self):
-        dummy_example = self.dummy_example
-        while True:
-            logger.info("Waiting for request")
-            request_type, request = broadcast_one_to_all((_RequestType.FINISHED, dummy_example), is_source=False)
-
-            if request_type == _RequestType.FINISHED:
-                break
-
-            logger.info("Doing request")
-            self.do_request(request_type, request)
-
-    def dispatch(self, request_type, request):
-        print(self.dummy_example, request)
-        broadcast_one_to_all((request_type, request), is_source=True)
-        return self.do_request(request_type, request)
-
-    def finish(self):
-        assert jax.process_index() == 0
-        broadcast_one_to_all((_RequestType.FINISHED, self.dummy_example), is_source=True)
-
-
-class LevanterHarnessLM(LM):
-    def __init__(self, adaptor: _InternalLMAdapter, tokenizer):
-        super().__init__()
-        self.adaptor = adaptor
-        self.tokenizer = tokenizer
-
-        def _stack_batch(examples):
-            return stack_tree(self.adaptor.EvalBatch, examples, pad_to_batch_size=True)
-
-        self._stack_batch_jit = hax.named_jit(_stack_batch)
-
     def _stack_batch(self, examples):
-        with use_cpu_device():
-            return self._stack_batch_jit(examples)
+        return stack_tree(self.EvalBatch, examples, pad_to_batch_size=True)
 
     def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
         """
@@ -162,41 +117,43 @@ class LevanterHarnessLM(LM):
 
         """
 
-        Pos = self.adaptor.model.Pos
+        Pos = self.model.Pos
 
         contexts = self.tokenizer([req.args[0] for req in requests])["input_ids"]
         completions = self.tokenizer([req.args[1] for req in requests])["input_ids"]
 
         examples: list[LmExample] = []
-        logger.info("Creating examples")
-        with local_cpu_mesh():
-            for context, completion in zip(contexts, completions):
-                context, completion = self._truncate_or_pad(context, completion)
-                context, completion = hax.named(context, Pos.name), hax.named(completion, Pos.name)
-                example = jax.jit(lambda: LmExample.from_prompt_and_completion(
-                    context, completion, ignore_id=self.tokenizer.pad_token_id
-                ))()
-                examples.append(example)
-        logger.info("Created examples")
+
+        @hax.named_jit
+        def _jit_create_example(tokens, prompt_len):
+            tokens = hax.named(tokens, self.model.Pos)
+            return LmExample.from_prompt_and_completion(self.model.Pos, tokens, prompt_len, ignore_id=self.tokenizer.pad_token_id)
+
+        # TODO: offload this to an evalbatchloader
+        for context, completion in zip(tqdm(contexts, desc="Creating examples"), completions):
+            tokens, length = self._truncate_or_pad(context, completion)
+            tokens = jnp.array(tokens)
+            length = jnp.array(length)
+            example = _jit_create_example(tokens, length)
+            examples.append(example)
 
         result: list[tuple[float, bool]] = []
-        for batch in batched(tqdm(examples, desc="examples", leave=False), self.adaptor.EvalBatch.size):
+        for batch in batched(tqdm(examples, desc="examples", leave=False), self.EvalBatch.size):
             logger.info("Processing batch")
-            with local_cpu_mesh():
-                batch_example = self._stack_batch(batch)
-            out_lls, out_correct = self.adaptor.dispatch(_RequestType.LOG_LIKELIHOOD, batch_example)
+            batch_example = self._stack_batch(batch)
+            # batch_example = jax.device_put(batch_example, jax.local_devices()[0])
+            source = sourcerize(self._jit_loglikelihood)(self.model, batch_example)
+            print(source, flush=True)
+            out_lls, out_correct = self._jit_loglikelihood(self.model, batch_example)
             result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
 
         # skip padding
         result = result[: len(examples)]
 
-        # print(contexts)
-        # print(completions)
-
         return result
 
     def _truncate_or_pad(self, context, completion):
-        max_len = self.adaptor.model.Pos.size
+        max_len = self.model.Pos.size
         if len(completion) > max_len:
             warnings.warn(f"Completion is longer than max length {max_len}. Truncating.")
             completion = completion[:max_len]
@@ -208,8 +165,7 @@ class LevanterHarnessLM(LM):
             # right pad with padding token
             context = context + [pad_token_id] * (max_len - len(context) - len(completion))
 
-        return context, completion
-
+        return jnp.array(context + completion), len(context)
 
     def loglikelihood_rolling(self, requests) -> List[Tuple[float]]:
         raise NotImplementedError()
@@ -219,17 +175,9 @@ class LevanterHarnessLM(LM):
 
 
 def run_lm_eval_harness(model, task_spec: list[str], tokenizer, EvalBatch, axis_resources, max_examples=None) -> dict:
-    adapter = _InternalLMAdapter(EvalBatch, model, axis_resources)
-    harness = LevanterHarnessLM(adapter, tokenizer)
+    harness = LevanterHarnessLM(EvalBatch, model, axis_resources, tokenizer)
     tasks_to_run = tasks.get_task_dict(task_spec)
-    if jax.process_index() == 0:
-        try:
-            outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples)
-        finally:
-            adapter.finish()
-    else:
-        adapter.worker_loop()
-        outputs = {}
+    outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples)
 
     return outputs
 
@@ -261,8 +209,9 @@ class LmEvalHarnessConfig:
 class EvalHarnessConfig:
     tokenizer: str
     checkpoint_path: str
+    checkpoint_is_hf: bool = False
     trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
-    model: LmConfig = dataclasses.field(default_factory=LmConfig)
+    model: LmConfig = dataclasses.field(default_factory=Gpt2Config)
 
     eval_harness: LmEvalHarnessConfig = dataclasses.field(default_factory=LmEvalHarnessConfig)
 
@@ -294,33 +243,41 @@ def run_eval_harness_main(config: EvalHarnessConfig):
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
         # initialize the model
-        if config.checkpoint_path is not None:
-            # initialize the model
+        if config.checkpoint_is_hf:
+            model_config = config.model
+            converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter  # type: ignore
+            converter = converter.replaced(reference_checkpoint=config.checkpoint_path, tokenizer=tokenizer)
+            model = converter.load_pretrained(
+                model_config.model_type, config.checkpoint_path, dtype=config.trainer.mp.compute_dtype
+            )
+        else:
             with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
-                # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
                 model = load_checkpoint(model, config.checkpoint_path, subpath="model")
-                model = inference_mode(model, True)
+            model = hax.shard(model, parameter_axis_mapping)
 
-            model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+        model = inference_mode(model, True)
 
-            logger.info("Running LM eval harness....")
-            outputs = run_lm_eval_harness(
-                model,
-                task_spec,
-                tokenizer,
-                config.EvalBatch,
-                axis_resources=compute_axis_mapping,
-                max_examples=max_examples,
-            )
+        ex = LmExample.from_prompt_and_completion(model.Pos, hax.zeros(model.Pos, dtype=int), 100)
+        source = sourcerize(model.compute_loss)(ex)
 
-            logger.info("Finished running LM eval harness")
-            # log the results as json
-            with open("lm_eval_results.json", "w") as f:
+        print(source, flush=True)
 
-                json.dump(outputs, f, indent=2)
-        else:
-            raise ValueError("No checkpoint path provided")
+        logger.info("Running LM eval harness....")
+        outputs = run_lm_eval_harness(
+            model,
+            task_spec,
+            tokenizer,
+            config.EvalBatch,
+            axis_resources=compute_axis_mapping,
+            max_examples=max_examples,
+        )
+
+        logger.info("Finished running LM eval harness")
+        # log the results as json
+        with open("lm_eval_results.json", "w") as f:
+
+            json.dump(outputs, f, indent=2)
 
 
 if __name__ == "__main__":

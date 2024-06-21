@@ -173,5 +173,3 @@ optimizer:
   beta1: 0.9
   beta2: 0.95
   warmup: 2000
-  # NB olmo uses linear decay
-  decay: linear

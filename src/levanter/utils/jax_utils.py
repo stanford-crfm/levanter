@@ -1,5 +1,4 @@
 import contextlib
-import functools
 import json
 import warnings
 from dataclasses import fields
@@ -43,7 +42,9 @@ def use_cpu_device():
 def local_cpu_mesh():
     """Temporarily sets the default device to CPU"""
     cpu = jax.local_devices(backend="cpu")[0]
-    mesh = jax.sharding.Mesh(np.array([cpu]).reshape(1, 1), ("data", "model"))
+    mesh = jax.sharding.Mesh(
+        np.array([cpu]).reshape(1, 1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    )
     with use_cpu_device(), mesh:
         yield mesh
 
@@ -335,7 +336,7 @@ def estimated_free_device_memory(device) -> Optional[float]:
         return (limit - in_use) // (1024.0**3)
 
 
-@functools.partial(jax.jit, static_argnums=(0), static_argnames=("batch", "pad_to_batch_size"))
+# @functools.partial(jax.jit, static_argnums=(0), static_argnames=("batch", "pad_to_batch_size"))
 def stack_tree(batch: AxisSelector, individual_datums: list[X], *, pad_to_batch_size: bool) -> X:
     """
     Stacks a tree of NamedArrays or arrays into a single array. NamedArrays get a new axis with the name batch_name,
