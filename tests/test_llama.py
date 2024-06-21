@@ -216,7 +216,7 @@ def test_llama_decoder_layer(num_kv_heads):
 
     position_ids = torch.arange(llama_config.Pos.size).reshape(1, -1)
 
-    out = llama_decoder_layer(x, mask)
+    out, _ = llama_decoder_layer(x, mask)
     hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
     assert np.isclose(
@@ -234,7 +234,7 @@ def test_llama_lm_head_model(num_kv_heads):
     mask = AttentionMask.causal()
 
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
-    out = llama_model(input_ids, mask)
+    out, _ = llama_model(input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
 
 
@@ -251,10 +251,32 @@ def test_llama_lm_head_model_bwd(use_flash, num_kv_heads):
     llama_model = LlamaLMHeadModel.init(Vocab=Vocab, config=llama_config, key=random.PRNGKey(0))
 
     def f(llama_model, input_ids, mask):
-        out = llama_model(input_ids, mask)
+        out, _ = llama_model(input_ids, mask)
         return hax.sum(out).scalar()
 
     _, grads = eqx.filter_value_and_grad(f)(llama_model, input_ids, mask)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_state_dict_consistency(scan_layers, num_kv_heads):
+    from transformers import LlamaForCausalLM
+
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_layers=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+        scan_layers=scan_layers,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+    hf_config = config.to_hf_config(Vocab.size)
+    hf_model = LlamaForCausalLM(hf_config)
+    assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())
 
 
 @skip_if_no_torch
@@ -264,16 +286,16 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
-    converter = LlamaConfig().hf_checkpoint_converter()
-
     config = LlamaConfig(
         seq_len=128,
         hidden_dim=16,
         num_heads=4,
+        num_layers=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
         scan_layers=scan_layers,
     )
+    converter = config.hf_checkpoint_converter()
     Vocab = hax.Axis("vocab", 1000)
     hf_config = config.to_hf_config(Vocab.size)
 
@@ -299,7 +321,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
         )
 
         def compute(input):
-            model_output = model(input, attn_mask=attn_mask)
+            model_output, _ = model(input, attn_mask=attn_mask)
             return hax.nn.softmax(model_output, axis=model.Vocab)
 
         compute = jax.jit(compute)
@@ -324,6 +346,8 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
         seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
+        num_layers=4,
+        intermediate_dim=64,
         num_kv_heads=num_kv_heads,
         rope_scaling=None,
         gradient_checkpointing=False,  # disable for tests so debugging is easier

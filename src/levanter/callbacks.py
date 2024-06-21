@@ -47,6 +47,8 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
         load_time = time.time() - time_in
         total_load_time += load_time
         loss = loss_fn(model, batch)
+        if isinstance(loss, tuple):
+            loss, _ = loss
         total_loss += loss.item()
         n += 1
         loss_time = time.time() - time_in - load_time

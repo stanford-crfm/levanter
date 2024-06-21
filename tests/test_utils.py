@@ -239,4 +239,6 @@ def check_model_works_with_seqlen(model_type, config, input_len):
     input_ids = hax.arange(config.Pos.resize(input_len), dtype=jax.numpy.int32)
     causal_mask = AttentionMask.causal()
     a1 = model(input_ids, key=key, attn_mask=causal_mask)
+    if isinstance(a1, tuple):
+        a1, _ = a1
     assert a1.axis_size("position") == input_len

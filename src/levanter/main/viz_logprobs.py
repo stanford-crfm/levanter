@@ -72,7 +72,7 @@ def main(config: VizGpt2Config):
         def compute_log_probs(model: LmHeadModel, example: LmExample):
             model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
-            logprobs = model.compute_loss(example, reduction=None)
+            logprobs, _ = model.compute_loss(example, reduction=None)
             # roll forward to get the loss for each predicted token
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array

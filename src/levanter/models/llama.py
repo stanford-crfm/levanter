@@ -30,6 +30,8 @@ from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.py_utils import cached_classproperty
+from levanter.tracker.histograms import get_bins, sharded_histogram
 
 
 silence_transformer_nag()
@@ -78,6 +80,7 @@ class LlamaConfig(HFCompatConfig):
     use_bias: bool = False
     use_layer_norm_weight: bool = True
     rope_scaling: Optional[dict] = None
+    measure_act_stats: bool = True
 
     reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
@@ -181,10 +184,17 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     up_proj: hnn.Linear  # projection from Embed to Mlp
     down_proj: hnn.Linear  # projection from Mlp to Embed
     act: Callable = eqx.static_field()
+    measure_act_stats: bool = False
 
     @staticmethod
     def init(
-        Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
+        Embed: Axis,
+        Mlp: Axis,
+        activation_fn: Union[str, Callable],
+        *,
+        key,
+        use_bias: bool = False,
+        measure_act_stats=False,
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
         gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
@@ -193,16 +203,20 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
-        return LlamaMlp(gate_proj, up_proj, down_proj, act)
+        get_bins()  # initialize bins
+        return LlamaMlp(gate_proj, up_proj, down_proj, act, measure_act_stats)
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
         k_gate, k_up, k_down = maybe_rng_split(key, 3)
         hidden_states = self.gate_proj(x, key=k_gate)
+        extras = {}
+        if self.measure_act_stats:
+            extras["gate_hist"] = sharded_histogram(hidden_states.array, bins=get_bins())
         hidden_states = self.act(hidden_states)
         hidden_states = hidden_states * self.up_proj(x, key=k_up)
         outputs = self.down_proj(hidden_states, key=k_down)
-        return outputs
+        return outputs, extras
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
@@ -402,6 +416,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
             config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
+            measure_act_stats=config.measure_act_stats,
         )
         ln_1 = config.mk_LayerNorm(config.Embed)
         ln_2 = config.mk_LayerNorm(config.Embed)
@@ -420,9 +435,9 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
-        mlp_output = self.mlp(x, key=k_mlp)
+        mlp_output, extras = self.mlp(x, key=k_mlp)
         output = residual + mlp_output
-        return output
+        return output, extras
 
 
 class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
@@ -449,10 +464,10 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, mask=attn_mask, key=keys)
+        x, extras = self.layers.scan(x, mask=attn_mask, key=keys)
         x = self.norm(x)
 
-        return x
+        return x, extras
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         if isinstance(self.layers, Stacked):
@@ -544,9 +559,9 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        x, extras = self.transformer(x, attn_mask=attn_mask, key=k_t)
         lm_logits = self.lm_head(x, key=k_head)
-        return lm_logits
+        return lm_logits, extras
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
         new_Vocab = self.Vocab.resize(new_size)

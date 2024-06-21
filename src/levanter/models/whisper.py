@@ -347,7 +347,7 @@ class WhisperTransformer(eqx.Module, StateDictSerializationMixin):
         x = self.layers.fold(x, xa, attn_mask, key=keys)
         x = self.layer_norm(x)
 
-        return x
+        return x, {}  # Empty extras for now
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
@@ -405,8 +405,8 @@ class WhisperEncoder(eqx.Module, StateDictSerializationMixin):
         pos_emb = whisper_sinusoids(self.config.Embed, self.config.SourcePos)[self.config.SourcePos, :seq_len]
         x = x + pos_emb
 
-        x = self.transformer(x, key=k_transformer)
-        return x
+        x, extras = self.transformer(x, key=k_transformer)
+        return x, extras
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "WhisperDecoder":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
@@ -501,10 +501,10 @@ class WhisperDecoder(eqx.Module, StateDictSerializationMixin):
             causal_mask = causal_mask & attn_mask
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
-        x = self.transformer(x, audio_embeds, causal_mask, key=k_transformer)
+        x, extras = self.transformer(x, audio_embeds, causal_mask, key=k_transformer)
         lm_logits = self.embeddings.unembed(x)
 
-        return lm_logits
+        return lm_logits, extras
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "WhisperDecoder":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
@@ -553,10 +553,10 @@ class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
         if attn_mask is not None and not isinstance(attn_mask, AttentionMask):
             attn_mask = AttentionMask.explicit(attn_mask)
         k_encoder, k_decoder = haliax.jax_utils.maybe_rng_split(key, 2)
-        audio_features = self.encoder(mel, key=k_encoder)
-        lm_logits = self.decoder(input_ids, audio_features, attn_mask=attn_mask, key=k_decoder)
+        audio_features, extras1 = self.encoder(mel, key=k_encoder)
+        lm_logits, extras2 = self.decoder(input_ids, audio_features, attn_mask=attn_mask, key=k_decoder)
 
-        return lm_logits
+        return lm_logits, extras1 | extras2
 
 
 class WhisperASRModel(WhisperModel, ASRMixin):

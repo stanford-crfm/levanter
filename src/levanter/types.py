@@ -72,4 +72,5 @@ class ModuleComputeLoss(ComputeLossFunction[M, X]):
         reduction_axis: Optional[hax.AxisSelection] = None,
         **kwargs,
     ) -> Scalar | hax.NamedArray:
-        return model.compute_loss(*inputs, reduction=reduction, reduction_axis=reduction_axis, **kwargs)
+        res, _ = model.compute_loss(*inputs, reduction=reduction, reduction_axis=reduction_axis, **kwargs)
+        return res

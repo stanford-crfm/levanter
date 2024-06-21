@@ -23,6 +23,7 @@ from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -192,9 +193,9 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        x, extras = self.transformer(x, attn_mask=attn_mask, key=k_t)
         lm_logits = self.lm_head(x, key=k_head)
-        return lm_logits
+        return lm_logits, extras
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[MistralConfig]":
         new_Vocab = self.Vocab.resize(new_size)
