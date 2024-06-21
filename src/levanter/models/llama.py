@@ -468,6 +468,8 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         if isinstance(self.layers, Stacked):
             stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
             state_dict.update(stacked_dict)
+        else:
+            state_dict.update(my_state_dict)
 
         return state_dict
 
