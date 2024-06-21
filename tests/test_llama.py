@@ -2,7 +2,7 @@ import tempfile
 
 import chex
 import equinox as eqx
-import jax
+import numpy
 import numpy as np
 import pytest
 import transformers
@@ -47,7 +47,7 @@ def test_llama_config():
 
 def test_llama_flops():
     # Check that the forward flops is within 10% of the naive calculation
-    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    hf_config = transformers.LlamaConfig.from_pretrained("huggyllama/llama-7b")
     llama_config = LlamaConfig.from_hf_config(hf_config)
     n_params = 6.7e9
     ratio = 2 * n_params / llama_config.flops_per_token(hf_config.vocab_size)
@@ -289,7 +289,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
 
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
-    torch_out = jax.nn.softmax(torch_out, axis=-1)
+    # torch_out = jax.nn.softmax(torch_out, axis=-1)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
@@ -298,15 +298,18 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
             LlamaLMHeadModel, config, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
-        def compute(input):
+        @hax.named_jit
+        def compute(model, input):
             model_output = model(input, attn_mask=attn_mask)
-            return hax.nn.softmax(model_output, axis=model.Vocab)
+            return model_output
 
-        compute = jax.jit(compute)
-        jax_out = compute(input).array
+        jax_out = compute(model, input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
         assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
+
+        # now we're going to magnify the model parameters enough that differences should actualy show up
+        jax_out = compute(model, input).array
 
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
@@ -314,9 +317,8 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
 
         torch_out2 = torch_model2(input_torch)
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-        torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out2} != {jax_out}"
+        numpy.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
 
 
 def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConfig:
@@ -361,3 +363,27 @@ def test_pass_different_length_seq(num_kv_heads):
         use_flash_attention=True,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [2, 4])
+def test_state_dict_consistency(scan_layers, num_kv_heads):
+    from transformers import LlamaForCausalLM
+
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_layers=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+        scan_layers=scan_layers,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+    hf_config = config.to_hf_config(Vocab.size)
+    hf_model = LlamaForCausalLM(hf_config)
+    print(hf_model.state_dict().keys())
+    print(model.to_state_dict().keys())
+    assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())
