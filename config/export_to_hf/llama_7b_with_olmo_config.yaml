@@ -1,4 +1,4 @@
-checkpoint_path: gs://marin-ckpt-eu-w4/marin/olmoish7b_v5e512_0612/dlwh_7b0612/
+checkpoint_path: gs://marin-ckpt-eu-w4/marin/olmoish7b_v5e512_0612/dlwh_7b0612/step-180000/
 output_dir: gs://marin-ckpt-eu-w4/marin/olmoish7b_v5e512_0612/hf_model/
 upload_to_hf: stanford-crfm/llama-7b-dolma
 model:  # 7B class model
