@@ -10,5 +10,7 @@ model:  # 7B class model
   num_heads: 32
   num_kv_heads: 32
   use_flash_attention: True
-  flash_attention_block_size: 1024
+#  flash_attention_block_size: 1024
+  use_bias: false
+  use_layer_norm_weight: false
 tokenizer: "allenai/OLMo-1B"
