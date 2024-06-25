@@ -1,11 +1,12 @@
 import os
 import re
+from typing import Generator
 
 from braceexpand import braceexpand
 from google.cloud import storage
 
 
-def get_subdirectories(bucket_name, directory_path, suffix) -> set:
+def get_subdirectories(bucket_name, directory_path, suffix) -> Generator[str, None, None]:
     """Given a GCS bucket name, directory path and suffix, list all the subdirectories that contain files with the given suffix."""
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(bucket_name)
