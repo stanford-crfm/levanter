@@ -1,8 +1,8 @@
-from google.cloud import storage
-from tqdm import tqdm
-import re
 import os
+import re
+
 from braceexpand import braceexpand
+from google.cloud import storage
 
 
 def get_subdirectories(bucket_name, directory_path, suffix) -> set:
@@ -78,7 +78,9 @@ def validate_with_braceexpand(braceexpand_paths, paths):
         print(paths)
 
 
-def main(bucket_name = "marin-data", directory = "processed/fineweb/fw-v1.0/", suffix = "_processed_html.jsonl.gz", limit=None):
+def main(
+    bucket_name="marin-data", directory="processed/fineweb/fw-v1.0/", suffix="_processed_html.jsonl.gz", limit=None
+):
     counter = 0
     subdirectories = get_subdirectories(bucket_name, directory, suffix)
     for subdirectory in subdirectories:
