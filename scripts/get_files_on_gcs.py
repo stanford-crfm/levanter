@@ -90,6 +90,6 @@ def main(bucket_name = "marin-data", directory = "processed/fineweb/fw-v1.0/", s
 
 
 if __name__ == "__main__":
-    # suffix = "_processed_html.jsonl.gz"
-    suffix = "_processed_md.jsonl.gz"
-    main(suffix=suffix, limit=10)
+    suffix = "_processed_html.jsonl.gz"
+    # suffix = "_processed_md.jsonl.gz"
+    main(suffix=suffix)
