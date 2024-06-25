@@ -99,7 +99,7 @@ def main(config: EvalLmConfig):
             model_config = config.model
             if not hasattr(model_config, "hf_checkpoint_converter"):
                 raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
-            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter
+            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             model_from_hf_checkpoint = converter.load_pretrained(
                 model_config.model_type, model_config, config.hf_checkpoint, dtype=mp.compute_dtype
