@@ -172,7 +172,7 @@ class TaggedEvaluator:
         device_mesh=None,
         axis_mapping=None,
         max_examples_per_dataset=None,
-        mp: jmp.Policy = None,
+        mp: Optional[jmp.Policy] = None,
     ):
         self.EvalBatch = EvalBatch
         self.dataset = DomainTaggedDataset(tagged_eval_sets, max_examples_per_dataset)
@@ -199,7 +199,9 @@ class TaggedEvaluator:
             m: LmHeadModel, state: tuple[RunningMean, RunningMean], batch: LmExample, tags: hax.NamedArray
         ):
             m = inference_mode(m, True)
-            m = self.mp.cast_to_compute(m)
+
+            if self.mp is not None:
+                m = self.mp.cast_to_compute(m)
             with hax.axis_mapping(axis_mapping):
                 total_mean, mean_per_tag = state
                 losses = m.compute_loss(batch, reduction=None, reduction_axis=())
