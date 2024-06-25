@@ -2,6 +2,7 @@ import os
 import re
 from typing import Generator
 
+import fire
 from braceexpand import braceexpand
 from google.cloud import storage
 
@@ -93,6 +94,4 @@ def main(
 
 
 if __name__ == "__main__":
-    suffix = "_processed_html.jsonl.gz"
-    # suffix = "_processed_md.jsonl.gz"
-    main(suffix=suffix)
+    fire.Fire(main)
