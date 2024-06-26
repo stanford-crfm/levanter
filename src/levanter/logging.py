@@ -1,14 +1,15 @@
-import contextlib
 import logging as pylogging
 import os
 import time
 from pathlib import Path
-from typing import List, Union
+from typing import Iterable, Iterator, List, TypeVar, Union
 
 import jax
 
 
 pylogger = pylogging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 def init_logging(log_dir: Union[str, Path], run_id: str, level: int = pylogging.INFO) -> None:
@@ -68,19 +69,18 @@ def save_xla_dumps_to_wandb(initial_time: float):
         pylogger.warning("XLA_FLAGS is not set to dump to a path, so we can't save the dumps to wandb")
 
 
-@contextlib.contextmanager
-def capture_time():
-    start = time.perf_counter()
-    done = False
+class LoadingTimeTrackerIterator(Iterator[T]):
+    def __init__(self, items: Iterable[T]):
+        self.total_time = 0.0
+        start = time.perf_counter()
+        self.items = iter(items)
+        self.total_time += time.perf_counter() - start
 
-    def fn():
-        if done:
-            return end - start
-        else:
-            return time.perf_counter() - start
-
-    yield fn
-    end = time.time()
+    def __next__(self) -> T:
+        start = time.perf_counter()
+        item = next(self.items)
+        self.total_time += time.perf_counter() - start
+        return item
 
 
 def silence_transformer_nag():

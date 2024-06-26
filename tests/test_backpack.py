@@ -54,7 +54,7 @@ def test_backpack_nano_compare():
     vocab_size = 5257
     torch.manual_seed(0)
 
-    converter = BackpackConfig.default_hf_checkpoint_converter
+    converter = BackpackConfig().hf_checkpoint_converter()
 
     # a bit hacky, using some internal-y APIs of transformers
     cls = converter.HFAutoModelClass()
@@ -83,7 +83,7 @@ def test_backpack_nano_compare():
     # now compare levanter
     with tempfile.TemporaryDirectory() as tmpdir:
         lev_config = converter.config_from_hf_config(config)
-        model.save_pretrained(tmpdir)
+        model.save_pretrained(tmpdir, safe_serialization=False)  # unsafe b/c weight tying
         loaded_checkpoint = converter.load_state_dict(tmpdir)
 
     roundtrip_hf_config = converter.hf_config_from_config(lev_config)

@@ -1,5 +1,6 @@
 import tempfile
 
+import chex
 import equinox as eqx
 import jax
 import numpy as np
@@ -11,6 +12,7 @@ import haliax as hax
 
 from levanter.models.attention import AttentionMask
 from levanter.models.gemma import GemmaConfig, GemmaDecoderLayer, GemmaLMHeadModel, GemmaRMSNorm
+from levanter.models.llama import LlamaAttention, LlamaMlp
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -40,7 +42,7 @@ def test_gemma_config():
     # `hidden_activation` fields. We don't touch the `hidden_act` field, and it is overridden
     # by `hidden_activation`.
     # See https://github.com/huggingface/transformers/pull/29402 for more info.
-    assert gemma_config.activation_function == "gelu"
+    assert gemma_config.activation_function == "gelu_new"  # gelu_new is a closer match to gelu_pytorch_tanh
     assert new_hf_config.hidden_activation == "gelu_pytorch_tanh"
     assert new_hf_config.hidden_act == "gelu_pytorch_tanh"
 
@@ -103,16 +105,14 @@ def test_gemma_decoder_layer(num_kv_heads):
     batch_size = x_torch.shape[0]
     explicit_mask = torch.from_numpy(np.array(mask.materialize(gemma_config.Pos, gemma_config.KeyPos).array))
     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
-    mask_torch = (mask_torch == 0).float() * -1e9
+    mask_torch = (mask_torch == 0).float() * -1e10
 
     position_ids = torch.arange(gemma_config.Pos.size).reshape(1, -1)
 
     out = gemma_decoder_layer(x, mask)
     hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
-    assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    ).all(), f"{hf_out[0]} != {out}"
+    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
@@ -155,8 +155,6 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, GemmaForCausalLM
 
-    converter = GemmaConfig.default_hf_checkpoint_converter
-
     config = GemmaConfig(
         seq_len=128,
         hidden_dim=16,
@@ -165,6 +163,8 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         gradient_checkpointing=False,
         scan_layers=scan_layers,
     )
+    converter = config.hf_checkpoint_converter()
+
     Vocab = hax.Axis("vocab", 1000)
     hf_config = config.to_hf_config(Vocab.size)
 
@@ -186,7 +186,10 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            GemmaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            converter.default_config.model_type,
+            converter.default_config,
+            f"{tmpdir}/torch_model",
+            resize_vocab_to_match_tokenizer=False,
         )
 
         def compute(input):
@@ -211,16 +214,11 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
 
 
 def _get_gemma_config(use_flash=False, num_kv_heads=4, seq_len=128) -> GemmaConfig:
-    rope_scaling = {
-        "type": "linear",
-        "factor": 2.0,
-    }
     return GemmaConfig(
         seq_len=seq_len,
         hidden_dim=16,
         num_heads=4,
         num_kv_heads=num_kv_heads,
-        rope_scaling=rope_scaling,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,
@@ -256,3 +254,57 @@ def test_pass_different_length_seq(num_kv_heads):
         use_flash_attention=True,
     )
     check_model_works_with_seqlen(GemmaLMHeadModel, config, 16)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("use_flash", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_gemma_attention(use_flash, num_kv_heads):
+    import torch
+    from transformers.models.gemma.modeling_gemma import GemmaAttention as HFGemmaAttention
+
+    config = _get_gemma_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+
+    attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))  # type: ignore
+
+    state = attention.to_state_dict()
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_attention = HFGemmaAttention(config.to_hf_config(32000))
+    hf_attention.load_state_dict(state, strict=True)
+
+    x, mask = _get_random_inputs(config)
+    x_torch = torch.from_numpy(np.array(x.array))
+    batch_size = x_torch.shape[0]
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
+
+    # the torch mask is really a bias, so we need to invert it and make it a big negative number
+    mask_torch = (mask_torch == 0).float() * -1e9
+
+    out = attention(x, mask)
+    position_ids = torch.arange(config.Pos.size).reshape(1, -1)
+    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+
+    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
+
+
+@skip_if_no_torch
+def test_gemma_mlp():
+    import torch
+    from transformers.models.gemma.modeling_gemma import GemmaMLP as HFGemmaMLP
+
+    config = _get_gemma_config()
+    mlp = LlamaMlp.init(config.Embed, config.Mlp, config.activation_function, key=random.PRNGKey(0))
+
+    state = mlp.to_state_dict()
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_mlp = HFGemmaMLP(config.to_hf_config(32000))
+    hf_mlp.load_state_dict(state, strict=True)
+
+    x, _ = _get_random_inputs(config)
+    x_torch = torch.from_numpy(np.array(x.array))
+
+    out = mlp(x)
+    hf_out = hf_mlp(x_torch)
+
+    chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)

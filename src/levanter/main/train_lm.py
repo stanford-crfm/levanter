@@ -47,6 +47,7 @@ class TrainLmConfig:
     hf_save_steps: int = 10000
 
     update_hessian_steps: int = 10
+    data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
 
 
 def main(config: TrainLmConfig):
@@ -59,7 +60,7 @@ def main(config: TrainLmConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
@@ -73,7 +74,7 @@ def main(config: TrainLmConfig):
             # NB: gross mutability
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(tokenizer=tokenizer)
     else:
         converter = None
@@ -91,6 +92,10 @@ def main(config: TrainLmConfig):
         seed = config.trainer.seed
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
+        if config.data_seed is not None:
+            logger.info(f"Overriding data seed with {config.data_seed}")
+            data_key = jrandom.PRNGKey(config.data_seed)
+
         # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
         # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
         compute_axis_mapping = trainer.compute_axis_mapping
@@ -104,7 +109,7 @@ def main(config: TrainLmConfig):
 
         tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -129,7 +134,10 @@ def main(config: TrainLmConfig):
                 state = dataclasses.replace(state, model=None)
                 gc.collect()
                 model = converter.load_pretrained(
-                    config.model, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+                    config.model.model_type,
+                    config.model,
+                    axis_mapping=parameter_axis_mapping,
+                    dtype=trainer.mp.compute_dtype,
                 )
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
@@ -154,7 +162,11 @@ def main(config: TrainLmConfig):
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
-        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
+        flops_per_token = config.model.flops_per_token(vocab_size)
+        flops_per_example = 3 * flops_per_token * Pos.size if flops_per_token is not None else None
+        trainer.add_hook(
+            callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
+        )
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
 

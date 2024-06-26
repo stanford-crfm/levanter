@@ -29,7 +29,7 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
 )
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
-from levanter.utils.py_utils import cached_classproperty
+from levanter.utils.flop_utils import lm_flops_per_token
 
 
 silence_transformer_nag()
@@ -111,10 +111,9 @@ class GemmaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            cls,  # type: ignore
+            self,
             reference_checkpoint="google/gemma-2b",
             trust_remote_code=True,
             HfConfigClass=HfGemmaConfig,
@@ -133,7 +132,7 @@ class GemmaConfig(HFCompatConfig):
             activation_function = hf_config.hidden_act
 
         if activation_function == "gelu_pytorch_tanh":
-            activation_function = "gelu"
+            activation_function = "gelu_new"
 
         assert activation_function is not None, "No activation function found in HF configuration."
         return GemmaConfig(
@@ -171,7 +170,7 @@ class GemmaConfig(HFCompatConfig):
             num_key_value_heads=self.num_kv_heads,
             head_dim=self.hidden_dim // self.num_heads,
             hidden_activation=(
-                "gelu_pytorch_tanh" if self.activation_function == "gelu" else self.activation_function
+                "gelu_pytorch_tanh" if self.activation_function == "gelu_new" else self.activation_function
             ),
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
@@ -183,6 +182,18 @@ class GemmaConfig(HFCompatConfig):
     @property
     def model_type(cls) -> Type["GemmaLMHeadModel"]:
         return GemmaLMHeadModel
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
+        )
 
 
 class GemmaRMSNorm(hnn.LayerNorm):

@@ -85,13 +85,13 @@ def main(config: LoraLmConfig):
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=data_key), Pos, KeyPos)
         train_loader = trainer.sharded_loader(train_dataset, Batch)
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model = converter.load_pretrained(
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+            model_config.model_type, model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
         )
 
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))

@@ -64,12 +64,12 @@ def test_estimate_mixture_weights():
     x2_mask = hax.named([0.0, 0.0, 0.0, 1.0, 1.0], (Dim,))
     W3 = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
     x3_mask = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
-    x3_bias = hax.named([4.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
+    x3_bias = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
 
     # y = sigmoid(Wx + b + N(0, noise^2)) > 0.5
     ds1 = LogitDataset(W1, 0.1, x1_mask, 0.0, key=next(keys))
     ds2 = LogitDataset(W2, 2.0, x2_mask, 0.0, key=next(keys))
-    ds3 = LogitDataset(W3, 0.0, x3_mask, x3_bias, key=next(keys))
+    ds3 = LogitDataset(W3, 0.05, x3_mask, x3_bias, key=next(keys))
 
     # TODO: remove key as a requirement for models
     def compute_loss_fn(model, example, reduction=hax.mean, reduction_axis=None, key=None):
@@ -105,12 +105,14 @@ def test_estimate_mixture_weights():
 
             return state.model, (loss / (state.step - 200))
 
+    model_key = next(keys)
+
     def init_model():
         return hax.nn.Linear.init(
             Dim,
             (),
             use_bias=True,
-            key=next(keys),
+            key=model_key,
         )
 
     m1, loss1 = fit_to_dataset(ds1)
@@ -155,6 +157,6 @@ def test_estimate_mixture_weights():
     w2 = w["d2"]
     w3 = w["d3"]
 
-    assert w1 > w3 > w2
+    assert w1 > w3 > w2, (w1, w2, w3)
     assert abs(w1 + w2 + w3 - 1.0) < 1e-3
     assert w2 < 0.05  # the noise distribution should get a very low weight

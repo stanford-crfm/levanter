@@ -12,7 +12,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
-from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
+from levanter.compat.hf_checkpoints import HFCompatConfig, ModelWithHfSerializationMixin, save_hf_checkpoint_callback
 from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig
 from levanter.models.whisper import WhisperConfig
@@ -55,7 +55,7 @@ def main(config: TrainASRConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
@@ -73,7 +73,7 @@ def main(config: TrainASRConfig):
             # NB: gross mutability
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(tokenizer=tokenizer, feature_extractor=config.data.the_feature_extractor)
     else:
         converter = None
@@ -132,7 +132,10 @@ def main(config: TrainASRConfig):
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 state = dataclasses.replace(state, model=None)
-                model = converter.load_pretrained(config.model.asr_model_type, axis_mapping=parameter_axis_mapping)
+                assert isinstance(config.model.asr_model_type, ModelWithHfSerializationMixin)
+                model = converter.load_pretrained(  # type: ignore
+                    config.model.asr_model_type, config.model, axis_mapping=parameter_axis_mapping
+                )
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
             else:

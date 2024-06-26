@@ -5,10 +5,12 @@ import equinox as eqx
 import jax
 import numpy as np
 import optax
+from chex import assert_trees_all_close
 from transformers import AutoModelForCausalLM
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.quantization import DefaultDotGeneralOp, DotGeneralOp
 
 from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
@@ -110,8 +112,10 @@ def test_lora_peft_integration():
 
     hf_dict = get_peft_model_state_dict(model)
 
-    converter = Gpt2Config.default_hf_checkpoint_converter
-    lev_model = converter.load_pretrained(Gpt2LMHeadModel, "stanford-crfm/expanse-gpt2-small-x777")
+    converter = Gpt2Config().hf_checkpoint_converter
+    lev_model = converter.load_pretrained(
+        converter.default_config, converter.default_config.model_type, "stanford-crfm/expanse-gpt2-small-x777"
+    )
 
     lora_lev_model = loraize(lev_model, LoraConfig(r=8, target_modules=["c_attn"]), key=jax.random.PRNGKey(0))
     # for some dumb reason, the hf state dict starts with this prefix
@@ -138,27 +142,47 @@ def test_merge_lora():
             second = hnn.Linear.init(Mid, In, key=k2)
             return Module(first, second)
 
-    Layers = hax.Axis("Layers", 3)
+    Layers = hax.Axis("Layers", 2)
+
+    # tpu matmuls are very imprecise, so we force higher precision
+    class PreciseDotGeneralOp(DotGeneralOp):
+        def __call__(self, lhs, rhs, dimension_numbers, precision=None, preferred_element_type=None):
+            return jax.lax.dot_general(
+                lhs,
+                rhs,
+                dimension_numbers,
+                precision=jax.lax.Precision.HIGHEST,
+                preferred_element_type=preferred_element_type,
+            )
 
     k0 = jax.random.PRNGKey(0)
-    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, 3))
+    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, Layers.size))
 
-    loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
+    loraized = loraize(module, LoraConfig(r=8, target_modules=["second"]), key=k0)
     assert isinstance(loraized, hnn.Stacked)
 
     merged = merge_lora_modules(loraized)
 
     assert isinstance(merged, hnn.Stacked)
 
+    def replace_dot_general(x):
+        if isinstance(x, DefaultDotGeneralOp):
+            return PreciseDotGeneralOp()
+        return x
+
+    merged = jax.tree_map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    loraized = jax.tree_map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+
     input = hax.random.normal(k0, (In,))
-    assert hax.all(hax.isclose(loraized.fold(input), merged.fold(input)))
+    # light tolerances for TPU
+    assert_trees_all_close(merged.fold(input), loraized.fold(input), rtol=1e-3, atol=3e-3)
 
 
 @skip_if_no_torch
 def test_lora_load_in_peft():
     import torch
 
-    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
+    converter: HFCheckpointConverter = Gpt2Config().hf_checkpoint_converter()
     config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
     Vocab = converter.Vocab
 
@@ -207,7 +231,7 @@ def test_lora_load_in_peft():
 def test_lora_merged_load_in_hf():
     import torch
 
-    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
+    converter: HFCheckpointConverter = Gpt2Config().hf_checkpoint_converter()
     config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
     Vocab = converter.Vocab
 

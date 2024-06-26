@@ -30,7 +30,7 @@ import jax
 import jmp
 import numpy as np
 from draccus import field
-from jax.experimental import mesh_utils, multihost_utils
+from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation
@@ -51,11 +51,11 @@ from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
-from levanter.logging import capture_time
-from levanter.tracker import TrackerConfig
+from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
 from levanter.utils import cloud_utils, fsspec_utils
+from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -643,20 +643,13 @@ class TrainerConfig:
 
     @cached_property
     def device_mesh(self) -> Mesh:
-        is_multislice = hasattr(jax.devices()[0], "slice_index")
-        if is_multislice:
-            devices = mesh_utils.create_hybrid_device_mesh(
-                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_axis_size),
-                (self.replica_dcn_axis_size, self.data_dcn_axis_size, 1),
-                allow_split_physical_axes=True,
-            )
-        else:
-            devices = mesh_utils.create_device_mesh(
-                (self.replica_ici_axis_size, self.data_ici_axis_size, self.model_axis_size),
-                allow_split_physical_axes=True,
-            )
-
-        return Mesh(devices, (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL))
+        return create_fsdp_mesh(
+            self.replica_ici_axis_size,
+            self.data_ici_axis_size,
+            self.model_axis_size,
+            self.replica_dcn_axis_size,
+            self.data_dcn_axis_size,
+        )
 
     @property
     def eval_batch_size(self):
