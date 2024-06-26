@@ -14,3 +14,4 @@ model:  # 7B class model
   use_bias: false
   use_layer_norm_weight: false
 tokenizer: "allenai/OLMo-1B"
+save_tokenizer: true
