@@ -22,8 +22,7 @@ from .utils import batched
 
 
 if TYPE_CHECKING:
-    from levanter.data.shard_cache import MetricsMonitor
-
+    from .metrics_monitor import MetricsMonitor
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)
