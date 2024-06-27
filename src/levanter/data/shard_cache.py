@@ -8,7 +8,7 @@ import threading
 import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import IO, Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, TypeVar
+from typing import IO, Any, Callable, Dict, Generic, Iterable, Iterator, List, Optional, Sequence, TypeVar
 
 import fsspec.core
 import pyarrow as pa
@@ -783,6 +783,90 @@ class _ChunkCollator:
             return None
 
 
+class GroupRoundRobinBuffer(Generic[T]):
+    """
+    A buffer that holds items from multiple groups and returns them in a round-robin fashion.
+    The groups need not have the same number of items. If a group is exhausted, it is removed from the rotation.
+    """
+
+    def __init__(self, groups: Sequence[str]):
+        self.groups = groups
+        self._current_group = 0
+        self.buffers: dict[str, list[T]] = {group: [] for group in groups}
+        self._remaining_groups = set(groups)
+        self._totals_written: dict[str, int] = {group: 0 for group in groups}
+        self._totals_expected: dict[str, Optional[int]] = {group: None for group in groups}
+
+    def extend_group(self, group: str, *items: T):
+        if group not in self.groups:
+            raise ValueError(f"Group {group} not in {self.groups}")
+
+        if group not in self._remaining_groups:
+            raise ValueError(f"Group {group} already finished")
+
+        self.buffers[group].extend(items)
+
+    def group_total_known(self, group: str, total: int):
+        if group not in self.groups:
+            raise ValueError(f"Group {group} not in {self.groups}")
+
+        if group not in self._remaining_groups:
+            raise ValueError(f"Group {group} already finished: {total} vs {self._totals_expected[group]}")
+
+        self._totals_expected[group] = total
+
+        if self._totals_written[group] == total:
+            assert len(self.buffers[group]) == 0
+            self._remaining_groups.remove(group)
+
+    def is_finished(self):
+        return len(self._remaining_groups) == 0
+
+    def pop(self) -> Optional[T]:
+        group = self._next_group_to_read_from()
+        if group is None:
+            return None
+
+        if len(self.buffers[group]) == 0:
+            return None
+
+        item = self.buffers[group].pop(0)
+        self._totals_written[group] += 1
+
+        if self._totals_written[group] == self._totals_expected[group]:
+            assert len(self.buffers[group]) == 0
+            assert group in self._remaining_groups
+            self._remaining_groups.remove(group)
+
+        self._current_group = (self._current_group + 1) % len(self.groups)
+
+        return item
+
+    def drain(self) -> list[T]:
+        items = []
+        while True:
+            item = self.pop()
+            if item is None:
+                break
+            items.append(item)
+
+        return items
+
+    def _next_group_to_read_from(self):
+        if len(self._remaining_groups) == 0:
+            return None
+
+        while True:
+            group = self.groups[self._current_group]
+            if group not in self._remaining_groups:
+                assert self._totals_written[group] == self._totals_expected[group]
+                assert len(self.buffers[group]) == 0
+                self._current_group = (self._current_group + 1) % len(self.groups)
+            else:
+                break
+        return group
+
+
 @ray.remote(num_cpus=0.5)  # keep this small b/c it doesn't do a lot
 class ChunkCacheBuilder:
     """
@@ -806,8 +890,7 @@ class ChunkCacheBuilder:
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.broker_ref = broker_ref
-        self.shard_status: Dict[str, _ShardStatus] = dict()
-        self._current_round_robin = []
+        self._current_round_robin: GroupRoundRobinBuffer[ChunkMetadata] = GroupRoundRobinBuffer(source.shard_names)
         self.source = source
         self._metrics = InProgressCacheMetrics()
 
@@ -822,10 +905,6 @@ class ChunkCacheBuilder:
             self._shard_writers = []
             self._shard_readers = []
             self._processor_actors = []
-
-            for shard_name in source.shard_names:
-                self._current_round_robin.append(shard_name)
-                self.shard_status[shard_name] = _ShardStatus()
 
             num_shards = len(source.shard_names)
             num_worker_groups = len(ray.nodes())
@@ -878,7 +957,7 @@ class ChunkCacheBuilder:
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
         """Callback method for when a shard worker has produced a new chunk."""
-        self.shard_status[shard_name].current_buffer.extend(chunks)
+        self._current_round_robin.extend_group(shard_name, *chunks)
 
         # if we have buffered chunks, we need to check if we can send them to the broker
         self._attempt_to_flush_buffers()
@@ -895,24 +974,15 @@ class ChunkCacheBuilder:
 
     def shard_finished(self, shard_name: str, expected_num_chunks: int):
         """Callback method for when a shard worker has finished."""
-        shard_status = self.shard_status[shard_name]
-        assert (
-            shard_status.expected_num_chunks is None
-        ), f"Shard {shard_name} already finished: {shard_status.expected_num_chunks} {expected_num_chunks}"
-        shard_status.expected_num_chunks = expected_num_chunks
+        self._current_round_robin.group_total_known(shard_name, expected_num_chunks)
 
-        # we might still have buffered chunks, so we need to check if we can append them
         self._attempt_to_flush_buffers()
         self._metrics.shards_finished += 1
         ray.get(self.broker_ref._new_metrics.remote(self._metrics))
 
         # if there are no more active shards, we're done
-        if self._all_shards_done():
-            assert len(self._current_round_robin) == 0
+        if self._current_round_robin.is_finished():
             self._finish()
-
-    def _all_shards_done(self):
-        return all(status.is_finished_and_buffer_empty for status in self.shard_status.values())
 
     def shard_failed(self, shard_name: str, error: ExceptionInfo):
         """Callback method for when a shard worker has failed."""
@@ -937,43 +1007,8 @@ class ChunkCacheBuilder:
         # If we can, we send them to the broker
 
         # here "finished" means that the shard has sent all of its chunks and has told us that it's done.
-
-        chunks_to_send = []
-
-        while len(self._current_round_robin) > 0:
-            name = self._current_round_robin[0]
-            status = self.shard_status[name]
-            if status.is_finished_and_buffer_empty:
-                # we're done with this shard, so we can remove it from the roundrobin
-                self._current_round_robin.pop(0)
-                logger.debug(f"Shard {name} is finished, removing from round robin")
-                continue
-
-            # now let's see if we can send a chunk from this shard
-            next_chunk = status.pop_chunk_to_send()
-            if next_chunk is not None:
-                # we can send a chunk from this shard
-                self._current_round_robin.pop(0)
-                self._current_round_robin.append(name)
-                chunks_to_send.append(next_chunk)
-                continue
-            else:
-                # we can't send a chunk from this shard, so we can't send any additional chunks
-                if self.logger.level <= pylogging.DEBUG:
-                    chunks_waiting = [
-                        f"{n2} ({len(s2.current_buffer)})"
-                        for n2, s2 in self.shard_status.items()
-                        if len(s2.current_buffer) > 0
-                    ]
-                    msg = (
-                        f"Shard {name} has no chunks to send and is not known to be finished. We have this many queued"
-                        f" chunks: {chunks_waiting}"
-                    )
-                    self.logger.debug(msg)
-                break
-
+        chunks_to_send = self._current_round_robin.drain()
         if len(chunks_to_send) > 0:
-            logger.debug(f"Sending {len(chunks_to_send)} chunks to broker")
             ray.get(self.broker_ref._append_chunks.remote(*chunks_to_send))
 
     def _finish(self):
