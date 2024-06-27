@@ -1,6 +1,9 @@
+import math
 import tempfile
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from levanter.newstore.jagged_array import JaggedArray, JaggedArrayBuilder
@@ -165,3 +168,134 @@ class TestJaggedArrayBuilder:
 
             with pytest.raises(ValueError):
                 builder[::2]
+
+
+async def create_builder_with_data(directory, num_sequences: int, sequence_length: int | tuple[int, ...]):
+    if isinstance(sequence_length, int):
+        sequence_length = (sequence_length,)
+
+    """Helper function to create a JaggedArrayBuilder with specific data."""
+    seed = jax.random.PRNGKey(num_sequences * math.prod(sequence_length))
+
+    builder = await JaggedArrayBuilder.open_async(directory, item_rank=len(sequence_length), dtype=jnp.int64)
+    for i in range(num_sequences):
+        key, seed = jax.random.split(seed)
+        data = jax.random.randint(key, sequence_length, 0, 100)
+        await builder.append_async(data)
+
+    return builder
+
+
+def create_builder_with_data_sync(directory, num_sequences: int, sequence_length: int | tuple[int, ...]):
+    if isinstance(sequence_length, int):
+        sequence_length = (sequence_length,)
+
+    """Helper function to create a JaggedArrayBuilder with specific data."""
+    seed = jax.random.PRNGKey(num_sequences * math.prod(sequence_length))
+
+    builder = JaggedArrayBuilder.open(directory, item_rank=len(sequence_length), dtype=jnp.int64)
+    for i in range(num_sequences):
+        key, seed = jax.random.split(seed)
+        data = jax.random.randint(key, sequence_length, 0, 100)
+        builder.append(data)
+
+    return builder
+
+
+@pytest.mark.asyncio
+async def test_trim_to_size_async():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=1000)
+
+    # Initial size
+    initial_size = len(builder)
+    assert initial_size == 10
+
+    expected_data = list(await builder.get_item_async(slice(0, 10)))
+
+    # Trim to smaller size
+    await builder.trim_to_size_async(5)
+    new_size = len(builder)
+    assert new_size == 5
+
+    # Verify the data integrity
+    trimmed_data = await builder.data.read()
+    assert jnp.all(trimmed_data == jnp.concatenate(expected_data[:5]))
+
+    # Trim to zero size
+    await builder.trim_to_size_async(0)
+    new_size = len(builder)
+    assert new_size == 0
+
+    # Verify the data integrity
+    trimmed_data = await builder.data.read()
+    assert trimmed_data.size == 0
+
+
+@pytest.mark.asyncio
+async def test_trim_to_size_larger_than_current():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=1000)
+    expected_data = list(await builder.get_item_async(slice(0, 10)))
+
+    # Initial size
+    initial_size = len(builder)
+    assert initial_size == 10
+
+    # Trim to a larger size than current (should not change)
+    await builder.trim_to_size_async(15)
+    new_size = len(builder)
+    assert new_size == 10
+
+    # Verify the data integrity
+    trimmed_data = await builder.data.read()
+    assert np.array_equal(trimmed_data, jnp.concatenate(expected_data[:10]))
+
+
+@pytest.mark.asyncio
+async def test_trim_to_size_with_shapes_async():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=(10, 100))
+    expected_shapes = list(await builder.shapes.read())
+
+    # Trim to smaller size
+    await builder.trim_to_size_async(5)
+    new_size = len(builder)
+    assert new_size == 5
+
+    # Verify the shapes integrity
+    trimmed_shapes = await builder.shapes.read()
+    assert np.array_equal(trimmed_shapes, jnp.stack(expected_shapes[:5]))
+
+
+def test_trim_to_size():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = create_builder_with_data_sync(tmpdir, num_sequences=10, sequence_length=1000)
+
+    # Initial size
+    initial_size = len(builder)
+    assert initial_size == 10
+
+    expected_data = list(builder[0:10])
+
+    # Trim to smaller size
+    builder.trim_to_size(5)
+    new_size = len(builder)
+    assert new_size == 5
+
+    # Verify the data integrity
+    trimmed_data = builder.data.read().result()
+    assert jnp.all(trimmed_data == jnp.concatenate(expected_data[:5]))
+
+    # Trim to zero size
+    builder.trim_to_size(0)
+    new_size = len(builder)
+    assert new_size == 0
+
+    # Verify the data integrity
+    trimmed_data = builder.data.read().result()
+    assert trimmed_data.size == 0
+
+
+if __name__ == "__main__":
+    pytest.main()

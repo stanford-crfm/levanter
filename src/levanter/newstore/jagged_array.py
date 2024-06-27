@@ -66,7 +66,7 @@ class JaggedArray(eqx.Module):
             return data
 
 
-async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
+def _ts_open_core(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
     mode = _mode_to_open_mode(mode)
     if path is None:
         import uuid
@@ -81,7 +81,7 @@ async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
     # Basically, we want to load the existing shape metadata if it exists
     if not mode.get("delete_existing", False):
         try:
-            return await ts.open(spec, **mode)
+            return ts.open(spec, **mode).result()  # TODO: use async when applicable
         except FileNotFoundError:
             pass
         except ValueError:
@@ -89,8 +89,13 @@ async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
 
     # TODO: groups?
     # TODO: set chunk sizes
-    return await ts.open(spec, dtype=jnp.dtype(dtype).name, shape=shape,
-                         chunk_layout=ts.ChunkLayout(chunk_shape = [2048, *shape[1:]]), **mode)
+    return ts.open(
+        spec,
+        dtype=jnp.dtype(dtype).name,
+        shape=shape,
+        chunk_layout=ts.ChunkLayout(chunk_shape=[2048, *shape[1:]]),
+        **mode,
+    )
 
 
 def _mode_to_open_mode(mode: str):
@@ -124,23 +129,35 @@ class JaggedArrayBuilder:
 
     @staticmethod
     async def open_async(path: Optional[str], *, mode="a", item_rank=1, dtype):
-        offset_path = _extend_path(path, "offsets")
-        offsets = await _ts_open_async(offset_path, jnp.int64, [1], mode=mode)
-
-        data_path = _extend_path(path, "data")
-        data = await _ts_open_async(data_path, dtype, [0], mode=mode)
-
-        if item_rank > 1:
-            shape_path = _extend_path(path, "shapes")
-            shapes = await _ts_open_async(shape_path, jnp.int64, [0, item_rank - 1], mode=mode)
-        else:
-            shapes = None
-
-        return JaggedArrayBuilder(offsets, data, shapes, item_rank)
+        offsets, data, shapes = JaggedArrayBuilder._open_core(path, mode=mode, item_rank=item_rank, dtype=dtype)
+        return JaggedArrayBuilder(await offsets, await data, await shapes if shapes is not None else shapes, item_rank)
 
     @staticmethod
     def open(path: Optional[str], *, mode="a", item_rank=1, dtype):
-        return asyncio.run(JaggedArrayBuilder.open_async(path, mode=mode, item_rank=item_rank, dtype=dtype))
+        offsets, data, shapes = JaggedArrayBuilder._open_core(path, mode=mode, item_rank=item_rank, dtype=dtype)
+        return JaggedArrayBuilder(
+            offsets.result(), data.result(), shapes.result() if shapes is not None else shapes, item_rank
+        )
+
+    @staticmethod
+    def _open_core(path: Optional[str], *, mode="a", item_rank=1, dtype):
+        offset_path = _extend_path(path, "offsets")
+        offsets = _ts_open_core(offset_path, jnp.int64, [1], mode=mode)
+
+        data_path = _extend_path(path, "data")
+        data = _ts_open_core(data_path, dtype, [0], mode=mode)
+
+        if item_rank > 1:
+            shape_path = _extend_path(path, "shapes")
+            shapes = _ts_open_core(shape_path, jnp.int64, [0, item_rank - 1], mode=mode)
+        else:
+            shapes = None
+
+        return (offsets, data, shapes)
+
+    @property
+    def data_size(self):
+        return self.offsets[self.offsets.shape[0] - 1].read().result()
 
     async def append_async(self, data: jax.Array):
         await self.extend_async([data])
@@ -148,7 +165,65 @@ class JaggedArrayBuilder:
     def append(self, data: jax.Array):
         asyncio.run(self.append_async(data))
 
+    async def trim_to_size_async(self, size: int):
+        """
+        Trims so we have exactly `size` rows in the jagged array.
+        """
+        if size >= len(self):
+            return
+
+        # Trim the offsets
+        offsets = await self.offsets.resize(exclusive_max=[size + 1])
+        # Trim the data
+        new_max = await offsets[size].read()
+        data = self.data.resize(exclusive_max=[new_max])
+
+        # Trim the shapes
+        if self.shapes is not None:
+            shapes = self.shapes.resize(exclusive_max=[size, *self.shapes.shape[1:]])
+            self.shapes = await shapes
+
+        self.offsets = offsets
+        self.data = await data
+
+    def trim_to_size(self, size: int):
+        if size >= self.data_size:
+            return
+
+        if self.shapes is not None:
+            shapes = self.shapes.resize(exclusive_max=[size, *self.shapes.size[1:]])
+
+        # Trim the offsets
+        offsets = self.offsets.resize(exclusive_max=[size + 1]).result()
+        # Trim the data
+        new_max = offsets[size].read().result()
+        data = self.data.resize(exclusive_max=[new_max])
+
+        # Trim the shapes
+
+        self.offsets = offsets
+        self.data = data.result()
+        self.shapes = shapes.result()
+
     async def extend_async(self, arrays: Sequence[jax.Array]):
+        data, new_offsets, shapes = self._prepare_batch(arrays)
+        self.data = await _append_ts_async(self.data, data)
+
+        self.offsets = await _append_ts_async(self.offsets, new_offsets)
+
+        if self.shapes is not None:
+            self.shapes = await _append_ts_async(self.shapes, shapes)
+
+    def extend(self, arrays: Sequence[jax.Array]):
+        data, new_offsets, shapes = self._prepare_batch(arrays)
+        self.data = _append_ts_sync(self.data, data)
+
+        self.offsets = _append_ts_sync(self.offsets, new_offsets)
+
+        if self.shapes is not None:
+            self.shapes = _append_ts_sync(self.shapes, shapes)
+
+    def _prepare_batch(self, arrays):
         if self.shapes is not None:
             for data in arrays:
                 if data.ndim != self.item_rank:
@@ -159,20 +234,10 @@ class JaggedArrayBuilder:
                 if data.ndim > 1:
                     raise ValueError(f"Expected data to have rank 1, got {data.ndim}")
             shapes = None
-
         new_offsets = np.array([data.size for data in arrays], dtype=np.int64)
         new_offsets = np.cumsum(new_offsets) + self.data.shape[0]
-
         data = np.concatenate([data.reshape(-1) for data in arrays])
-        self.data = await _append_ts_async(self.data, data)
-
-        self.offsets = await _append_ts_async(self.offsets, new_offsets)
-
-        if self.shapes is not None:
-            self.shapes = await _append_ts_async(self.shapes, shapes)
-
-    def extend(self, arrays: Sequence[jax.Array]):
-        asyncio.run(self.extend_async(arrays))
+        return data, new_offsets, shapes
 
     async def reload_async(self) -> "JaggedArrayBuilder":
         """
@@ -186,16 +251,23 @@ class JaggedArrayBuilder:
         #     shapes = await self.shapes.resolve(fix_resizable_bounds=True)
         # else:
         #     shapes = None
-        offsets = await ts.open(_unshaped_spec(self.offsets))
-        data = await ts.open(_unshaped_spec(self.data.spec()))
-        shapes = await (future_from_value(None) if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec())))
+        offsets = ts.open(_unshaped_spec(self.offsets))
+        data = ts.open(_unshaped_spec(self.data.spec()))
+        shapes = future_from_value(None) if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec()))
 
-        # offsets, data, shapes = await asyncio.gather(offsets, data, shapes)
+        offsets, data, shapes = await asyncio.gather(offsets, data, shapes)
 
         return JaggedArrayBuilder(offsets, data, shapes, self.item_rank)
 
     def reload(self) -> "JaggedArrayBuilder":
-        return asyncio.run(self.reload_async())
+        offsets = ts.open(_unshaped_spec(self.offsets))
+        data = ts.open(_unshaped_spec(self.data.spec()))
+        shapes = None if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec())).result()
+
+        offsets = offsets.result()
+        data = data.result()
+
+        return JaggedArrayBuilder(offsets, data, shapes, self.item_rank)
 
     def __len__(self):
         return self.offsets.shape[0] - 1
@@ -229,7 +301,32 @@ class JaggedArrayBuilder:
                     raise e
 
     def __getitem__(self, item):
-        return asyncio.run(self.get_item_async(item))
+        if isinstance(item, slice):
+            start, stop, step = item.indices(len(self))
+            if step != 1:
+                raise ValueError("JaggedArrayBuilder doesn't support slicing with step != 1")
+            shapes = None if self.shapes is None else self.shapes[start:stop]
+            # NB: JaggedArray not JaggedArrayBuilder
+            # TODO: use a transformed TS?
+            offsets = self.offsets[start : stop + 1].read().result()
+            data_start, data_stop = offsets[0], offsets[-1]
+            new_offsets = offsets - offsets[0]
+            return JaggedArray(new_offsets, self.data[data_start:data_stop].read().result(), shapes)
+        else:
+            try:
+                start, stop = self.offsets[item : item + 2].read().result()
+                data = self.data[start:stop].read().result()
+
+                if self.shapes is not None:
+                    shapes = np.array(self.shapes[item])
+                    data = data.reshape(*shapes, -1)
+                return data
+            except ValueError as e:
+                # ts raises a value error for an index out of bounds OUT_OF_RANGE
+                if "OUT_OF_RANGE" in str(e):
+                    raise IndexError(f"JaggedArrayBuilder index out of range: {item}") from e
+                else:
+                    raise e
 
 
 async def _append_ts_async(store: ts.TensorStore, data: np.ndarray):
@@ -237,6 +334,11 @@ async def _append_ts_async(store: ts.TensorStore, data: np.ndarray):
     await out_store[out_store.shape[0] - data.shape[0] :].write(data)
     return out_store
 
+
+def _append_ts_sync(store: ts.TensorStore, data: np.ndarray):
+    out_store = store.resize(exclusive_max=[store.shape[0] + data.shape[0], *store.shape[1:]]).result()
+    out_store[out_store.shape[0] - data.shape[0] :].write(data).result()
+    return out_store
 
 
 def _unshaped_spec(store: ts.TensorStore) -> ts.Spec:
