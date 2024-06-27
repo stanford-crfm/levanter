@@ -792,19 +792,19 @@ class GroupRoundRobinBuffer(Generic[T]):
     def __init__(self, groups: Sequence[str]):
         self.groups = groups
         self._current_group = 0
-        self.buffers: dict[str, list[T]] = {group: [] for group in groups}
+        self.buffers: dict[str, list[tuple[int, T]]] = {group: [] for group in groups}
         self._remaining_groups = set(groups)
         self._totals_written: dict[str, int] = {group: 0 for group in groups}
         self._totals_expected: dict[str, Optional[int]] = {group: None for group in groups}
 
-    def extend_group(self, group: str, *items: T):
+    def append_to_group(self, group: str, item_serial: int, item: T):
         if group not in self.groups:
             raise ValueError(f"Group {group} not in {self.groups}")
 
         if group not in self._remaining_groups:
             raise ValueError(f"Group {group} already finished")
 
-        self.buffers[group].extend(items)
+        heapq.heappush(self.buffers[group], (item_serial, item))
 
     def group_total_known(self, group: str, total: int):
         if group not in self.groups:
@@ -830,7 +830,13 @@ class GroupRoundRobinBuffer(Generic[T]):
         if len(self.buffers[group]) == 0:
             return None
 
-        item = self.buffers[group].pop(0)
+        cur_serial, item = self.buffers[group][0]
+
+        if cur_serial != self._totals_written[group]:
+            return None
+
+        heapq.heappop(self.buffers[group])
+
         self._totals_written[group] += 1
 
         if self._totals_written[group] == self._totals_expected[group]:
@@ -891,6 +897,7 @@ class ChunkCacheBuilder:
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.broker_ref = broker_ref
         self._current_round_robin: GroupRoundRobinBuffer[ChunkMetadata] = GroupRoundRobinBuffer(source.shard_names)
+        self._chunk_counts: dict[str, int] = {shard: 0 for shard in source.shard_names}
         self.source = source
         self._metrics = InProgressCacheMetrics()
 
@@ -957,7 +964,13 @@ class ChunkCacheBuilder:
 
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
         """Callback method for when a shard worker has produced a new chunk."""
-        self._current_round_robin.extend_group(shard_name, *chunks)
+        # self._current_round_robin.extend_group(shard_name, *chunks)
+        count = self._chunk_counts[shard_name]
+        for chunk in chunks:
+            self._current_round_robin.append_to_group(shard_name, count, chunk)
+            count += 1
+
+        self._chunk_counts[shard_name] = count
 
         # if we have buffered chunks, we need to check if we can send them to the broker
         self._attempt_to_flush_buffers()
