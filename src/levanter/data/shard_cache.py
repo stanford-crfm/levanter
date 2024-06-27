@@ -20,7 +20,6 @@ from ray.actor import ActorHandle
 from ray.exceptions import GetTimeoutError
 
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
-from ._metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
 from ._queue import (
     PriorityProcessorActor,
@@ -30,6 +29,7 @@ from ._queue import (
     _BatchProcessorQueue,
 )
 from .dataset import ShardableDataset
+from .metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from .sharded_dataset import ShardedDataset
 
 
@@ -530,26 +530,6 @@ class _ShardStatus:
     @property
     def is_finished_and_buffer_empty(self):
         return self.expected_num_chunks is not None and self.num_chunks_sent >= self.expected_num_chunks
-
-
-class WaitTimeReportingThread(threading.Thread):
-    def __init__(self, report, interval=60):
-        super().__init__()
-        self.report = report
-        self.interval = interval
-        self.shutdown_event = threading.Event()
-
-    def run(self):
-        total_waited = 0
-        while True:
-            if self.shutdown_event.wait(self.interval):
-                break
-            if total_waited > 0:
-                self.report(total_waited)
-            total_waited += self.interval
-
-    def shutdown(self):
-        self.shutdown_event.set()
 
 
 # Ray does poorly with large numbers of actors (grumble grumble), so we can't have one actor per shard.

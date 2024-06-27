@@ -1,5 +1,6 @@
 import dataclasses
 import logging as pylogging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol, Union
@@ -147,3 +148,23 @@ class LoggerMetricsMonitor(MetricsMonitor):
 
         if metrics.is_finished:
             self.logger.info("Cache creation finished")
+
+
+class WaitTimeReportingThread(threading.Thread):
+    def __init__(self, report, interval=60):
+        super().__init__()
+        self.report = report
+        self.interval = interval
+        self.shutdown_event = threading.Event()
+
+    def run(self):
+        total_waited = 0
+        while True:
+            if self.shutdown_event.wait(self.interval):
+                break
+            if total_waited > 0:
+                self.report(total_waited)
+            total_waited += self.interval
+
+    def shutdown(self):
+        self.shutdown_event.set()
