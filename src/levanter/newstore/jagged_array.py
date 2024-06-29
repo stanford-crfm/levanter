@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import equinox as eqx
+import fsspec.core
 import jax
 import jax.experimental.array_serialization.serialization as ser
 import jax.numpy as jnp
@@ -74,7 +75,11 @@ def _ts_open_core(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
         random_name = str(uuid.uuid4())
         spec = ts.Spec({"driver": "zarr", "kvstore": f"memory://{random_name}"})
     else:
-        spec = ser.get_tensorstore_spec(path)
+        # make path absolute if it's not already
+        protocol, _ = fsspec.core.split_protocol(path)
+        if protocol is None:
+            path = os.path.abspath(path)
+        spec = ser.get_tensorstore_spec(path, ocdbt=True)
         fsspec_utils.mkdirs(os.path.dirname(path))
 
     # TODO: this is a bit of a hack
@@ -93,7 +98,7 @@ def _ts_open_core(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
         spec,
         dtype=jnp.dtype(dtype).name,
         shape=shape,
-        chunk_layout=ts.ChunkLayout(chunk_shape=[2048, *shape[1:]]),
+        chunk_layout=ts.ChunkLayout(chunk_shape=[8192, *shape[1:]]),
         **mode,
     )
 
@@ -252,7 +257,7 @@ class JaggedArrayBuilder:
         # else:
         #     shapes = None
         offsets = ts.open(_unshaped_spec(self.offsets))
-        data = ts.open(_unshaped_spec(self.data.spec()))
+        data = ts.open(_unshaped_spec(self.data))
         shapes = future_from_value(None) if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec()))
 
         offsets, data, shapes = await asyncio.gather(offsets, data, shapes)
@@ -261,7 +266,7 @@ class JaggedArrayBuilder:
 
     def reload(self) -> "JaggedArrayBuilder":
         offsets = ts.open(_unshaped_spec(self.offsets))
-        data = ts.open(_unshaped_spec(self.data.spec()))
+        data = ts.open(_unshaped_spec(self.data))
         shapes = None if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec())).result()
 
         offsets = offsets.result()
