@@ -25,7 +25,6 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -43,11 +42,12 @@ class BackpackConfig(Gpt2Config):
     def model_type(self) -> Type["BackpackLMHeadModel"]:
         return BackpackLMHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
         # We trust this code because it's in our hub repo
         return HFCheckpointConverter(
-            cls, "stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079", trust_remote_code=True
+            self,
+            reference_checkpoint="stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079",
+            trust_remote_code=True,
         )
 
     # Axes

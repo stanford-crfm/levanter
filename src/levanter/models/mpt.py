@@ -30,8 +30,8 @@ from levanter.compat.torch_serialization import (
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
+from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -156,9 +156,8 @@ class MptConfig(HFCompatConfig):
     def model_type(self) -> Type["MptLmHeadModel"]:
         return MptLmHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MptConfig"]:  # type: ignore
-        return HFCheckpointConverter(cls, "mosaicml/mpt-7b", trust_remote_code=False)
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MptConfig"]:  # type: ignore
+        return HFCheckpointConverter(self, "mosaicml/mpt-7b", trust_remote_code=False)
 
     @classmethod
     def from_hf_config(cls, config):
@@ -198,6 +197,18 @@ class MptConfig(HFCompatConfig):
             logit_scale=self.logit_scale,
             vocab_size=vocab_size,
             **config_overrides,
+        )
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.d_model,
+            intermediate_dim=self.d_model * self.expansion_ratio,
+            num_layers=self.n_layers,
+            num_kv_heads=self.n_heads,
+            num_heads=self.n_heads,
+            seq_len=self.max_seq_len,
+            vocab_size=vocab_size,
+            glu=False,
         )
 
 

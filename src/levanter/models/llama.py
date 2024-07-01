@@ -29,7 +29,7 @@ from levanter.models.attention import AttentionBackend, AttentionMask, dot_produ
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
-from levanter.utils.py_utils import cached_classproperty
+from levanter.utils.flop_utils import lm_flops_per_token
 
 
 silence_transformer_nag()
@@ -79,6 +79,9 @@ class LlamaConfig(HFCompatConfig):
     use_layer_norm_weight: bool = True
     rope_scaling: Optional[dict] = None
 
+    reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
+    tokenizer: Optional[str] = None
+
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
@@ -94,13 +97,12 @@ class LlamaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            cls,  # type: ignore
-            "meta-llama/Llama-2-7b-hf",
+            self.__class__,
+            reference_checkpoint=self.reference_checkpoint,
             trust_remote_code=True,
-            tokenizer="hf-internal-testing/llama-tokenizer",
+            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
             HfConfigClass=HfLlamaConfig,
         )
 
@@ -148,12 +150,24 @@ class LlamaConfig(HFCompatConfig):
         )
 
     @property
-    def model_type(cls) -> Type["LlamaLMHeadModel"]:
+    def model_type(self) -> Type["LlamaLMHeadModel"]:
         return LlamaLMHeadModel
 
     def mk_LayerNorm(self, axis: Axis) -> "LlamaRMSNorm":
         return LlamaRMSNorm.init(
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
+        )
+
+    def flops_per_token(self, vocab_size: int):
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=True,
         )
 
 
@@ -454,6 +468,8 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         if isinstance(self.layers, Stacked):
             stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
             state_dict.update(stacked_dict)
+        else:
+            state_dict.update(my_state_dict)
 
         return state_dict
 

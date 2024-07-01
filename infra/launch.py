@@ -22,12 +22,14 @@ def setup_vm_docker(tpu_name, zone, docker_base_image):
         "docker",
         getpass.getuser(),
         "&&",
+        "sudo",
         "docker",
         "volume",
         "create",
         "--driver=local",
         "levanter",
         "&&",
+        "sudo",
         "docker",
         "rm",
         "-f",
@@ -56,7 +58,7 @@ def list_tpus(zone):
     return tpus
 
 
-def start_tpu_vm(tpu_name, *, tpu_type, preemptible, version, zone, autodelete):
+def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete):
     tpu_exists = any([tpu["NAME"] == tpu_name for tpu in list_tpus(zone)])
     if tpu_exists:
         if not autodelete:
@@ -90,8 +92,16 @@ def start_tpu_vm(tpu_name, *, tpu_type, preemptible, version, zone, autodelete):
         "--zone=" + zone,
         "--quiet",
     ]
-    if preemptible:
+    if capacity_type == "preemptible":
         command.append("--preemptible")
+    elif capacity_type == "reserved":
+        command.append("--reserved")
+    elif capacity_type == "spot":
+        command.append("--spot")
+    elif capacity_type == "on-demand" or capacity_type is None:
+        pass
+    else:
+        raise ValueError(f"Unknown capacity type: {capacity_type}")
     cli.run_command(*command)
 
 
@@ -118,7 +128,22 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
     cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
-    cli.add_arg(parser, config, ["--preemptible"], default=False, action="store_true")
+    cli.add_arg(
+        parser, config, ["--capacity_type"], default=None, choices=["preemptible", "spot", "reserved", "on-demand"]
+    )
+    cli.add_arg(
+        parser,
+        config,
+        ["--preemptible"],
+        required=False,
+        action="store_const",
+        const="preemptible",
+        dest="capacity_type",
+    )
+    cli.add_arg(parser, config, ["--spot"], required=False, action="store_const", const="spot", dest="capacity_type")
+    cli.add_arg(
+        parser, config, ["--reserved"], required=False, action="store_const", const="reserved", dest="capacity_type"
+    )
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
@@ -140,7 +165,7 @@ if __name__ == "__main__":
     docker_repository = args.docker_repository
     foreground = args.foreground
     image_id = args.image_name
-    preemptible = args.preemptible
+    capacity_type = args.capacity_type
     project = args.project
     if args.retries < 0:
         retries = 10000000
@@ -166,7 +191,7 @@ if __name__ == "__main__":
             start_tpu_vm(
                 tpu_name=tpu_name,
                 tpu_type=tpu_type,
-                preemptible=preemptible,
+                capacity_type=capacity_type,
                 version=version,
                 zone=zone,
                 autodelete=autodelete,
