@@ -1,4 +1,6 @@
 # Reads an old-style ShardCache and writes a new-style TreeCache
+import os
+
 import jax
 import numpy as np
 
@@ -39,4 +41,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     for split in ["train", "validation"]:
-        convert_to_new_cache(sys.argv[1] + "/" + split, sys.argv[2] + "/" + split)
+        in_path = os.path.join(sys.argv[1], split)
+        out_path = os.path.join(sys.argv[2], split)
+        convert_to_new_cache(in_path, out_path)

@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Generic, List, TypeVar
+from typing import Generic, List, Sequence, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -45,7 +45,7 @@ class TreeStoreBuilder(Generic[T]):
 
     path: str
     mode: str
-    tree: PyTree[JaggedArrayBuilder]  # This starts as None, but is set to a list of JABuilders
+    tree: PyTree[JaggedArrayBuilder]
 
     def __init__(self, tree, path: str, mode: str):
         self.path = path
@@ -82,7 +82,13 @@ class TreeStoreBuilder(Generic[T]):
         This method works only when the "leaves" are lists of numpy arrays or scalars.
         For instance, HF's BatchEncoding is a dict of lists of numpy arrays.
         """
-        asyncio.run(self.extend_with_batch_async(batch))
+        jtu.tree_map(
+            lambda writer, xs: writer.extend([np.asarray(x) for x in xs]),
+            self.tree,
+            batch,
+            is_leaf=heuristic_is_leaf_batched,
+        )
+
 
     async def extend_with_batch_async(self, batch: T):
         """
@@ -100,11 +106,27 @@ class TreeStoreBuilder(Generic[T]):
 
         await asyncio.gather(*jax.tree_leaves(futures))
 
+    def trim_to_size(self, size: int):
+        """
+        Trim the store to a given size.
+        """
+        self.tree = jtu.tree_map(lambda writer: writer.trim_to_size(size), self.tree, is_leaf=heuristic_is_leaf)
+
+    async def trim_to_size_async(self, size: int):
+        """
+        Trim the store to a given size.
+        """
+        futures = jtu.tree_map(lambda writer: writer.trim_to_size_async(size), self.tree, is_leaf=heuristic_is_leaf)
+        leaves, structure = jax.tree_flatten(futures)
+
+        awaitted = await asyncio.gather(*leaves)
+        self.tree = jax.tree_unflatten(structure, awaitted)
+
     def reload(self) -> "TreeStoreBuilder":
         """
         Close the builder and return a TreeStore.
         """
-        tree = jtu.tree_map(lambda builder: builder.resolve(), self.tree, is_leaf=heuristic_is_leaf)
+        tree = jtu.tree_map(lambda builder: builder.reload(), self.tree, is_leaf=heuristic_is_leaf)
         return TreeStoreBuilder(tree, self.path, self.mode)
 
     def __len__(self):
@@ -151,3 +173,48 @@ def _render_path_elem(x):
             return f"{i}"
         case _:
             return str(x)
+
+
+class TokenSeqDataset:
+    """
+    A dataset of sequences of tokens of fixed length, materialized from a collection of JaggedArrayBuilders,
+    which have typically much longer sequences. This class takes consecutive sequences of tokens from the builders
+    and slices/concats them to form the dataset.
+    """
+
+    def __init__(
+        self, token_arrays: Sequence[JaggedArrayBuilder], token_counts: Sequence[int], seq_len: int, pad_token: int
+    ):
+        self.token_arrays = token_arrays
+
+        def _round_to_nearest_multiple(x, y):
+            return x + y - x % y
+
+        token_counts_padded = np.array([_round_to_nearest_multiple(x, seq_len) for x in token_counts])
+        seq_counts = token_counts_padded // seq_len
+        self.seq_counts_cumsum = np.concatenate([np.asarray([0]), np.cumsum(seq_counts)])
+
+        self.seq_len = seq_len
+        self.pad_token = pad_token
+
+    def __len__(self):
+        return self.seq_counts_cumsum[-1]
+
+    def __getitem__(self, seq_id):
+        return asyncio.run(self.get_item_async(seq_id))
+
+    async def get_item_async(self, seq_id):
+        # TODO: accept slices and such?
+        shard_id = np.searchsorted(self.seq_counts_cumsum, seq_id, side="right") - 1
+        shard_start = self.seq_counts_cumsum[shard_id]
+        shard_end = self.seq_counts_cumsum[shard_id + 1]
+        shard_seq_id = seq_id - shard_start
+
+        shard_seq_start = shard_seq_id * self.seq_len
+        shard_seq_end = min((shard_seq_id + 1) * self.seq_len, self.token_arrays[shard_id].data_size)
+
+        shard_seq = await self.token_arrays[shard_id].data[shard_seq_start:shard_seq_end].read()
+        pad_len = self.seq_len - (shard_seq_end - shard_seq_start)
+        padded_seq = np.concatenate([shard_seq, np.full(pad_len, self.pad_token, dtype=shard_seq.dtype)])
+
+        return padded_seq

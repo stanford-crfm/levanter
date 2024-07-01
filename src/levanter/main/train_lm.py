@@ -189,6 +189,8 @@ def main(config: TrainLmConfig):
         # )
         #
         # data loader. may need to seek to the right place if we're resuming
+
+
         train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 
         if int(state.step) > 0:
