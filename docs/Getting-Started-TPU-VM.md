@@ -115,7 +115,7 @@ subnetwork: "default"
 EOF
 ```
 
-If you want to custom the docker image that is created and uploaded to GCP Artifact Registry, you can add config `image_name: "YOUR-DOCKER-NAME"`.
+If you want to customize the docker image that is created and uploaded to GCP Artifact Registry, you can add config `image_name: "YOUR-DOCKER-NAME"`.
 
 Now run `launch.py`. This will package your current directory into a Docker image and run it on your workers. Everything after the `--` is run on each worker.
 
@@ -202,13 +202,13 @@ gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'sudo r
 **and then you have to ctrl-c this after about 10 seconds**. Otherwise, gcloud will think the command failed and will
 try again, and get stuck in a loop forever. (You can ctrl-c it at any point after 10 seconds.)
 
-### Docker-related Issue
+### Docker-related Issues
 
-If you get a `permission denied` error with your `docker.sock`. You should be able to fix with:
+If you get a `permission denied` error with your `docker.sock`,
+you should be able to fix it by running the following script in the launching machine and then restarting your shell:
 
 ```shell
 sudo usermod -aG docker $USER
-sudo chmod 666 /var/run/docker.sock
 ```
 
 If you get an error like `denied: Unauthenticated request. Unauthenticated requests do not have permission "artifactregistry.repositories.uploadArtifacts"`,
@@ -216,5 +216,7 @@ You should run the following authentication script:
 
 ```shell
 # change based on your GCP zone
+gcloud auth configure-docker ${GCP_ZONE}.pkg.dev
+# for example:
 gcloud auth configure-docker us-central2-docker.pkg.dev
 ```
