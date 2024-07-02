@@ -115,17 +115,19 @@ subnetwork: "default"
 EOF
 ```
 
+If you want to customize the docker image that is created and uploaded to GCP Artifact Registry, you can add config `image_name: "YOUR-DOCKER-NAME"`.
+
 Now run `launch.py`. This will package your current directory into a Docker image and run it on your workers. Everything after the `--` is run on each worker.
 
 ```bash
-python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ### Launch a GPT-2 Small in interactive mode
 
 To run in the foreground, use `--foreground` with the `launch.py` script. You should use tmux or something for long running jobs for this version. It's mostly for debugging.
 ```bash
-python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ### Babysitting Script
@@ -199,3 +201,22 @@ gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'sudo r
 
 **and then you have to ctrl-c this after about 10 seconds**. Otherwise, gcloud will think the command failed and will
 try again, and get stuck in a loop forever. (You can ctrl-c it at any point after 10 seconds.)
+
+### Docker-related Issues
+
+If you get a `permission denied` error with your `docker.sock`,
+you should be able to fix it by running the following script in the launching machine and then restarting your shell:
+
+```shell
+sudo usermod -aG docker $USER
+```
+
+If you get an error like `denied: Unauthenticated request. Unauthenticated requests do not have permission "artifactregistry.repositories.uploadArtifacts"`,
+You should run the following authentication script:
+
+```shell
+# change based on your GCP zone
+gcloud auth configure-docker ${GCP_ZONE}.pkg.dev
+# for example:
+gcloud auth configure-docker us-central2-docker.pkg.dev
+```
