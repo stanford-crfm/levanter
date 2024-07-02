@@ -78,6 +78,7 @@ class LlamaConfig(HFCompatConfig):
     use_bias: bool = False
     use_layer_norm_weight: bool = True
     rope_scaling: Optional[dict] = None
+    rope_theta: float = 10000.0
 
     reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
@@ -119,6 +120,7 @@ class LlamaConfig(HFCompatConfig):
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             rope_scaling=hf_config.rope_scaling,
+            rope_theta=hf_config.rope_theta,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
@@ -146,6 +148,7 @@ class LlamaConfig(HFCompatConfig):
             rms_norm_eps=self.layer_norm_epsilon,
             rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
+            rope_theta=self.rope_theta,
             **config_overrides,
         )
 
@@ -288,7 +291,10 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
         cos, sin = llama_rotary_pos_emb(
-            self.config.HeadSize, x.resolve_axis("position"), scale=self._rope_scale_factor()
+            self.config.HeadSize,
+            x.resolve_axis("position"),
+            scale=self._rope_scale_factor(),
+            theta=self.config.rope_theta,
         )
         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
@@ -606,11 +612,11 @@ def _apply_rotary_pos_emb(
 
 
 def llama_rotary_pos_emb(
-    HeadSize: Axis, Pos: Axis, base: float = 10000, scale: float = 1.0
+    HeadSize: Axis, Pos: Axis, theta: float = 10000, scale: float = 1.0
 ) -> Tuple[NamedArray, NamedArray]:
     with jax.ensure_compile_time_eval():
         HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
-        inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
+        inv_freq: NamedArray = 1.0 / (theta ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
 
         position_ids: NamedArray = hax.arange(Pos) / scale
 
