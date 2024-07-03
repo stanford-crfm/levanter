@@ -95,6 +95,7 @@ class GemmaConfig(HFCompatConfig):
 
     use_bias: bool = False
     rope_scaling: Optional[dict] = None
+    rope_theta: float = 10000.0
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
