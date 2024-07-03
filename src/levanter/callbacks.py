@@ -19,6 +19,7 @@ from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
 from levanter.trainer import StepInfo
+from levanter.utils import flop_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
@@ -123,33 +124,51 @@ def log_performance_stats(
             return f"{prefix}/{key}"
         return key
 
+    device_count = jax.device_count()
+    device = jax.devices()[0]
+
+    flops_per_device = flop_utils.device_hardware_flops(device)
+
+    if flops_per_device is not None:
+        theoretical_flops = flops_per_device * device_count
+
+        levanter.tracker.log_summary(
+            {
+                wrap_key("device_kind"): device.device_kind,
+                wrap_key("theoretical_flops_per_device"): flops_per_device,
+                wrap_key("theoretical_flops"): theoretical_flops,
+            }
+        )
+
+    if flops_per_example is not None:
+        levanter.tracker.log_summary({wrap_key("flops_per_example"): flops_per_example})
+
     def log_performance_stats(step_info: StepInfo):
+        dict_to_log = {}
 
         # log these totals because it's useful for comparing different seqlens, batch sizes, etc
         total_tokens = tokens_per_example * batch_size * step_info.step
-        levanter.tracker.log_metrics({wrap_key("total_tokens"): total_tokens}, step=step_info.step)
+        dict_to_log["total_tokens"] = total_tokens
 
         if flops_per_example:
             total_flops = flops_per_example * batch_size * step_info.step
-            levanter.tracker.log_metrics({wrap_key("total_gflops"): total_flops / 1e9}, step=step_info.step)
+            dict_to_log["total_gflops"] = total_flops / 1e9
 
         if step_info.step_duration != 0.0:
-            levanter.tracker.log_metrics(
-                {
-                    wrap_key("examples_per_second"): float(batch_size) / step_info.step_duration,
-                    wrap_key("tokens_per_second"): float(tokens_per_example) / step_info.step_duration * batch_size,
-                    wrap_key("duration"): step_info.step_duration,
-                },
-                step=step_info.step,
-            )
+            dict_to_log["examples_per_second"] = float(batch_size) / step_info.step_duration
+            dict_to_log["tokens_per_second"] = float(tokens_per_example) / step_info.step_duration * batch_size
+            dict_to_log["duration"] = step_info.step_duration
 
             if flops_per_example is not None:
-                levanter.tracker.log_metrics(
-                    {
-                        wrap_key("gflops_per_second"): flops_per_example / 1e9 / step_info.step_duration * batch_size,
-                    },
-                    step=step_info.step,
-                )
+                model_flops_instant = flops_per_example / step_info.step_duration * batch_size
+                dict_to_log["gflops_per_second"] = model_flops_instant / 1e9
+
+                if theoretical_flops is not None:
+                    mfu_instant = model_flops_instant / theoretical_flops * 100.0
+                    dict_to_log["mfu"] = mfu_instant
+
+        dict_to_log = {wrap_key(k): v for k, v in dict_to_log.items()}
+        levanter.tracker.log_metrics(dict_to_log, step=step_info.step)
 
     return log_performance_stats
 
