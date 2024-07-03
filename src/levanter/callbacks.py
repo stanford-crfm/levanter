@@ -163,7 +163,7 @@ def log_performance_stats(
                 model_flops_instant = flops_per_example / step_info.step_duration * batch_size
                 dict_to_log["gflops_per_second"] = model_flops_instant / 1e9
 
-                if theoretical_flops is not None:
+                if flops_per_device is not None:
                     mfu_instant = model_flops_instant / theoretical_flops * 100.0
                     dict_to_log["mfu"] = mfu_instant
 
