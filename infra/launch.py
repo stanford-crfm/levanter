@@ -123,7 +123,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     config = cli.load_config()
 
-    cli.add_arg(parser, config, ["--autodelete"], default=False, action="store_true")
+    cli.add_arg(
+        parser, config, ["--autodelete"], default=False, action="store_true", help="Delete TPU if it already exists."
+    )
     cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/rjpower/levanter:latest")
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
