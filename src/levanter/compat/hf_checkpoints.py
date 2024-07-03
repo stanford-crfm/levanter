@@ -776,7 +776,7 @@ def save_hf_checkpoint_callback(
     return cb
 
 
-def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True):
+def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=False):
     """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
     is_url_like = urlparse(model_name_or_path).scheme != ""
     if is_url_like:
