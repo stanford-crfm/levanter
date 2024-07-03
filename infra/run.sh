@@ -14,5 +14,3 @@ fi
 source $VENV/bin/activate
 
 PYTHONPATH=${LEV_ROOT}:${LEV_ROOT}/src:${LEV_ROOT}/examples:$PYTHONPATH "$@"
-
-export HF_HOME='trace/'
