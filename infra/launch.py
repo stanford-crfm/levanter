@@ -188,6 +188,18 @@ if __name__ == "__main__":
     if command[0] == "--":
         command = command[1:]
 
+    # make an image tag based on the unix timestamp to ensure we always pull the latest image
+    tag = int(time.time())
+
+    full_image_id = push_docker.push_to_gcp(
+        project_id=project,
+        region=region,
+        repository=docker_repository,
+        image_name=image_id,
+        tag=tag,
+        docker_file="docker/tpu/Dockerfile.incremental",
+    )
+
     for i in range(retries + 1):
         try:
             start_tpu_vm(
@@ -205,18 +217,6 @@ if __name__ == "__main__":
                 tpu_name=tpu_name,
                 zone=zone,
                 docker_base_image=docker_base_image,
-            )
-
-            # make an image tag based on the unix timestamp to ensure we always pull the latest image
-            tag = int(time.time())
-
-            full_image_id = push_docker.push_to_gcp(
-                project_id=project,
-                region=region,
-                repository=docker_repository,
-                image_name=image_id,
-                tag=tag,
-                docker_file="docker/tpu/Dockerfile.incremental",
             )
 
             git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
