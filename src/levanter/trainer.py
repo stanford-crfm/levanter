@@ -497,6 +497,9 @@ class Trainer:
 
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
+        # TODO: null learning for now
+        loss = 0*loss
+        grads = 0*grads
         # Sophia needs to be able to access the loss function in the optimizer
         def obj_fun(trainable_model):
             model = eqx.combine(trainable_model, state.model)
