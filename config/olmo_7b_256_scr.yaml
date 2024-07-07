@@ -17,6 +17,8 @@ trainer:
     auto_start_cluster: false
   checkpointer:
     keep:
+      - every: 1
+        until: 10
       - every: 25
         until: 100
       - every: 50
