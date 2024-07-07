@@ -442,7 +442,7 @@ def to_numpy_state_dict(model, prefix: Optional[str] = None) -> StateDict:
 
                 shardings = [None if i != axis_to_shard else "device" for i in range(len(arr.shape))]
                 sharding = NamedSharding(process_mesh, PartitionSpec(*shardings))
-                out = jax.jit(_identity_fn, out_shardings=sharding)(arr)
+                out = jax.device_put(arr, sharding)
                 return np.array(out)
 
         # need to make sure the model is on *this machine* and *this machine's CPU* before saving
