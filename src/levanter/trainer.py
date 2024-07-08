@@ -495,8 +495,6 @@ class Trainer:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
-        # and ignore grad steps?
-        loss = loss*0
 
         # Sophia needs to be able to access the loss function in the optimizer
         def obj_fun(trainable_model):
