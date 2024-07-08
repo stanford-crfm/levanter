@@ -169,6 +169,25 @@ def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = Tr
     return saveable_state  # type: ignore
 
 
+# def take_train_step(
+#     optimizer,
+#     model: M,
+#     opt_state,
+#     grads,
+#     *,
+#     obj_fun: Optional[Callable[[M], Scalar]] = None,
+#     is_trainable: FilterTree = True,
+# ) -> Tuple[M, OptState]:
+#     train_grads = trainables_only(grads, is_trainable)
+#     overwrites, train_grads = partition_for_grad_overwrite(train_grads)
+#     trainable_model = trainables_only(model, is_trainable)
+#     print(f"type of opt_state: {type(opt_state)}")
+#     opt_state.inner_state = jax.tree_util.tree_map(lambda x: x, opt_state.inner_state)
+#     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+#     model = apply_updates(model, updates, overwrites)
+
+#     return model, opt_state
+
 def take_train_step(
     optimizer,
     model: M,
@@ -182,6 +201,12 @@ def take_train_step(
     overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
     print(f"type of opt_state: {type(opt_state)}")
+    
+    # Zero out the inner state
+    opt_state = opt_state._replace(
+        inner_state=jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), opt_state.inner_state)
+    )
+    
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
     model = apply_updates(model, updates, overwrites)
 
