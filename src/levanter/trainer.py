@@ -500,7 +500,8 @@ class Trainer:
         # TODO: null learning for now
         # Zero out the loss and gradients to prevent learning
         loss = 0 * loss
-        grads = eqx.tree_util.tree_map(lambda x: 0 * x, grads)
+        zero_out = lambda leaf: 0 * leaf
+        grads = eqx.tree_at(lambda x: x, grads, replace_fn=zero_out)
 
         # Sophia needs to be able to access the loss function in the optimizer
         def obj_fun(trainable_model):
