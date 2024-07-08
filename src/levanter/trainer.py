@@ -494,8 +494,8 @@ class Trainer:
     def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
-        old_state = state
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
+        # and ignore grad steps?
         loss = loss *0
 
         # Sophia needs to be able to access the loss function in the optimizer
@@ -505,9 +505,9 @@ class Trainer:
                 model = self.mp.cast_to_compute(model)
                 return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
-        new_state = state.take_step(grads, obj_fun=obj_fun)
+       # new_state = state.take_step(grads, obj_fun=obj_fun)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)
-        return loss, old_state
+        return loss, new_state
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
