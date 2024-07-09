@@ -117,6 +117,14 @@ EOF
 
 If you want to customize the docker image that is created and uploaded to GCP Artifact Registry, you can add config `image_name: "YOUR-DOCKER-NAME"`.
 
+Note that you can also configure docker to push to GHCR by setting
+```
+docker_registry: ghcr
+github_user: <YOUR USERNAME>
+github_token: <YOUR TOKEN>
+```
+By default, the tpu instance won't be able to access the docker image, so you may need to make it public.
+
 Now run `launch.py`. This will package your current directory into a Docker image and run it on your workers. Everything after the `--` is run on each worker.
 
 ```bash
