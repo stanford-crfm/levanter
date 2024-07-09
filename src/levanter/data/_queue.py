@@ -12,9 +12,9 @@ import pyarrow as pa
 import ray
 from ray.actor import ActorHandle
 
-from levanter.data import BatchProcessor
-from levanter.data._preprocessor import as_record_batch
 from levanter.utils.ray_utils import RefBox
+
+from ._preprocessor import BatchProcessor, as_record_batch
 
 
 logger = pylogging.getLogger(__name__)

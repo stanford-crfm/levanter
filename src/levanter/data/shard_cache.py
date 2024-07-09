@@ -33,6 +33,7 @@ from .metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, Metri
 from .sharded_dataset import ShardedDataset
 
 
+G = TypeVar("G")
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 
@@ -783,21 +784,21 @@ class _ChunkCollator:
             return None
 
 
-class GroupRoundRobinBuffer(Generic[T]):
+class GroupRoundRobinBuffer(Generic[G, T]):
     """
     A buffer that holds items from multiple groups and returns them in a round-robin fashion.
     The groups need not have the same number of items. If a group is exhausted, it is removed from the rotation.
     """
 
-    def __init__(self, groups: Sequence[str]):
+    def __init__(self, groups: Sequence[G]):
         self.groups = groups
         self._current_group = 0
-        self.buffers: dict[str, list[tuple[int, T]]] = {group: [] for group in groups}
+        self.buffers: dict[G, list[tuple[int, T]]] = {group: [] for group in groups}
         self._remaining_groups = set(groups)
-        self._totals_written: dict[str, int] = {group: 0 for group in groups}
-        self._totals_expected: dict[str, Optional[int]] = {group: None for group in groups}
+        self._totals_written: dict[G, int] = {group: 0 for group in groups}
+        self._totals_expected: dict[G, Optional[int]] = {group: None for group in groups}
 
-    def append_to_group(self, group: str, item_serial: int, item: T):
+    def append_to_group(self, group: G, item_serial: int, item: T):
         if group not in self.groups:
             raise ValueError(f"Group {group} not in {self.groups}")
 
@@ -806,7 +807,7 @@ class GroupRoundRobinBuffer(Generic[T]):
 
         heapq.heappush(self.buffers[group], (item_serial, item))
 
-    def group_total_known(self, group: str, total: int):
+    def group_total_known(self, group: G, total: int):
         if group not in self.groups:
             raise ValueError(f"Group {group} not in {self.groups}")
 
@@ -896,7 +897,9 @@ class ChunkCacheBuilder:
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.broker_ref = broker_ref
-        self._current_round_robin: GroupRoundRobinBuffer[ChunkMetadata] = GroupRoundRobinBuffer(source.shard_names)
+        self._current_round_robin: GroupRoundRobinBuffer[str, ChunkMetadata] = GroupRoundRobinBuffer(
+            source.shard_names
+        )
         self._chunk_counts: dict[str, int] = {shard: 0 for shard in source.shard_names}
         self.source = source
         self._metrics = InProgressCacheMetrics()
