@@ -8,7 +8,7 @@ import threading
 import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import IO, Any, Callable, Dict, Generic, Iterable, Iterator, List, Optional, Sequence, TypeVar
+from typing import IO, Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, TypeVar
 
 import fsspec.core
 import pyarrow as pa
@@ -21,6 +21,7 @@ from ray.exceptions import GetTimeoutError
 
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
 from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
+from ._process_interleave import GroupRoundRobinBuffer, InProgressSequence
 from ._queue import (
     PriorityProcessorActor,
     PriorityWorkItem,
@@ -784,94 +785,7 @@ class _ChunkCollator:
             return None
 
 
-class GroupRoundRobinBuffer(Generic[G, T]):
-    """
-    A buffer that holds items from multiple groups and returns them in a round-robin fashion.
-    The groups need not have the same number of items. If a group is exhausted, it is removed from the rotation.
-    """
-
-    def __init__(self, groups: Sequence[G]):
-        self.groups = groups
-        self._current_group = 0
-        self.buffers: dict[G, list[tuple[int, T]]] = {group: [] for group in groups}
-        self._remaining_groups = set(groups)
-        self._totals_written: dict[G, int] = {group: 0 for group in groups}
-        self._totals_expected: dict[G, Optional[int]] = {group: None for group in groups}
-
-    def append_to_group(self, group: G, item_serial: int, item: T):
-        if group not in self.groups:
-            raise ValueError(f"Group {group} not in {self.groups}")
-
-        if group not in self._remaining_groups:
-            raise ValueError(f"Group {group} already finished")
-
-        heapq.heappush(self.buffers[group], (item_serial, item))
-
-    def group_total_known(self, group: G, total: int):
-        if group not in self.groups:
-            raise ValueError(f"Group {group} not in {self.groups}")
-
-        if group not in self._remaining_groups:
-            raise ValueError(f"Group {group} already finished: {total} vs {self._totals_expected[group]}")
-
-        self._totals_expected[group] = total
-
-        if self._totals_written[group] == total:
-            assert len(self.buffers[group]) == 0
-            self._remaining_groups.remove(group)
-
-    def is_finished(self):
-        return len(self._remaining_groups) == 0
-
-    def pop(self) -> Optional[T]:
-        group = self._next_group_to_read_from()
-        if group is None:
-            return None
-
-        if len(self.buffers[group]) == 0:
-            return None
-
-        cur_serial, item = self.buffers[group][0]
-
-        if cur_serial != self._totals_written[group]:
-            return None
-
-        heapq.heappop(self.buffers[group])
-
-        self._totals_written[group] += 1
-
-        if self._totals_written[group] == self._totals_expected[group]:
-            assert len(self.buffers[group]) == 0
-            assert group in self._remaining_groups
-            self._remaining_groups.remove(group)
-
-        self._current_group = (self._current_group + 1) % len(self.groups)
-
-        return item
-
-    def drain(self) -> list[T]:
-        items = []
-        while True:
-            item = self.pop()
-            if item is None:
-                break
-            items.append(item)
-
-        return items
-
-    def _next_group_to_read_from(self):
-        if len(self._remaining_groups) == 0:
-            return None
-
-        while True:
-            group = self.groups[self._current_group]
-            if group not in self._remaining_groups:
-                assert self._totals_written[group] == self._totals_expected[group]
-                assert len(self.buffers[group]) == 0
-                self._current_group = (self._current_group + 1) % len(self.groups)
-            else:
-                break
-        return group
+MAX_SHARDS_TO_READ_AT_ONCE = 32
 
 
 @ray.remote(num_cpus=0.5)  # keep this small b/c it doesn't do a lot
@@ -1037,9 +951,9 @@ class ChunkCacheBuilder:
 class ChunkCacheBroker:
     """Actor that manages the global order on chunks and vends chunk metadata to readers."""
 
-    chunks: List[ChunkMetadata]
-    _reader_promises: Dict[int, asyncio.Future[ChunkMetadata]]
-    _finished_promise: asyncio.Future[None]
+    _chunks: InProgressSequence[ChunkMetadata]
+    _latest_metrics: InProgressCacheMetrics
+    _metrics_condition: asyncio.Condition
 
     def __init__(
         self,
@@ -1050,17 +964,16 @@ class ChunkCacheBroker:
         cache_config: Optional[Dict[str, Any]],
     ):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
-        self.chunks = []
-        self._reader_promises = {}
+
+        self._chunks = InProgressSequence()
         self._is_finished = False
         self._source = source
         self._processor = processor
         self._cache_dir = cache_dir
-        self._rows_per_chunk = rows_per_chunk
-        self._finished_promise = asyncio.Future()
         # used to subscribe to metrics updates
         self._latest_metrics = InProgressCacheMetrics()
         self._metrics_condition = asyncio.Condition()
+
         self._cache_config = cache_config
         path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
         name = f"broker::{path_for_name}"
@@ -1070,25 +983,25 @@ class ChunkCacheBroker:
         # first see if we need to do anything: check the ledger for is_finished
         try:
             cache_ledger = _load_cache_ledger(self._cache_dir)
-            self._append_chunks(*cache_ledger.chunks)
-            self._is_finished = True
-            self._finished_promise.set_result(None)
         except FileNotFoundError:
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             # only use the last two components of the name since it gets kind of long
             name = f"builder::{path_for_name}"
-            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, self._rows_per_chunk)  # type: ignore
+            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, rows_per_chunk)  # type: ignore
+        else:
+            self._append_chunks(*cache_ledger.chunks)
+            self._finalize()
 
     def is_finished(self):
-        return self._is_finished
+        return self._chunks.is_finished()
 
     async def finished_sentinel(self):
-        await self._finished_promise
+        await self._chunks.finished_promise
 
     async def updated_metrics(self) -> InProgressCacheMetrics:
-        if self._finished_promise.done():
-            if self._finished_promise.exception() is not None:
-                raise self._finished_promise.exception()  # type: ignore
+        if self.is_finished():
+            if self._chunks.finished_promise.exception() is not None:
+                raise self._chunks.finished_promise.exception()  # type: ignore
             else:
                 return self._latest_metrics
 
@@ -1097,33 +1010,20 @@ class ChunkCacheBroker:
             return self._latest_metrics
 
     async def get_chunk(self, chunk_idx: int) -> Optional[ChunkMetadata]:
-        assert isinstance(self.chunks, list), self.chunks
-        if chunk_idx < len(self.chunks):
-            return self.chunks[chunk_idx]
-        elif self._is_finished:
+        try:
+            return await self._chunks.get(chunk_idx)
+        except IndexError:
             return None
-        elif self._finished_promise.exception() is not None:
-            raise self._finished_promise.exception()  # type: ignore
-        else:
-            if chunk_idx not in self._reader_promises:
-                self._reader_promises[chunk_idx] = asyncio.Future()
-            return await self._reader_promises[chunk_idx]
 
     async def final_chunk_count(self) -> Optional[int]:
-        if self._is_finished:
-            return len(self.chunks)
-        else:
-            return None
+        await self._chunks.finished_promise
+        return self._chunks.final_length()
 
     def _append_chunks(self, *chunks: ChunkMetadata):
         for chunk in chunks:
-            self.chunks.append(chunk)
-            chunk_idx = len(self.chunks) - 1
+            self._chunks.append(chunk)
+            chunk_idx = self._chunks.current_length()
             self.logger.debug(f"Received chunk {chunk_idx}")
-            if chunk_idx in self._reader_promises:
-                self.logger.debug(f"Resolving promise for chunk {chunk_idx}")
-                self._reader_promises[chunk_idx].set_result(chunk)
-                del self._reader_promises[chunk_idx]
 
     def _new_metrics(self, metrics):
         self._latest_metrics = metrics
@@ -1138,34 +1038,21 @@ class ChunkCacheBroker:
 
     def _writer_exception(self, shard_name, exc_info: ExceptionInfo):
         info = exc_info.restore()
-
         logger.exception(f"Writer task {shard_name} failed with exception", exc_info=info)
-        for future in self._reader_promises.values():
-            future.set_exception(info[1])
-
-        self._reader_promises = {}
-
-        self._finished_promise.set_exception(info[1])
+        self._chunks.set_exception(info[1])
         self._do_notify()
 
     def _finalize(self):
         logger.info(f"Finalizing cache {self._cache_dir}...")
         self._is_finished = True
-        for k, future in self._reader_promises.items():
-            future.set_result(None)
+        self._chunks.finalize()
+        assert self._chunks.is_finished()
 
         # write ledger
         _serialize_json_and_commit(
-            os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self.chunks, self._cache_config)
+            os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self._chunks.to_list(), self._cache_config)
         )
 
-        self._reader_promises = {}
-        # TODO: For some reason this crashes other actors with weird reference counting assertion errors.
-        # pretty sure it's a ray bug
-        # self._builder_actor = None
-        self._finished_promise.set_result(None)
-
-        # notify metrics subscribers
         self._do_notify()
 
 

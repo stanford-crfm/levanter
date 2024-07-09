@@ -273,6 +273,9 @@ class InProgressSequence(Generic[T]):
         if self._finished_length is not None and idx >= self._finished_length:
             raise IndexError("Index out of range")
 
+        if self._finished_promise.done() and self._finished_promise.exception():
+            return self._finished_promise
+
         if idx < len(self._buffer):
             promise = asyncio.Future()
             result = self._buffer[idx]
