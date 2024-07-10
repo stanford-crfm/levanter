@@ -126,28 +126,35 @@ def test_cache_recover_from_crash():
 
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
+        print("starting first", flush=True)
         with pytest.raises(_CustomException):
             build_or_load_cache(tmpdir, source, TestProcessor(), randomize_shards=True)
 
+        print("raised first", flush=True)
+
         # kill the broker actor so that we can test recovery
         ray.kill(_get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True), no_restart=True)
+        print("killed first", flush=True)
 
         source = CrashingShardSource(5)
         with pytest.raises(_CustomException):
             build_or_load_cache(tmpdir, source, TestProcessor(), randomize_shards=True)
 
         ray.kill(_get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True), no_restart=True)
+        print("killed second")
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
         reader1 = build_or_load_cache(
             tmpdir, source, TestProcessor(), batch_size=1, await_finished=True, randomize_shards=True
         )
+        print("Finished build1")
 
         # compare to the original with no crash
         reader2 = build_or_load_cache(
             tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True, randomize_shards=True
         )
+        print("made it past second build")
 
         assert list(reader1) == list(reader2)
         assert len(list(reader1)) == 40

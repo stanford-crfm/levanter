@@ -872,7 +872,6 @@ class ChunkCacheBuilder(SnitchRecipient):
         next_shard_in_group = self._active_shard_for_group[group] + 1
 
         if next_shard_in_group >= len(shard_group):
-            print(f"Group {group} finished")
             self.logger.debug(f"Group {group} finished")
             return
 
@@ -912,7 +911,6 @@ class ChunkCacheBuilder(SnitchRecipient):
             reader_actor = PriorityProcessorActor.options(  # type: ignore
                 name=priority_actor_name, get_if_exists=True
             ).remote()
-            print("Created actor", reader_actor)
 
             shard_readers.append(reader_actor)
         return shard_readers
@@ -955,7 +953,7 @@ class ChunkCacheBuilder(SnitchRecipient):
     def shard_finished(self, shard_name: str, expected_num_chunks: int):
         """Callback method for when a shard worker has finished."""
         with log_failures_to(self.broker_ref):
-            print(f"Shard {shard_name} finished")
+            logger.info(f"Shard {shard_name} finished")
             group_id = self._shard_name_to_group[shard_name]
             self._expected_chunk_totals[shard_name] = expected_num_chunks
 
@@ -966,9 +964,6 @@ class ChunkCacheBuilder(SnitchRecipient):
             self._attempt_to_flush_buffers()
             self._metrics.shards_finished += 1
             ray.get(self.broker_ref._new_metrics.remote(self._metrics))
-
-            print(f"Is the round robin finished? {self._current_round_robin.is_finished()}")
-            print(f"Remaining groups in round robin: {self._current_round_robin._remaining_groups}")
 
             # if there are no more active shards, we're done
             if self._current_round_robin.is_finished():
@@ -1047,6 +1042,7 @@ class ChunkCacheBroker(SnitchRecipient):
         # used to subscribe to metrics updates
         self._latest_metrics = InProgressCacheMetrics()
         self._metrics_condition = asyncio.Condition()
+        self._finished_sentinel: asyncio.Future[None] = asyncio.Future()
 
         self._cache_config = cache_config
         path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
@@ -1070,7 +1066,7 @@ class ChunkCacheBroker(SnitchRecipient):
         return self._chunks.is_finished()
 
     async def finished_sentinel(self):
-        await self._chunks.finished_promise
+        await self._finished_sentinel
 
     async def updated_metrics(self) -> InProgressCacheMetrics:
         if self.is_finished():
@@ -1120,6 +1116,7 @@ class ChunkCacheBroker(SnitchRecipient):
     def _writer_exception(self, shard_name, exc_info: ExceptionInfo):
         info = exc_info.restore()
         logger.exception(f"Writer task {shard_name} failed with exception", exc_info=info)
+        self._finished_sentinel.set_exception(info[1])
         self._chunks.set_exception(info[1])
         self._do_notify()
 
@@ -1128,6 +1125,7 @@ class ChunkCacheBroker(SnitchRecipient):
         self._is_finished = True
         self._chunks.finalize()
         assert self._chunks.is_finished()
+        self._finished_sentinel.set_result(None)
 
         # write ledger
         _serialize_json_and_commit(

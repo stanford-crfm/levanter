@@ -88,7 +88,9 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
     source = OneDocPerShardSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True)
+        build_or_load_cache(
+            f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True, randomize_shards=False
+        )
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=False)
 
         result = list(cache)
@@ -111,7 +113,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
 
     source = ShardsDataset([[b] for b in batches])
     with tempfile.TemporaryDirectory() as tmpdir:
-        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor())
+        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), randomize_shards=False)
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=True)
 
         result = list(cache)
@@ -148,7 +150,7 @@ def test_doc_cache_sharding():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         source = ShardsDataset(doc_shards)
-        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor())
+        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), randomize_shards=False)
 
         # must evenly divide num_shards
         num_shards_rebuild = [1, 2, 3, 4, 6, 12]
