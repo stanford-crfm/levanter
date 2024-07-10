@@ -76,6 +76,8 @@ def test_cache_simple():
         assert list(ray_ds) == list(simple_processed)
 
 
+# skip b/c ray segfaults in CI
+@pytest.mark.skip
 @pytest.mark.ray
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
