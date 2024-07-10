@@ -848,7 +848,7 @@ class ChunkCacheBuilder(SnitchRecipient):
                     self._shard_name_to_group[shard_name] = group_id
 
             self._chunk_counts_for_group = [0] * num_shard_groups
-            self._chunk_counts_for_shard: dict[str, int] = {}
+            self._chunk_counts_for_shard: dict[str, int] = {s: 0 for s in source.shard_names}
             self._active_shard_for_group = [-1] * num_shard_groups
             self._expected_chunk_totals: dict[str, int] = {}
 
