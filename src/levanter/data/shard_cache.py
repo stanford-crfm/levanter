@@ -51,6 +51,7 @@ logger = pylogging.getLogger(__name__)
 
 DEFAULT_ROWS_PER_CHUNK = 8192
 DEFAULT_MAX_BYTES_PER_BATCH = 256 * 1024 * 1024  # 256 MB, this is pre-preprocessing python object size
+DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE = 32
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -67,6 +68,7 @@ def build_or_load_cache(
     cache_config: Optional[Dict[str, Any]] = None,
     *,
     randomize_shards: bool = True,
+    shards_to_read_at_once: int = DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE,
 ) -> "ShardCache":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
@@ -106,6 +108,7 @@ def build_or_load_cache(
         rows_per_chunk=rows_per_chunk,
         cache_config=cache_config,
         randomize_shards=randomize_shards,
+        shards_to_read_at_once=shards_to_read_at_once,
     )
 
     if cache.is_finished:
@@ -784,9 +787,6 @@ class _ChunkCollator:
             return None
 
 
-MAX_SHARDS_TO_READ_AT_ONCE = 32
-
-
 @ray.remote(num_cpus=0.5)  # keep this small b/c it doesn't do a lot
 class ChunkCacheBuilder(SnitchRecipient):
     """
@@ -807,6 +807,7 @@ class ChunkCacheBuilder(SnitchRecipient):
         processor: BatchProcessor[T],
         rows_per_chunk: int,
         randomize_shards: bool,
+        shards_to_read_at_once: int,
     ):
         with log_failures_to(broker_ref):
             pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
@@ -826,12 +827,13 @@ class ChunkCacheBuilder(SnitchRecipient):
                 return
 
             self.logger.info(f"Starting cache build for {len(source.shard_names)} shards")
-            # we process shards in groups of MAX_SHARDS_TO_READ_AT_ONCE
+            # we process shards in groups of DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE
             # once one group is done, we move on to the next group
             # this is to avoid having too many open file handles at once (we have seen 30K shards)
             # once a shard group is finished, we start the next group
             num_shards = len(source.shard_names)
-            num_shard_groups = min(num_shards, MAX_SHARDS_TO_READ_AT_ONCE)
+            num_shard_groups = min(num_shards, shards_to_read_at_once)
+            print("num_shard_groups", num_shard_groups)
             self._num_groups = num_shard_groups
 
             # we do a permutation of the shard names (using a seed) to get a stable order and as a kind of poor man's shuffle
@@ -846,12 +848,13 @@ class ChunkCacheBuilder(SnitchRecipient):
                     self._shard_name_to_group[shard_name] = group_id
 
             self._chunk_counts_for_group = [0] * num_shard_groups
+            self._chunk_counts_for_shard: dict[str, int] = {}
             self._active_shard_for_group = [-1] * num_shard_groups
+            self._expected_chunk_totals: dict[str, int] = {}
 
             self._current_round_robin: GroupRoundRobinBuffer[int, ChunkMetadata] = GroupRoundRobinBuffer(
                 range(num_shard_groups)
             )
-            self._expected_chunk_totals: dict[str, int] = {}
 
             self._shard_readers = self._initialize_workers()
             # if we have a bunch of caches to build with one shard, we don't want them all
@@ -926,13 +929,14 @@ class ChunkCacheBuilder(SnitchRecipient):
                 count += 1
 
             self._chunk_counts_for_group[group_id] = count
+            self._chunk_counts_for_shard[shard_name] = self._chunk_counts_for_shard.get(shard_name, 0) + len(chunks)
 
             # if we have buffered chunks, we need to check if we can send them to the broker
             self._attempt_to_flush_buffers()
             self._update_metrics_for_new_chunks(chunks)
 
             if shard_name in self._expected_chunk_totals:
-                if count == self._expected_chunk_totals[shard_name]:
+                if self._chunk_counts_for_shard[shard_name] == self._expected_chunk_totals[shard_name]:
                     self._kick_off_next_shard_for_group(group_id)
                 elif count > self._expected_chunk_totals[shard_name]:
                     logger.error(f"Received more chunks than expected for {shard_name}")
@@ -964,6 +968,9 @@ class ChunkCacheBuilder(SnitchRecipient):
             self._attempt_to_flush_buffers()
             self._metrics.shards_finished += 1
             ray.get(self.broker_ref._new_metrics.remote(self._metrics))
+
+            if self._chunk_counts_for_shard[shard_name] == self._expected_chunk_totals[shard_name]:
+                self._kick_off_next_shard_for_group(group_id)
 
             # if there are no more active shards, we're done
             if self._current_round_robin.is_finished():
@@ -1031,6 +1038,7 @@ class ChunkCacheBroker(SnitchRecipient):
         rows_per_chunk: int,
         cache_config: Optional[Dict[str, Any]],
         randomize_shards: bool,
+        shards_to_read_at_once: int,
     ):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
 
@@ -1057,7 +1065,7 @@ class ChunkCacheBroker(SnitchRecipient):
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             # only use the last two components of the name since it gets kind of long
             name = f"builder::{path_for_name}"
-            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, rows_per_chunk, randomize_shards=randomize_shards)  # type: ignore
+            self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, rows_per_chunk, randomize_shards=randomize_shards, shards_to_read_at_once=shards_to_read_at_once)  # type: ignore
         else:
             self._append_chunks(*cache_ledger.chunks)
             self._finalize()
@@ -1136,7 +1144,14 @@ class ChunkCacheBroker(SnitchRecipient):
 
 
 def _get_broker_actor(
-    cache_dir, input_shards, processor, cache_config=None, rows_per_chunk=DEFAULT_ROWS_PER_CHUNK, *, randomize_shards
+    cache_dir,
+    input_shards,
+    processor,
+    cache_config=None,
+    rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
+    *,
+    randomize_shards,
+    shards_to_read_at_once,
 ):
     return ChunkCacheBroker.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
         # type: ignore
@@ -1146,6 +1161,7 @@ def _get_broker_actor(
         cache_config=cache_config,
         rows_per_chunk=rows_per_chunk,
         randomize_shards=randomize_shards,
+        shards_to_read_at_once=shards_to_read_at_once,
     )
 
 
@@ -1262,6 +1278,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
         rows_per_chunk: int,
         cache_config: Optional[Dict[str, Any]] = None,
         randomize_shards: bool = True,
+        shards_to_read_at_once: int = DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE,
     ):
         try:
             return ShardCache.load(cache_dir, batch_size)
@@ -1273,6 +1290,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 cache_config=cache_config,
                 rows_per_chunk=rows_per_chunk,
                 randomize_shards=randomize_shards,
+                shards_to_read_at_once=shards_to_read_at_once,
             )
             return ShardCache(cache_dir=cache_dir, batch_size=batch_size, ledger=None, _broker=broker)
 

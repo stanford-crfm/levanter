@@ -64,11 +64,17 @@ def simple_process(processor, source):
 
 
 @pytest.mark.ray
-def test_cache_simple():
+@pytest.mark.parametrize("shards_to_read_at_once", [1, 2, 4])
+def test_cache_simple(shards_to_read_at_once):
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
         ray_ds = build_or_load_cache(
-            tmpdir, SimpleShardSource(), TestProcessor(), randomize_shards=False, await_finished=True
+            tmpdir,
+            SimpleShardSource(),
+            TestProcessor(),
+            randomize_shards=False,
+            await_finished=True,
+            shards_to_read_at_once=shards_to_read_at_once,
         )
 
         simple_processed = simple_process(TestProcessor(), SimpleShardSource())
@@ -341,7 +347,6 @@ def test_serial_cache_writer():
         assert set(freeze_batch(batch) for batch in serial) == set(freeze_batch(batch) for batch in ray_ds)
 
 
-@pytest.mark.skip("Ray seems to segfault on this test?")
 @pytest.mark.ray
 def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -363,7 +368,6 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
-@pytest.mark.skip("Ray seems to segfault on this test?")
 @pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
