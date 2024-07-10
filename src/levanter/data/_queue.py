@@ -165,7 +165,7 @@ class PriorityProcessorActor:
         self._processing_thread = threading.Thread(target=self._loop, daemon=True)
         self._processing_thread.start()
 
-    def add_work_group(self, group: PriorityWorkTaskGroupSpec):
+    def assign_work(self, group: PriorityWorkTaskGroupSpec):
         items = group.build().items()
         with self._queue_lock:
             for item in items:

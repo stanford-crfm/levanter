@@ -13,47 +13,51 @@ T = TypeVar("T")
 # shards.permute().group(G).flatmap_interleaved(f, num_workers)  # produces an iterator over T
 
 
-def flatmap_interleaved(f, iterable, *, num_workers, ray_remote_args=None):
-    """Apply f to each element of iterable, returning an interleaved list of results.
+# TODO: can we work with this?
 
-    Args:
-        f: A function to apply to each element of iterable. Should return an iterator
-        iterable: An iterable of elements to apply f to.
-        num_workers: The number of workers to use.
-
-    Returns:
-        iterator over the results of applying f to each element of iterable, interleaving the results
-    """
-    iterable = list(enumerate(iterable))
-    # group the elements by worker
-    grouped = [iterable[i::num_workers] for i in range(num_workers)]
-
-    sink = RoundRobinSink.remote(range(len(iterable)))
-
-    results = [_compute_round_robin.options(**(ray_remote_args or {})).remote(f, group, sink) for group in grouped]
-    del results
-
-
-@ray.remote
-def _compute_round_robin(f, groups, sink):
-    serials = [0] * len(groups)
-    emitters = [(group_id, f(group)) for group_id, group in groups]
-    done_emitters = set()
-
-    while len(done_emitters) < len(groups):
-        for idx in range(len(groups)):
-            group_id, emitter = emitters[idx]
-            if group_id in done_emitters:
-                continue
-            item = next(emitter, None)
-            if item is None:
-                done_emitters.add(group_id)
-                emitters[idx] = (group_id, None)
-                del emitter
-                sink.group_total_known(group_id, serials[group_id])
-            else:
-                sink.append_to_group(group_id, serials[group_id], item)
-                serials[group_id] += 1
+# def flatmap_interleaved(f, iterable, *, num_workers, ray_remote_args=None):
+#     """Apply f to each element of iterable, returning an interleaved list of results.
+#
+#     Args:
+#         f: A function to apply to each element of iterable. Should return an iterator
+#         iterable: An iterable of elements to apply f to.
+#         num_workers: The number of workers to use.
+#
+#     Returns:
+#         iterator over the results of applying f to each element of iterable, interleaving the results
+#     """
+#     iterable = list(enumerate(iterable))
+#     # group the elements by worker
+#     grouped = [iterable[i::num_workers] for i in range(num_workers)]
+#
+#     sink = RoundRobinSink.remote(range(len(iterable)))
+#
+#     results = [_compute_round_robin.options(**(ray_remote_args or {})).remote(f, group, sink) for group in grouped]
+#     ray.get(results)
+#
+#     return sink._buffer.drain()
+#
+#
+# @ray.remote
+# def _compute_round_robin(f, groups, sink):
+#     serials = [0] * len(groups)
+#     emitters = [(group_id, f(group)) for group_id, group in groups]
+#     done_emitters = set()
+#
+#     while len(done_emitters) < len(groups):
+#         for idx in range(len(groups)):
+#             group_id, emitter = emitters[idx]
+#             if group_id in done_emitters:
+#                 continue
+#             item = next(emitter, None)
+#             if item is None:
+#                 done_emitters.add(group_id)
+#                 emitters[idx] = (group_id, None)
+#                 del emitter
+#                 sink.group_total_known(group_id, serials[group_id])
+#             else:
+#                 sink.append_to_group(group_id, serials[group_id], item)
+#                 serials[group_id] += 1
 
 
 @ray.remote
