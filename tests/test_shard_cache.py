@@ -76,8 +76,6 @@ def test_cache_simple():
         assert list(ray_ds) == list(simple_processed)
 
 
-# skip b/c ray segfaults in CI
-@pytest.mark.skip
 @pytest.mark.ray
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
@@ -364,6 +362,7 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
+@pytest.mark.skip("Ray seems to segfault on this test?")
 @pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
