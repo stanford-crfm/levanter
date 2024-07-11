@@ -22,8 +22,7 @@ from .utils import batched
 
 
 if TYPE_CHECKING:
-    from levanter.data.shard_cache import MetricsMonitor
-
+    from .metrics_monitor import MetricsMonitor
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)
@@ -70,6 +69,7 @@ class ShardedDataset(Dataset[T_co]):
         rows_per_chunk: Optional[int] = None,
         await_finished: bool = True,
         monitors: Optional[Sequence["MetricsMonitor"]] = None,
+        randomize_shards: bool = False,
     ) -> ShardableDataset[dict]:
         """
         Constructs a shard cache version of this dataset using Ray.
@@ -101,6 +101,7 @@ class ShardedDataset(Dataset[T_co]):
             rows_per_chunk=rows_per_chunk,
             await_finished=await_finished,
             monitors=monitors,
+            randomize_shards=randomize_shards,
         )
         return DictCacheDataset(cache)
 
