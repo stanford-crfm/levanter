@@ -17,6 +17,7 @@ def setup_module(module):
 
 
 def teardown_module(module):
+    print("Shutting down ray")
     ray.shutdown()
 
 

@@ -1133,13 +1133,12 @@ class ChunkCacheBroker(SnitchRecipient):
         self._chunks.finalize()
         assert self._chunks.is_finished()
         self._finished_sentinel.set_result(None)
+        self._do_notify()
 
         # write ledger
         _serialize_json_and_commit(
             os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self._chunks.to_list(), self._cache_config)
         )
-
-        self._do_notify()
 
 
 def _get_broker_actor(
@@ -1470,7 +1469,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
 
         self._metrics_monitors.append(monitor)
         if self._monitor_thread is None:
-            self._monitor_thread = threading.Thread(target=self._monitor_metrics)
+            self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
             self._monitor_thread.start()
 
     def _monitor_metrics(self):
