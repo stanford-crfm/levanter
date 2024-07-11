@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from levanter.newstore.jagged_array import JaggedArray, JaggedArrayBuilder
+from levanter.newstore.jagged_array import JaggedArray, JaggedArrayStore
 
 
 class TestJaggedArray:
@@ -74,10 +74,10 @@ class TestJaggedArray:
             jagged_array[::2]
 
 
-class TestJaggedArrayBuilder:
+class TestJaggedArrayStore:
     def test_append_and_get(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayBuilder.open(tmpdir, item_rank=2, dtype=jnp.float32)
+            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
 
             data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
             data2 = jnp.array([[5.0]])
@@ -98,7 +98,7 @@ class TestJaggedArrayBuilder:
 
     def test_extend_with_multiple(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayBuilder.open(tmpdir, item_rank=2, dtype=jnp.float32)
+            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
 
             data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
             data2 = jnp.array([[5.0]])
@@ -115,13 +115,13 @@ class TestJaggedArrayBuilder:
 
     def test_append_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayBuilder.open(tmpdir, item_rank=1, dtype=jnp.float32)
+            builder = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.float32)
             with pytest.raises(ValueError):
                 builder.append(jnp.array([[1.0, 2.0]]))
 
     def test_append_single_rank(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayBuilder.open(tmpdir, item_rank=1, dtype=jnp.float32)
+            builder = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.float32)
 
             data = jnp.array([1.0, 2.0, 3.0])
             builder.append(data)
@@ -133,7 +133,7 @@ class TestJaggedArrayBuilder:
 
     def test_append_multi_rank(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayBuilder.open(tmpdir, item_rank=2, dtype=jnp.float32)
+            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
 
             data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
             data2 = jnp.array([[5.0, 6.0], [7.0, 8.0]])
@@ -151,7 +151,7 @@ class TestJaggedArrayBuilder:
 
     def test_getitem_out_of_bounds(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayBuilder.open(tmpdir, item_rank=2, dtype=jnp.float32)
+            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
 
             data = jnp.array([[1.0, 2.0], [3.0, 4.0]])
             builder.append(data)
@@ -161,7 +161,7 @@ class TestJaggedArrayBuilder:
 
     def test_step_slicing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayBuilder.open(tmpdir, item_rank=2, dtype=jnp.float32)
+            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
 
             data = jnp.array([[1.0, 2.0], [3.0, 4.0]])
             builder.append(data)
@@ -174,10 +174,10 @@ async def create_builder_with_data(directory, num_sequences: int, sequence_lengt
     if isinstance(sequence_length, int):
         sequence_length = (sequence_length,)
 
-    """Helper function to create a JaggedArrayBuilder with specific data."""
+    """Helper function to create a JaggedArrayStore with specific data."""
     seed = jax.random.PRNGKey(num_sequences * math.prod(sequence_length))
 
-    builder = await JaggedArrayBuilder.open_async(directory, item_rank=len(sequence_length), dtype=jnp.int64)
+    builder = await JaggedArrayStore.open_async(directory, item_rank=len(sequence_length), dtype=jnp.int64)
     for i in range(num_sequences):
         key, seed = jax.random.split(seed)
         data = jax.random.randint(key, sequence_length, 0, 100)
@@ -186,14 +186,16 @@ async def create_builder_with_data(directory, num_sequences: int, sequence_lengt
     return builder
 
 
-def create_builder_with_data_sync(directory, num_sequences: int, sequence_length: int | tuple[int, ...]):
+def create_builder_with_data_sync(
+    directory, num_sequences: int, sequence_length: int | tuple[int, ...]
+) -> JaggedArrayStore:
     if isinstance(sequence_length, int):
         sequence_length = (sequence_length,)
 
-    """Helper function to create a JaggedArrayBuilder with specific data."""
+    """Helper function to create a JaggedArrayStore with specific data."""
     seed = jax.random.PRNGKey(num_sequences * math.prod(sequence_length))
 
-    builder = JaggedArrayBuilder.open(directory, item_rank=len(sequence_length), dtype=jnp.int64)
+    builder = JaggedArrayStore.open(directory, item_rank=len(sequence_length), dtype=jnp.int64)
     for i in range(num_sequences):
         key, seed = jax.random.split(seed)
         data = jax.random.randint(key, sequence_length, 0, 100)
