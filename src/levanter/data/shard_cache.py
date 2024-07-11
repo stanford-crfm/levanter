@@ -833,7 +833,6 @@ class ChunkCacheBuilder(SnitchRecipient):
             # once a shard group is finished, we start the next group
             num_shards = len(source.shard_names)
             num_shard_groups = min(num_shards, shards_to_read_at_once)
-            print("num_shard_groups", num_shard_groups)
             self._num_groups = num_shard_groups
 
             # we do a permutation of the shard names (using a seed) to get a stable order and as a kind of poor man's shuffle
