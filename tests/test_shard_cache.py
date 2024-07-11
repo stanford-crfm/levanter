@@ -136,18 +136,20 @@ def test_cache_recover_from_crash():
         with pytest.raises(_CustomException):
             build_or_load_cache(tmpdir, source, TestProcessor(), randomize_shards=True)
 
-        print("raised first", flush=True)
-
         # kill the broker actor so that we can test recovery
-        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True), no_restart=True)
-        print("killed first", flush=True)
+        ray.kill(
+            _get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True, shards_to_read_at_once=32),
+            no_restart=True,
+        )
 
         source = CrashingShardSource(5)
         with pytest.raises(_CustomException):
             build_or_load_cache(tmpdir, source, TestProcessor(), randomize_shards=True)
 
-        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True), no_restart=True)
-        print("killed second")
+        ray.kill(
+            _get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True, shards_to_read_at_once=32),
+            no_restart=True,
+        )
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
