@@ -116,5 +116,6 @@ test = [
     "pytest",
     "soundfile",
     "librosa",
-    "pytest-forked"
+    "pytest-forked",
+    "pytest-asyncio"
 ]

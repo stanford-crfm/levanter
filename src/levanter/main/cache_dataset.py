@@ -3,7 +3,8 @@ import os
 from dataclasses import dataclass, field
 
 import levanter
-from levanter.data.shard_cache import LoggingMetricsMonitor, RichMetricsMonitor, build_or_load_cache
+from levanter.data.metrics_monitor import LoggingMetricsMonitor, RichMetricsMonitor
+from levanter.data.shard_cache import build_or_load_cache
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logging

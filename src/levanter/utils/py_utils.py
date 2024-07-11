@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from dataclasses import dataclass
@@ -181,3 +182,9 @@ def actual_sizeof(obj):
                 need_to_see.extend(obj)
         objects = need_to_see
     return size
+
+
+def future_from_value(value):
+    future = asyncio.Future()
+    future.set_result(value)
+    return future

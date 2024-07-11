@@ -10,6 +10,7 @@ from levanter.data._preprocessor import BatchProcessor
 from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_or_load_cache
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.utils.py_utils import logical_cpu_core_count
+from test_utils import skip_in_ci
 
 
 def setup_module(module):
@@ -64,10 +65,18 @@ def simple_process(processor, source):
 
 
 @pytest.mark.ray
-def test_cache_simple():
+@pytest.mark.parametrize("shards_to_read_at_once", [1, 2, 4])
+def test_cache_simple(shards_to_read_at_once):
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
-        ray_ds = build_or_load_cache(tmpdir, SimpleShardSource(), TestProcessor())
+        ray_ds = build_or_load_cache(
+            tmpdir,
+            SimpleShardSource(),
+            TestProcessor(),
+            randomize_shards=False,
+            await_finished=True,
+            shards_to_read_at_once=shards_to_read_at_once,
+        )
 
         simple_processed = simple_process(TestProcessor(), SimpleShardSource())
 
@@ -104,6 +113,7 @@ class _CustomException(Exception):
 
 
 @pytest.mark.ray
+@skip_in_ci
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataset[List[int]]):
         def __init__(self, crash_point: int):
@@ -125,23 +135,33 @@ def test_cache_recover_from_crash():
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
         with pytest.raises(_CustomException):
-            build_or_load_cache(tmpdir, source, TestProcessor())
+            build_or_load_cache(tmpdir, source, TestProcessor(), randomize_shards=True)
 
         # kill the broker actor so that we can test recovery
-        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
+        ray.kill(
+            _get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True, shards_to_read_at_once=32),
+            no_restart=True,
+        )
 
         source = CrashingShardSource(5)
         with pytest.raises(_CustomException):
-            build_or_load_cache(tmpdir, source, TestProcessor())
+            build_or_load_cache(tmpdir, source, TestProcessor(), randomize_shards=True)
 
-        ray.kill(_get_broker_actor(tmpdir, source, TestProcessor()), no_restart=True)
+        ray.kill(
+            _get_broker_actor(tmpdir, source, TestProcessor(), randomize_shards=True, shards_to_read_at_once=32),
+            no_restart=True,
+        )
 
         # testing this doesn't throw
         source = CrashingShardSource(1000)
-        reader1 = build_or_load_cache(tmpdir, source, TestProcessor(), batch_size=1, await_finished=True)
+        reader1 = build_or_load_cache(
+            tmpdir, source, TestProcessor(), batch_size=1, await_finished=True, randomize_shards=True
+        )
 
         # compare to the original with no crash
-        reader2 = build_or_load_cache(tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True)
+        reader2 = build_or_load_cache(
+            tmpdir2, SimpleShardSource(), TestProcessor(), batch_size=1, await_finished=True, randomize_shards=True
+        )
 
         assert list(reader1) == list(reader2)
         assert len(list(reader1)) == 40
@@ -162,6 +182,7 @@ def test_no_hang_if_empty_shard_source():
         assert list(reader) == []
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_chunk_ordering_is_correct_with_slow_shards():
     class SlowShardSource(ShardedDataset[List[int]]):
@@ -176,13 +197,17 @@ def test_chunk_ordering_is_correct_with_slow_shards():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = build_or_load_cache(
-            tmpdir, SlowShardSource(), TestProcessor(1), batch_size=1, rows_per_chunk=10, await_finished=False
+            tmpdir,
+            SlowShardSource(),
+            TestProcessor(1),
+            batch_size=1,
+            rows_per_chunk=10,
+            await_finished=False,
+            randomize_shards=False,
         )
 
         # now block until the cache is done
-        print("at wait")
         cache.await_finished(timeout=10)
-        print("done waiting")
 
         # now check that the chunks are in the right order
         # TODO: this is a bit gross
@@ -199,9 +224,8 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         assert chunk is None
 
 
-# @pytest.mark.ray
-# disable b/c ray is segfaulting in CI
-@pytest.mark.skip
+@skip_in_ci
+@pytest.mark.ray
 def test_can_get_chunk_before_finished():
     @ray.remote(num_cpus=0)
     class Blocker:
@@ -255,6 +279,7 @@ def test_can_get_chunk_before_finished():
         cache.await_finished(timeout=10)
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
     class ThrowingProcessor(BatchProcessor[Sequence[int]]):
@@ -274,6 +299,7 @@ def test_shard_cache_crashes_if_processor_throws():
             build_or_load_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_map_batches_and_map_shard_cache():
     td = tempfile.TemporaryDirectory()
@@ -283,7 +309,7 @@ def test_map_batches_and_map_shard_cache():
             .map(lambda list: list * 2)
             .map_batches(TestProcessor(), 8)
             .map(lambda d: {"q": d["test"]})
-            .build_or_load_cache(tmpdir, await_finished=True)
+            .build_or_load_cache(tmpdir, await_finished=True, randomize_shards=False)
         )
 
         def composite_fn(list):
@@ -322,6 +348,7 @@ def test_serial_cache_writer():
         assert set(freeze_batch(batch) for batch in serial) == set(freeze_batch(batch) for batch in ray_ds)
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -343,6 +370,7 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
