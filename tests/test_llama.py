@@ -47,11 +47,13 @@ def test_llama_config():
 
 def test_llama_flops():
     # Check that the forward flops is within 10% of the naive calculation
-    hf_config = transformers.LlamaConfig.from_pretrained("huggyllama/llama-7b")
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
     llama_config = LlamaConfig.from_hf_config(hf_config)
-    n_params = 6.7e9
-    ratio = 2 * n_params / llama_config.flops_per_token(hf_config.vocab_size)
-    assert ratio > 0.85, f"ratio {ratio} < 0.9"
+    n_params = 6.738415616e9
+    ratio = llama_config.flops_per_token(hf_config.vocab_size) / (2 * n_params)
+    print(ratio)
+    assert ratio > 1.1, f"ratio {ratio} < 1.1"
+    assert ratio < 1.2, f"ratio {ratio} > 1.2"
 
 
 @skip_if_no_torch
