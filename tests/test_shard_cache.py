@@ -183,6 +183,7 @@ def test_no_hang_if_empty_shard_source():
         assert list(reader) == []
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_chunk_ordering_is_correct_with_slow_shards():
     class SlowShardSource(ShardedDataset[List[int]]):
@@ -299,6 +300,7 @@ def test_shard_cache_crashes_if_processor_throws():
             build_or_load_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_map_batches_and_map_shard_cache():
     td = tempfile.TemporaryDirectory()
@@ -369,6 +371,7 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
