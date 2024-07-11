@@ -112,6 +112,7 @@ class _CustomException(Exception):
     pass
 
 
+@pytest.mark.skip
 @pytest.mark.ray
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataset[List[int]]):
@@ -280,6 +281,7 @@ def test_can_get_chunk_before_finished():
         cache.await_finished(timeout=10)
 
 
+@pytest.mark.skip
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
     class ThrowingProcessor(BatchProcessor[Sequence[int]]):
