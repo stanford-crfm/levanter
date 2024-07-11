@@ -154,7 +154,7 @@ class TokenSeqDataset(ShardableDataset[np.ndarray]):
     @staticmethod
     def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
         # Maybe force the cache to be built ahead of time?
-        doc_cache = TokenizedDocumentCache.load(cache_dir, True)
+        doc_cache = TokenizedDocumentCache.load(cache_dir, flatten_docs=True)
         return TokenSeqDataset(doc_cache, seq_len, stride)
 
 
