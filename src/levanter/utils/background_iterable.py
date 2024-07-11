@@ -27,7 +27,7 @@ class BackgroundIterable(Iterable[Ex]):
         if self._stop_event.is_set():
             raise RuntimeError("Cannot iterate over a stopped BackgroundIterable")
 
-        q = queue.Queue(self.max_capacity)
+        q = queue.Queue(self.max_capacity or 0)
         thread = threading.Thread(target=self._fill_queue_with_batches, args=(q,))
         thread.daemon = True
         thread.start()
