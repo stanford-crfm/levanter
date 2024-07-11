@@ -15,11 +15,12 @@ def lm_flops_per_token(
     glu: bool,
 ):
     head_dim = hidden_dim / num_heads
-    mlp = 2 * (2 if glu else 3) * hidden_dim * intermediate_dim
+    mlp = 2 * (3 if glu else 2) * hidden_dim * intermediate_dim
     qkv_proj = 2 * hidden_dim * (num_heads * head_dim + 2 * num_kv_heads * head_dim)
     dense_proj = 2 * hidden_dim * hidden_dim
     # The following are across the whole sequence
-    key_query_logits = 2 * seq_len * (seq_len / 2) * num_heads * head_dim
+    # assume full attention map like megatron-lm
+    key_query_logits = 2 * seq_len**2 * num_heads * head_dim
     mask = 3 * seq_len * seq_len * num_heads
     mask_value = 2 * seq_len * seq_len * head_dim * num_heads
     seq_flops = key_query_logits + mask + mask_value
