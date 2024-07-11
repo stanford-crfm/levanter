@@ -9,7 +9,7 @@ from levanter.data.shard_cache import build_or_load_cache
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.data.text import TokenizedDocumentCache
 from levanter.utils.py_utils import logical_cpu_core_count
-from test_utils import IdentityProcessor, ShardsDataset, SingleShardDocumentSource
+from test_utils import IdentityProcessor, ShardsDataset, SingleShardDocumentSource, skip_in_ci
 
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -63,6 +63,7 @@ def test_index_no_files():
             pytest.fail("Should not have any chunks")
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_doc_cache_reproduces_data_one_batch_per_shard():
     def doc_i(i: int):
@@ -102,6 +103,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
             assert as_listed == docs[i]
 
 
+@skip_in_ci
 @pytest.mark.ray
 @pytest.mark.parametrize("batch_size", list([1, 2, 3, 8]))
 def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
@@ -137,6 +139,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
             assert found
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_doc_cache_sharding():
     def doc_i(i: int):

@@ -10,6 +10,7 @@ from levanter.data._preprocessor import BatchProcessor
 from levanter.data.shard_cache import ChunkMetadata, SerialCacheWriter, _get_broker_actor, build_or_load_cache
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.utils.py_utils import logical_cpu_core_count
+from test_utils import skip_in_ci
 
 
 def setup_module(module):
@@ -112,8 +113,8 @@ class _CustomException(Exception):
     pass
 
 
-@pytest.mark.skip
 @pytest.mark.ray
+@skip_in_ci
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataset[List[int]]):
         def __init__(self, crash_point: int):
@@ -167,7 +168,6 @@ def test_cache_recover_from_crash():
         assert len(list(reader1)) == 40
 
 
-@pytest.mark.skip
 @pytest.mark.ray
 def test_no_hang_if_empty_shard_source():
     class EmptyShardSource(ShardedDataset[List[int]]):
@@ -183,7 +183,6 @@ def test_no_hang_if_empty_shard_source():
         assert list(reader) == []
 
 
-@pytest.mark.skip
 @pytest.mark.ray
 def test_chunk_ordering_is_correct_with_slow_shards():
     class SlowShardSource(ShardedDataset[List[int]]):
@@ -225,9 +224,8 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         assert chunk is None
 
 
-# @pytest.mark.ray
-# disable b/c ray is segfaulting in CI
-@pytest.mark.skip
+@skip_in_ci
+@pytest.mark.ray
 def test_can_get_chunk_before_finished():
     @ray.remote(num_cpus=0)
     class Blocker:
@@ -281,7 +279,7 @@ def test_can_get_chunk_before_finished():
         cache.await_finished(timeout=10)
 
 
-@pytest.mark.skip
+@skip_in_ci
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
     class ThrowingProcessor(BatchProcessor[Sequence[int]]):
@@ -301,7 +299,6 @@ def test_shard_cache_crashes_if_processor_throws():
             build_or_load_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
 
 
-@pytest.mark.skip
 @pytest.mark.ray
 def test_map_batches_and_map_shard_cache():
     td = tempfile.TemporaryDirectory()
@@ -329,7 +326,6 @@ def test_map_batches_and_map_shard_cache():
         assert ray_entries == list(simple_processed)
 
 
-@pytest.mark.skip
 @pytest.mark.ray
 def test_serial_cache_writer():
     with tempfile.TemporaryDirectory() as tmpdir1, tempfile.TemporaryDirectory() as tmpdir2:
@@ -351,7 +347,7 @@ def test_serial_cache_writer():
         assert set(freeze_batch(batch) for batch in serial) == set(freeze_batch(batch) for batch in ray_ds)
 
 
-@pytest.mark.skip
+@skip_in_ci
 @pytest.mark.ray
 def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -373,7 +369,6 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
-@pytest.mark.skip
 @pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
