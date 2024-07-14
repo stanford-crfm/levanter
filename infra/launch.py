@@ -115,8 +115,8 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete
         f"--zone={zone}",
         "--quiet",
     ]
-    if capacity_type in ["preemptible", "best-effort"]:
-        command.append("--best-effort")
+    if capacity_type == "preemptible" or True:
+        command.append("--preemptible")
     elif capacity_type == "reserved":
         command.append("--reserved")
     elif capacity_type == "spot":
@@ -186,18 +186,47 @@ if __name__ == "__main__":
         default=None,
         choices=["preemptible", "spot", "reserved", "on-demand", "best-effort"],
     )
+    # Add a mutually exclusive group for the individual options
+    capacity_group = parser.add_mutually_exclusive_group()
+
     cli.add_arg(
-        parser,
+        capacity_group,
         config,
         ["--preemptible"],
-        required=False,
         action="store_const",
         const="preemptible",
         dest="capacity_type",
+        help="Use preemptible capacity"
     )
-    cli.add_arg(parser, config, ["--spot"], required=False, action="store_const", const="spot", dest="capacity_type")
+
     cli.add_arg(
-        parser, config, ["--reserved"], required=False, action="store_const", const="reserved", dest="capacity_type"
+        capacity_group,
+        config,
+        ["--spot"],
+        action="store_const",
+        const="spot",
+        dest="capacity_type",
+        help="Use spot capacity"
+    )
+
+    cli.add_arg(
+        capacity_group,
+        config,
+        ["--reserved"],
+        action="store_const",
+        const="reserved",
+        dest="capacity_type",
+        help="Use reserved capacity"
+    )
+
+    cli.add_arg(
+        capacity_group,
+        config,
+        ["--on-demand"],
+        action="store_const",
+        const="on-demand",
+        dest="capacity_type",
+        help="Use on-demand capacity"
     )
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
@@ -212,7 +241,11 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--github_token"], type=str)
 
     parser.add_argument(
-        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
+        "-e", "--env", 
+        action="append", 
+        nargs=2, 
+        metavar=("KEY", "VALUE"), 
+        default=list(config.get("env", {}).items())
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
