@@ -45,14 +45,17 @@ class Dataset(Protocol[T_co]):
 
 
 class AsyncDataset(abc.ABC, Generic[T_co]):
+    @abc.abstractmethod
     async def async_len(self) -> int:
         raise NotImplementedError
 
+    @abc.abstractmethod
     async def length_is_known(self) -> bool:
         """Returns whether the length of the dataset is known.
         If this returns False, the current_len of the dataset may change in the future."""
         raise NotImplementedError
 
+    @abc.abstractmethod
     def will_have_len(self) -> bool:
         """
         Returns whether the dataset will have a known length in the future (e.g. if it's being constructed).
@@ -60,6 +63,7 @@ class AsyncDataset(abc.ABC, Generic[T_co]):
         """
         raise NotImplementedError
 
+    @abc.abstractmethod
     async def current_len(self) -> Optional[int]:
         """
         Returns the current length of the dataset that won't require (expensive) waiting.
@@ -72,6 +76,7 @@ class AsyncDataset(abc.ABC, Generic[T_co]):
     async def async_getitem(self, index: int) -> T_co:
         return (await self.get_batch([index]))[0]
 
+    @abc.abstractmethod
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         raise NotImplementedError
 
@@ -192,9 +197,6 @@ class ListAsyncDataset(AsyncDataset[T]):
             while len(self.data) < length and not self.is_complete:
                 await self.length_updated.wait()
 
-        if self.is_complete:
-            return await self.current_len()
-
         return len(self.data)
 
 
@@ -288,7 +290,7 @@ class EraShufflingDataset(AsyncDataset[T_co]):
         return self.dataset.will_have_len()
 
     async def current_len(self) -> Optional[int]:
-        # nb this is the no-wait length, which means we might be a bit behind the actual length
+        # nb this is the no-wait length, which means we might be a bit behind the length of the inner dataset
         inner_current_len = await self.dataset.current_len()
         if inner_current_len is None:
             return None

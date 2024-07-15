@@ -127,16 +127,21 @@ async def test_era_shuffling_can_grow():
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(coro2, timeout=0.1)
 
+    assert await shuffling_dataset.current_len() == 15
+
     coro2 = shuffling_dataset.wait_until_len_at_least(20)
     dataset.append(15)
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(coro2, timeout=0.1)
+
+    assert await shuffling_dataset.current_len() == 15
 
     coro2 = shuffling_dataset.wait_until_len_at_least(20)
     dataset.finalize()
     await asyncio.wait_for(coro2, timeout=0.1)
 
     assert await dataset.async_len() == 16
+    assert await shuffling_dataset.current_len() == 16
 
     coro = shuffling_dataset.get_batch(list(range(16)))
 
