@@ -3,7 +3,7 @@ import functools
 from jax import random as jrandom
 
 from levanter.newdata.core import Sampler
-from levanter.newdata.prp import PseudoRandomPermutation
+from levanter.newdata.prp import Permutation
 
 
 # TODO: figure out "stateless shuffle buffer"
@@ -28,9 +28,9 @@ class PermutationSampler(Sampler):
         self.allow_epochs = allow_epochs
 
         @functools.lru_cache(maxsize=4)  # we're mostly going to be going sequentially, so even 4 is overkill
-        def gen_epoch_permutation(epoch: int) -> PseudoRandomPermutation:
+        def gen_epoch_permutation(epoch: int) -> Permutation:
             mix_key = jrandom.fold_in(key, epoch)
-            return PseudoRandomPermutation(length, mix_key)
+            return Permutation(length, mix_key)
 
         self.gen_epoch_permutation = gen_epoch_permutation
 
@@ -69,9 +69,9 @@ class EraPermutationSampler(Sampler):
         self.key = key
 
         @functools.lru_cache(maxsize=4)  # we're mostly going to be going sequentially
-        def gen_era_permutation(era: int) -> PseudoRandomPermutation:
+        def gen_era_permutation(era: int) -> Permutation:
             mix_key = jrandom.fold_in(key, era)
-            return PseudoRandomPermutation(era_length, mix_key)
+            return Permutation(era_length, mix_key)
 
         self.gen_era_permutation = gen_era_permutation
 
