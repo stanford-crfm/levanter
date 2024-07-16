@@ -56,7 +56,7 @@ class AsyncDataset(abc.ABC, Generic[T_co]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def will_have_len(self) -> bool:
+    def is_finite(self) -> bool:
         """
         Returns whether the dataset will have a known length in the future (e.g. if it's being constructed).
         If this returns False, the length of the dataset is infinite or unknowable.
@@ -108,7 +108,7 @@ class WrappedAsyncDataset(AsyncDataset[T_co]):
     async def length_is_known(self) -> bool:
         return self.dataset.has_len()
 
-    def will_have_len(self) -> bool:
+    def is_finite(self) -> bool:
         return self.dataset.has_len()
 
     async def current_len(self) -> Optional[int]:
@@ -166,7 +166,7 @@ class ListAsyncDataset(AsyncDataset[T]):
     async def length_is_known(self) -> bool:
         return self.is_complete
 
-    def will_have_len(self) -> bool:
+    def is_finite(self) -> bool:
         return True
 
     async def current_len(self) -> Optional[int]:
@@ -211,7 +211,7 @@ class PermutationDataset(AsyncDataset[T_co]):
     async def from_dataset(
         dataset: AsyncDataset[T_co] | Dataset[T_co], key: jax.random.PRNGKey
     ) -> "PermutationDataset[T_co]":
-        if isinstance(dataset, AsyncDataset) and not dataset.will_have_len():
+        if isinstance(dataset, AsyncDataset) and not dataset.is_finite():
             raise ValueError("PermutationDataset requires a dataset with an (eventual) known length")
 
         dataset = dataset if isinstance(dataset, AsyncDataset) else WrappedAsyncDataset(dataset)
@@ -224,8 +224,8 @@ class PermutationDataset(AsyncDataset[T_co]):
     async def length_is_known(self) -> bool:
         return await self.dataset.length_is_known()
 
-    def will_have_len(self) -> bool:
-        return self.dataset.will_have_len()
+    def is_finite(self) -> bool:
+        return self.dataset.is_finite()
 
     async def current_len(self) -> Optional[int]:
         return await self.dataset.current_len()
@@ -286,8 +286,8 @@ class EraShufflingDataset(AsyncDataset[T_co]):
     async def length_is_known(self) -> bool:
         return await self.dataset.length_is_known()
 
-    def will_have_len(self) -> bool:
-        return self.dataset.will_have_len()
+    def is_finite(self) -> bool:
+        return self.dataset.is_finite()
 
     async def current_len(self) -> Optional[int]:
         # nb this is the no-wait length, which means we might be a bit behind the length of the inner dataset

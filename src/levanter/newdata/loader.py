@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Iterable, Iterator, Optional, TypeVar
 
@@ -10,11 +11,9 @@ from haliax import is_named_array
 from haliax.partitioning import ResourceMapping
 
 from levanter.data.loader import _stack_tree
-from levanter.newdata.dataset import Dataset
+from levanter.newdata.dataset import AsyncDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
-
-from .core import Sampler
 
 
 Ex = TypeVar("Ex")
@@ -27,8 +26,7 @@ class DataLoader(Iterable[Ex]):
     def __init__(
         self,
         Batch: hax.Axis,
-        data_store: Dataset[Ex],
-        sampler: Sampler,
+        data_store: AsyncDataset[Ex],
         max_buffered_items: Optional[int],
         mesh: Mesh,
         axis_resources: Optional[ResourceMapping],
@@ -43,9 +41,14 @@ class DataLoader(Iterable[Ex]):
         self.max_capacity = max_buffered_items
         self.axis_resources = axis_resources
         self.data_store = data_store
-        self.sampler = sampler
         self.mesh = mesh
         self.Batch = Batch
+
+        async def _exemplar_shape():
+            x = await self.data_store.async_getitem(0)
+            return _abstractify(x)
+
+        self._exemplar_future = asyncio.create_task(_exemplar_shape())
 
     @property
     def batch_size(self):
@@ -63,9 +66,6 @@ class DataLoaderIterator(Iterator[Ex]):
         self.dl = data_loader
         self._start_from_batch = start_from_batch
 
-        self._exemplar = _abstractify(self.dl.data_store[0])
-        self._exemplar_leaves, self._exemplar_shape = jax.tree.flatten(self._exemplar, is_leaf=is_named_array)
-
         if self.dl.max_capacity is not None and self.dl.max_capacity >= 0:
             self._batches = self._produce_batches()
         else:
@@ -74,13 +74,15 @@ class DataLoaderIterator(Iterator[Ex]):
     def __next__(self):
         return next(self._batches)
 
-    def _produce_batches(self):
+    async def _produce_batches(self):
+        _ex_leaves, _ex_structure = jax.tree_flatten(await self.dl._exemplar_future)
+
         batch_number = self._start_from_batch or 0
         total_ex_loaded = 0
         while True:
-            if self.dl.sampler.has_known_len():
-                if total_ex_loaded + self.dl.batch_size >= len(self.dl.sampler):
-                    break
+            if self.dl.data_store.is_finite():
+                # wait until we're sure we have enough
+                await self.dl.data_store.wait_until_len_at_least((batch_number + 1) * self.dl.batch_size)
 
             batch = self._produce_batch(batch_number)
             batch_number += 1
@@ -88,8 +90,8 @@ class DataLoaderIterator(Iterator[Ex]):
 
             total_ex_loaded += self.dl.batch_size
 
-    def _produce_batch(self, batch_number: int):
-        indices = [self.dl.sampler(batch_number * self.dl.batch_size + i) for i in range(self.dl.batch_size)]
+    async def _produce_batch(self, batch_number):
+        indices = range(batch_number * self.dl.batch_size, batch_number + 1, self.dl.batch_size)
 
         # (begin, end) -> leaf index -> stacked array
         stacked_local_batch: dict[tuple[int, int], list[Array | hax.NamedArray]] = {}
