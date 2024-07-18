@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from levanter.utils.background_iterable import AsyncBackgroundIterable, BackgroundIterable
+from levanter.utils.background_iterable import BackgroundIterable
 
 
 def test_reentrancy():
@@ -73,13 +73,13 @@ async def test_async_reentrancy():
             yield i
             await asyncio.sleep(0.01)
 
-    background_iterable = AsyncBackgroundIterable(async_producer, max_capacity=10)
+    background_iterable = BackgroundIterable(async_producer, max_capacity=10)
 
-    iter1 = background_iterable.__aiter__()
-    iter2 = background_iterable.__aiter__()
+    iter1 = iter(background_iterable)
+    iter2 = iter(background_iterable)
 
-    data1 = [item async for item in iter1]
-    data2 = [item async for item in iter2]
+    data1 = [item for item in iter1]
+    data2 = [item for item in iter2]
 
     assert data1 == data2
     assert data1 == list(range(1, 101))
@@ -91,9 +91,9 @@ async def test_async_empty_iteration():
         if False:
             yield
 
-    background_iterable = AsyncBackgroundIterable(async_producer, max_capacity=10)
+    background_iterable = BackgroundIterable(async_producer, max_capacity=10)
 
-    data = [item async for item in background_iterable]
+    data = list(background_iterable)
 
     assert data == []
 
@@ -102,12 +102,12 @@ async def test_async_empty_iteration():
 async def test_async_exception_handling():
     async def async_producer_with_exception():
         raise ValueError("Something went wrong!")
-        yield 0
+        yield 0  # have to make sure it's an async coroutine
 
-    background_iterable = AsyncBackgroundIterable(async_producer_with_exception, max_capacity=10)
+    background_iterable = BackgroundIterable(async_producer_with_exception, max_capacity=10)
 
     with pytest.raises(ValueError):
-        async for _ in background_iterable:
+        for _ in background_iterable:
             pass
 
 
@@ -118,15 +118,15 @@ async def test_async_stop_event():
             for item in range(1, 101):
                 yield item
 
-    background_iterable = AsyncBackgroundIterable(ongoing_async_process, max_capacity=10)
+    background_iterable = BackgroundIterable(ongoing_async_process, max_capacity=10)
 
-    iter1 = background_iterable.__aiter__()
+    iter1 = iter(background_iterable)
 
     for _ in range(5):
-        await iter1.__anext__()
+        next(iter1)
 
     iter1.stop()
 
-    with pytest.raises(StopAsyncIteration):
-        await iter1.__anext__()
-        await iter1.__anext__()
+    with pytest.raises(StopIteration):
+        await next(iter1)
+        await next(iter1)

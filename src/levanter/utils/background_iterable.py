@@ -2,7 +2,7 @@ import asyncio
 import queue
 import sys
 import threading
-from typing import AsyncIterator, Callable, Generic, Iterable, Iterator, Optional, TypeVar
+from typing import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Optional, TypeVar, Union
 
 import tblib
 
@@ -19,20 +19,25 @@ class BackgroundIterable(Iterable[Ex]):
     like running XLA kernels...
     """
 
-    def __init__(self, producer_fn: Callable[[], Iterator[Ex]], max_capacity: Optional[int] = None):
+    def __init__(
+        self,
+        producer_fn: Callable[[], Union[Iterator[Ex], Awaitable[AsyncIterator[Ex]]]],
+        max_capacity: Optional[int] = None,
+    ):
         self.max_capacity = max_capacity
         self._producer_fn = producer_fn
 
-    def __iter__(self) -> "BackgroundIterator[Ex]":
+    def __iter__(self):
         return BackgroundIterator(self._producer_fn, self.max_capacity)
 
 
 class BackgroundIterator(Iterator[Ex]):
-    def __init__(self, producer_fn: Callable[[], Iterator[Ex]], max_capacity: Optional[int]):
+    def __init__(self, producer_fn: Callable[[], Union[Iterator[Ex], AsyncIterator[Ex]]], max_capacity: Optional[int]):
         self.max_capacity = max_capacity
         self._producer_fn = producer_fn
         self._stop_event = threading.Event()
-        self.q: queue.Queue[Ex | "_ExceptionWrapper"] = queue.Queue(self.max_capacity or 0)
+        self.q: queue.Queue = queue.Queue(self.max_capacity or 0)
+        self.loop = asyncio.get_event_loop()
         self.thread = threading.Thread(target=self._fill_queue_with_batches)
         self.thread.daemon = True
         self.thread.start()
@@ -59,7 +64,17 @@ class BackgroundIterator(Iterator[Ex]):
 
     def _fill_queue_with_batches(self):
         try:
-            for batch in self._producer_fn():
+            iterator = self._producer_fn()
+            if isinstance(iterator, Iterator):
+                self._produce_batches_sync(iterator)
+            else:
+                asyncio.run(self._produce_batches_async(iterator))
+        except Exception:
+            self.q.put(_ExceptionWrapper(sys.exc_info()))
+
+    def _produce_batches_sync(self, iterator):
+        try:
+            for batch in iterator:
                 while not self._stop_event.is_set():
                     try:
                         self.q.put(batch, block=True, timeout=1)
@@ -79,64 +94,9 @@ class BackgroundIterator(Iterator[Ex]):
         except Exception:
             self.q.put(_ExceptionWrapper(sys.exc_info()))
 
-
-class AsyncBackgroundIterable(Generic[Ex]):
-    """
-    A wrapper around an asynchronous iterable that runs the iterable in a background thread and fills a queue with the results.
-
-    This allows the iterable to be consumed in a separate thread, and for the results to be consumed in the main thread.
-    This will only work particularly well if the main thread is doing some kind of IO or other blocking operation,
-    like running XLA kernels...
-    """
-
-    def __init__(self, producer_fn: Callable[[], AsyncIterator[Ex]], max_capacity: Optional[int] = None):
-        self.max_capacity = max_capacity
-        self._producer_fn = producer_fn
-
-    def __aiter__(self) -> "AsyncBackgroundIterator[Ex]":
-        return AsyncBackgroundIterator(self._producer_fn, self.max_capacity)
-
-
-class AsyncBackgroundIterator(AsyncIterator[Ex]):
-    def __init__(self, producer_fn: Callable[[], AsyncIterator[Ex]], max_capacity: Optional[int]):
-        self.max_capacity = max_capacity
-        self._producer_fn = producer_fn
-        self._stop_event = threading.Event()
-        self.q: queue.Queue[Ex | "_ExceptionWrapper"] = queue.Queue(self.max_capacity or 0)
-        self.loop = asyncio.get_event_loop()
-        self.thread = threading.Thread(target=self._fill_queue_with_batches_async)
-        self.thread.daemon = True
-        self.thread.start()
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        while not self._stop_event.is_set():
-            batch = await self.loop.run_in_executor(None, self.q.get)
-            if batch is _SENTINEL:
-                raise StopAsyncIteration
-            elif isinstance(batch, _ExceptionWrapper):
-                batch.reraise()
-            return batch
-
-        raise StopAsyncIteration
-
-    def __del__(self):
-        self.stop()
-
-    def stop(self):
-        self._stop_event.set()
-
-    def _fill_queue_with_batches_async(self):
+    async def _produce_batches_async(self, iterator):
         try:
-            asyncio.run(self._produce_batches_async())
-        except Exception:
-            self.q.put(_ExceptionWrapper(sys.exc_info()))
-
-    async def _produce_batches_async(self):
-        try:
-            async for batch in self._producer_fn():
+            async for batch in iterator:
                 while not self._stop_event.is_set():
                     try:
                         self.q.put(batch, block=True, timeout=1)
