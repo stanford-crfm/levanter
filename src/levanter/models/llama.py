@@ -53,6 +53,7 @@ class LlamaConfig(HFCompatConfig):
             Note that num_heads must be divisible by this number. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
+        z_loss_weight (float, optional): weight for the z-loss. Defaults to 0.0, no z-loss.
     """
 
     seq_len: int = 2048
@@ -64,6 +65,7 @@ class LlamaConfig(HFCompatConfig):
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
+    z_loss_weight: float = 0.0
 
     # Attention-related config
     upcast_attn: bool = False
@@ -121,6 +123,7 @@ class LlamaConfig(HFCompatConfig):
             layer_norm_epsilon=hf_config.rms_norm_eps,
             rope_scaling=hf_config.rope_scaling,
             rope_theta=hf_config.rope_theta,
+            z_loss_weight=0.0, # z loss is not present in HF config
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
@@ -555,6 +558,7 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
         lm_logits = self.lm_head(x, key=k_head)
         return lm_logits
+
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
         new_Vocab = self.Vocab.resize(new_size)

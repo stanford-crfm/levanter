@@ -11,7 +11,7 @@ from haliax import Axis, NamedArray
 from haliax.nn import cross_entropy_loss
 
 from levanter.models.attention import AttentionMask
-
+from levanter.models.loss import cross_entropy_and_logsumexp_penalty
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
@@ -131,9 +131,12 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         logits = logits.astype(jnp.float32)
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
-        loss = cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        )
+        if hasattr(self.config, "z_loss_weight") and self.config.z_loss_weight > 0:
+            loss = cross_entropy_and_logsumexp_penalty(logits, self.Vocab, target_y, logsumexp_weight=self.config.z_loss_weight)
+        else:
+            loss = cross_entropy_loss(
+                logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            )
 
         return loss
 
