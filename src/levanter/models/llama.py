@@ -123,7 +123,7 @@ class LlamaConfig(HFCompatConfig):
             layer_norm_epsilon=hf_config.rms_norm_eps,
             rope_scaling=hf_config.rope_scaling,
             rope_theta=hf_config.rope_theta,
-            z_loss_weight=0.0, # z loss is not present in HF config
+            z_loss_weight=0.0,  # z loss is not present in HF config
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
@@ -558,7 +558,6 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
         lm_logits = self.lm_head(x, key=k_head)
         return lm_logits
-
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
         new_Vocab = self.Vocab.resize(new_size)

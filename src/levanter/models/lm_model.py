@@ -9,9 +9,11 @@ from jax.random import PRNGKey
 import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.nn import cross_entropy_loss
+from haliax.nn.loss import maybe_reduce_loss
 
 from levanter.models.attention import AttentionMask
 from levanter.models.loss import cross_entropy_and_logsumexp_penalty
+
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
@@ -132,12 +134,40 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         if hasattr(self.config, "z_loss_weight") and self.config.z_loss_weight > 0:
-            loss = cross_entropy_and_logsumexp_penalty(logits, self.Vocab, target_y, logsumexp_weight=self.config.z_loss_weight)
+            loss = cross_entropy_and_logsumexp_penalty(
+                logits, self.Vocab, target_y, logsumexp_weight=self.config.z_loss_weight
+            )
         else:
             loss = cross_entropy_loss(
                 logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
             )
 
+        return loss
+
+    def compute_z_loss(
+        self,
+        example: LmExample,
+        z_loss_weight,
+        *,
+        key=None,
+        reduction: Optional[hax.ReductionFunction] = hax.mean,
+        reduction_axis: Optional[hax.AxisSelection] = None,
+    ) -> jnp.ndarray | NamedArray:
+        """
+        Computes the cross-entropy loss for a language modeling example with z_loss.
+        If reduction is not None, the loss is reduced
+        across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
+        reduced, and the result is a named array with axes (*batch axes, sequence_length).
+        """
+        logits = self(example.tokens, example.attn_mask, key=key)
+        # TODO: would be nice if we made the dtype configurable
+        logits = logits.astype(jnp.float32)
+        targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
+        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
+        loss = cross_entropy_and_logsumexp_penalty(
+            logits, self.Vocab, target_y, logsumexp_weight=self.config.z_loss_weight
+        )
+        loss = maybe_reduce_loss(loss, reduction=reduction, reduction_axis=reduction_axis, where=example.loss_mask)
         return loss
 
     @property

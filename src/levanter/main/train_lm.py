@@ -8,7 +8,7 @@ from typing import Optional, Union
 import jax.random as jrandom
 
 import haliax as hax
-from haliax import Axis
+from haliax import Axis, Scalar
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
@@ -19,10 +19,27 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
+from levanter.types import ComputeLossFunction, M, X
 from levanter.utils.jax_utils import parameter_count
 
 
 logger = logging.getLogger(__name__)
+
+
+class ModuleComputeZLoss(ComputeLossFunction[M, X]):
+    """
+    Loss that just delegates to the model's compute_z_loss method.
+    """
+
+    def __call__(
+        self,
+        model,
+        *inputs: X,
+        reduction: Optional[hax.ReductionFunction] = hax.mean,
+        reduction_axis: Optional[hax.AxisSelection] = None,
+        **kwargs,
+    ) -> Scalar | hax.NamedArray:
+        return model.compute_z_loss(*inputs, reduction=reduction, reduction_axis=reduction_axis, **kwargs)
 
 
 @dataclass
@@ -48,6 +65,7 @@ class TrainLmConfig:
 
     update_hessian_steps: int = 10
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
+    z_loss_weight: float = 0.0
 
 
 def main(config: TrainLmConfig):
@@ -82,11 +100,18 @@ def main(config: TrainLmConfig):
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
+    loss_fn: Optional[ComputeLossFunction] = None
+
+    if config.z_loss_weight > 0:
+        loss_fn = ModuleComputeZLoss()
+    else:
+        loss_fn = None  # It will be automatically set to the default loss function in the model
+
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn) as trainer:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
