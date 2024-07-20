@@ -108,7 +108,7 @@ zone: us-west4-a
 tpu_name: test-spin-up-32
 tpu_type: "v5litepod-16"
 vm_image: "tpu-ubuntu2204-base"
-preemptible: true
+capacity_type: "preemptible"
 autodelete: false
 subnetwork: "default"
 
