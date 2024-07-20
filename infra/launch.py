@@ -186,47 +186,21 @@ if __name__ == "__main__":
         default=None,
         choices=["preemptible", "spot", "reserved", "on-demand", "best-effort"],
     )
-    # Add a mutually exclusive group for the individual options
-    capacity_group = parser.add_mutually_exclusive_group()
-
+        cli.add_arg(
+        parser, config, ["--capacity_type"], default=None, choices=["preemptible", "spot", "reserved", "on-demand"]
+    )
     cli.add_arg(
-        capacity_group,
+        parser,
         config,
         ["--preemptible"],
+        required=False,
         action="store_const",
         const="preemptible",
         dest="capacity_type",
-        help="Use preemptible capacity"
     )
-
+    cli.add_arg(parser, config, ["--spot"], required=False, action="store_const", const="spot", dest="capacity_type")
     cli.add_arg(
-        capacity_group,
-        config,
-        ["--spot"],
-        action="store_const",
-        const="spot",
-        dest="capacity_type",
-        help="Use spot capacity"
-    )
-
-    cli.add_arg(
-        capacity_group,
-        config,
-        ["--reserved"],
-        action="store_const",
-        const="reserved",
-        dest="capacity_type",
-        help="Use reserved capacity"
-    )
-
-    cli.add_arg(
-        capacity_group,
-        config,
-        ["--on-demand"],
-        action="store_const",
-        const="on-demand",
-        dest="capacity_type",
-        help="Use on-demand capacity"
+        parser, config, ["--reserved"], required=False, action="store_const", const="reserved", dest="capacity_type"
     )
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
