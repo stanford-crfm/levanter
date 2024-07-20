@@ -158,11 +158,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--github_token"], type=str)
 
     parser.add_argument(
-        "-e", "--env", 
-        action="append", 
-        nargs=2, 
-        metavar=("KEY", "VALUE"), 
-        default=list(config.get("env", {}).items())
+        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
