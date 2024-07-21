@@ -36,10 +36,12 @@ fi
 # spin loop until we get a good error code
 echo "Creating VM $VM_NAME"
 # create the command. note that --preemptible doesn't accept a value, so just append it if we want it
-CMD="$GCLOUD_CMD tpus tpu-vm create $VM_NAME \
-  --zone=$ZONE \
-  --accelerator-type=$TYPE \
-  --version=$VM_IMAGE"
+CMD="$GCLOUD_CMD tpus queued-resources create $VM_NAME \
+ --node-id=$VM_NAME \
+ --zone=$ZONE \
+ --accelerator-type=$TYPE \
+ --runtime-version=$VM_IMAGE \
+"
 
 # if network isn't 'default', set it
 if [ "$NETWORK" != "default" ]; then
@@ -47,13 +49,16 @@ if [ "$NETWORK" != "default" ]; then
 fi
 
 if [ "$PREEMPTIBLE" = true ]; then
-  CMD="$CMD --preemptible"
+ CMD="$CMD --preemptible"
 fi
 echo "Running command: $CMD"
 
-while ! $CMD; do
-  echo "Error creating VM, retrying in 5 seconds"
-  sleep 5
+CHECK="gcloud alpha compute tpus queued-resources list --zone us-central2-b | grep -q WAITING_FOR_RESOURCES"
+
+while bash -c "$CHECK"; do
+    gcloud alpha compute tpus queued-resources list --zone us-central2-b
+    echo "Giving the VM a few seconds to start up"
+    sleep 60
 done
 
 echo "Giving the VM a few seconds to start up"
