@@ -77,7 +77,7 @@ def describe_tpu(tpu_name, zone):
         return None
 
 
-def start_tpu_vm(tpu_name, *, tpu_type, preemptible, version, zone, autodelete, node_count):
+def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete, node_count):
     tpu_stat = describe_tpu(tpu_name, zone)
     if tpu_stat is not None:
         if tpu_stat["state"]["state"] == "SUSPENDED":
@@ -116,7 +116,7 @@ def start_tpu_vm(tpu_name, *, tpu_type, preemptible, version, zone, autodelete, 
         "--quiet",
     ]
     if capacity_type == "preemptible":
-        command.append("--preemptible")
+        command.append("--best-effort")
     elif capacity_type == "reserved":
         command.append("--reserved")
     elif capacity_type == "spot":
@@ -207,7 +207,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--github_token"], type=str)
 
     parser.add_argument(
-        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
+        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=config.get("env", {}).items()
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
@@ -334,3 +334,21 @@ if __name__ == "__main__":
             print("Error running command.")
             if i < retries - 1:
                 print("Retrying... %d/%d" % (i + 1, retries))
+        else:
+            print("Job finished with no error.")
+            if autodelete:
+                print("Autodelete is set to True. Tear down machine...")
+                cli.run_command(
+                    "gcloud",
+                    "alpha",
+                    "compute",
+                    "tpus",
+                    "queued-resources",
+                    "delete",
+                    tpu_name,
+                    "--quiet",
+                    f"--zone={zone}",
+                    "--force",
+                )
+
+            break

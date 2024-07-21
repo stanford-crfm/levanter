@@ -32,7 +32,7 @@ def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
     add_ssh_key(os.path.expanduser("~/.ssh/google_compute_engine"))
     try:
         if node_count > 1:
-            return _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure)
+            return _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=ignore_failure)
 
         return run_command(
             "gcloud",
@@ -72,7 +72,7 @@ def _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=False)
         processes.append(p)
     for p in processes:
         if p.wait() != 0:
-            raise subprocess.CalledProcessError(p.returncode)
+            raise subprocess.CalledProcessError(p.returncode, cmd=" ".join(args))
 
 
 # Oddly enough, there's no API to simply fetch the current gcloud configuration...
