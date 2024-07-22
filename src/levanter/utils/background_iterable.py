@@ -2,7 +2,7 @@ import asyncio
 import queue
 import sys
 import threading
-from typing import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Optional, TypeVar, Union
+from typing import AsyncIterator, Callable, Iterable, Iterator, Optional, TypeVar, Union
 
 import tblib
 
@@ -21,7 +21,7 @@ class BackgroundIterable(Iterable[Ex]):
 
     def __init__(
         self,
-        producer_fn: Callable[[], Union[Iterator[Ex], Awaitable[AsyncIterator[Ex]]]],
+        producer_fn: Callable[[], Union[Iterator[Ex], AsyncIterator[Ex]]],
         max_capacity: Optional[int] = None,
     ):
         self.max_capacity = max_capacity

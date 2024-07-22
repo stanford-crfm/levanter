@@ -1,6 +1,6 @@
 import abc
 import asyncio
-from typing import Generic, Optional, Protocol, Sequence, TypeVar
+from typing import Generic, Optional, Sequence, TypeVar
 
 import jax.random
 import numpy as np
@@ -13,14 +13,15 @@ T_co = TypeVar("T_co", covariant=True)
 T = TypeVar("T")
 
 
-class Dataset(Protocol[T_co]):
+class Dataset(abc.ABC, Generic[T_co]):
+    @abc.abstractmethod
     def __len__(self) -> int:
         """
         Returns the final length of the data store.
         May raise if the length is not known.
         """
-        pass
 
+    @abc.abstractmethod
     def has_len(self) -> bool:
         """
         Whether the data store currently has a known length. If this returns False, then the length of the data store
@@ -28,6 +29,7 @@ class Dataset(Protocol[T_co]):
         """
         pass
 
+    @abc.abstractmethod
     def current_len(self) -> Optional[int]:
         """
         Returns the current length of the data store. If the length is infinite or not known, returns None.
@@ -37,6 +39,7 @@ class Dataset(Protocol[T_co]):
     def __getitem__(self, index: int) -> T_co:
         return self.get_batch([index])[0]
 
+    @abc.abstractmethod
     def get_batch(self, indices: Sequence[int] | np.ndarray) -> Sequence[T_co]:
         pass
 
@@ -144,6 +147,9 @@ class SequenceDataset(Dataset[T_co]):
 
     def __getitem__(self, idx: int) -> T_co:
         return self.data[idx]
+
+    def get_batch(self, indices: Sequence[int] | np.ndarray) -> Sequence[T_co]:
+        return [self.data[i] for i in indices]
 
 
 class ListAsyncDataset(AsyncDataset[T]):
