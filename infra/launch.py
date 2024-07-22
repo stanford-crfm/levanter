@@ -247,14 +247,25 @@ if __name__ == "__main__":
     # make an image tag based on the unix timestamp to ensure we always pull the latest image
     tag = int(time.time())
 
-    full_image_id = push_docker.push_to_gcp(
-        project_id=project,
-        region=region,
-        repository=docker_repository,
-        image_name=image_id,
-        tag=tag,
-        docker_file="docker/tpu/Dockerfile.incremental",
-    )
+    if registry == "ghcr":
+        full_image_id = push_docker.push_to_github(
+            local_image=image_id,
+            tag=tag,
+            github_user=github_user,
+            github_token=github_token,
+            docker_file="docker/tpu/Dockerfile.incremental",
+        )
+    elif registry == "gcp":
+        full_image_id = push_docker.push_to_gcp(
+            project_id=project,
+            region=region,
+            repository=docker_repository,
+            image_name=image_id,
+            tag=tag,
+            docker_file="docker/tpu/Dockerfile.incremental",
+        )
+    else:
+        raise ValueError(f"Unknown docker registry: {args.docker_registry}")
 
     for i in range(retries + 1):
         try:
@@ -276,29 +287,6 @@ if __name__ == "__main__":
                 node_count=node_count,
                 docker_base_image=docker_base_image,
             )
-
-            # make an image tag based on the unix timestamp to ensure we always pull the latest image
-            tag = int(time.time())
-
-            if registry == "ghcr":
-                full_image_id = push_docker.push_to_github(
-                    local_image=image_id,
-                    tag=tag,
-                    github_user=github_user,
-                    github_token=github_token,
-                    docker_file="docker/tpu/Dockerfile.incremental",
-                )
-            elif registry == "gcp":
-                full_image_id = push_docker.push_to_gcp(
-                    project_id=project,
-                    region=region,
-                    repository=docker_repository,
-                    image_name=image_id,
-                    tag=tag,
-                    docker_file="docker/tpu/Dockerfile.incremental",
-                )
-            else:
-                raise ValueError(f"Unknown docker registry: {args.docker_registry}")
 
             git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
 
