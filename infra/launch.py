@@ -336,19 +336,19 @@ if __name__ == "__main__":
                 print("Retrying... %d/%d" % (i + 1, retries))
         else:
             print("Job finished with no error.")
-            if autodelete:
-                print("Autodelete is set to True. Tear down machine...")
-                cli.run_command(
-                    "gcloud",
-                    "alpha",
-                    "compute",
-                    "tpus",
-                    "queued-resources",
-                    "delete",
-                    tpu_name,
-                    "--quiet",
-                    f"--zone={zone}",
-                    "--force",
-                )
-
             break
+
+    if autodelete:
+        print("Autodelete is set to True. Tear down machine...")
+        cli.run_command(
+            "gcloud",
+            "alpha",
+            "compute",
+            "tpus",
+            "queued-resources",
+            "delete",
+            tpu_name,
+            "--quiet",
+            f"--zone={zone}",
+            "--force",
+        )
