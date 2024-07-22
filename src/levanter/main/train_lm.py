@@ -158,7 +158,12 @@ def main(config: TrainLmConfig):
                 max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
             cb = levanter.eval.cb_tagged_lm_evaluate(
-                EvalBatch, causal_datasets, trainer.device_mesh, compute_axis_mapping, max_eval_examples_per_ds
+                EvalBatch,
+                causal_datasets,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                mp=config.trainer.mp,
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
@@ -196,7 +201,6 @@ def main(config: TrainLmConfig):
         # )
         #
         # data loader. may need to seek to the right place if we're resuming
-
 
         train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 

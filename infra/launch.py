@@ -123,7 +123,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     config = cli.load_config()
 
-    cli.add_arg(parser, config, ["--autodelete"], default=False, action="store_true")
+    cli.add_arg(
+        parser, config, ["--autodelete"], default=False, action="store_true", help="Delete TPU if it already exists."
+    )
     cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/rjpower/levanter:latest")
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
@@ -151,9 +153,12 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--zone"], required=True)
     cli.add_arg(parser, config, ["--retries"], default=0, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=_default_run_id(), type=str)
+    cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
+    cli.add_arg(parser, config, ["--github_user"], type=str)
+    cli.add_arg(parser, config, ["--github_token"], type=str)
 
     parser.add_argument(
-        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=config.get("env", {}).items()
+        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
@@ -176,6 +181,9 @@ if __name__ == "__main__":
     version = args.version
     zone = args.zone
     run_id = args.run_id
+    registry = args.docker_registry
+    github_user = args.github_user
+    github_token = args.github_token
 
     region = "-".join(zone.split("-")[:-1])
     env = {k: v for k, v in args.env}
@@ -185,6 +193,18 @@ if __name__ == "__main__":
 
     if command[0] == "--":
         command = command[1:]
+
+    # make an image tag based on the unix timestamp to ensure we always pull the latest image
+    tag = int(time.time())
+
+    full_image_id = push_docker.push_to_gcp(
+        project_id=project,
+        region=region,
+        repository=docker_repository,
+        image_name=image_id,
+        tag=tag,
+        docker_file="docker/tpu/Dockerfile.incremental",
+    )
 
     for i in range(retries + 1):
         try:
@@ -208,14 +228,25 @@ if __name__ == "__main__":
             # make an image tag based on the unix timestamp to ensure we always pull the latest image
             tag = int(time.time())
 
-            full_image_id = push_docker.push_to_gcp(
-                project_id=project,
-                region=region,
-                repository=docker_repository,
-                image_name=image_id,
-                tag=tag,
-                docker_file="docker/tpu/Dockerfile.incremental",
-            )
+            if registry == "ghcr":
+                full_image_id = push_docker.push_to_github(
+                    local_image=image_id,
+                    tag=tag,
+                    github_user=github_user,
+                    github_token=github_token,
+                    docker_file="docker/tpu/Dockerfile.incremental",
+                )
+            elif registry == "gcp":
+                full_image_id = push_docker.push_to_gcp(
+                    project_id=project,
+                    region=region,
+                    repository=docker_repository,
+                    image_name=image_id,
+                    tag=tag,
+                    docker_file="docker/tpu/Dockerfile.incremental",
+                )
+            else:
+                raise ValueError(f"Unknown docker registry: {args.docker_registry}")
 
             git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
 
