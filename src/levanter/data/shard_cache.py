@@ -55,6 +55,7 @@ DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE = 32
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+LEVEL_TO_LOG = pylogging.DEBUG
 
 
 def build_or_load_cache(
@@ -541,7 +542,7 @@ class _ShardStatus:
 class _GroupShardWriterWorker:
     def __init__(self, parent_ref, cache_dir: str, shard_names: Sequence[str]):
         with log_failures_to(parent_ref):
-            pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
+            pylogging.basicConfig(level=LEVEL_TO_LOG, format=LOG_FORMAT)
             self.cache_dir = cache_dir
             self.shard_names = shard_names
             self.shard_writers: dict[str, _ShardWriterWorker] = {
@@ -615,7 +616,7 @@ class _ShardWriterWorker:  # type: ignore
         cache_dir: str,
         shard_name: str,
     ):
-        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
+        pylogging.basicConfig(level=LEVEL_TO_LOG, format=LOG_FORMAT)
         self.parent_ref = parent_ref
         self.cache_dir = cache_dir
         self.shard_name = shard_name
@@ -810,7 +811,7 @@ class ChunkCacheBuilder(SnitchRecipient):
         shards_to_read_at_once: int,
     ):
         with log_failures_to(broker_ref):
-            pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
+            pylogging.basicConfig(level=LEVEL_TO_LOG, format=LOG_FORMAT)
             self.name = name
             self.logger = pylogging.getLogger(f"{__name__}.{name}")
             self.broker_ref = broker_ref
@@ -911,7 +912,7 @@ class ChunkCacheBuilder(SnitchRecipient):
         for worker_id in range(num_workers):
             priority_actor_name = f"priority_processor.{worker_id}"
             reader_actor = PriorityProcessorActor.options(  # type: ignore
-                name=priority_actor_name, get_if_exists=True
+                name=priority_actor_name, get_if_exists=True, lifetime="detached"
             ).remote()
 
             shard_readers.append(reader_actor)
@@ -988,27 +989,13 @@ class ChunkCacheBuilder(SnitchRecipient):
 
     def shard_failed(self, shard_name: str, error: ExceptionInfo):
         """Callback method for when a shard worker has failed."""
-        ray.get(self.broker_ref._writer_exception.remote(shard_name, error))
+        self.broker_ref._writer_exception.remote(shard_name, error)
 
     def other_failed(self, error: ExceptionInfo):
         """Callback method for when a shard worker has failed."""
-        ray.get(self.broker_ref._writer_exception.remote(None, error))
+        self.broker_ref._writer_exception.remote(None, error)
 
     def _attempt_to_flush_buffers(self):
-        # this is the most complex logic in this class.
-        # The global order on chunks is defined as a roundrobin over shards, until one shard is done.
-        # After that, that shard is removed from the roundrobin and the process continues.
-        # Roundrobin order is determined by self.source.shard_names
-
-        # We are happy to release chunks that form a prefix of the global order so that they can be read.
-        # To do that, we maintain the roundrobin order in self._current_round_robin
-        # and we maintain the current buffer for each shard in self.shard_status.
-        # When we get a new chunk, we append it to the buffer for that shard.
-        # When we get a finished message, we mark that shard as finished.
-        # In either case, we check if we can send any chunks from the front of the roundrobin.
-        # If we can, we send them to the broker
-
-        # here "finished" means that the shard has sent all of its chunks and has told us that it's done.
         chunks_to_send = self._current_round_robin.drain()
         if len(chunks_to_send) > 0:
             ray.get(self.broker_ref._append_chunks.remote(*chunks_to_send))
@@ -1017,8 +1004,8 @@ class ChunkCacheBuilder(SnitchRecipient):
         self._metrics.is_finished = True
         ray.get(self.broker_ref._new_metrics.remote(self._metrics))
         ray.get(self.broker_ref._finalize.remote())
-        self._shard_writers = []
-        self._shard_readers = []
+        # self._shard_writers = []
+        # self._shard_readers = []
 
 
 @ray.remote(num_cpus=0)
@@ -1039,7 +1026,7 @@ class ChunkCacheBroker(SnitchRecipient):
         randomize_shards: bool,
         shards_to_read_at_once: int,
     ):
-        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
+        pylogging.basicConfig(level=LEVEL_TO_LOG, format=LOG_FORMAT)
 
         self._chunks = InProgressSequence()
         self._is_finished = False
@@ -1070,10 +1057,10 @@ class ChunkCacheBroker(SnitchRecipient):
             self._finalize()
 
     def is_finished(self):
-        return self._chunks.is_finished()
+        return self._is_finished
 
     async def finished_sentinel(self):
-        await self._finished_sentinel
+        return await self._finished_sentinel
 
     async def updated_metrics(self) -> InProgressCacheMetrics:
         if self.is_finished():
@@ -1123,7 +1110,9 @@ class ChunkCacheBroker(SnitchRecipient):
     def _writer_exception(self, shard_name, exc_info: ExceptionInfo):
         info = exc_info.restore()
         logger.exception(f"Writer task {shard_name} failed with exception", exc_info=info)
-        self._finished_sentinel.set_exception(info[1])
+        # only set exception if it's not already set
+        if not self._finished_sentinel.done():
+            self._finished_sentinel.set_exception(info[1])
         self._chunks.set_exception(info[1])
         self._do_notify()
 
@@ -1132,13 +1121,19 @@ class ChunkCacheBroker(SnitchRecipient):
         self._is_finished = True
         self._chunks.finalize()
         assert self._chunks.is_finished()
-        self._finished_sentinel.set_result(None)
-        self._do_notify()
 
         # write ledger
         _serialize_json_and_commit(
             os.path.join(self._cache_dir, LEDGER_FILE_NAME), CacheLedger(self._chunks.to_list(), self._cache_config)
         )
+
+        if not self._finished_sentinel.done():
+            self._finished_sentinel.set_result(None)
+        else:
+            logger.error("Finished sentinel already set")
+        self._do_notify()
+
+
 
 
 def _get_broker_actor(
@@ -1151,7 +1146,8 @@ def _get_broker_actor(
     randomize_shards,
     shards_to_read_at_once,
 ):
-    return ChunkCacheBroker.options(name="lev_cache_manager::" + cache_dir, get_if_exists=True).remote(
+    return ChunkCacheBroker.options(name="lev_cache_manager::" + cache_dir.replace("/","--"), get_if_exists=True,
+                                    lifetime="detached").remote(
         # type: ignore
         cache_dir=cache_dir,
         source=input_shards,
@@ -1459,7 +1455,11 @@ class ShardCache(Iterable[pa.RecordBatch]):
             yield batch
 
     def await_finished(self, timeout: Optional[float] = None):
-        return ray.get(self.finished_sentinel(), timeout=timeout)
+        sent = self.finished_sentinel()
+        try:
+            ray.get(sent, timeout=timeout)
+        except TimeoutError:
+            raise TimeoutError("Timeout while waiting for cache to finish")
 
     def attach_metrics_monitor(self, monitor: MetricsMonitor):
         if self._broker is None:
@@ -1467,10 +1467,10 @@ class ShardCache(Iterable[pa.RecordBatch]):
             # maybe get the final metrics?
             return
 
-        self._metrics_monitors.append(monitor)
-        if self._monitor_thread is None:
-            self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
-            self._monitor_thread.start()
+        # self._metrics_monitors.append(monitor)
+        # if self._monitor_thread is None:
+        #     self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
+        #     self._monitor_thread.start()
 
     def _monitor_metrics(self):
         while True:
