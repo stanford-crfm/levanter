@@ -1103,7 +1103,6 @@ class ChunkCacheBroker(SnitchRecipient):
             self_ref = ray.runtime_context.get_runtime_context().current_actor
             # only use the last two components of the name since it gets kind of long
             name = f"builder::{path_for_name}"
-            # self._builder_actor = ChunkCacheBuilder.remote(self_ref, self._cache_dir, name, self._source, self._processor, self._rows_per_chunk)  # type: ignore
             self._builder_actor = ChunkCacheBuilder.remote(  # type: ignore
                 self_ref,
                 self._cache_dir,
