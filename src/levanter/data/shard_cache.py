@@ -28,8 +28,6 @@ from ..utils.ray_utils import (
     ser_exc_info,
 )
 from ._preprocessor import BatchProcessor, BatchResult, as_record_batch, dict_from_record_batch
-
-# from ._process_interleave import GroupRoundRobinBuffer, InProgressSequence
 from ._queue import (
     PriorityProcessorActor,
     PriorityWorkItem,
@@ -67,9 +65,6 @@ def build_or_load_cache(
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     cache_config: Optional[Dict[str, Any]] = None,
-    *,
-    randomize_shards: bool = True,
-    shards_to_read_at_once: int = DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE,
 ) -> "ShardCache":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
@@ -108,8 +103,6 @@ def build_or_load_cache(
         batch_size=batch_size,
         rows_per_chunk=rows_per_chunk,
         cache_config=cache_config,
-        randomize_shards=randomize_shards,
-        shards_to_read_at_once=shards_to_read_at_once,
     )
 
     if cache.is_finished:
@@ -819,8 +812,6 @@ class ChunkCacheBuilder(SnitchRecipient):
         source: ShardedDataset[T],
         processor: BatchProcessor[T],
         rows_per_chunk: int,
-        randomize_shards: bool,
-        shards_to_read_at_once: int,
     ):
         with log_failures_to(broker_ref):
             pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
@@ -1072,8 +1063,6 @@ class ChunkCacheBroker(SnitchRecipient):
         processor: BatchProcessor[T],
         rows_per_chunk: int,
         cache_config: Optional[Dict[str, Any]],
-        randomize_shards: bool,
-        shards_to_read_at_once: int,
     ):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self.chunks = []
@@ -1110,8 +1099,6 @@ class ChunkCacheBroker(SnitchRecipient):
                 self._source,
                 self._processor,
                 rows_per_chunk,
-                randomize_shards=randomize_shards,
-                shards_to_read_at_once=shards_to_read_at_once,
             )  # type: ignore
 
     def is_finished(self):
@@ -1217,9 +1204,6 @@ def _get_broker_actor(
     processor,
     cache_config=None,
     rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
-    *,
-    randomize_shards,
-    shards_to_read_at_once,
 ):
     return ChunkCacheBroker.options(
         name="lev_cache_manager::" + cache_dir.replace("/", "--"), get_if_exists=True, lifetime="detached"
@@ -1230,8 +1214,6 @@ def _get_broker_actor(
         processor=processor,
         cache_config=cache_config,
         rows_per_chunk=rows_per_chunk,
-        randomize_shards=randomize_shards,
-        shards_to_read_at_once=shards_to_read_at_once,
     )
 
 
@@ -1347,8 +1329,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
         batch_size: int,
         rows_per_chunk: int,
         cache_config: Optional[Dict[str, Any]] = None,
-        randomize_shards: bool = True,
-        shards_to_read_at_once: int = DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE,
     ):
         try:
             return ShardCache.load(cache_dir, batch_size)
@@ -1359,8 +1339,6 @@ class ShardCache(Iterable[pa.RecordBatch]):
                 processor=processor,
                 cache_config=cache_config,
                 rows_per_chunk=rows_per_chunk,
-                randomize_shards=randomize_shards,
-                shards_to_read_at_once=shards_to_read_at_once,
             )
             return ShardCache(cache_dir=cache_dir, batch_size=batch_size, ledger=None, _broker=broker)
 

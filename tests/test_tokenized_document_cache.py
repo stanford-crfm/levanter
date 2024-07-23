@@ -89,9 +89,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
     source = OneDocPerShardSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        build_or_load_cache(
-            f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True, randomize_shards=False
-        )
+        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True)
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=False)
 
         result = list(cache)
@@ -115,7 +113,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
 
     source = ShardsDataset([[b] for b in batches])
     with tempfile.TemporaryDirectory() as tmpdir:
-        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), randomize_shards=False)
+        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor())
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=True)
 
         result = list(cache)
