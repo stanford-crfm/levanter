@@ -208,7 +208,10 @@ class TextUrlDataset(ShardedDataset[str]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
-        with fsspec.open(url, "r", compression="infer") as f:
+        compression = "infer"
+        if url.endswith(".zstd"):
+            compression = "zstd"
+        with fsspec.open(url, "r", compression=compression) as f:
             format = _sniff_format_for_dataset(url)
             match format:
                 case ".jsonl":
