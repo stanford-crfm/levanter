@@ -887,59 +887,6 @@ class ChunkCacheBuilder(SnitchRecipient):
 
                     self._shard_readers.append(reader_actor)
 
-    # def _kick_off_next_shard_for_group(self, group):
-    #     self_ref = current_actor_handle()
-    #
-    #     def priority_fn(chunk_idx):
-    #         return chunk_idx * self._num_groups + group
-    #
-    #     shard_group = self._shard_groups[group]
-    #     next_shard_in_group = self._active_shard_for_group[group] + 1
-    #
-    #     if next_shard_in_group >= len(shard_group):
-    #         self.logger.debug(f"Group {group} finished")
-    #         return
-    #
-    #     to_process = [shard_group[next_shard_in_group]]
-    #
-    #     writer = _GroupShardWriterWorker.remote(self_ref, self.cache_dir, to_process)  # type: ignore
-    #     self._shard_writers.append(writer)
-    #
-    #     # TODO: would probably be better if we didn't create one of these per shard
-    #     processor_actor = _BatchProcessorQueue.remote(self.processor)  # type: ignore
-    #
-    #     work_item = ShardToBeProcessed(
-    #         name=self.name,
-    #         builder_ref=self_ref,
-    #         writer=writer,
-    #         shard_source=self.source,
-    #         shard_name=shard_group[next_shard_in_group],
-    #         priority_fn=priority_fn,
-    #         processor_actor=processor_actor,
-    #         batch_size=self.processor.batch_size,
-    #         num_rows_per_chunk=self.rows_per_chunk,
-    #         group_id=group,
-    #     )
-    #
-    #     # we want global names so that different tasks can coordinate priorities
-    #     worker_to_assign = (next_shard_in_group + self._worker_offset) % len(self._shard_readers)
-    #     self._active_shard_for_group[group] = next_shard_in_group
-    #     self._shard_readers[worker_to_assign].assign_work.remote(work_item)
-
-    # def _initialize_workers(self):
-    #     shard_readers = []
-    #     num_workers = len(ray.nodes())
-    #     if num_workers == 0:
-    #         raise ValueError("No workers available")
-    #     for worker_id in range(num_workers):
-    #         priority_actor_name = f"priority_processor.{worker_id}"
-    #         reader_actor = PriorityProcessorActor.options(  # type: ignore
-    #             name=priority_actor_name, get_if_exists=True, lifetime="detached"
-    #         ).remote()
-    #
-    #         shard_readers.append(reader_actor)
-    #     return shard_readers
-
     def new_chunk(self, shard_name: str, *chunks: ChunkMetadata):
         """Callback method for when a shard worker has produced a new chunk."""
         self.shard_status[shard_name].current_buffer.extend(chunks)
