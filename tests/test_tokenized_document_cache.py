@@ -151,7 +151,7 @@ def test_doc_cache_sharding():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         source = ShardsDataset(doc_shards)
-        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), randomize_shards=False)
+        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor())
 
         # must evenly divide num_shards
         num_shards_rebuild = [1, 2, 3, 4, 6, 12]

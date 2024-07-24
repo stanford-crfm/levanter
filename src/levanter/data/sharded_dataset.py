@@ -100,7 +100,6 @@ class ShardedDataset(Dataset[T_co]):
             rows_per_chunk=rows_per_chunk,
             await_finished=await_finished,
             monitors=monitors,
-            # randomize_shards=randomize_shards,
         )
         return DictCacheDataset(cache)
 

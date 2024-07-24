@@ -73,7 +73,6 @@ def test_cache_simple(shards_to_read_at_once):
             tmpdir,
             SimpleShardSource(),
             TestProcessor(),
-            # randomize_shards=False,
             await_finished=True,
             # shards_to_read_at_once=shards_to_read_at_once,
         )
