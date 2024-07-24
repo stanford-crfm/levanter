@@ -16,12 +16,13 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
 
-from .tree_store import TreeStoreBuilder
-from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data._queue import PriorityWorkItem, PriorityWorkTaskGroup, PriorityWorkTaskGroupSpec
+from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_dataset import ShardedDataset
 from ..utils.ray_utils import ExceptionInfo, RefBox, current_actor_handle, ser_exc_info
+from .tree_store import TreeStoreBuilder
+
 
 T = TypeVar("T")
 
@@ -111,6 +112,7 @@ class ShardMetadata:
 @dataclass
 class CacheLedger:
     """Written at the end of the cache build process."""
+
     shards: List[ShardMetadata] = dataclasses.field(default_factory=list)
     metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
@@ -121,7 +123,7 @@ class SerialCacheWriter(AbstractContextManager):
     Mostly for scripts and debugging.
 
     Examples:
-        >>> with SerialCacheWriter(cache_dir) as writer:
+        >>> with SerialCacheWriter(cache_dir, exemplar) as writer:
         ...     for batch in process_batches():
         ...         writer.write_batch(batch)
     """
@@ -143,7 +145,9 @@ class SerialCacheWriter(AbstractContextManager):
     def __exit__(self, exc_type, exc_val, exc_tb):
         # if successful, write the ledger
         # TODO: store field counts in the ledger
-        shard_metadata = ShardMetadata(self.cache_dir, is_finished=True, field_counts={})
+        shard_metadata = ShardMetadata(
+            self.cache_dir, num_rows=len(self._tree_store), is_finished=True, field_counts={}
+        )
 
         if exc_type is None:
             _serialize_json_and_commit(
@@ -177,7 +181,6 @@ def _load_or_initialize_shard_metadata(path):
         return ShardMetadata(path=path, num_rows=0, is_finished=False, field_counts={})
 
 
-
 class _OutOfOrderCacheWriter:
     """
     This cache writer receives batches from some number of shards and writes them to the store in a defined round-robin
@@ -185,6 +188,7 @@ class _OutOfOrderCacheWriter:
 
     Once a shard finishes sending batches, it notifies this writer, which then updates the metadata and writes it to disk.
     """
+
     def __init__(self, cache_dir: str, shards: Sequence[str]):
         self.cache_dir = cache_dir
         self.shards = shards
@@ -271,7 +275,6 @@ def _canonicalize_batch(batch: Union[dict, List[dict]]) -> List[dict]:
         return batch
 
 
-
 # thinking through the design of the cache system
 
 # we decided to use Ray, which was maybe a mistake, but here we are.
@@ -287,6 +290,7 @@ def _canonicalize_batch(batch: Union[dict, List[dict]]) -> List[dict]:
 # Reading batches requires CPU and network.
 # ==> This means we should limit the number of shard groups to roughly the number of nodes, maybe times 2.
 # We ideally want to read from shards roughly evenly (at least within a group of shards)
+
 
 def _shard_reader_generator(shard_source: ShardedDataset[T], shard_idx: int, start_row: int, batch_size: int):
     shard_name = shard_source.shard_names[shard_idx]
@@ -412,17 +416,13 @@ class ShardReaderItem(PriorityWorkItem):
                         batch=RefBox(ray.put(batch)),
                     )
                 )
-                writer.batch_finished.remote(
-                    self.shard_name, self.batch_idx, RefBox(batch_result_ref), time_in
-                )
+                writer.batch_finished.remote(self.shard_name, self.batch_idx, RefBox(batch_result_ref), time_in)
                 self.batch_idx += 1
 
             if exhausted_shard:
                 writer.shard_finished_reading.remote(self.shard_name, self.batch_idx)
 
-            self.group.logger.debug(
-                f"Finished reading one batch of shard {self.shard_name}: {self.batch_idx}"
-            )
+            self.group.logger.debug(f"Finished reading one batch of shard {self.shard_name}: {self.batch_idx}")
 
             return exhausted_shard, batch_result_ref
         except Exception as e:  # noqa
@@ -509,10 +509,7 @@ class _GroupShardWriterWorker:
     async def batch_finished(self, shard_name: str, batch_idx: int, batch: RefBox, time_in):
         try:
             time_mid = time.time()
-            logger.debug(
-                f"Received in progress batch {batch_idx} of shard {shard_name} in"
-                f" {time_mid - time_in}"
-            )
+            logger.debug(f"Received in progress batch {batch_idx} of shard {shard_name} in {time_mid - time_in}")
             # do a backoff loop until the batch is actually processed. log if it's been a while
             timeout_interval = 20
             total_time_waited = 0
@@ -527,18 +524,13 @@ class _GroupShardWriterWorker:
                     total_time_waited += timeout_interval
                     timeout_interval = min(2 * timeout_interval, 100)
                     logger.info(
-                        f"Waiting for {shard_name}.{batch_idx} to be processed. "
-                        f"Waited {total_time_waited} seconds."
+                        f"Waiting for {shard_name}.{batch_idx} to be processed. Waited {total_time_waited} seconds."
                     )
 
             if logger.isEnabledFor(pylogging.DEBUG):
-                logger.debug(
-                    f"Received finished {shard_name}.{batch_idx} in {(time.time() - time_in):.2f} seconds."
-                )
+                logger.debug(f"Received finished {shard_name}.{batch_idx} in {(time.time() - time_in):.2f} seconds.")
             elif total_time_waited > 40:
-                logger.info(
-                    f"Waited {total_time_waited} seconds for {shard_name}.{batch_idx} to be processed."
-                )
+                logger.info(f"Waited {total_time_waited} seconds for {shard_name}.{batch_idx} to be processed.")
             return self.shard_writers[shard_name].batch_finished(batch_idx, batch)
         except Exception as e:
             print(f"Error while processing batch {batch_idx} of  shard {shard_name}", flush=True)
@@ -783,6 +775,7 @@ class _TreeStoreCacheBuilder:
         # notify metrics subscribers
         self._do_notify()
 
+
 def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None):
     name = f"lev_cache_manager::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
@@ -893,7 +886,6 @@ class TreeCache:
             except Exception as e:
                 self.logger.exception("Error while reading metrics from shard cache.")
                 raise e
-
 
 
 class GroupRoundRobinBuffer(Generic[T]):

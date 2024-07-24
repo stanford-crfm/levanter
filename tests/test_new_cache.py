@@ -43,15 +43,15 @@ def test_serial_cache_writer():
         source = SimpleShardSource(num_shards=4)
         processor = SimpleProcessor()
 
-        with SerialCacheWriter(tmpdir1) as writer:
+        exemplar = {"data": np.array([0], dtype=np.int64)}
+
+        with SerialCacheWriter(tmpdir1, exemplar) as writer:
             for shard_name in source.shard_names:
                 for ex in batched(source.open_shard(shard_name), processor.batch_size):
                     writer.write_batch(processor(ex))
 
-        _ = writer.result(batch_size=1)
+        _ = writer.result()
         data_path = writer._tree_store.path
-
-        exemplar = {"data": np.array([0], dtype=np.int64)}
 
         builder = TreeStoreBuilder.open(exemplar, data_path, mode="r")
 
