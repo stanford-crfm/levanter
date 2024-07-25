@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import os
 import subprocess
 import typing
@@ -10,11 +11,6 @@ from google.cloud import storage
 def run_command(*args, **kwargs):
     print("Running:", " ".join(list(args)))
     return subprocess.check_call(args, **kwargs)
-
-
-def run_command_parallel(*args, **kwargs):
-    print("Running:", " ".join(list(args)))
-    return subprocess.Popen(args, **kwargs)
 
 
 def add_ssh_key(ssh_key_filename):
@@ -54,25 +50,32 @@ def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
 
 
 def _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=False):
-    processes = []
-    for i in range(node_count):
-        p = run_command_parallel(
-            "gcloud",
-            "alpha",
-            "compute",
-            "tpus",
-            "queued-resources",
-            "ssh",
-            tpu_name,
-            "--worker=all",
-            f"--node={i}",
-            f"--zone={zone}",
-            "--command=%s" % " ".join(args),
-        )
-        processes.append(p)
-    for p in processes:
-        if p.wait() != 0:
-            raise subprocess.CalledProcessError(p.returncode, cmd=" ".join(args))
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [
+            executor.submit(
+                run_command,
+                "gcloud",
+                "alpha",
+                "compute",
+                "tpus",
+                "tpu-vm",
+                "ssh",
+                f"{tpu_name}-{i}",
+                "--worker=all",
+                f"--zone={zone}",
+                "--command=%s" % " ".join(args),
+            )
+            for i in range(node_count)
+        ]
+
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except subprocess.CalledProcessError as e:
+                if ignore_failure:
+                    print("Ignoring failure:", e)
+                else:
+                    raise
 
 
 # Oddly enough, there's no API to simply fetch the current gcloud configuration...

@@ -80,7 +80,7 @@ def describe_tpu(tpu_name, zone):
 def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete, node_count):
     tpu_stat = describe_tpu(tpu_name, zone)
     if tpu_stat is not None:
-        if tpu_stat["state"]["state"] == "SUSPENDED":
+        if tpu_stat["state"]["state"] in ["FAILED", "SUSPENDED"]:
             print("TPU suspended, bypassing autodelete config and deleting...")
         elif not autodelete:
             print("TPU already exists and autodelete is false, leaving it as is.")
@@ -115,7 +115,7 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete
         f"--zone={zone}",
         "--quiet",
     ]
-    if capacity_type == "preemptible":
+    if capacity_type in ["preemptible", "best-effort"]:
         command.append("--best-effort")
     elif capacity_type == "reserved":
         command.append("--reserved")
@@ -134,6 +134,7 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete
     cli.run_command(*command)
 
     # wait for queued resource to complete
+    print("Checking TPU creation status every minute...")
     waited = 0
     while True:
         time.sleep(60)
@@ -179,7 +180,11 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
     cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
     cli.add_arg(
-        parser, config, ["--capacity_type"], default=None, choices=["preemptible", "spot", "reserved", "on-demand"]
+        parser,
+        config,
+        ["--capacity_type"],
+        default=None,
+        choices=["preemptible", "spot", "reserved", "on-demand", "best-effort"],
     )
     cli.add_arg(
         parser,
@@ -319,7 +324,7 @@ if __name__ == "__main__":
             print(f"Running on tpu_name... {tpu_name}")
             cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
         except subprocess.CalledProcessError as e:  # noqa: F841
-            print("Error running command.")
+            print(f"Error running command {e.cmd}")
             if i < retries - 1:
                 print("Retrying... %d/%d" % (i + 1, retries))
         else:
