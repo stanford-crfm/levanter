@@ -5,11 +5,11 @@ import pytest
 import ray
 from transformers import AutoTokenizer, BatchEncoding
 
-from levanter.data.shard_cache import build_cache
-from levanter.data.sharded_dataset import ShardedDataset
+from levanter.data.shard_cache import build_or_load_cache
+from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset
 from levanter.data.text import TokenizedDocumentCache
 from levanter.utils.py_utils import logical_cpu_core_count
-from test_utils import IdentityProcessor, ShardsDataset, SingleShardDocumentSource
+from test_utils import IdentityProcessor, ShardsDataset, SingleShardDocumentSource, skip_in_ci
 
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -63,6 +63,7 @@ def test_index_no_files():
             pytest.fail("Should not have any chunks")
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_doc_cache_reproduces_data_one_batch_per_shard():
     def doc_i(i: int):
@@ -88,7 +89,9 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
     source = OneDocPerShardSource(docs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        build_cache(f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True)
+        build_or_load_cache(
+            f"{tmpdir}/cache", source, IdentityProcessor(), await_finished=True, randomize_shards=False
+        )
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=False)
 
         result = list(cache)
@@ -100,6 +103,7 @@ def test_doc_cache_reproduces_data_one_batch_per_shard():
             assert as_listed == docs[i]
 
 
+@skip_in_ci
 @pytest.mark.ray
 @pytest.mark.parametrize("batch_size", list([1, 2, 3, 8]))
 def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
@@ -111,7 +115,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
 
     source = ShardsDataset([[b] for b in batches])
     with tempfile.TemporaryDirectory() as tmpdir:
-        build_cache(f"{tmpdir}/cache", source, IdentityProcessor())
+        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), randomize_shards=False)
         cache = TokenizedDocumentCache.load(f"{tmpdir}/cache", flatten_docs=True)
 
         result = list(cache)
@@ -135,6 +139,7 @@ def test_doc_cache_reproduces_data_multi_docs_per_batch_sharded(batch_size):
             assert found
 
 
+@skip_in_ci
 @pytest.mark.ray
 def test_doc_cache_sharding():
     def doc_i(i: int):
@@ -148,7 +153,7 @@ def test_doc_cache_sharding():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         source = ShardsDataset(doc_shards)
-        build_cache(f"{tmpdir}/cache", source, IdentityProcessor())
+        build_or_load_cache(f"{tmpdir}/cache", source, IdentityProcessor(), randomize_shards=False)
 
         # must evenly divide num_shards
         num_shards_rebuild = [1, 2, 3, 4, 6, 12]
@@ -176,3 +181,38 @@ def _unbatch_encoding(enc: BatchEncoding):
     for i in range(len(enc["input_ids"])):
         docs.append(BatchEncoding(data={k: [v[i]] for k, v in enc.items()}))
     return docs
+
+
+@pytest.mark.ray
+def test_cache_fails_with_different_tokenizer():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(f"{tmpdir}/data.txt", "w") as f:
+            f.write("")
+
+        dataset = TextUrlDataset(
+            [f"{tmpdir}/data.txt"],
+        )
+
+        tokenizer_a = AutoTokenizer.from_pretrained("microsoft/phi-2")
+        tokenizer_b = AutoTokenizer.from_pretrained("google/flan-t5-small")
+
+        TokenizedDocumentCache.build_or_load(
+            tmpdir,
+            dataset,
+            tokenizer=tokenizer_a,
+        )
+
+        # Loading with the original tokenizer should be fine.
+        TokenizedDocumentCache.build_or_load(
+            tmpdir,
+            dataset,
+            tokenizer=tokenizer_a,
+        )
+
+        # Loading with a different tokenizer should error out.
+        with pytest.raises(ValueError):
+            TokenizedDocumentCache.build_or_load(
+                tmpdir,
+                dataset,
+                tokenizer=tokenizer_b,
+            )

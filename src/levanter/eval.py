@@ -4,6 +4,7 @@ import warnings
 from typing import Callable, Optional, Sequence, TypeVar
 
 import jax.numpy as jnp
+import jmp
 import numpy as np
 import tqdm
 from jax.sharding import Mesh
@@ -13,6 +14,7 @@ from haliax.partitioning import ResourceMapping
 
 import levanter.tracker
 from levanter.data import Dataset, ReplicatedBatchLoader
+from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils.stat_utils import RunningMean
@@ -32,6 +34,7 @@ class EvalResult:
     macro_avg_loss: float  # average of per-dataset average losses
     tag_macro_losses: dict[str, float]  # per tag average-per-token loss
     tag_micro_losses: dict[str, float]  # per tag total loss, for "parent" tags
+    total_eval_loading_time: float
 
 
 class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
@@ -88,6 +91,7 @@ def cb_tagged_lm_evaluate(
     axis_mapping: ResourceMapping = None,
     max_examples_per_dataset: Optional[int] = None,
     prefix: str = "eval",
+    mp: jmp.Policy = None,
 ) -> Callable[[StepInfo], EvalResult]:
     """
     Evaluates multiple tagged datasets using a given evaluation function.
@@ -108,24 +112,35 @@ def cb_tagged_lm_evaluate(
         axis_mapping: The axis mapping to use for evaluation
     """
 
-    evaluator = TaggedEvaluator(EvalBatch, tagged_eval_sets, device_mesh, axis_mapping, max_examples_per_dataset)
+    evaluator = TaggedEvaluator(
+        EvalBatch, tagged_eval_sets, device_mesh, axis_mapping, max_examples_per_dataset, mp=mp
+    )
 
     def eval_callback(step: StepInfo):
-        result = evaluator.evaluate(step.model)
+        with levanter.tracker.capture_time() as time_fn:
+            result = evaluator.evaluate(step.model)
+
         log_dict = {
             # log micro average as just "loss"
             _join_prefix(prefix, "loss"): result.micro_avg_loss,
             _join_prefix(prefix, "macro_loss"): result.macro_avg_loss,
+            _join_prefix(prefix, "loading_time"): result.total_eval_loading_time,
+            _join_prefix(prefix, "total_time"): time_fn(),
         }
+
         logger.info(f"{prefix} loss: {result.micro_avg_loss:.3f}")
         for tag, loss in result.tag_macro_losses.items():
-            # don't loss leaf tag macro losses because it doesn't mean anything different than micro loss
+            # don't log leaf tag macro losses because it doesn't mean anything different than micro loss
             if tag in evaluator.dataset.tag_to_index:
+                continue
+            if not tag:
                 continue
             log_dict[_join_prefix(prefix, tag) + "/macro_loss"] = loss
             logger.info(f"{tag} macro loss: {loss:.3f}")
 
         for tag, loss in result.tag_micro_losses.items():
+            if not tag:
+                continue
             if tag in evaluator.dataset.tag_to_index:
                 log_dict[_join_prefix(prefix, tag) + "/loss"] = loss
                 logger.info(f"{tag} loss: {loss:.3f}")
@@ -151,13 +166,20 @@ class TaggedEvaluator:
     """
 
     def __init__(
-        self, EvalBatch: hax.Axis, tagged_eval_sets, device_mesh=None, axis_mapping=None, max_examples_per_dataset=None
+        self,
+        EvalBatch: hax.Axis,
+        tagged_eval_sets,
+        device_mesh=None,
+        axis_mapping=None,
+        max_examples_per_dataset=None,
+        mp: Optional[jmp.Policy] = None,
     ):
         self.EvalBatch = EvalBatch
         self.dataset = DomainTaggedDataset(tagged_eval_sets, max_examples_per_dataset)
         self.loader = ReplicatedBatchLoader(
             self.dataset, mesh=device_mesh, axis_resources=axis_mapping, Batch=EvalBatch
         )
+        self.mp = mp
 
         # tags are arranged hierarchically with "/" as separator. We want to log the average loss for each tag.
         hierarchy: dict[str, list[int]] = {}
@@ -177,6 +199,9 @@ class TaggedEvaluator:
             m: LmHeadModel, state: tuple[RunningMean, RunningMean], batch: LmExample, tags: hax.NamedArray
         ):
             m = inference_mode(m, True)
+
+            if self.mp is not None:
+                m = self.mp.cast_to_compute(m)
             with hax.axis_mapping(axis_mapping):
                 total_mean, mean_per_tag = state
                 losses = m.compute_loss(batch, reduction=None, reduction_axis=())
@@ -203,7 +228,9 @@ class TaggedEvaluator:
         state = (RunningMean.zeros_like(total_loss), RunningMean.zeros_like(mean_losses_per_tag))
         state = hax.shard(state)
 
-        for batch, tags in tqdm.tqdm(self.loader, "eval"):
+        iterator = LoadingTimeTrackerIterator(self.loader)
+
+        for batch, tags in tqdm.tqdm(iterator, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
 
         total_loss, losses_per_tag = state
@@ -239,4 +266,4 @@ class TaggedEvaluator:
             tag_micro_loss[tag] = mean_loss_per_tag_cpu[index]
             # no macro loss for the leaf tags
 
-        return EvalResult(micro_avg_loss, macro_avg_loss, tag_macro_loss, tag_micro_loss)
+        return EvalResult(micro_avg_loss, macro_avg_loss, tag_macro_loss, tag_micro_loss, iterator.total_time)

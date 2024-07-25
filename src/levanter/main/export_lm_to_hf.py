@@ -59,7 +59,7 @@ def main(config: ConvertLmConfig):
         if config.override_vocab_size:
             model = model.resize_vocab(config.override_vocab_size)
 
-        converter = model.config.default_hf_checkpoint_converter.replaced(tokenizer=tokenizer)
+        converter = model.config.hf_checkpoint_converter().replaced(tokenizer=tokenizer)
 
         converter.save_pretrained(
             model,

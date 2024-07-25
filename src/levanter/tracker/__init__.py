@@ -1,4 +1,4 @@
-from levanter.tracker.helpers import log_optimizer_hyperparams
+from levanter.tracker.helpers import capture_time, log_optimizer_hyperparams
 from levanter.tracker.tracker import CompositeTracker, NoopConfig, NoopTracker, Tracker, TrackerConfig
 from levanter.tracker.tracker_fns import (
     current_tracker,
@@ -26,4 +26,5 @@ __all__ = [
     "log_summary",
     "log_hyperparameters",
     "set_global_tracker",
+    "capture_time",
 ]

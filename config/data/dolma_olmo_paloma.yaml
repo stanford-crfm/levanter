@@ -108,7 +108,7 @@ train_weights:
   dolma-algebraic-stack: 12.6 # 12.6 * 1.0
   dolma-arxiv: 28.0 # 28.0 * 1.0
   dolma-gutenberg: 5.3 # 5.3 * 1.0
-  dolma-c4: 69.2 # 138.4 * 0.5
+  dolma-c4: 124.95 # 249.9 * 0.5
   dolma-cc: 597.75 # 1,195.5 * 0.5
   dolma-cc-news: 14.3 # 1.0
   dolma-falcon: 456.4 # 1.0, refined web

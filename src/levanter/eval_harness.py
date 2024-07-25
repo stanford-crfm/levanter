@@ -5,6 +5,7 @@
 import dataclasses
 import json
 import logging
+import typing
 import warnings
 from dataclasses import dataclass
 from functools import cached_property
@@ -14,10 +15,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import transformers
-from jax.experimental.multihost_utils import broadcast_one_to_all
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.gpt2 import Gpt2Config
+
 
 try:
     from lm_eval import evaluator, tasks
@@ -29,20 +30,19 @@ except ImportError:
     evaluator = object
     # tasks = object
 
+from jax_sourceror import sourcerize
 from tqdm import tqdm
 
 import haliax as hax
 from haliax.nn import cross_entropy_loss
 from haliax.partitioning import round_axis_for_partitioning
 
-from jax_sourceror import sourcerize
-
 import levanter.config
 from levanter.checkpoint import load_checkpoint
 from levanter.data import batched
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
-from levanter.utils.jax_utils import local_cpu_mesh, stack_tree, use_cpu_device
+from levanter.utils.jax_utils import stack_tree, use_cpu_device
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -78,7 +78,7 @@ class _RequestType:
 
 
 class LevanterHarnessLM(LM):
-    def __init__(self,  EvalBatch: hax.Axis, model: LmHeadModel, axis_resources, tokenizer):
+    def __init__(self, EvalBatch: hax.Axis, model: LmHeadModel, axis_resources, tokenizer):
         super().__init__()
         self.EvalBatch = EvalBatch
         self.model = model
@@ -117,8 +117,6 @@ class LevanterHarnessLM(LM):
 
         """
 
-        Pos = self.model.Pos
-
         contexts = self.tokenizer([req.args[0] for req in requests])["input_ids"]
         completions = self.tokenizer([req.args[1] for req in requests])["input_ids"]
 
@@ -127,7 +125,9 @@ class LevanterHarnessLM(LM):
         @hax.named_jit
         def _jit_create_example(tokens, prompt_len):
             tokens = hax.named(tokens, self.model.Pos)
-            return LmExample.from_prompt_and_completion(self.model.Pos, tokens, prompt_len, ignore_id=self.tokenizer.pad_token_id)
+            return LmExample.from_prompt_and_completion(
+                self.model.Pos, tokens, prompt_len, ignore_id=self.tokenizer.pad_token_id
+            )
 
         # TODO: offload this to an evalbatchloader
         for context, completion in zip(tqdm(contexts, desc="Creating examples"), completions):
@@ -242,13 +242,15 @@ def run_eval_harness_main(config: EvalHarnessConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
+        model: LmHeadModel
+
         # initialize the model
         if config.checkpoint_is_hf:
             model_config = config.model
             converter: HFCheckpointConverter = model_config.default_hf_checkpoint_converter  # type: ignore
             converter = converter.replaced(reference_checkpoint=config.checkpoint_path, tokenizer=tokenizer)
             model = converter.load_pretrained(
-                model_config.model_type, config.checkpoint_path, dtype=config.trainer.mp.compute_dtype
+                model_config.model_type, model_config, ref=config.checkpoint_path, dtype=config.trainer.mp.compute_dtype  # type: ignore
             )
         else:
             with use_cpu_device():
@@ -256,7 +258,7 @@ def run_eval_harness_main(config: EvalHarnessConfig):
                 model = load_checkpoint(model, config.checkpoint_path, subpath="model")
             model = hax.shard(model, parameter_axis_mapping)
 
-        model = inference_mode(model, True)
+        model = typing.cast(LmHeadModel, inference_mode(model, True))
 
         ex = LmExample.from_prompt_and_completion(model.Pos, hax.zeros(model.Pos, dtype=int), 100)
         source = sourcerize(model.compute_loss)(ex)

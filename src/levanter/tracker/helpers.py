@@ -1,6 +1,8 @@
+import contextlib
 import dataclasses
 import logging
 import os
+import time
 from typing import Optional
 
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
@@ -73,3 +75,19 @@ def generate_pip_freeze():
 
     dists = distributions()
     return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
+
+
+@contextlib.contextmanager
+def capture_time():
+    start = time.perf_counter()
+    done = False
+
+    def fn():
+        if done:
+            return end - start
+        else:
+            return time.perf_counter() - start
+
+    yield fn
+    end = time.perf_counter()
+    done = True

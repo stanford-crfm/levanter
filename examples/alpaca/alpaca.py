@@ -176,7 +176,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
         }
 
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
-    dataset = dataset.build_cache(config.data_cache_dir, await_finished=True)
+    dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)
 
     dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)
 
@@ -234,7 +234,7 @@ def train(config: TrainArgs):
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
+            model_config.model_type, model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
         )
 
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)

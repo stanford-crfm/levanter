@@ -49,7 +49,11 @@ class LmExample(eqx.Module):
     @staticmethod
     def from_prompt_and_completion(
         Pos,
-        tokens: hax.NamedArray, prompt_length: NamedOrNumeric, *, ignore_id: Optional[int] = None, all_causal: bool = True
+        tokens: hax.NamedArray,
+        prompt_length: NamedOrNumeric,
+        *,
+        ignore_id: Optional[int] = None,
+        all_causal: bool = True,
     ) -> "LmExample":
         # mask out the prompt tokens
         loss_mask = hax.arange(Pos) >= prompt_length
@@ -85,6 +89,9 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     @abc.abstractmethod
     def Pos(self) -> Axis:
         pass
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return None
 
     def build(self, Vocab: Axis, *, key: PRNGKey) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore

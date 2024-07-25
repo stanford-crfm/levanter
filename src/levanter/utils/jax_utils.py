@@ -269,7 +269,8 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
             gcd = np.gcd(shape_i, num_devices)
             num_devices //= gcd
             device_shape = (num_devices, gcd) + device_shape[1:]
-        sharding = PositionalSharding(devices).reshape(list(device_shape)).replicate(axis=0, keepdims=True)
+        sharding = PositionalSharding(devices).reshape(list(device_shape))
+        sharding = sharding.replicate(axis=0, keepdims=False)
         return sharding
     else:
         # get the existing mesh and find the FSDP axis

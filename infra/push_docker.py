@@ -9,7 +9,9 @@ script will automatically build and deploy an image based on your current code.
 
 import argparse
 import json
+import pty
 import subprocess
+import sys
 
 from infra.helpers import cli
 
@@ -33,9 +35,13 @@ GCP_CLEANUP_POLICY = [
 ]
 
 
-def _run(*args, **kw):
-    print("Running ", " ".join(args[0]))
-    return subprocess.check_output(*args, **kw)
+def _run(argv):
+    if sys.stdout.isatty():
+        exit_code = pty.spawn(argv)
+        if exit_code != 0:
+            raise subprocess.CalledProcessError(exit_code, argv)
+    else:
+        subprocess.check_output(argv, stderr=subprocess.STDOUT)
 
 
 def configure_gcp_docker(project_id, region, repository):
@@ -44,7 +50,6 @@ def configure_gcp_docker(project_id, region, repository):
     try:
         _run(
             ["gcloud", "artifacts", "repositories", "describe", f"--location={region}", repository],
-            stderr=subprocess.STDOUT,
         )
         print(f"Found existing artifact registry repository `{repository}`, skipping setup.")
         return
@@ -66,7 +71,6 @@ def configure_gcp_docker(project_id, region, repository):
                 f"--location={region}",
                 "--repository-format=docker",
             ],
-            stderr=subprocess.STDOUT,
         )
     except subprocess.CalledProcessError as e:
         # Ignore error if repository already exists.
