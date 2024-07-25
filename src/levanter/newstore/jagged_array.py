@@ -68,12 +68,13 @@ class JaggedArray(eqx.Module):
 
 
 # zarr suggests 1MB chunk size (in bytes, but whatever)
-# at 4 bytes this is
+# at 4 bytes this is 256k elements
 DEFAULT_CHUNK_SIZE = 256 * 1024
+DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 1024
 
 
 def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
-    spec = _get_spec(path)
+    spec = _get_spec(path, shape)
     mode = _mode_to_open_mode(mode)
 
     # Basically, we want to load the existing shape metadata if it exists
@@ -91,13 +92,17 @@ def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
         spec,
         dtype=jnp.dtype(dtype).name,
         shape=shape,
-        chunk_layout=ts.ChunkLayout(chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]]),
+        # chunk_layout=ts.ChunkLayout(
+        #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
+        #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
+        # ),
+        # compression={"codec": "zstd", "compression_level": 5},
         **mode,
     ).result()
 
 
 async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
-    spec = _get_spec(path)
+    spec = _get_spec(path, shape)
     mode = _mode_to_open_mode(mode)
 
     # Basically, we want to load the existing shape metadata if it exists
@@ -115,12 +120,16 @@ async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
         spec,
         dtype=jnp.dtype(dtype).name,
         shape=shape,
-        chunk_layout=ts.ChunkLayout(chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]]),
+        # chunk_layout=ts.ChunkLayout(
+        #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
+        #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
+        # ),
+        # compression={"codec": "zstd", "compression_level": 5},
         **mode,
     )
 
 
-def _get_spec(path):
+def _get_spec(path, shape):
     if path is None:
         import uuid
 
@@ -132,7 +141,24 @@ def _get_spec(path):
         if protocol is None:
             path = os.path.abspath(path)
         spec = ser.get_tensorstore_spec(path, ocdbt=False)
+        store = spec.get("kvstore")
+        spec = {"driver": "zarr3", "kvstore": store}
         fsspec_utils.mkdirs(os.path.dirname(path))
+        spec["metadata"] = {
+            "chunk_grid": {
+                "name": "regular",
+                "configuration": {"chunk_shape": [DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]},
+            },
+            "codecs": [
+                {
+                    "name": "sharding_indexed",
+                    "configuration": {
+                        "chunk_shape": [DEFAULT_CHUNK_SIZE, *shape[1:]],
+                        "codecs": [{"name": "blosc", "configuration": {"clevel": 5}}],
+                    },
+                }
+            ],
+        }
     return spec
 
 
