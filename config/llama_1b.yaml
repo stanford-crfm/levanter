@@ -13,7 +13,7 @@ trainer:
   tracker:
     type: wandb
     project: "marin"
-    tags: ["dolma", "llama", "llama_tokenizer"]
+    tags: ["dolma", "llama", "llama_tokenizer", "infra", "time_to_train"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 1024
