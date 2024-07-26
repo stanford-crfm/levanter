@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import os
 import subprocess
 import typing
@@ -23,9 +24,12 @@ def add_ssh_key(ssh_key_filename):
     subprocess.check_call(["ssh-add", ssh_key_filename])
 
 
-def tpu_ssh(tpu_name, zone, *args, ignore_failure=False):
+def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
     add_ssh_key(os.path.expanduser("~/.ssh/google_compute_engine"))
     try:
+        if node_count > 1:
+            return _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=ignore_failure)
+
         return run_command(
             "gcloud",
             "alpha",
@@ -43,6 +47,35 @@ def tpu_ssh(tpu_name, zone, *args, ignore_failure=False):
             print("Ignoring failure:", e)
         else:
             raise
+
+
+def _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=False):
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [
+            executor.submit(
+                run_command,
+                "gcloud",
+                "alpha",
+                "compute",
+                "tpus",
+                "tpu-vm",
+                "ssh",
+                f"{tpu_name}-{i}",
+                "--worker=all",
+                f"--zone={zone}",
+                "--command=%s" % " ".join(args),
+            )
+            for i in range(node_count)
+        ]
+
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except subprocess.CalledProcessError as e:
+                if ignore_failure:
+                    print("Ignoring failure:", e)
+                else:
+                    raise
 
 
 # Oddly enough, there's no API to simply fetch the current gcloud configuration...
