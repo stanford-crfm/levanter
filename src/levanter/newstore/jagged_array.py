@@ -3,7 +3,6 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-import equinox as eqx
 import fsspec.core
 import jax
 import jax.experimental.array_serialization.serialization as ser
@@ -15,62 +14,10 @@ from levanter.utils import fsspec_utils
 from levanter.utils.py_utils import future_from_value
 
 
-class JaggedArray(eqx.Module):
-    """
-    A jagged array is a collection of arrays of varying lengths.
-    We represent this as a single array with an accompanying array of offsets.
-
-    Note that JAX doesn't really support jagged arrays, so we have to be careful about how we use them.
-    In particular, you shouldn't be using these directly in jitted code unless you're careful.
-
-    Typically, we just use these for data loading, with the backing arrays being tensorstore arrays.
-    """
-
-    offsets: jax.Array | ts.TensorStore
-    data: jax.Array | ts.TensorStore
-    # shapes is probably premature architecture, but it amuses me.
-    shapes: Optional[jax.Array | ts.TensorStore] = None  # (len(offsets), len(data.shape)-1)
-
-    def __init__(
-        self,
-        offsets: jax.Array | ts.TensorStore,
-        data: jax.Array | ts.TensorStore,
-        shapes: Optional[jax.Array | ts.TensorStore] = None,
-    ):
-        self.offsets = offsets
-        self.data = data
-        self.shapes = shapes
-
-    def __len__(self):
-        return self.offsets.shape[0] - 1
-
-    def __getitem__(self, item):
-        if isinstance(item, slice):
-            start, stop, step = item.indices(len(self))
-            if step != 1:
-                raise ValueError("JaggedArray doesn't support slicing with step != 1")
-            if stop > len(self):
-                raise IndexError("JaggedArray index out of range")
-
-            shapes = None if self.shapes is None else self.shapes[start:stop]
-            new_offsets = self.offsets[start : stop + 1] - self.offsets[start]
-            return JaggedArray(new_offsets, self.data[self.offsets[start] : self.offsets[stop]], shapes)
-        else:
-            if item >= len(self):
-                raise IndexError("JaggedArray index out of range")
-            data = self.data[self.offsets[item] : self.offsets[item + 1]]
-
-            if self.shapes is not None:
-                shapes = self.shapes[item]
-                data = data.reshape(*shapes, -1)
-
-            return data
-
-
 # zarr suggests 1MB chunk size (in bytes, but whatever)
 # at 4 bytes this is 256k elements
 DEFAULT_CHUNK_SIZE = 256 * 1024
-DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 1024
+DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 128
 
 
 def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
@@ -91,7 +38,7 @@ def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
     return ts.open(
         spec,
         dtype=jnp.dtype(dtype).name,
-        shape=shape,
+        shape=[2**54, *shape[1:]],
         # chunk_layout=ts.ChunkLayout(
         #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
         #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
@@ -119,7 +66,7 @@ async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
     return await ts.open(
         spec,
         dtype=jnp.dtype(dtype).name,
-        shape=shape,
+        shape=[2**54, *shape[1:]],
         # chunk_layout=ts.ChunkLayout(
         #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
         #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
@@ -229,14 +176,14 @@ class JaggedArrayStore:
 
     @property
     def num_rows(self):
-        return self.offsets[0].read().result()
+        return int(self.offsets[0].read().result())
 
     async def num_rows_async(self):
-        return await self.offsets[0].read()
+        return int(await self.offsets[0].read())
 
     @property
     def data_size(self):
-        return self.offsets[self.num_rows].read().result()
+        return int(self.offsets[self.num_rows].read().result())
 
     async def append_async(self, data: jax.Array):
         await self.extend_async([data])
@@ -251,98 +198,116 @@ class JaggedArrayStore:
         if size >= len(self):
             return
 
+        current_data_size = self.data_size
+        current_num_rows = await self.num_rows_async()
+
+        # if size == 0:
+        #     # Just reset the data
+        #     data_fut = self.data[0:current_data_size].write(np.array(0, dtype=self.data.dtype.name))
+        #     if self.shapes is not None:
+        #         shape_fut = self.shapes[0:current_data_size].write(np.array((0, *self.shapes.shape[1:]), dtype=self.shapes.dtype.name))
+        #     else:
+        #         shape_fut = None
+        #
+        #     await self.offsets[0:current_data_size].write(0)
+        #
+        #     await data_fut
+        #     await shape_fut if shape_fut is not None else None
+        #     return
+
+        offsets_fut = self.offsets[size + 1 : current_num_rows + 1].write(0)
         if size == 0:
-            # Just reset the data
-            new_data = self.data.resize(exclusive_max=[0])
-            if self.shapes is not None:
-                new_shapes = self.shapes.resize(exclusive_max=[0, *self.shapes.shape[1:]])
-            else:
-                new_shapes = None
+            new_max = 0
+        else:
+            new_max = int(await self.offsets[size].read())
 
-            await self.offsets[0].write(0)
-            new_offsets = self.offsets.resize(exclusive_max=[1])
-
-            self.data = await new_data
-            self.shapes = await new_shapes if new_shapes is not None else None
-            self.offsets = await new_offsets
-            return
-
-        offsets = await self.offsets.resize(exclusive_max=[size + 1])
-        new_max = await offsets[size].read()
-        data = self.data.resize(exclusive_max=[new_max])
-
-        f1 = offsets[0].write(size)
+        f1 = self.offsets[0].write(size)
 
         # Trim the shapes
         if self.shapes is not None:
-            shapes = self.shapes.resize(exclusive_max=[size, *self.shapes.shape[1:]])
-            self.shapes = await shapes
+            shape_fut = self.shapes[size:current_num_rows].write(
+                np.zeros(self.shapes.shape[1:], dtype=self.shapes.dtype.name)
+            )
+        else:
+            shape_fut = None
 
-        self.offsets = offsets
-        self.data = await data
+        data_fut = self.data[new_max:current_data_size].write(np.zeros((), dtype=self.data.dtype.name))
         await f1
 
+        await shape_fut if shape_fut is not None else None
+        await data_fut
+        await offsets_fut
+
     def trim_to_size(self, size: int):
-        if size >= self.data_size:
+        if size >= self.num_rows:
             return
+
+        old_len = len(self)
+        old_data_size = self.data_size
+
+        if self.shapes is not None:
+            shape_fut = self.shapes[size:old_len].write(np.zeros(self.shapes.shape[1:], dtype=self.shapes.dtype.name))
+        else:
+            shape_fut = None
+
+        f1 = self.offsets[0].write(size)
 
         if size == 0:
-            # Just reset the data
-            new_data = self.data.resize(exclusive_max=[0])
-            if self.shapes is not None:
-                new_shapes = self.shapes.resize(exclusive_max=[0, *self.shapes.shape[1:]])
-            else:
-                new_shapes = None
-
-            self.offsets[0].write(0).result()
-            new_offsets = self.offsets.resize(exclusive_max=[1])
-
-            self.data = new_data.result()
-            self.shapes = new_shapes.result() if new_shapes is not None else None
-            self.offsets = new_offsets.result()
-            return
-
-        if self.shapes is not None:
-            shapes = self.shapes.resize(exclusive_max=[size, *self.shapes.size[1:]])
-
-        # Trim the offsets
-        offsets = self.offsets.resize(exclusive_max=[size + 1]).result()
-        # Trim the data
-        new_max = offsets[size].read().result()
-        data = self.data.resize(exclusive_max=[new_max])
-
-        # Trim the shapes
-
-        self.offsets = offsets
-        f1 = self.offsets[0].write(size)
-        self.data = data.result()
-        if self.shapes is not None:
-            self.shapes = shapes.result()
+            new_max = 0
+        else:
+            new_max = int(self.offsets[size].read().result())
+        data_fut = self.data[new_max:old_data_size].write(np.zeros((), dtype=self.data.dtype.name))
 
         f1.result()
+        offsets_fut = self.offsets[size + 1 : old_data_size + 1].write(0)
+
+        data_fut.result()
+        offsets_fut.result()
+
+        if shape_fut is not None:
+            shape_fut.result()
 
     async def extend_async(self, arrays: Sequence[jax.Array]):
         data, new_offsets, shapes = self._prepare_batch(arrays)
-        self.data = await _append_ts_async(self.data, data)
 
-        self.offsets = await _append_ts_async(self.offsets, new_offsets)
+        num_rows = await self.num_rows_async()
+        num_added = len(arrays)
+        current_data_size = self.data_size
 
+        # Write to resized arrays concurrently, adjusting offsets explicitly
+        write_tasks = [
+            self.data[current_data_size : current_data_size + len(data)].write(data),
+            self.offsets[num_rows + 1 : num_rows + num_added + 1].write(new_offsets),
+        ]
         if self.shapes is not None:
-            self.shapes = await _append_ts_async(self.shapes, shapes)
+            write_tasks.append(self.shapes[num_rows : num_rows + num_added].write(shapes))
 
-        await self.offsets[0].write(await self.offsets[0].read() + len(arrays))
+        await asyncio.gather(*write_tasks)
+
+        # Update num_rows
+        int(self.offsets[self.num_rows].read().result())
+        await self.offsets[0].write(num_rows + len(arrays))
+        # print("done")
 
     def extend(self, arrays: Sequence[jax.Array]):
         data, new_offsets, shapes = self._prepare_batch(arrays)
-        current_len = self.offsets[0].read()
-        self.data = _append_ts_sync(self.data, data)
 
-        self.offsets = _append_ts_sync(self.offsets, new_offsets)
+        num_rows = self.num_rows
+        num_added = len(arrays)
+        current_data_size = self.data_size
 
+        write_tasks = [
+            self.data[current_data_size : current_data_size + len(data)].write(data),
+            self.offsets[num_rows + 1 : num_rows + num_added + 1].write(new_offsets),
+        ]
         if self.shapes is not None:
-            self.shapes = _append_ts_sync(self.shapes, shapes)
+            write_tasks.append(self.shapes[num_rows : num_rows + num_added].write(shapes))
 
-        self.offsets[0].write(current_len.result() + len(arrays)).result()
+        for task in write_tasks:
+            task.result()
+
+        # Update num_rows
+        self.offsets[0].write(num_rows + len(arrays)).result()
 
     def _prepare_batch(self, arrays):
         if self.shapes is not None:
@@ -389,6 +354,7 @@ class JaggedArrayStore:
 
     async def get_item_async(self, item):
         if isinstance(item, slice):
+            raise NotImplementedError("Slicing not supported")
             len_self = await self.num_rows_async()
             start, stop, step = item.indices(len_self)
             if step != 1:
@@ -417,6 +383,7 @@ class JaggedArrayStore:
 
     def __getitem__(self, item):
         if isinstance(item, slice):
+            raise NotImplementedError("Slicing not supported")
             # TODO: do we need to avoid reading len(self)?
             start, stop, step = item.indices(len(self))
             if step != 1:
@@ -444,6 +411,10 @@ class JaggedArrayStore:
                     raise e
 
     def _bounds_for_rows(self, start, stop):
+        num_rows = self.num_rows
+        if start >= num_rows or stop > num_rows:
+            raise IndexError("Index out of bounds")
+        start, stop, step = slice(start, stop).indices(num_rows)
         offsets = self.offsets[start : stop + 1].read().result()
         data_start, data_stop = offsets[0], offsets[-1]
         if start == 0:
@@ -462,22 +433,6 @@ class JaggedArrayStore:
             offsets[0] = 0
 
         return data_start, data_stop, offsets
-
-
-# TODO: ideally we would grow the store in larger chunks, but in practice we write very large batches
-# so this is probably fine.
-
-
-async def _append_ts_async(store: ts.TensorStore, data: np.ndarray):
-    out_store = await store.resize(exclusive_max=[store.shape[0] + data.shape[0], *store.shape[1:]])
-    await out_store[out_store.shape[0] - data.shape[0] :].write(data)
-    return out_store
-
-
-def _append_ts_sync(store: ts.TensorStore, data: np.ndarray):
-    out_store = store.resize(exclusive_max=[store.shape[0] + data.shape[0], *store.shape[1:]]).result()
-    out_store[out_store.shape[0] - data.shape[0] :].write(data).result()
-    return out_store
 
 
 def _unshaped_spec(store: ts.TensorStore) -> ts.Spec:

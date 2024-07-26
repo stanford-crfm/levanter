@@ -6,72 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from levanter.newstore.jagged_array import JaggedArray, JaggedArrayStore
-
-
-class TestJaggedArray:
-    def test_construction(self):
-        offsets = jnp.array([0, 3, 5])
-        data = jnp.array([1, 2, 3, 4, 5])
-        shapes = None
-
-        jagged_array = JaggedArray(offsets, data, shapes)
-        assert len(jagged_array) == 2
-        assert jnp.all(jagged_array[0] == jnp.array([1, 2, 3]))
-        assert jnp.all(jagged_array[1] == jnp.array([4, 5]))
-
-    def test_slicing(self):
-        offsets = jnp.array([0, 3, 5])
-        data = jnp.array([1, 2, 3, 4, 5])
-        shapes = None
-
-        jagged_array = JaggedArray(offsets, data, shapes)
-        sliced_array = jagged_array[1:]
-        assert len(sliced_array) == 1
-        assert jnp.all(sliced_array[0] == jnp.array([4, 5]))
-
-    def test_slicing_with_shapes(self):
-        offsets = jnp.array([0, 3, 5])
-        data = jnp.array([1, 2, 3, 4, 5])
-        shapes = jnp.array([[2], [1]])
-
-        jagged_array = JaggedArray(offsets, data, shapes)
-        sliced_array = jagged_array[1:]
-        assert len(sliced_array) == 1
-        assert jnp.all(sliced_array[0] == jnp.array([4, 5]))
-
-    def test_empty_array(self):
-        offsets = jnp.array([0])
-        data = jnp.array([])
-        jagged_array = JaggedArray(offsets, data)
-        assert len(jagged_array) == 0
-        with pytest.raises(IndexError):
-            jagged_array[0]
-
-    def test_single_element_array(self):
-        offsets = jnp.array([0, 1])
-        data = jnp.array([1])
-        jagged_array = JaggedArray(offsets, data)
-        assert len(jagged_array) == 1
-        assert jnp.all(jagged_array[0] == jnp.array([1]))
-
-    def test_out_of_bounds_index(self):
-        offsets = jnp.array([0, 3, 5])
-        data = jnp.array([1, 2, 3, 4, 5])
-        shapes = None
-
-        jagged_array = JaggedArray(offsets, data, shapes)
-        with pytest.raises(IndexError):
-            jagged_array[2]
-
-    def test_step_slicing(self):
-        offsets = jnp.array([0, 3, 5])
-        data = jnp.array([1, 2, 3, 4, 5])
-        shapes = None
-
-        jagged_array = JaggedArray(offsets, data, shapes)
-        with pytest.raises(ValueError):
-            jagged_array[::2]
+from levanter.newstore.jagged_array import JaggedArrayStore
 
 
 class TestJaggedArrayStore:
@@ -93,8 +28,8 @@ class TestJaggedArrayStore:
             result2 = builder[1]
             assert jnp.all(result2 == data2)
 
-            result_slice = builder[0:2]
-            assert isinstance(result_slice, JaggedArray)
+            # result_slice = builder[0:2]
+            # assert isinstance(result_slice, JaggedArray)
 
     def test_extend_with_multiple(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -166,8 +101,8 @@ class TestJaggedArrayStore:
             data = jnp.array([[1.0, 2.0], [3.0, 4.0]])
             builder.append(data)
 
-            with pytest.raises(ValueError):
-                builder[::2]
+            # with pytest.raises(ValueError):
+            #     builder[::2]
 
 
 async def create_builder_with_data(directory, num_sequences: int, sequence_length: int | tuple[int, ...]):
@@ -213,7 +148,7 @@ async def test_trim_to_size_async():
     initial_size = len(builder)
     assert initial_size == 10
 
-    expected_data = list(await builder.get_item_async(slice(0, 10)))
+    expected_data = list([builder[i] for i in range(10)])
 
     # Trim to smaller size
     await builder.trim_to_size_async(5)
@@ -221,7 +156,7 @@ async def test_trim_to_size_async():
     assert new_size == 5
 
     # Verify the data integrity
-    trimmed_data = await builder.data.read()
+    trimmed_data = await builder.data[0:5000].read()
     assert jnp.all(trimmed_data == jnp.concatenate(expected_data[:5]))
 
     # Trim to zero size
@@ -230,15 +165,15 @@ async def test_trim_to_size_async():
     assert new_size == 0
 
     # Verify the data integrity
-    trimmed_data = await builder.data.read()
-    assert trimmed_data.size == 0
+    trimmed_data = await builder.data[0:5000].read()
+    assert jnp.all(trimmed_data == 0)
 
 
 @pytest.mark.asyncio
 async def test_trim_to_size_larger_than_current():
     tmpdir = tempfile.TemporaryDirectory().name
     builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=1000)
-    expected_data = list(await builder.get_item_async(slice(0, 10)))
+    expected_data = list([builder[i] for i in range(10)])
 
     # Initial size
     initial_size = len(builder)
@@ -250,7 +185,7 @@ async def test_trim_to_size_larger_than_current():
     assert new_size == 10
 
     # Verify the data integrity
-    trimmed_data = await builder.data.read()
+    trimmed_data = await builder.data[0:10000].read()
     assert np.array_equal(trimmed_data, jnp.concatenate(expected_data[:10]))
 
 
@@ -258,7 +193,7 @@ async def test_trim_to_size_larger_than_current():
 async def test_trim_to_size_with_shapes_async():
     tmpdir = tempfile.TemporaryDirectory().name
     builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=(10, 100))
-    expected_shapes = list(await builder.shapes.read())
+    expected_shapes = list(await builder.shapes[0:10].read())
 
     # Trim to smaller size
     await builder.trim_to_size_async(5)
@@ -266,7 +201,7 @@ async def test_trim_to_size_with_shapes_async():
     assert new_size == 5
 
     # Verify the shapes integrity
-    trimmed_shapes = await builder.shapes.read()
+    trimmed_shapes = await builder.shapes[0:5].read()
     assert np.array_equal(trimmed_shapes, jnp.stack(expected_shapes[:5]))
 
 
@@ -278,7 +213,7 @@ def test_trim_to_size():
     initial_size = len(builder)
     assert initial_size == 10
 
-    expected_data = list(builder[0:10])
+    expected_data = list([builder[i] for i in range(10)])
 
     # Trim to smaller size
     builder.trim_to_size(5)
@@ -286,7 +221,7 @@ def test_trim_to_size():
     assert new_size == 5
 
     # Verify the data integrity
-    trimmed_data = builder.data.read().result()
+    trimmed_data = builder.data[0:5000].read().result()
     assert jnp.all(trimmed_data == jnp.concatenate(expected_data[:5]))
 
     # Trim to zero size
@@ -295,8 +230,8 @@ def test_trim_to_size():
     assert new_size == 0
 
     # Verify the data integrity
-    trimmed_data = builder.data.read().result()
-    assert trimmed_data.size == 0
+    trimmed_data = builder.data[0:10000].read().result()
+    assert jnp.all(trimmed_data == 0)
 
 
 if __name__ == "__main__":
