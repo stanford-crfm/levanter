@@ -413,7 +413,7 @@ class Trainer:
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_step_info, every=1)
+        self.add_hook(callbacks.log_step_info(self.config.num_train_steps), every=1)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
