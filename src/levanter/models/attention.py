@@ -848,13 +848,15 @@ def _tpu_splash_attention(
         )
 
         if mask is None:
-            kernel_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+            masks = [splash_attention_mask.FullMask(_shape=(Sq, Sk)) for i in range(Hq)]
+            kernel_mask = splash_attention_mask.MultiHeadMask(masks=masks)
         elif isinstance(mask, AttentionMask):
             if mask.is_causal:
                 masks = [splash_attention_mask.CausalMask(shape=(Sq, Sq)) for i in range(Hq)]
-                kernel_mask = splash_attention_mask.MultiHeadMask(masks=masks)
             else:
-                kernel_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+                masks = [splash_attention_mask.FullMask(_shape=(Sq, Sk)) for i in range(Hq)]
+
+            kernel_mask = splash_attention_mask.MultiHeadMask(masks=masks)
 
             if mask.explicit_mask is not None:
                 raise NotImplementedError("Explicit masks are not yet supported for splash attention")

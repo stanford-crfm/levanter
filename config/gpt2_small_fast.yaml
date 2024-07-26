@@ -23,3 +23,7 @@ optimizer:
   learning_rate: 1E-3
   weight_decay: 0.1
   warmup: 0.01
+eval_harness:
+  task_spec: ["lambada", "piqa", "hellaswag"]
+  max_examples: 32
+eval_harness_steps: 1000

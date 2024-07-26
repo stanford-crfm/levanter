@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax.random import PRNGKey
 
 import haliax as hax
-from haliax import Axis, NamedArray
+from haliax import Axis, NamedArray, NamedOrNumeric
 from haliax.nn import cross_entropy_loss
 
 from levanter.models.attention import AttentionMask
@@ -44,6 +44,32 @@ class LmExample(eqx.Module):
             loss_mask = loss_mask * ignore_mask
 
         attn_mask = AttentionMask.causal()
+        return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+    @staticmethod
+    def from_prompt_and_completion(
+        Pos,
+        tokens: hax.NamedArray,
+        prompt_length: NamedOrNumeric,
+        *,
+        ignore_id: Optional[int] = None,
+        all_causal: bool = True,
+    ) -> "LmExample":
+        # mask out the prompt tokens
+        loss_mask = hax.arange(Pos) >= prompt_length
+        # also mask out the last token
+        loss_mask *= 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
+
+        if ignore_id is not None:
+            ignore_mask = tokens != ignore_id
+            loss_mask *= ignore_mask
+
+        if all_causal:
+            attn_mask = AttentionMask.causal()
+        else:
+            # causal just for the completion part. We don't have a special structured mask for this, so we just
+            raise NotImplementedError("Not implemented yet")
+
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 

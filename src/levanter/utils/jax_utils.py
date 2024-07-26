@@ -12,7 +12,8 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec, PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
-import haliax
+import haliax as hax
+from haliax import AxisSelector, is_named_array
 from haliax.jax_utils import is_jax_array_like
 from haliax.partitioning import ResourceAxis
 
@@ -41,7 +42,9 @@ def use_cpu_device():
 def local_cpu_mesh():
     """Temporarily sets the default device to CPU"""
     cpu = jax.local_devices(backend="cpu")[0]
-    mesh = jax.sharding.Mesh(np.array([cpu]).reshape(1, 1), ("data", "model"))
+    mesh = jax.sharding.Mesh(
+        np.array([cpu]).reshape(1, 1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    )
     with use_cpu_device(), mesh:
         yield mesh
 
@@ -250,7 +253,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
         devices = jax.devices()
 
     if mesh is None:
-        mesh = haliax.partitioning._get_mesh()
+        mesh = hax.partitioning._get_mesh()
         if mesh.devices.shape == ():
             mesh = None
 
@@ -332,3 +335,37 @@ def estimated_free_device_memory(device) -> Optional[float]:
         in_use = stats.get("bytes_in_use", 0)
 
         return (limit - in_use) // (1024.0**3)
+
+
+# @functools.partial(jax.jit, static_argnums=(0), static_argnames=("batch", "pad_to_batch_size"))
+def stack_tree(batch: AxisSelector, individual_datums: list[X], *, pad_to_batch_size: bool) -> X:
+    """
+    Stacks a tree of NamedArrays or arrays into a single array. NamedArrays get a new axis with the name batch_name,
+    while regular arrays are stacked normally.
+
+    Args:
+        batch: Axis or str name of the new axis.
+        individual_datums: The tree of NamedArrays or arrays to stack
+        pad_to_batch_size: If True, pads the arrays to the size of the batch axis (assuming batch is an axis). If False, stacks them as is.
+    """
+    if pad_to_batch_size and not isinstance(batch, hax.Axis):
+        raise ValueError("pad_to_batch_size can only be used with an Axis Batch")
+
+    if pad_to_batch_size:
+        missing_count = batch.size - len(individual_datums)
+
+        def _stack_leaves_unchecked(*leaves):
+            if is_named_array(leaves[0]):
+                return hax.stack(batch.name, leaves + tuple(hax.zeros_like(leaves[0]) for _ in range(missing_count)))
+            else:
+                return jnp.stack(leaves + tuple(jnp.zeros_like(leaves[0]) for _ in range(missing_count)))
+
+    else:
+
+        def _stack_leaves_unchecked(*leaves):
+            if is_named_array(leaves[0]):
+                return hax.stack(hax.axis_name(batch), leaves)
+            else:
+                return jnp.stack(leaves)
+
+    return jax.tree_map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)

@@ -15,6 +15,7 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.eval_harness import LmEvalHarnessConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -46,8 +47,9 @@ class TrainLmConfig:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
-    update_hessian_steps: int = 10
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
+    eval_harness: Optional[LmEvalHarnessConfig] = None
+    eval_harness_steps: int = 10000
 
 
 def main(config: TrainLmConfig):
@@ -178,6 +180,13 @@ def main(config: TrainLmConfig):
             trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
                 every=config.hf_save_steps,
+            )
+
+        if config.eval_harness is not None:
+            eval_harness = config.eval_harness
+            trainer.add_hook(
+                callbacks.lm_eval_harness(eval_harness, tokenizer, EvalBatch, compute_axis_mapping),
+                every=config.eval_harness_steps,
             )
 
         # visualize log probs
