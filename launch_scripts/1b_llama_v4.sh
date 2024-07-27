@@ -20,8 +20,8 @@ CMD="python src/levanter/main/train_lm.py \
     --trainer.wandb.resume true \
     --trainer.wandb.id $WANDB_RUN_ID \
     --trainer.wandb.name $WANDB_RUN_NAME \
-    --trainer.load_checkpoint_path $GS_BUCKET/$WANDB_RUN_NAME/$WANDB_RUN_ID/  \
-    --trainer.checkpointer.base_path $GS_BUCKET/$WANDB_RUN_NAME \
+    --trainer.load_checkpoint_path $GS_BUCKET/ivan-ttt/$WANDB_RUN_NAME/$WANDB_RUN_ID/  \
+    --trainer.checkpointer.base_path $GS_BUCKET/ivan-ttt/$WANDB_RUN_NAME \
     --trainer.checkpointer.save_interval 600m"
 echo $CMD
 python infra/launch.py --retries=$RETRIES --foreground --tpu_name $TPU_NAME --tpu_type $TPU_TYPE --zone $TPU_ZONE --run_id $WANDB_RUN_ID \
