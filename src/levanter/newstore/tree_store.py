@@ -109,7 +109,8 @@ class TreeStoreBuilder(Generic[T]):
         """
         Trim the store to a given size.
         """
-        self.tree = jtu.tree_map(lambda writer: writer.trim_to_size(size), self.tree, is_leaf=heuristic_is_leaf)
+        # TODO These all return ts Futures so in theory we could await them all at once
+        jtu.tree_map(lambda writer: writer.trim_to_size(size), self.tree, is_leaf=heuristic_is_leaf)
 
     async def trim_to_size_async(self, size: int):
         """

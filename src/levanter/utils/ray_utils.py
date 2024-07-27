@@ -85,10 +85,11 @@ class SnitchRecipient:
 
 
 @contextlib.contextmanager
-def log_failures_to(parent):
+def log_failures_to(parent, suppress=False):
     # parent is actorref of SnitchRecipient
     try:
         yield
     except Exception as e:
         parent._child_failed.remote(current_actor_handle(), ser_exc_info(e))
-        raise e
+        if not suppress:
+            raise e
