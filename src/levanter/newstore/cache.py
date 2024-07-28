@@ -259,8 +259,11 @@ class _OrderedCacheWriter:
 
         updated_shards: dict[str, int] = dict()
         for shard, batch in self._batch_queue.drain():
+            print(f"Writing batch for {shard}")
             self._tree_store.extend(batch)
             updated_shards[shard] = updated_shards.get(shard, 0) + len(batch)
+
+        print(f"Updated shards: {updated_shards}")
 
         need_to_commit = len(updated_shards) > 0
         total_rows = self._ledger.total_num_rows + sum(updated_shards.values())
@@ -889,8 +892,12 @@ class GroupRoundRobinBuffer(Generic[T]):
 
         cur_serial, item = self.buffers[group][0]
 
-        if cur_serial != self._totals_written[group]:
+        print(f"group: {group}, cur_serial: {cur_serial}, totals_written: {self._totals_written[group]}")
+
+        if cur_serial > self._totals_written[group]:
             return None
+        elif cur_serial < self._totals_written[group]:
+            raise ValueError(f"Duplicate serial {cur_serial} for group {group}")
 
         heapq.heappop(self.buffers[group])
 

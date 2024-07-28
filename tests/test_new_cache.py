@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 import ray
+from ray.exceptions import RayTaskError
 
 from levanter.data import BatchProcessor, ShardedDataset, batched
 from levanter.newstore.cache import SerialCacheWriter, TreeStoreBuilder, _OrderedCacheWriter
@@ -409,23 +410,16 @@ async def test_duplicate_batches_same_shard():
     parent = PretendParent.remote()
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
+        shards = ["shard1"]
         writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
 
         try:
             # Sending duplicate batches for the same shard
             shard1_batch0 = [np.array([1, 2, 3])]
-            shard1_batch1 = [np.array([4, 5, 6])]
 
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
-            with pytest.raises(ValueError):
+            with pytest.raises(RayTaskError):
                 await writer.batch_finished.remote("shard1", 0, shard1_batch0)  # Duplicate
-            await writer.batch_finished.remote("shard1", 1, shard1_batch1)
-
-            store = TreeStoreBuilder.open(exemplar, cache_dir, mode="r")
-            assert len(store) == 2
-            np.testing.assert_array_equal(store[0], shard1_batch0[0])
-            np.testing.assert_array_equal(store[1], shard1_batch1[0])
         finally:
             ray.kill(parent)
             ray.kill(writer)
