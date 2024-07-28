@@ -234,5 +234,72 @@ def test_trim_to_size():
     assert jnp.all(trimmed_data == 0)
 
 
+@pytest.mark.asyncio
+async def test_get_batch_single_item():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=1000)
+
+    # Retrieve a single item using get_batch
+    batch = await builder.get_batch([3])
+    result = batch[0]
+
+    expected_data = await builder.get_item_async(3)
+
+    assert np.array_equal(result, expected_data)
+
+
+@pytest.mark.asyncio
+async def test_get_batch_multiple_items():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=1000)
+
+    # Retrieve multiple items using get_batch
+    indices = [1, 4, 7]
+    batch = await builder.get_batch(indices)
+
+    for idx, result in zip(indices, batch):
+        expected_data = await builder.get_item_async(idx)
+        assert np.array_equal(result, expected_data)
+
+
+@pytest.mark.asyncio
+async def test_get_batch_out_of_order():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=1000)
+
+    # Retrieve items out of order using get_batch
+    indices = [7, 2, 5]
+    batch = await builder.get_batch(indices)
+
+    for idx, result in zip(indices, batch):
+        expected_data = await builder.get_item_async(idx)
+        assert np.array_equal(result, expected_data)
+
+
+@pytest.mark.asyncio
+async def test_get_batch_with_shapes():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=(10, 100))
+
+    # Retrieve multiple items using get_batch
+    indices = [0, 3, 6]
+    batch = await builder.get_batch(indices)
+
+    for idx, result in zip(indices, batch):
+        expected_data = await builder.get_item_async(idx)
+        assert np.array_equal(result, expected_data)
+
+
+@pytest.mark.asyncio
+async def test_get_batch_empty():
+    tmpdir = tempfile.TemporaryDirectory().name
+    builder = await create_builder_with_data(tmpdir, num_sequences=10, sequence_length=1000)
+
+    # Retrieve an empty batch
+    batch = await builder.get_batch([])
+
+    assert batch == []
+
+
 if __name__ == "__main__":
     pytest.main()

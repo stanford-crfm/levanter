@@ -135,6 +135,14 @@ class TreeStoreBuilder(Generic[T]):
         else:
             return len(jax.tree.leaves(self.tree)[0])
 
+    async def get_batch(self, indices) -> List[T]:
+        grouped = jtu.tree_map(lambda reader: reader.get_batch(indices), self.tree, is_leaf=heuristic_is_leaf)
+
+        leaves, structure = jtu.tree_flatten(grouped, is_leaf=heuristic_is_leaf)
+
+        awaited_leaves = await asyncio.gather(*leaves)
+        return [jtu.tree_unflatten(structure, [leaf[i] for leaf in awaited_leaves]) for i in range(len(indices))]
+
     def __getitem__(self, item):
         if self.tree is None:
             raise IndexError("No data in store")

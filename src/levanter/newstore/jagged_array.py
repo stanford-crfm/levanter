@@ -17,7 +17,7 @@ from levanter.utils.py_utils import future_from_value
 # zarr suggests 1MB chunk size (in bytes, but whatever)
 # at 4 bytes this is 256k elements
 DEFAULT_CHUNK_SIZE = 256 * 1024
-DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 128
+DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 512
 
 
 def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
@@ -201,21 +201,8 @@ class JaggedArrayStore:
         current_data_size = self.data_size
         current_num_rows = await self.num_rows_async()
 
-        # if size == 0:
-        #     # Just reset the data
-        #     data_fut = self.data[0:current_data_size].write(np.array(0, dtype=self.data.dtype.name))
-        #     if self.shapes is not None:
-        #         shape_fut = self.shapes[0:current_data_size].write(np.array((0, *self.shapes.shape[1:]), dtype=self.shapes.dtype.name))
-        #     else:
-        #         shape_fut = None
-        #
-        #     await self.offsets[0:current_data_size].write(0)
-        #
-        #     await data_fut
-        #     await shape_fut if shape_fut is not None else None
-        #     return
-
         offsets_fut = self.offsets[size + 1 : current_num_rows + 1].write(0)
+
         if size == 0:
             new_max = 0
         else:
@@ -306,7 +293,7 @@ class JaggedArrayStore:
         for task in write_tasks:
             task.result()
 
-        # Update num_rows
+        # Update num_rows. We want to make sure this comes after the other data is committed to avoid a race
         self.offsets[0].write(num_rows + len(arrays)).result()
 
     def _prepare_batch(self, arrays):
@@ -380,6 +367,31 @@ class JaggedArrayStore:
                     raise IndexError(f"JaggedArrayStore index out of range: {item}") from e
                 else:
                     raise e
+
+    async def get_batch(self, indices: Sequence[int]):
+        # get indices
+        with ts.Batch():
+            all_indices_futs = [self._bounds_for_rows_async(indices[i], indices[i] + 1) for i in range(len(indices))]
+
+        # shapes, if applicable
+        if self.shapes is not None:
+            with ts.Batch():
+                shapes_futs = [self.shapes[i].read() for i in indices]
+
+        all_indices = [(start, stop) for start, stop, _ in await asyncio.gather(*all_indices_futs)]
+
+        # get data
+        with ts.Batch():
+            data_futs = [self.data[start:stop].read() for start, stop in all_indices]
+
+        data = await asyncio.gather(*data_futs)
+
+        if self.shapes is not None:
+            shapes = await asyncio.gather(*shapes_futs)
+
+            data = [d.reshape(*s, -1) for d, s in zip(data, shapes)]
+
+        return data
 
     def __getitem__(self, item):
         if isinstance(item, slice):
