@@ -29,8 +29,9 @@ def bench_old_cache(old_cache_path):
 
 
 def bench_new_cache_serial(exemplar, new_cache_path):
-    new_cache = TreeStoreBuilder.open(exemplar, new_cache_path).tree["input_ids"].data
-    len_cache = new_cache.shape[0]
+    jagged_array = TreeStoreBuilder.open(exemplar, new_cache_path).tree["input_ids"]
+    len_cache = len(jagged_array)
+    new_cache = jagged_array.data
     num_batches = len_cache // SEQ_LEN
     for b in range(BATCHES):
         elems = []
@@ -46,8 +47,9 @@ def bench_new_cache_serial(exemplar, new_cache_path):
 
 
 def bench_new_cache_random(exemplar, new_cache_path):
-    new_cache: ts.TensorStore = TreeStoreBuilder.open(exemplar, new_cache_path).tree["input_ids"].data
-    len_cache = new_cache.shape[0]
+    jagged_array = TreeStoreBuilder.open(exemplar, new_cache_path).tree["input_ids"]
+    len_cache = len(jagged_array)
+    new_cache = jagged_array.data
     num_batches = len_cache // SEQ_LEN
     for b in range(BATCHES):
         elems = []
