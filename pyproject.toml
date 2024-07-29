@@ -50,7 +50,7 @@ dependencies = [
     "matplotlib>=3.7.0",
     "tblib>=1.7.0,<4.0.0",
     "dataclasses-json~=0.6.4",
-    "ray[default]==2.32.0",
+    "ray[default]==2.33.0",
     "pydantic<3",  # temporary pin until Ray supports pydantic 2.0
     "rich~=13.0",
     "filelock~=3.13",
