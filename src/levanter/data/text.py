@@ -125,6 +125,62 @@ class MaskedLmDataset(ShardableDataset[LmExample]):
                 yield example
 
 
+class CausalLmDataset(ShardableDataset[LmExample]):
+    def __init__(
+        self,
+        dataset: ShardableDataset[np.ndarray],
+        QPos: Axis,
+        KPos: Axis,
+        fcm_prob: float = 0.0,
+        key: Optional[PRNGKeyArray] = None,
+        ignore_index: Optional[int] = None,
+    ):
+        self.dataset = dataset
+        self.QPos = QPos
+        self.KPos = KPos
+        self.fcm_prob = fcm_prob
+        self.key = key
+        self.ignore_id = ignore_index
+
+        if self.fcm_prob > 0.0 and self.key is None:
+            raise ValueError("must provide key if fcm_prob > 0.0")
+
+    def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
+        return CausalLmDataset(
+            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id
+        )
+
+    def __iter__(self) -> Iterator[LmExample]:
+        key = self.key
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        with use_cpu_device():
+
+            @functools.partial(eqx.filter_jit, out_shardings=sharding)
+            def _create_lm_example(tokens, key):
+                tokens = hax.named(tokens, self.QPos)
+
+                example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+
+                if self.fcm_prob > 0:
+                    # masks for attention
+                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+                    assert self.key is not None
+                    this_key, key = jax.random.split(key)
+                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                    attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
+                    example = dataclasses.replace(example, attn_mask=attn_mask)
+
+                return example
+
+            for tokens in self.dataset:
+                example = _create_lm_example(tokens, key)
+                yield example
+
+
+
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
     """
