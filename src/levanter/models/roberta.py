@@ -400,7 +400,7 @@ class RobertaAttention(eqx.Module, StateDictSerializationMixin):
         attention_mask: Optional[NamedArray] = None,
         *,
         key
-    ) -> Tuple[NamedArray]:
+    ) -> NamedArray:
         k_a, k_o = maybe_rng_split(key, 2)
         
         self_outputs = self.self_attn(
@@ -476,13 +476,11 @@ class RobertaLayer(eqx.Module, StateDictSerializationMixin):
     ) -> Tuple[NamedArray]:
         k_a, k_o = maybe_rng_split(key, 2)
 
-        self_attention_outputs = self.attention(
+        attention_output = self.attention(
             hidden_states,
             attention_mask,
             key=k_a, 
         )
-
-        attention_output = self_attention_outputs
 
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output, key=k_o)
@@ -634,7 +632,7 @@ class RobertaPooler(eqx.Module, StateDictSerializationMixin):
     @named_call
     def __call__(self, hidden_states: NamedArray, *, key=None) -> NamedArray:
         first_token = hidden_states[{"position" : 0}]
-        x = self.dense(first_token, key=key).rename({self.config.Embed: self.config.FinalEmbed})
+        x = self.dense(first_token, key=key).rename({self.config.FinalEmbed: self.config.Embed})
         x = hax.tanh(x)
         return x
 
@@ -708,7 +706,7 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         if attention_mask is None:
             attention_mask = hax.ones(input_axes)
         
-        # Attention mask from mask to real numbers
+        # Attention mask from mask to actual numbers
         attention_mask = (attention_mask == 0) * -1e9
         
         embedding_output = self.embeddings.embed(input_ids, token_type_ids, position_ids, input_embeds, key=k_emb)
@@ -724,13 +722,14 @@ class RobertaLMHead(eqx.Module, StateDictSerializationMixin):
     dense: hnn.Linear
     layer_norm: hnn.LayerNorm
     decoder: hnn.Linear
+    config: RobertaConfig
 
     @staticmethod
     def init(Vocab: Axis, config: RobertaConfig, *, key):
         k_dense, k_decoder = jrandom.split(key, 2)
         Embed = config.Embed
 
-        dense = hnn.Linear.init(Embed, config.FinalEmbed, key=k_dense, out_first=True)
+        dense = hnn.Linear.init(In=Embed, Out=config.FinalEmbed, key=k_dense, out_first=True)
         layer_norm = hnn.LayerNorm.init(axis=Embed, eps=config.layer_norm_eps)
 
         decoder = hnn.Linear.init(Embed, Vocab, key=k_decoder, out_first=True)
@@ -739,12 +738,12 @@ class RobertaLMHead(eqx.Module, StateDictSerializationMixin):
         # self.bias = nn.Parameter(torch.zeros(config.vocab_size))
         # self.decoder.bias = self.bias
 
-        return RobertaLMHead(dense, layer_norm, decoder)
+        return RobertaLMHead(dense, layer_norm, decoder, config)
 
     @named_call
     def __call__(self, features: NamedArray, *, key=None) -> NamedArray:
-        x = self.dense(features).rename({self.config.Embed: self.config.FinalEmbed})
-        x = hnn.gelu(x)
+        x = self.dense(features).rename({self.config.FinalEmbed: self.config.Embed})
+        x = hnn.gelu(x, approximate=False)
         x = self.layer_norm(x)
 
         # project back to size of vocabulary with bias
@@ -763,8 +762,8 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         # if config.is_decoder:
         #     raise AttributeError("Model is being run as a MaskedLM aka an encoder model, but is_decoder is true")
 
-        k_rob, key_head = jrandom.split(key, 2)
-        roberta = RobertaModel.init(Vocab, config, add_pooling_layer=False, key=k_rob)
+        key_rob, key_head = jrandom.split(key, 2)
+        roberta = RobertaModel.init(Vocab, config, add_pooling_layer=False, key=key_rob)
         lm_head = RobertaLMHead.init(Vocab, config, key=key_head)
 
         return RobertaForMaskedLM(roberta, lm_head, Vocab)
@@ -775,14 +774,17 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
     def set_output_embeddings(self, new_embeddings):
         self.lm_head.decoder = new_embeddings
 
-    def forward(
+    @named_call
+    def __call__(
         self,
         input_ids: Optional[NamedArray] = None,
         attention_mask: Optional[NamedArray] = None,
         token_type_ids: Optional[NamedArray] = None,
         position_ids: Optional[NamedArray] = None,
-        inputs_embeds: Optional[NamedArray] = None,
+        input_embeds: Optional[NamedArray] = None,
         labels: Optional[NamedArray] = None,
+        *,
+        key=None
     ) -> Tuple[NamedArray]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -793,23 +795,20 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
             Used to hide legacy arguments that have been deprecated.
         """
 
+        k_rob, k_lm = maybe_rng_split(key, 2)
+
         outputs = self.roberta(
-            input_ids,
-            attn_mask=attention_mask,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
-            inputs_embeds=inputs_embeds
+            input_embeds=input_embeds,
+            key=k_rob
         )
 
-        sequence_output = outputs[0]
-        prediction_scores = self.lm_head(sequence_output)
+        prediction_scores = self.lm_head(outputs[0], key=k_lm)
 
-        masked_lm_loss = None
-        if labels is not None:
-            masked_lm_loss = hnn.cross_entropy_loss(logits=prediction_scores, Label=self.Vocab, targets=labels)
-
-        output = (prediction_scores,)
-        return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
+        return prediction_scores
     
     
 def _rotate_half(x: NamedArray) -> NamedArray:
