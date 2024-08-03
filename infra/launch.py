@@ -115,8 +115,8 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete
         f"--zone={zone}",
         "--quiet",
     ]
-    if capacity_type == "preemptible":
-        command.append("--preemptible")
+    if capacity_type in ["preemptible", "best-effort"]:
+        command.append("--best-effort")
     elif capacity_type == "reserved":
         command.append("--reserved")
     elif capacity_type == "spot":
