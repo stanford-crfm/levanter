@@ -38,9 +38,6 @@ def heuristic_is_leaf_batched(x):
 class TreeStoreBuilder(Generic[T]):
     """
     A TreeStoreBuilder stores batched data as a tree of ragged arrays.
-
-    This class could implement MutableSequence, but that would probably give the wrong impression.
-    In particular, a slice returns a T with JaggedArrays as leaves, rather than a list of Ts.
     """
 
     path: str
@@ -119,8 +116,7 @@ class TreeStoreBuilder(Generic[T]):
         futures = jtu.tree_map(lambda writer: writer.trim_to_size_async(size), self.tree, is_leaf=heuristic_is_leaf)
         leaves, structure = jax.tree_flatten(futures)
 
-        awaitted = await asyncio.gather(*leaves)
-        self.tree = jax.tree_unflatten(structure, awaitted)
+        await asyncio.gather(*leaves)
 
     def reload(self) -> "TreeStoreBuilder":
         """
@@ -146,6 +142,13 @@ class TreeStoreBuilder(Generic[T]):
     def __getitem__(self, item):
         if self.tree is None:
             raise IndexError("No data in store")
+        elif isinstance(item, slice):
+            # debatch
+            leaves, structure = jax.tree.flatten(self.tree, is_leaf=heuristic_is_leaf)
+            # batched_items = jtu.tree_map(lambda reader: reader[item], self.tree, is_leaf=heuristic_is_leaf)
+            batched_item_leaves = [leaf[item] for leaf in leaves]
+            num_items = len(leaves[0])
+            return [jtu.tree_unflatten(structure, [leaf[i] for leaf in batched_item_leaves]) for i in range(num_items)]
         else:
             return jtu.tree_map(lambda reader: reader[item], self.tree, is_leaf=heuristic_is_leaf)
 

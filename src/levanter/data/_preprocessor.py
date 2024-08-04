@@ -196,7 +196,7 @@ class _CompositeBatchProcessor(BatchProcessor):
         return batch
 
 
-def dict_from_record_batch(b):
+def dict_from_record_batch(b) -> dict:
     # we follow the convention from hf batchencoding where homogeneous-lengthed arrays are turned into nd arrays
     # while heterogeneous lists are left as lists of arrays
 

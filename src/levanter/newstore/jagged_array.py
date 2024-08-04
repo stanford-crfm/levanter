@@ -395,17 +395,21 @@ class JaggedArrayStore:
 
     def __getitem__(self, item):
         if isinstance(item, slice):
-            raise NotImplementedError("Slicing not supported")
-            # TODO: do we need to avoid reading len(self)?
+            # raise NotImplementedError("Slicing not supported")
+            # # TODO: do we need to avoid reading len(self)?
+            # start, stop, step = item.indices(len(self))
+            # if step != 1:
+            #     raise ValueError("JaggedArrayStore doesn't support slicing with step != 1")
+            # shapes = None if self.shapes is None else self.shapes[start:stop]
+            # # NB: JaggedArray not JaggedArrayStore
+            # # TODO: use a transformed TS?
+            # data_start, data_stop, offsets = self._bounds_for_rows(start, stop)
+            # new_offsets = offsets - offsets[0]
+            # return JaggedArray(new_offsets, self.data[data_start:data_stop].read().result(), shapes)
             start, stop, step = item.indices(len(self))
-            if step != 1:
-                raise ValueError("JaggedArrayStore doesn't support slicing with step != 1")
-            shapes = None if self.shapes is None else self.shapes[start:stop]
-            # NB: JaggedArray not JaggedArrayStore
-            # TODO: use a transformed TS?
-            data_start, data_stop, offsets = self._bounds_for_rows(start, stop)
-            new_offsets = offsets - offsets[0]
-            return JaggedArray(new_offsets, self.data[data_start:data_stop].read().result(), shapes)
+            # for now, just read the data into a list
+
+            return [self[i] for i in range(start, stop, step)]
         else:
             try:
                 start, stop, _ = self._bounds_for_rows(item, item + 1)

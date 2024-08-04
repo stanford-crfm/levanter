@@ -10,9 +10,35 @@ import ray
 from ray.exceptions import RayTaskError
 
 from levanter.data import BatchProcessor, ShardedDataset, batched
-from levanter.newstore.cache import SerialCacheWriter, TreeStoreBuilder, _OrderedCacheWriter
+from levanter.newstore.cache import SerialCacheWriter, TreeStoreBuilder, _OrderedCacheWriter, build_or_load_cache
 from levanter.utils.py_utils import logical_cpu_core_count
 from levanter.utils.ray_utils import ExceptionInfo, SnitchRecipient, ser_exc_info
+
+
+class TestProcessor(BatchProcessor[Sequence[int]]):
+    def __init__(self, batch_size: int = 8):
+        self._batch_size = batch_size
+
+    def __call__(self, batch: Sequence[Sequence[int]]) -> Sequence[dict[str, Sequence[int]]]:
+        # return pa.RecordBatch.from_arrays([pa.array(batch)], ["test"])
+        return [{"test": np.asarray(x)} for x in batch]
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @property
+    def num_cpus(self) -> int:
+        return 1
+
+
+def simple_process(processor, source):
+    result = []
+    for shard_name in source.shard_names:
+        for batch in source.open_shard(shard_name):
+            result.append(processor([batch])[0])
+
+    return result
 
 
 def setup_module(module):
@@ -114,7 +140,7 @@ class PretendParent(SnitchRecipient):
     def get_finished_shards(self):
         return self._finished_shards
 
-    def _set_finished(self):
+    def _finalize(self):
         self._finished = True
 
     def is_finished(self):
@@ -460,3 +486,25 @@ async def test_mixed_order_batches_multiple_shards():
         finally:
             ray.kill(parent)
             ray.kill(writer)
+
+
+@pytest.mark.ray
+def test_cache_simple():
+    td = tempfile.TemporaryDirectory()
+    with td as tmpdir:
+        exemplar = {"test": np.array([1, 2, 3], dtype=int)}
+        ray_ds = build_or_load_cache(
+            tmpdir,
+            exemplar,
+            SimpleShardSource(num_shards=1),
+            TestProcessor(),
+            await_finished=True,
+        )
+
+        simple_processed = simple_process(TestProcessor(), SimpleShardSource())
+
+        all_data = ray_ds[:]
+
+        for r, s in zip(all_data, simple_processed):
+            assert r.keys() == s.keys()
+            np.testing.assert_array_equal(r["test"], s["test"])
