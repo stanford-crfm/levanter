@@ -233,7 +233,6 @@ if __name__ == "__main__":
     tpu_name = args.tpu_name
     tpu_type = args.tpu_type
     node_count = args.node_count
-    assert isinstance(node_count, int) and node_count > 0
     version = args.version
     zone = args.zone
     run_id = args.run_id
