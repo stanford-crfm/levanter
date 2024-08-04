@@ -23,6 +23,7 @@ CMD="python src/levanter/main/train_lm.py \
     --trainer.wandb.name $WANDB_RUN_NAME \
     --trainer.load_checkpoint_path $GS_BUCKET/ivan-ttt/$WANDB_RUN_NAME/$WANDB_RUN_ID/  \
     --trainer.checkpointer.base_path $GS_BUCKET/ivan-ttt/$WANDB_RUN_NAME \
+    --trainer.replica_dcn_axis_size $NODE_COUNT \
     --trainer.checkpointer.save_interval 600m"
 echo $CMD
 python infra/launch.py --retries=$RETRIES --foreground \

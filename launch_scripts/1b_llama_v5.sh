@@ -21,6 +21,7 @@ CMD="python src/levanter/main/train_lm.py \
     --trainer.wandb.resume true \
     --trainer.wandb.id $WANDB_RUN_ID \
     --trainer.wandb.name $WANDB_RUN_NAME \
+    --trainer.replica_dcn_axis_size $NODE_COUNT \
     --trainer.load_checkpoint_path $GS_BUCKET/ivan-ttt/$WANDB_RUN_NAME/$WANDB_RUN_ID/  \
     --trainer.checkpointer.base_path $GS_BUCKET/ivan-ttt/$WANDB_RUN_NAME \
     --trainer.checkpointer.save_interval 600m"
