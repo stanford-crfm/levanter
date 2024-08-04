@@ -202,7 +202,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
-    cli.add_arg(parser, config, ["--node_count"], default=1)
+    cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
     cli.add_arg(parser, config, ["--zone"], required=True)
     cli.add_arg(parser, config, ["--retries"], default=0, type=int)
