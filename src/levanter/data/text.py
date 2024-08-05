@@ -14,6 +14,7 @@ import datasets
 import equinox as eqx
 import fsspec
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pyarrow as pa
 import regex
@@ -57,6 +58,65 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
+
+class MaskedLmDataset(ShardableDataset[LmExample]):
+    def __init__(
+        self,
+        dataset: ShardableDataset[np.ndarray],
+        QPos: Axis,
+        KPos: Axis,
+        mask_prob: float = 0.15,
+        key: Optional[PRNGKeyArray] = None,
+        ignore_index: Optional[int] = DEFAULT_IGNORE_INDEX,
+    ):
+        self.dataset = dataset
+        self.QPos = QPos
+        self.KPos = KPos
+        self.mask_prob = mask_prob
+        self.key = key
+        self.ignore_id = ignore_index if ignore_index is not None else DEFAULT_IGNORE_INDEX 
+
+        if self.mask_prob > 0.0 and self.key is None:
+            raise ValueError("must provide key if mask_prob > 0.0")
+
+    def shard(self, shard_id: int, num_shards: int) -> "MaskedLmDataset":
+        return MaskedLmDataset(
+            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.mask_prob, self.key, self.ignore_id
+        )
+
+    def __iter__(self) -> Iterator[LmExample]:
+        key = self.key
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        with use_cpu_device():
+            @functools.partial(eqx.filter_jit, out_shardings=sharding)
+            def _create_mlm_example(tokens, key):
+                tokens_array = tokens.array
+                
+                example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+                
+                if self.mask_prob > 0:
+                    this_key, key = jax.random.split(key)
+                    mask_shape = tokens_array.shape
+                    mask = jax.random.bernoulli(this_key, self.mask_prob, mask_shape)
+
+                    # Create a mask for 80% [MASK], 10% random, 10% original token
+                    rand = jax.random.uniform(this_key, mask_shape)
+                    mask_token = jnp.where(rand < 0.8, self.ignore_id, tokens_array)
+                    mask_token = jnp.where((rand >= 0.8) & (rand < 0.9), tokens_array, mask_token)
+                    random_tokens = jax.random.randint(this_key, mask_shape, 0, tokens_array.max() + 1)
+                    masked_tokens = jnp.where(mask, mask_token, random_tokens)
+
+                    masked_tokens_named = hax.named(masked_tokens, self.QPos)
+                    example = dataclasses.replace(example, tokens=masked_tokens_named)
+
+                return example
+
+            for tokens in self.dataset:
+                tokens_array = jnp.array(tokens)
+                tokens_named = hax.named(tokens_array, self.QPos)
+                example = _create_mlm_example(tokens_named, key)
+                yield example
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
@@ -112,6 +172,8 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             for tokens in self.dataset:
                 example = _create_lm_example(tokens, key)
                 yield example
+
+
 
 
 class TokenSeqDataset(ShardableDataset[np.ndarray]):
