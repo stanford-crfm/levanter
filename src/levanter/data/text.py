@@ -26,12 +26,10 @@ from haliax import Axis
 
 from levanter.data.mixture import MixtureDataset, StopStrategy
 
-# intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import AttentionMask
-from levanter.models.lm_model import LmExample
+from levanter.models.lm_model import MaskedLmExample, LmExample
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
-
 
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
@@ -54,7 +52,6 @@ from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, Wrappe
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
-
 logger = logging.getLogger("levanter.data.text")
 
 # TASKS:
@@ -65,13 +62,14 @@ LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
-class MaskedLmDataset(ShardableDataset[LmExample]):
+class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
     def __init__(
         self,
         dataset: ShardableDataset[np.ndarray],
         QPos: Axis,
         KPos: Axis,
         mask_prob: float = 0.15,
+        noise_prob: float = 0.1,
         key: Optional[PRNGKeyArray] = None,
         ignore_index: Optional[int] = DEFAULT_IGNORE_INDEX,
     ):
@@ -79,6 +77,7 @@ class MaskedLmDataset(ShardableDataset[LmExample]):
         self.QPos = QPos
         self.KPos = KPos
         self.mask_prob = mask_prob
+        self.noise_prob = noise_prob
         self.key = key
         self.ignore_id = ignore_index if ignore_index is not None else DEFAULT_IGNORE_INDEX 
 
@@ -87,10 +86,10 @@ class MaskedLmDataset(ShardableDataset[LmExample]):
 
     def shard(self, shard_id: int, num_shards: int) -> "MaskedLmDataset":
         return MaskedLmDataset(
-            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.mask_prob, self.key, self.ignore_id
+            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.mask_prob, self.noise_prob, self.key, self.ignore_id
         )
 
-    def __iter__(self) -> Iterator[LmExample]:
+    def __iter__(self) -> Iterator[MaskedLmExample]:
         key = self.key
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
 
@@ -98,31 +97,44 @@ class MaskedLmDataset(ShardableDataset[LmExample]):
             @functools.partial(eqx.filter_jit, out_shardings=sharding)
             def _create_mlm_example(tokens, key):
                 tokens_array = tokens.array
-                
-                example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
-                
+                targets = tokens_array.copy()
+
                 if self.mask_prob > 0:
                     this_key, key = jax.random.split(key)
                     mask_shape = tokens_array.shape
                     mask = jax.random.bernoulli(this_key, self.mask_prob, mask_shape)
 
-                    # Create a mask for 80% [MASK], 10% random, 10% original token
                     rand = jax.random.uniform(this_key, mask_shape)
                     mask_token = jnp.where(rand < 0.8, self.ignore_id, tokens_array)
-                    mask_token = jnp.where((rand >= 0.8) & (rand < 0.9), tokens_array, mask_token)
                     random_tokens = jax.random.randint(this_key, mask_shape, 0, tokens_array.max() + 1)
-                    masked_tokens = jnp.where(mask, mask_token, random_tokens)
+                    mask_token = jnp.where((rand >= 0.8) & (rand < 0.8 + self.noise_prob), random_tokens, mask_token)
+                    masked_tokens = jnp.where(mask, mask_token, tokens_array)
+
+                    # Set targets to the original tokens where mask is True, otherwise set to ignore_id
+                    targets = jnp.where(mask, tokens_array, self.ignore_id)
 
                     masked_tokens_named = hax.named(masked_tokens, self.QPos)
-                    example = dataclasses.replace(example, tokens=masked_tokens_named)
+                    targets_named = hax.named(targets, self.QPos)
+
+                    attn_mask_shape = (tokens_array.shape[0], tokens_array.shape[0])
+                    attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.QPos, self.KPos))
+
+                    example = MaskedLmExample.masked_lm(tokens=masked_tokens_named, targets=targets_named, ignore_id=self.ignore_id, attn_mask=attn_mask)
+                else:
+                    targets_named = hax.named(targets, self.QPos)
+                    attn_mask_shape = (tokens_array.shape[0], tokens_array.shape[0])
+                    attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.QPos, self.KPos))
+
+                    example = MaskedLmExample.masked_lm(tokens=tokens, targets=targets_named, ignore_id=self.ignore_id, attn_mask=attn_mask)
 
                 return example
 
-            for tokens in self.dataset:
-                tokens_array = jnp.array(tokens)
-                tokens_named = hax.named(tokens_array, self.QPos)
-                example = _create_mlm_example(tokens_named, key)
-                yield example
+        for tokens in self.dataset:
+            tokens_array = jnp.array(tokens)
+            tokens_named = hax.named(tokens_array, self.QPos)
+            example = _create_mlm_example(tokens_named, key)
+            yield example
+
 
 
 class CausalLmDataset(ShardableDataset[LmExample]):
@@ -155,7 +167,6 @@ class CausalLmDataset(ShardableDataset[LmExample]):
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
 
         with use_cpu_device():
-
             @functools.partial(eqx.filter_jit, out_shardings=sharding)
             def _create_lm_example(tokens, key):
                 tokens = hax.named(tokens, self.QPos)
@@ -163,10 +174,6 @@ class CausalLmDataset(ShardableDataset[LmExample]):
                 example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
 
                 if self.fcm_prob > 0:
-                    # masks for attention
-                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
                     assert self.key is not None
                     this_key, key = jax.random.split(key)
                     fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
@@ -178,7 +185,6 @@ class CausalLmDataset(ShardableDataset[LmExample]):
             for tokens in self.dataset:
                 example = _create_lm_example(tokens, key)
                 yield example
-
 
 
 
