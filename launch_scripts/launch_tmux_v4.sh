@@ -20,7 +20,7 @@ setup_window() {
 }
 
 # Set up N windows
-for i in {0..8}
+for i in {0..1}
 do
     setup_window $i
     echo "Window $i set up"

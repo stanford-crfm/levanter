@@ -1,7 +1,7 @@
 CONFIG_PATH="config/llama_1b.yaml"
 EXP_NAME="1b-llama-tok"
 TPU_TYPE="v4-256"
-NODE_COUNT=4
+NODE_COUNT=16
 TPU_ZONE="us-central2-b"
 GS_BUCKET="gs://marin-ckpt-us-c2"  # gs://marin-ckpt-us-w4, gs://marin-ckpt-us-c2
 
