@@ -248,7 +248,7 @@ class _OrderedCacheWriter:
         with log_failures_to(self._parent):
             self._batch_queue.group_total_known(shard_name, expected_num_rows)
             self._expected_num_rows[shard_name] = expected_num_rows
-            print(
+            logger.debug(
                 f"Attempting to write batches because {shard_name} finished reading with {expected_num_rows} batches."
             )
             self._attempt_to_write_batches()
@@ -272,12 +272,12 @@ class _OrderedCacheWriter:
 
         updated_shards: dict[str, int] = dict()
         for shard, batch in self._batch_queue.drain():
-            print(f"Writing batch for {shard}")
+            logger.debug(f"Writing batch for {shard}")
             batch = _canonicalize_batch(batch)
             self._tree_store.extend(batch)
             updated_shards[shard] = updated_shards.get(shard, 0) + len(batch)
 
-        print(f"Updated shards: {updated_shards}")
+        logger.debug(f"Updated shards: {updated_shards}")
 
         need_to_commit = len(updated_shards) > 0
         total_rows = self._ledger.total_num_rows + sum(updated_shards.values())
@@ -305,7 +305,6 @@ class _OrderedCacheWriter:
     def _check_for_finished_shards(self):
         futures_to_await_shards = []
         need_to_commit_for_shards = False
-        print(f"{self._expected_num_rows=} {self._ledger.shard_rows=}")
         for shard, expected_rows in self._expected_num_rows.items():
             if expected_rows is None:
                 continue
@@ -313,7 +312,7 @@ class _OrderedCacheWriter:
             current_rows = self._ledger.shard_rows.get(shard, 0)
             if current_rows == expected_rows:
                 if shard not in self._ledger.finished_shards:
-                    print(f"Shard {shard} finished.")
+                    logger.info(f"Shard {shard} finished.")
                     self._ledger.finished_shards.append(shard)
                     futures_to_await_shards.append(self._parent.shard_finished.remote(shard))
                     need_to_commit_for_shards = True
@@ -488,11 +487,10 @@ class ShardReaderItem(PriorityWorkItem):
                             batch=RefBox(ray.put(batch)),
                         )
                     )
-                    print(f"Got batch result: {batch_result_ref}")
+                    logger.debug(f"Got batch result: {batch_result_ref}")
                     write_finished_ref = writer.batch_finished.remote(
                         self.shard_name, self.batch_idx, RefBox(batch_result_ref)
                     )
-                    print("Started future.")
                     self.batch_idx += 1
                     self._total_rows += len(batch)
                 except Exception as e:
@@ -502,7 +500,7 @@ class ShardReaderItem(PriorityWorkItem):
                     raise e
 
             if exhausted_shard:
-                print(f"Shard {self.shard_name} exhausted. Expecting {self._total_rows} rows.")
+                logger.debug(f"Shard {self.shard_name} exhausted. Expecting {self._total_rows} rows.")
                 writer.shard_finished_reading.remote(self.shard_name, self._total_rows)
 
             self.group.logger.debug(f"Finished reading one batch of shard {self.shard_name}: {self.batch_idx}")
@@ -689,7 +687,6 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
 
     def _child_failed(self, child: ray.actor.ActorHandle, exception: ExceptionInfo):
         self.logger.error(f"Child {child} failed with exception", exc_info=exception.restore())
-        print(f"Child {child} failed with exception {exception}", flush=True)
         self._writer_exception(None, exception)
 
     def is_finished(self):
@@ -710,7 +707,6 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             return self._ledger
 
     def _writer_exception(self, shard_name, exc_info: ExceptionInfo):
-        print(f"Writer task {shard_name} failed with exception", flush=True)
         info = exc_info.restore()
 
         logger.exception(f"Writer task {shard_name} failed with exception", exc_info=info)
@@ -828,9 +824,7 @@ class TreeCache(AsyncDataset[T_co]):
     async def _wait_for_len(self, needed_len):
         if self._broker is not None:
             while needed_len > await self.current_len():
-                print("Sleeping", flush=True)
                 new_ledger = await self._broker.updated_ledger.remote()
-                print(f"Waiting for {needed_len} rows, have {new_ledger.total_num_rows}", flush=True)
 
                 if needed_len <= new_ledger.total_num_rows:
                     break
@@ -925,15 +919,12 @@ class TreeCache(AsyncDataset[T_co]):
     def _get_start_stops(self, slice):
         start = slice.start or 0
         if slice.stop is None:
-            print("WAITING FOR FINISHED")
             stop = len(self)
         elif slice.stop < 0:
-            print("WAITING FOR FINISHED")
             stop = len(self) + slice.stop
         else:
             stop = slice.stop
         if start < 0:
-            print("WAITING FOR FINISHED")
             start = len(self) + slice.start
         step = slice.step or 1
         return start, step, stop
@@ -948,7 +939,6 @@ class TreeCache(AsyncDataset[T_co]):
                 assert self._broker is not None
                 ledger = ray.get(self._broker.current_ledger.remote())
                 metrics = _ledger_to_metrics(ledger)
-                print(f"Metrics: {metrics}")
                 if metrics.rows_finished == 0 and metrics.is_finished:
                     # this means we built an empty cache. go with it
                     self._store = TreeStoreBuilder.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
@@ -1050,7 +1040,7 @@ class GroupRoundRobinBuffer(Generic[T]):
 
         cur_serial, item = self.buffers[group][0]
 
-        print(
+        logger.debug(
             f"group: {group}, cur_serial: {cur_serial}, totals_written: {self._totals_written[group]},"
             f" totals_expected: {self._totals_expected.get(group)}"
         )
