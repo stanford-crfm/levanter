@@ -10,6 +10,7 @@ import ray
 from ray.exceptions import RayTaskError
 
 from levanter.data import BatchProcessor, ShardedDataset, batched
+from levanter.data.sharded_dataset import TextUrlDataset
 from levanter.newstore.cache import (
     SerialCacheWriter,
     TreeStoreBuilder,
@@ -761,3 +762,52 @@ def test_shard_cache_crashes_if_processor_throws():
         with pytest.raises(RuntimeError):
             exemplar = {"test": np.array([1, 2, 3], dtype=int)}
             build_or_load_cache(tmpdir, exemplar, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
+
+
+@pytest.mark.ray
+def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(f"{tmpdir}/data.txt", "w") as f:
+            f.write("")
+
+        with pytest.raises(ValueError):
+            TextUrlDataset(
+                [f"{tmpdir}/data.txt", f"{tmpdir}/data.txt"],
+            )
+
+        with open(f"{tmpdir}/data.txt.1", "w") as f:
+            f.write("")
+
+            dataset = TextUrlDataset(
+                [f"{tmpdir}/data.txt", f"{tmpdir}/data.txt.1"],
+            )
+
+            exemplar = {"test": np.array([1, 2, 3], dtype=int)}
+
+            build_or_load_cache(tmpdir, exemplar, dataset, TestProcessor(), await_finished=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.ray
+async def test_shard_cache_fails_gracefully_with_unknown_file_type():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        exemplar = {"test": np.array([1, 2, 3], dtype=int)}
+        with open(f"{tmpdir}/data.not_a_real_extension", "w") as f:
+            f.write("")
+
+        dataset = TextUrlDataset(
+            [f"{tmpdir}/data.not_a_real_extension"],
+        )
+
+        with pytest.raises(ValueError):
+            build_or_load_cache(tmpdir, exemplar, dataset, TestProcessor(), await_finished=True)
+
+        # now make sure it works in non-blocking mode
+
+        cache = build_or_load_cache(tmpdir, exemplar, dataset, TestProcessor(), await_finished=False)
+
+        with pytest.raises(ValueError):
+            await cache.get_batch([0])
+
+        with pytest.raises(ValueError):
+            cache.await_finished(timeout=10)
