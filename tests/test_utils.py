@@ -193,10 +193,14 @@ def skip_in_ci(fn_or_msg):
     return pytest.mark.skipif("CI" in os.environ, reason="skipped in CI")(fn_or_msg)
 
 
-class IdentityProcessor(BatchProcessor[BatchEncoding]):
+class IdentityProcessor(BatchProcessor[BatchEncoding, BatchEncoding]):
     def __call__(self, batch: Sequence[BatchEncoding]) -> BatchEncoding:
         stacked = reduce(_stack_batch_encodings, batch)
         return stacked
+
+    @property
+    def output_exemplar(self):
+        return BatchEncoding({})
 
     @property
     def num_cpus(self) -> int:

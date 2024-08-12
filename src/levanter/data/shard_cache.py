@@ -45,6 +45,7 @@ from .sharded_dataset import ShardedDataset
 G = TypeVar("G")
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
+U = TypeVar("U")
 
 
 logger = pylogging.getLogger(__name__)
@@ -60,7 +61,7 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 def build_or_load_cache(
     cache_dir: str,
     input_shards: ShardedDataset[T],
-    processor: BatchProcessor[T],
+    processor: BatchProcessor[T, U],
     batch_size: int = 1,
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
     await_finished: bool = True,
@@ -804,7 +805,7 @@ class ChunkCacheBuilder(SnitchRecipient):
         cache_dir: str,
         name: str,
         source: ShardedDataset[T],
-        processor: BatchProcessor[T],
+        processor: BatchProcessor[T, U],
         rows_per_chunk: int,
         randomize_shards: bool,
         shards_to_read_at_once: int,
@@ -1033,7 +1034,7 @@ class ChunkCacheBroker(SnitchRecipient):
         self,
         cache_dir: str,
         source: ShardedDataset[T],
-        processor: BatchProcessor[T],
+        processor: BatchProcessor[T, U],
         rows_per_chunk: int,
         cache_config: Optional[Dict[str, Any]],
         randomize_shards: bool,
@@ -1271,7 +1272,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
     def build_or_load(
         cache_dir: str,
         shard_source: ShardedDataset[T],
-        processor: BatchProcessor[T],
+        processor: BatchProcessor[T, U],
         batch_size: int,
         rows_per_chunk: int,
         cache_config: Optional[Dict[str, Any]] = None,

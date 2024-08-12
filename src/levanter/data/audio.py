@@ -63,7 +63,7 @@ AudioTextDict = TypedDict(
 )
 
 
-class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
+class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextStorageBatch]):
     """
     A batch processor that converts raw audio into the expected inputs of a model.
     """
@@ -81,7 +81,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
         padding=True,
     ):
         self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
-        self.bt: PreTrainedTokenizerBase = BatchTokenizer(
+        self.bt = BatchTokenizer(
             tokenizer,
             enforce_bos=enforce_bos,
             enforce_eos=enforce_eos,
@@ -115,6 +115,15 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str]]):
         combined_features["audio_shape"] = [a_shape[1:]] * a_shape[0]
         combined_features["input_features"] = a_features.reshape(a_shape[0], -1)
         return combined_features
+
+    @property
+    def output_exemplar(self):
+        return {
+            "input_features": np.zeros((0,), dtype=np.float32),
+            "input_ids": np.zeros((0,), dtype=np.int64),
+            "attention_mask": np.zeros((0,), dtype=np.int64),
+            "audio_shape": np.zeros((self.feature_extractor.feature_size,), dtype=np.int64),
+        }
 
     @property
     def num_cpus(self) -> int:
@@ -282,7 +291,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
         await_finished=True,
         override_resources=None,
     ) -> "ProcessedAudioCache":
-        bp: BatchProcessor[Tuple[np.ndarray, int, str]] = BatchAudioProcessor(
+        bp = BatchAudioProcessor(
             processor,
             tokenizer,
             enforce_bos=enforce_bos,

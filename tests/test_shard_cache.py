@@ -25,7 +25,7 @@ def teardown_module(module):
 # - test idempotency of writes
 
 
-class TestProcessor(BatchProcessor[Sequence[int]]):
+class TestProcessor(BatchProcessor[Sequence[int], pa.RecordBatch]):
     def __init__(self, batch_size: int = 8):
         self._batch_size = batch_size
 

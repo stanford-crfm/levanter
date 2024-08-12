@@ -10,12 +10,16 @@ from levanter.data.utils import batched
 from levanter.newstore.tree_store import TreeStoreBuilder
 
 
-class SimpleProcessor(BatchProcessor[Sequence[int]]):
+class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
     def __init__(self, batch_size: int = 8):
         self._batch_size = batch_size
 
     def __call__(self, batch: Sequence[Sequence[int]]) -> Sequence[dict[str, Sequence[int]]]:
         return [{"data": x} for x in batch]
+
+    @property
+    def output_exemplar(self) -> dict[str, Sequence[int]]:
+        return {"data": np.array([0], dtype=np.int64)}
 
     @property
     def batch_size(self) -> int:

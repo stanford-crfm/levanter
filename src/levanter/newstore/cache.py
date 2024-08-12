@@ -39,7 +39,7 @@ from .tree_store import TreeStoreBuilder
 
 
 T = TypeVar("T")
-T_out = TypeVar("T_out")
+U = TypeVar("U")
 
 logger = pylogging.getLogger(__name__)
 
@@ -51,13 +51,13 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 def build_or_load_cache(
     cache_dir: str,
-    exemplar: T_out,
+    exemplar: U,
     input_shards: ShardedDataset[T],
-    processor: BatchProcessor[T],
+    processor: BatchProcessor[T, U],
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     cache_config: Optional[Dict[str, Any]] = None,
-) -> "TreeCache[T_out]":
+) -> "TreeCache[U]":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
     on any file system understood by fsspec.
@@ -541,7 +541,7 @@ def _load_cache_ledger(cache_dir) -> CacheLedger:
         raise FileNotFoundError(f"Cache ledger not found at {ledger_path}")
 
 
-def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
+def _mk_queue_aware_process_task(processor: BatchProcessor[T, U], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(desc, batch: List[T]):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
@@ -581,7 +581,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         exemplar,
         name: str,
         source: ShardedDataset[T],
-        processor: BatchProcessor[T],
+        processor: BatchProcessor[T, U],
         cache_config: Dict[str, Any],
     ):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
@@ -857,11 +857,11 @@ class TreeCache(AsyncDataset[T_co]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        exemplar: T_out,
+        exemplar: U,
         shard_source: ShardedDataset[T],
-        processor: BatchProcessor[T],
+        processor: BatchProcessor[T, U],
         cache_config: Optional[Dict[str, Any]] = None,
-    ) -> "TreeCache[T_out]":
+    ) -> "TreeCache[U]":
         try:
             return TreeCache.load(cache_dir, exemplar)
         except FileNotFoundError:

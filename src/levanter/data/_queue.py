@@ -20,6 +20,7 @@ from ._preprocessor import BatchProcessor, as_record_batch
 logger = pylogging.getLogger(__name__)
 
 T = TypeVar("T")
+U = TypeVar("U")
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
@@ -65,7 +66,7 @@ class PriorityWorkItem(Protocol):
             return self.priority <= other.priority
 
 
-def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
+def _mk_queue_aware_process_task(processor: BatchProcessor[T, U], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(desc, batch: List[T]) -> pa.RecordBatch:
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
@@ -120,7 +121,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
     def batch_size(self):
         return self.processor.batch_size
 
-    def __init__(self, batch_processor: BatchProcessor[T]):
+    def __init__(self, batch_processor: BatchProcessor[T, U]):
         self.pqueue = PriorityQueue()
         self.processor = batch_processor
         self._next_task_id = 0

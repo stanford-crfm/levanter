@@ -22,13 +22,17 @@ from levanter.utils.py_utils import logical_cpu_core_count
 from levanter.utils.ray_utils import ExceptionInfo, SnitchRecipient, ser_exc_info
 
 
-class TestProcessor(BatchProcessor[Sequence[int]]):
+class TestProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
     def __init__(self, batch_size: int = 8):
         self._batch_size = batch_size
 
     def __call__(self, batch: Sequence[Sequence[int]]) -> Sequence[dict[str, np.ndarray]]:
         # return pa.RecordBatch.from_arrays([pa.array(batch)], ["test"])
         return [{"test": np.asarray(x)} for x in batch]
+
+    @property
+    def output_exemplar(self):
+        return {"test": np.array([0], dtype=np.int64)}
 
     @property
     def batch_size(self) -> int:
@@ -75,7 +79,7 @@ def teardown_module(module):
     ray.shutdown()
 
 
-class SimpleProcessor(BatchProcessor[Sequence[int]]):
+class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
     def __init__(self, batch_size: int = 8):
         self._batch_size = batch_size
 
@@ -89,6 +93,10 @@ class SimpleProcessor(BatchProcessor[Sequence[int]]):
     @property
     def num_cpus(self) -> int:
         return 1
+
+    @property
+    def output_exemplar(self) -> dict[str, np.ndarray]:
+        return {"data": np.array([0], dtype=np.int64)}
 
 
 class SimpleShardSource(ShardedDataset[list[int]]):
@@ -551,9 +559,13 @@ def test_cache_remembers_its_cached():
         exemplar = {"test": np.array([1, 2, 3], dtype=int)}
         ds1 = build_or_load_cache(tmpdir, exemplar, SimpleShardSource(), TestProcessor())
 
-        class ThrowingProcessor(BatchProcessor[Sequence[int]]):
+        class ThrowingProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
             def __call__(self, batch: Sequence[Sequence[int]]):
                 raise RuntimeError("This should not be called")
+
+            @property
+            def output_exemplar(self) -> dict[str, np.ndarray]:
+                return {"test": np.array([0], dtype=np.int64)}
 
             @property
             def batch_size(self) -> int:
@@ -746,9 +758,13 @@ async def test_can_get_elems_before_finished():
 
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
-    class ThrowingProcessor(BatchProcessor[Sequence[int]]):
+    class ThrowingProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
         def __call__(self, batch: Sequence[Sequence[int]]):
             raise RuntimeError("exc")
+
+        @property
+        def output_exemplar(self) -> dict:
+            return {"test": np.array([0], dtype=np.int64)}
 
         @property
         def batch_size(self) -> int:

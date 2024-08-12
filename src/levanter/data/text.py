@@ -36,7 +36,7 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
-from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
+from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.dataset import ShardableDataset, ShuffleDataset  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
@@ -331,7 +331,7 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
 ws = regex.compile(r"\s")
 
 
-class BatchTokenizer(BatchProcessor[str]):
+class BatchTokenizer(BatchProcessor[str, BatchEncoding]):
     """
     A batch processor that tokenizes a batch of strings using a tokenizer.
     By default, this will append eos to the end of the string, even if the tokenizer doesn't.
@@ -394,6 +394,10 @@ class BatchTokenizer(BatchProcessor[str]):
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
 
         return encoding
+
+    @property
+    def output_exemplar(self) -> BatchEncoding:
+        return self.tokenizer("hi there", return_attention_mask=self.return_attention_mask, verbose=False)
 
     @property
     def name_or_path(self):
