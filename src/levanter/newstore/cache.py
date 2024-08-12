@@ -51,7 +51,6 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 def build_or_load_cache(
     cache_dir: str,
-    exemplar: U,
     input_shards: ShardedDataset[T],
     processor: BatchProcessor[T, U],
     await_finished: bool = True,
@@ -88,7 +87,6 @@ def build_or_load_cache(
     # first see if we need to do anything
     cache = TreeCache.build_or_load(
         cache_dir=cache_dir,
-        exemplar=exemplar,
         shard_source=input_shards,
         processor=processor,
         cache_config=cache_config,
@@ -578,7 +576,6 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
     def __init__(
         self,
         cache_dir: str,
-        exemplar,
         name: str,
         source: ShardedDataset[T],
         processor: BatchProcessor[T, U],
@@ -592,6 +589,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self._updated_ledger_condition = asyncio.Condition()
         self._ledger = CacheLedger(0, {})
         self.shards_in_progress: set[str] = set()
+        exemplar = processor.output_exemplar
 
         self._finished_promise: asyncio.Future[None] = asyncio.Future()
         # used to subscribe to metrics updates
@@ -740,14 +738,13 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self._do_notify()
 
 
-def _get_builder_actor(cache_dir, exemplar, input_shards, processor, cache_config=None):
+def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None):
     name = f"lev_cache_manager::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
 
     return _TreeStoreCacheBuilder.options(name=name, get_if_exists=True).remote(  # type: ignore
         name=name_for_display,
-        exemplar=exemplar,
         cache_dir=cache_dir,
         source=input_shards,
         processor=processor,
@@ -857,22 +854,20 @@ class TreeCache(AsyncDataset[T_co]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        exemplar: U,
         shard_source: ShardedDataset[T],
         processor: BatchProcessor[T, U],
         cache_config: Optional[Dict[str, Any]] = None,
     ) -> "TreeCache[U]":
         try:
-            return TreeCache.load(cache_dir, exemplar)
+            return TreeCache.load(cache_dir, processor.output_exemplar)
         except FileNotFoundError:
             broker = _get_builder_actor(
                 cache_dir=cache_dir,
-                exemplar=exemplar,
                 input_shards=shard_source,
                 processor=processor,
                 cache_config=cache_config,
             )
-            return TreeCache(cache_dir=cache_dir, exemplar=exemplar, ledger=None, _broker=broker)
+            return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
 
     def finished_sentinel(self):
         """Returns a Ray-awaitable object that will be set when the cache is finished"""
