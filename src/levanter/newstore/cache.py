@@ -781,7 +781,7 @@ class TreeCache(AsyncDataset[T_co]):
         name = os.path.join(*cache_dir.split("/")[-2:])
         self.logger = pylogging.getLogger(f"TreeCache.{name}")
 
-        self._monitor_thread = threading.Thread(target=self._monitor_metrics)
+        self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
         self._monitor_thread.start()
 
     @property
