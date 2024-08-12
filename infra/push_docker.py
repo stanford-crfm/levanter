@@ -38,16 +38,6 @@ GCP_CLEANUP_POLICY = [
 ]
 
 
-def _cp(src, dst):
-    assert not dst.exists(), f"Copy failed. Destination path ({dst}) already exists."
-    if src.is_dir():
-        shutil.copytree(src, dst)
-    elif src.is_file():
-        shutil.copy(src, dst)
-    else:
-        raise RuntimeError(f"Copy failed. Source path ({src}) is neither a directory nor a file. Check if it exists.")
-
-
 def _rm(path):
     if path.is_dir():
         shutil.rmtree(path, ignore_errors=True)
@@ -55,6 +45,18 @@ def _rm(path):
         os.remove(path)
     elif path.exists():
         raise RuntimeError(f"Remove failed. Path ({path}) is neither a directory nor a file.")
+
+
+def _cp(src, dst):
+    # delete dst if exists
+    _rm(dst)
+
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    elif src.is_file():
+        shutil.copy(src, dst)
+    else:
+        raise RuntimeError(f"Copy failed. Source path ({src}) is neither a directory nor a file. Check if it exists.")
 
 
 def _run(argv):
@@ -154,16 +156,18 @@ def build_docker(docker_file, image_name, tag, mount_src) -> str:
     """Builds a Docker image, enables artifact access, and pushes to Artifact Registry."""
     # Copy external files temporarily to .mnt
     mount_dst = Path(".mnt")
-    _rm(mount_dst)  # Remove previous .mnt if necessary
     _cp(mount_src, mount_dst)
 
+    # Get mounting path in docker image.
+    levanter_path = Path("/opt/levanter")
+    mount_path = levanter_path / mount_src
     _run(
         [
             "docker",
             "buildx",
             "build",
             "--build-arg",
-            f"MOUNT_PATH={mount_src.absolute()}",
+            f"MOUNT_PATH={mount_path.resolve()}",
             "--platform=linux/amd64",
             "-t",
             f"{image_name}:{tag}",
