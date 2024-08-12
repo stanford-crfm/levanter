@@ -4,6 +4,7 @@ import heapq
 import logging as pylogging
 import os
 import threading
+from concurrent.futures import Future as threading_Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Sequence, TypeVar, Union
@@ -754,7 +755,6 @@ class TreeCache(AsyncDataset[T_co]):
     # monitor_thread waits for new metrics and also periodically reloads the cache
     _monitor_thread: Optional[threading.Thread]
     _metrics_monitors: List[MetricsMonitor]
-    _store: Optional[TreeStoreBuilder[T_co]]
 
     def __init__(
         self,
@@ -767,36 +767,33 @@ class TreeCache(AsyncDataset[T_co]):
         self.ledger = ledger
         self._was_already_finished = ledger is not None and ledger.is_finished
         self._broker = _broker
-        self._store = None
         self._exemplar = exemplar
 
         self._metrics_monitors = []
         name = os.path.join(*cache_dir.split("/")[-2:])
         self.logger = pylogging.getLogger(f"TreeCache.{name}")
+        self._store_future: threading_Future[TreeStoreBuilder] = threading_Future()
 
         self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
         self._monitor_thread.start()
 
     @property
     def store(self) -> TreeStoreBuilder[T_co]:
-        if self._store is None:
-            raise ValueError("Store not set yet")
+        return self._store_future.result()
 
-        return self._store
+    async def store_async(self) -> TreeStoreBuilder[T_co]:
+        return await asyncio.wrap_future(self._store_future)
 
     async def async_len(self) -> int:
         if self._broker is not None:
             self.await_finished()
-            assert self._store is not None
-            return len(self._store)
-        else:
-            assert self._store is not None
-            return len(self._store)
+
+        return len(await self.store_async())
 
     def __len__(self):
         self.await_finished()
 
-        return len(self._store)
+        return len(self.store)
 
     async def length_is_known(self) -> bool:
         if self._broker is not None:
@@ -808,18 +805,17 @@ class TreeCache(AsyncDataset[T_co]):
         return True
 
     async def current_len(self) -> int:
-        if self._store is None:
-            assert self._broker is not None
+        if not self._store_future.done():
             return 0
-        else:
-            return len(self._store)
+
+        return len(await self.store_async())
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         max_idx = max(indices) + 1
         await self._wait_for_len(max_idx)
-        assert self._store is not None
+        store = await self.store_async()
 
-        return await self._store.get_batch(indices)
+        return await store.get_batch(indices)
 
     async def _wait_for_len(self, needed_len):
         if self._broker is not None:
@@ -907,14 +903,13 @@ class TreeCache(AsyncDataset[T_co]):
 
     def get_batch_sync(self, indices_or_slice, *, timeout=None):
         # TODO: wait until we have a cache
-        if self._store is None:
-            raise ValueError("Cache not loaded yet")
+        store = self.store
 
         if isinstance(indices_or_slice, slice):
             start, step, stop = self._get_start_stops(indices_or_slice)
-            return self.store.get_batch(range(start, stop, step))
+            return store.get_batch(range(start, stop, step))
         else:
-            return self.store.get_batch(indices_or_slice)
+            return store.get_batch(indices_or_slice)
 
     def _get_start_stops(self, slice):
         start = slice.start or 0
@@ -931,27 +926,32 @@ class TreeCache(AsyncDataset[T_co]):
 
     def await_finished(self, timeout: Optional[float] = None):
         x = ray.get(self.finished_sentinel(), timeout=timeout)
-        if self._store is None:
-            try:
-                self._store = TreeStoreBuilder.open(self._exemplar, self.cache_dir, mode="r")
-            except FileNotFoundError:
-                logger.error(f"Cache at {self.cache_dir} not found.")
-                assert self._broker is not None
-                ledger = ray.get(self._broker.current_ledger.remote())
-                metrics = _ledger_to_metrics(ledger)
-                if metrics.rows_finished == 0 and metrics.is_finished:
-                    # this means we built an empty cache. go with it
-                    self._store = TreeStoreBuilder.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
-                else:
-                    raise
-
+        self._attempt_to_load_store()
         return x
 
     async def finished(self):
         x = await self.finished_sentinel()
-        if self._store is None:
-            self._store = TreeStoreBuilder.open(self._exemplar, self.cache_dir, mode="r")
+        # TODO: make an async version of this
+        self._attempt_to_load_store()
         return x
+
+    def _attempt_to_load_store(self):
+        if self._store_future.done():
+            return
+
+        try:
+            store = TreeStoreBuilder.open(self._exemplar, self.cache_dir, mode="r")
+        except FileNotFoundError:
+            logger.error(f"Cache at {self.cache_dir} not found.")
+            assert self._broker is not None
+            ledger = ray.get(self._broker.current_ledger.remote())
+            metrics = _ledger_to_metrics(ledger)
+            if metrics.rows_finished == 0 and metrics.is_finished:
+                # this means we built an empty cache. go with it
+                store = TreeStoreBuilder.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
+            else:
+                raise
+        self._store_future.set_result(store)
 
     def attach_metrics_monitor(self, monitor: MetricsMonitor):
         if self._broker is None:
@@ -974,8 +974,7 @@ class TreeCache(AsyncDataset[T_co]):
                         break
                 except TimeoutError:
                     pass
-                if self._store is None:
-                    self._store = TreeStoreBuilder.open(self._exemplar, self.cache_dir, mode="r")
+                self._attempt_to_load_store()
             except Exception as e:
                 self.logger.exception("Error while reading metrics from shard cache.")
                 raise e
