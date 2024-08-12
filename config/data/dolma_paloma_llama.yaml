@@ -1,4 +1,4 @@
-cache_dir: "gs://marin-data/tokenized/OLMo-1B/dolma-v1.7"
+cache_dir: "gs://marin-data/tokenized/dolma-v1.7/llama2"
 tokenizer: "meta-llama/Llama-2-7b-hf"
 stop_strategy: restart
 configs:
