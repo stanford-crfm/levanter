@@ -35,17 +35,21 @@ def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
 
     # TODO: groups?
     # TODO: set chunk sizes
-    return ts.open(
-        spec,
-        dtype=jnp.dtype(dtype).name,
-        shape=[2**54, *shape[1:]],
-        # chunk_layout=ts.ChunkLayout(
-        #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
-        #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
-        # ),
-        # compression={"codec": "zstd", "compression_level": 5},
-        **mode,
-    ).result()
+    try:
+        return ts.open(
+            spec,
+            dtype=jnp.dtype(dtype).name,
+            shape=[2**54, *shape[1:]],
+            # chunk_layout=ts.ChunkLayout(
+            #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
+            #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
+            # ),
+            # compression={"codec": "zstd", "compression_level": 5},
+            **mode,
+        ).result()
+    except ValueError as e:
+        if "NOT_FOUND" in str(e):
+            raise FileNotFoundError(f"File not found: {path}") from e
 
 
 async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):

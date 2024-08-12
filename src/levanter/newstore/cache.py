@@ -4,7 +4,6 @@ import heapq
 import logging as pylogging
 import os
 import threading
-import traceback
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Sequence, TypeVar, Union
@@ -40,6 +39,7 @@ from .tree_store import TreeStoreBuilder
 
 
 T = TypeVar("T")
+T_out = TypeVar("T_out")
 
 logger = pylogging.getLogger(__name__)
 
@@ -51,13 +51,13 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 def build_or_load_cache(
     cache_dir: str,
-    exemplar: T,
+    exemplar: T_out,
     input_shards: ShardedDataset[T],
     processor: BatchProcessor[T],
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     cache_config: Optional[Dict[str, Any]] = None,
-) -> "TreeCache":
+) -> "TreeCache[T_out]":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
     on any file system understood by fsspec.
@@ -227,10 +227,15 @@ class _OrderedCacheWriter:
             # double check that we're not finished by committing the ledger
             self._attempt_to_write_batches()
 
-    def batch_finished(self, shard_name: str, shard_batch_idx: int, batch_result):
+    def batch_finished(self, shard_name: str, shard_batch_idx: int, batch_result_box):
         with log_failures_to(self._parent):
             if self._failed:
                 logger.warning("Received batch after failure. Ignoring.")
+                return
+            if isinstance(batch_result_box, RefBox):
+                batch_result = ray.get(batch_result_box.ref)
+            else:
+                batch_result = batch_result_box
             # we need to keep track of the order of the batches so that we can write them out in order
             self._batch_queue.append_to_group(shard_name, shard_batch_idx, batch_result)
             return self._attempt_to_write_batches()
@@ -291,8 +296,9 @@ class _OrderedCacheWriter:
             self._ledger.total_num_rows = total_rows
             _serialize_json_and_commit(os.path.join(self.cache_dir, LEDGER_FILE_NAME), self._ledger)
 
+            futures_to_await.append(self._parent._updated_ledger.remote(self._ledger))
+
             if self._ledger.is_finished:
-                print("Finishing?")
                 f = self._parent._finalize.remote()
                 futures_to_await.append(f)
 
@@ -476,20 +482,26 @@ class ShardReaderItem(PriorityWorkItem):
 
             if batch:
                 priority = self.spec.priority_fn(self.shard_idx, self.batch_idx)
-                # these times aren't exact because the times might be from different machines
-                # but they're just for logging
-                batch_result_ref = ray.get(
-                    self.spec.processor_actor.submit.remote(
-                        priority=priority,
-                        desc=f"{self.shard_name}.{self.batch_idx}",
-                        batch=RefBox(ray.put(batch)),
+                try:
+                    batch_result_ref = ray.get(
+                        self.spec.processor_actor.submit.remote(
+                            priority=priority,
+                            desc=f"{self.shard_name}.{self.batch_idx}",
+                            batch=RefBox(ray.put(batch)),
+                        )
                     )
-                )
-                print("Got batch result.")
-                write_finished_ref = writer.batch_finished.remote(self.shard_name, self.batch_idx, batch_result_ref)
-                print("Started future.")
-                self.batch_idx += 1
-                self._total_rows += len(batch)
+                    print(f"Got batch result: {batch_result_ref}")
+                    write_finished_ref = writer.batch_finished.remote(
+                        self.shard_name, self.batch_idx, RefBox(batch_result_ref)
+                    )
+                    print("Started future.")
+                    self.batch_idx += 1
+                    self._total_rows += len(batch)
+                except Exception as e:
+                    self.group.logger.exception(f"Error while processing batch {self.batch_idx}")
+                    # fire and forget
+                    writer.shard_failed.remote(self.shard_name, self.batch_idx, ser_exc_info())
+                    raise e
 
             if exhausted_shard:
                 print(f"Shard {self.shard_name} exhausted. Expecting {self._total_rows} rows.")
@@ -576,27 +588,30 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.source = source
         self._cache_dir = cache_dir
-        self._metrics = InProgressCacheMetrics()
+        # self._metrics = InProgressCacheMetrics()
+        self._updated_ledger_condition = asyncio.Condition()
+        self._ledger = CacheLedger(0, {})
         self.shards_in_progress: set[str] = set()
 
         self._finished_promise: asyncio.Future[None] = asyncio.Future()
         # used to subscribe to metrics updates
-        self._metrics_condition = asyncio.Condition()
         self._cache_config = cache_config
         path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
         name = f"broker::{path_for_name}"
         self.logger = pylogging.getLogger(f"{name}")
-        self._cache_writer = _OrderedCacheWriter.options(name=f"cache_writer.{name}", lifetime="detached").remote(  # type: ignore
+        self._cache_writer = _OrderedCacheWriter.remote(  # type: ignore
             current_actor_handle(), exemplar, cache_dir, source.shard_names
         )
 
         try:
             cache_ledger = _load_cache_ledger(self._cache_dir)
             self._ledger = cache_ledger
-            self._is_finished = True
-            self._finished_promise.set_result(None)
         except FileNotFoundError:
-            self._start_workers(cache_dir, name, processor, source)
+            pass
+
+        if self._ledger.is_finished:
+            self._finished_promise.set_result(None)
+        self._start_workers(cache_dir, name, processor, source)
 
     def _start_workers(self, cache_dir, name, processor, source):
         if len(source.shard_names) == 0:
@@ -660,13 +675,15 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
 
     def shard_finished(self, shard_name: str):
         """Callback method for when a shard worker has finished."""
-        self._metrics.shards_finished += 1
-        self._do_notify()
         self.shards_in_progress.remove(shard_name)
 
     def shard_failed(self, shard_name: str, error: ExceptionInfo):
         """Callback method for when a shard worker has failed."""
         self._writer_exception(shard_name, error)
+
+    def _updated_ledger(self, ledger: CacheLedger):
+        self._ledger = ledger
+        self._do_notify()
 
     def other_failed(self, error: ExceptionInfo):
         """Callback method for when a shard worker has failed."""
@@ -674,57 +691,49 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
 
     def _child_failed(self, child: ray.actor.ActorHandle, exception: ExceptionInfo):
         self.logger.error(f"Child {child} failed with exception", exc_info=exception.restore())
+        print(f"Child {child} failed with exception {exception}", flush=True)
         self._writer_exception(None, exception)
 
     def is_finished(self):
-        return self._metrics.is_finished
+        return self._ledger.is_finished
 
     async def finished_sentinel(self):
         await self._finished_promise
 
-    async def updated_metrics(self) -> InProgressCacheMetrics:
+    async def updated_ledger(self) -> CacheLedger:
         if self._finished_promise.done():
             if self._finished_promise.exception() is not None:
                 raise self._finished_promise.exception()  # type: ignore
             else:
-                return self._metrics
+                return self._ledger
 
-        async with self._metrics_condition:
-            await self._metrics_condition.wait()
-            return self._metrics
+        async with self._updated_ledger_condition:
+            await self._updated_ledger_condition.wait()
+            return self._ledger
 
     def _writer_exception(self, shard_name, exc_info: ExceptionInfo):
+        print(f"Writer task {shard_name} failed with exception", flush=True)
         info = exc_info.restore()
 
         logger.exception(f"Writer task {shard_name} failed with exception", exc_info=info)
 
-        # format the tb and put it into the exception object because for some reason set_exception eats the original tb
-        msg = f"{info[0].__name__}: {info[1]}"
-        # info[2] is a traceback, not an iterable
-        # formatted_tb = "\n".join(info[2])
-        # formatted_tb = info[2].format()
-        formatted_tb = "\n".join(traceback.format_exception(info[0], info[1], info[2]))
-        formatted_tb = f"{msg}\n{formatted_tb}"
-
-        ex = Exception(formatted_tb)
-        ex.__cause__ = info[1]
-
-        self._finished_promise.set_exception(ex)
+        self._finished_promise.set_exception(info[1])
         self._do_notify()
 
     def _do_notify(self):
         async def _do_notify_async():
-            async with self._metrics_condition:
-                self._metrics_condition.notify_all()
+            async with self._updated_ledger_condition:
+                self._updated_ledger_condition.notify_all()
 
         asyncio.create_task(_do_notify_async())
+
+    def current_ledger(self):
+        return self._ledger
 
     def _finalize(self):
         logger.info(f"Finalizing cache {self._cache_dir}...")
 
-        self._metrics.is_finished = True
-        self._is_finished = True
-
+        self._ledger.is_finished = True
         self._finished_promise.set_result(None)
 
         # notify metrics subscribers
@@ -763,6 +772,7 @@ class TreeCache(AsyncDataset[T_co]):
     ):
         self.cache_dir = cache_dir
         self.ledger = ledger
+        self._was_already_finished = ledger is not None and ledger.is_finished
         self._broker = _broker
         self._store = None
         self._exemplar = exemplar
@@ -821,15 +831,18 @@ class TreeCache(AsyncDataset[T_co]):
     async def _wait_for_len(self, needed_len):
         if self._broker is not None:
             while needed_len > await self.current_len():
-                # TODO: reload?
-                new_metrics = await self._broker.updated_metrics.remote()
+                print("Sleeping", flush=True)
+                new_ledger = await self._broker.updated_ledger.remote()
+                print(f"Waiting for {needed_len} rows, have {new_ledger.total_num_rows}", flush=True)
 
-                if needed_len < new_metrics.num_rows:
+                if needed_len <= new_ledger.total_num_rows:
                     break
 
-                if new_metrics.is_finished:
-                    if needed_len >= new_metrics.num_rows:
-                        raise IndexError(f"Index {needed_len} out of bounds for cache of size {new_metrics.num_rows}")
+                if new_ledger.is_finished:
+                    if needed_len >= new_ledger.rows_finished:
+                        raise IndexError(
+                            f"Index {needed_len} out of bounds for cache of size {new_ledger.total_num_rows}"
+                        )
                     break
 
     @staticmethod
@@ -844,11 +857,11 @@ class TreeCache(AsyncDataset[T_co]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        exemplar: T,
+        exemplar: T_out,
         shard_source: ShardedDataset[T],
         processor: BatchProcessor[T],
         cache_config: Optional[Dict[str, Any]] = None,
-    ):
+    ) -> "TreeCache[T_out]":
         try:
             return TreeCache.load(cache_dir, exemplar)
         except FileNotFoundError:
@@ -877,15 +890,8 @@ class TreeCache(AsyncDataset[T_co]):
 
     def __getitem__(self, item):
         if isinstance(item, slice):
-            start = item.start or 0
-            if item.stop is None:
-                stop = len(self)
-            elif item.stop < 0:
-                stop = len(self) + item.stop
-            else:
-                stop = item.stop
-
-            step = item.step or 1
+            start, step, stop = self._get_start_stops(item)
+            # TODO: wait for store to be set
             return self.store[start:stop:step]
         else:
             if item < 0:
@@ -894,10 +900,65 @@ class TreeCache(AsyncDataset[T_co]):
                 raise IndexError(f"Index {item} out of bounds for cache of size {len(self)}")
             return self.store[item]
 
+    # async def get_batch_async(self, indices: Sequence[int] | slice):
+    #     # this is tricky: we want to wait until either the cache is finished or we have the max index
+    #     if isinstance(indices, slice):
+    #         # TODO: don't block event loop for negative indices
+    #         start, step, stop = self._get_start_stops(indices)
+    #         await self._wait_for_len(max(stop, start))
+    #         indices = range(start, stop, step)
+    #
+    #     max_index = max(indices)
+    #     await self._wait_for_len(max_index + 1)
+    #
+    #     if await self.current_len() <= max_index:
+    #         raise IndexError(f"Index {max_index} out of bounds for cache of size {await self.current_len()}")
+    #
+    #     return await self.get_batch(indices)
+
+    def get_batch_sync(self, indices_or_slice, *, timeout=None):
+        # TODO: wait until we have a cache
+        if self._store is None:
+            raise ValueError("Cache not loaded yet")
+
+        if isinstance(indices_or_slice, slice):
+            start, step, stop = self._get_start_stops(indices_or_slice)
+            return self.store.get_batch(range(start, stop, step))
+        else:
+            return self.store.get_batch(indices_or_slice)
+
+    def _get_start_stops(self, slice):
+        start = slice.start or 0
+        if slice.stop is None:
+            print("WAITING FOR FINISHED")
+            stop = len(self)
+        elif slice.stop < 0:
+            print("WAITING FOR FINISHED")
+            stop = len(self) + slice.stop
+        else:
+            stop = slice.stop
+        if start < 0:
+            print("WAITING FOR FINISHED")
+            start = len(self) + slice.start
+        step = slice.step or 1
+        return start, step, stop
+
     def await_finished(self, timeout: Optional[float] = None):
         x = ray.get(self.finished_sentinel(), timeout=timeout)
         if self._store is None:
-            self._store = TreeStoreBuilder.open(self._exemplar, self.cache_dir, mode="r")
+            try:
+                self._store = TreeStoreBuilder.open(self._exemplar, self.cache_dir, mode="r")
+            except FileNotFoundError:
+                logger.error(f"Cache at {self.cache_dir} not found.")
+                assert self._broker is not None
+                ledger = ray.get(self._broker.current_ledger.remote())
+                metrics = _ledger_to_metrics(ledger)
+                print(f"Metrics: {metrics}")
+                if metrics.rows_finished == 0 and metrics.is_finished:
+                    # this means we built an empty cache. go with it
+                    self._store = TreeStoreBuilder.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
+                else:
+                    raise
 
         return x
 
@@ -920,7 +981,8 @@ class TreeCache(AsyncDataset[T_co]):
         while True:
             try:
                 try:
-                    metrics = ray.get(self._broker.updated_metrics.remote(), timeout=10.0)
+                    ledger = ray.get(self._broker.updated_ledger.remote(), timeout=10.0)
+                    metrics = _ledger_to_metrics(ledger)
                     for monitor in self._metrics_monitors:
                         monitor(metrics)
                     if metrics.is_finished:
@@ -932,6 +994,16 @@ class TreeCache(AsyncDataset[T_co]):
             except Exception as e:
                 self.logger.exception("Error while reading metrics from shard cache.")
                 raise e
+
+
+def _ledger_to_metrics(ledger: CacheLedger) -> InProgressCacheMetrics:
+    return InProgressCacheMetrics(
+        rows_finished=ledger.total_num_rows,
+        is_finished=ledger.is_finished,
+        # shard_rows=ledger.shard_rows,
+        # finished_shards=ledger.finished_shards,
+        field_counts=ledger.field_counts,
+    )
 
 
 class GroupRoundRobinBuffer(Generic[T]):

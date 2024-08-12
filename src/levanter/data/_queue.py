@@ -145,7 +145,10 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
             self.ready = False
             item = self.pqueue.get()
             batch = item.batch
-            item.task_future.set_result(self._task_processor.remote(item.desc, batch))
+            try:
+                item.task_future.set_result(self._task_processor.remote(item.desc, batch))
+            except Exception as e:
+                item.task_future.set_exception(e)
 
     def task_running(self):
         self.ready = True
