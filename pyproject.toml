@@ -98,6 +98,6 @@ test = [
     "pytest-asyncio"
 ]
 
-[tool.setuptools]
-packages = ["find:src"]
-package-dir = { "" = "src" }
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["levanter", "levanter.*"]
