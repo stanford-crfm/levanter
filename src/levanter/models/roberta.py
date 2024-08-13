@@ -136,7 +136,7 @@ class RobertaConfig(HFCompatConfig):
     reference_checkpoint: str = "FacebookAI/roberta-base"
     tokenizer: Optional[str] = None
 
-    # Axis
+    # Axes
     Pos = property(lambda self: Axis(name="position", size=self.max_position_embeddings))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     Embed = property(lambda self: Axis(name="embed", size=self.hidden_size))
@@ -147,10 +147,7 @@ class RobertaConfig(HFCompatConfig):
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_size))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_size // self.num_attention_heads))
 
-    def __post_init__(self):
-        # TODO
-        pass
-    
+
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig) -> "RobertaConfig":
         return RobertaConfig(
@@ -707,7 +704,7 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
             attention_mask = hax.ones(input_axes)
         
         # Attention mask from mask to actual numbers
-        attention_mask = (attention_mask == 0) * -1e9
+        attention_mask = (attention_mask == 0) * -jnp.inf
         
         embedding_output = self.embeddings.embed(input_ids, token_type_ids, position_ids, input_embeds, key=k_emb)
         sequence_output = self.encoder(embedding_output, attention_mask=attention_mask, key=k_e)
@@ -782,7 +779,6 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         token_type_ids: Optional[NamedArray] = None,
         position_ids: Optional[NamedArray] = None,
         input_embeds: Optional[NamedArray] = None,
-        labels: Optional[NamedArray] = None,
         *,
         key=None
     ) -> Tuple[NamedArray]:
@@ -798,7 +794,7 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         k_rob, k_lm = maybe_rng_split(key, 2)
 
         outputs = self.roberta(
-            input_ids=input_ids,
+            input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
