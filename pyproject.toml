@@ -99,5 +99,5 @@ test = [
 ]
 
 [tool.setuptools]
-packages = ["levanter"]
+packages = ["find:src"]
 package-dir = { "" = "src" }
