@@ -138,6 +138,13 @@ To run in the foreground, use `--foreground` with the `launch.py` script. You sh
 python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
+### Using external directory/file
+
+In case that you want to reference some external directory/file outside of the levanter repo, you can do it by mounting the external directory/file to the docker image so that it becomes accessible in TPU instances. You can specify the path you want to mount by `--mount_path` with the `launch.py` script. Then, you should be able to use the mounted files in arguments in `train_lm.py` etc.
+```bash
+python infra/launch.py --mount_path <external path> -- python src/levanter/main/train_lm.py --config_path <external path> --trainer.checkpointer.base_path gs://<somewhere>'
+```
+
 ### Babysitting Script
 
 If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
