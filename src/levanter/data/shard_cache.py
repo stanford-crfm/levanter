@@ -53,7 +53,7 @@ DEFAULT_MAX_SHARDS_TO_READ_AT_ONCE = 32
 LEDGER_FILE_NAME = "cache_ledger.json"
 
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-LEVEL_TO_LOG = pylogging.DEBUG
+LEVEL_TO_LOG = pylogging.INFO
 
 
 def build_or_load_cache(
