@@ -1,4 +1,4 @@
-ARG IMAGE=ghcr.io/rjpower/levanter
+ARG IMAGE=ghcr.io/stanford-crfm/levanter-base
 ARG TAG=latest
 
 FROM ${IMAGE}:${TAG}
@@ -12,6 +12,8 @@ ENV TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60\
 
 WORKDIR /opt/levanter
 
+# We have to mkdir src/ to avoid setuptools error
+RUN mkdir -p /opt/levanter/src
 ADD pyproject.toml README.md /opt/levanter/
 RUN pip install -e '.[test]'
 ADD . /opt/levanter
