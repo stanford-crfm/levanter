@@ -7,7 +7,6 @@ import json
 import os
 import subprocess
 import time
-from pathlib import Path
 
 from infra import push_docker
 from infra.helpers import cli
@@ -211,7 +210,6 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
     cli.add_arg(parser, config, ["--github_user"], type=str)
     cli.add_arg(parser, config, ["--github_token"], type=str)
-    cli.add_arg(parser, config, ["--mount_path"], type=Path, default=Path("config"))
 
     parser.add_argument(
         "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
@@ -241,7 +239,6 @@ if __name__ == "__main__":
     registry = args.docker_registry
     github_user = args.github_user
     github_token = args.github_token
-    mount_path = args.mount_path
 
     region = "-".join(zone.split("-")[:-1])
     env = {k: v for k, v in args.env}
@@ -262,7 +259,6 @@ if __name__ == "__main__":
             github_user=github_user,
             github_token=github_token,
             docker_file="docker/tpu/Dockerfile.incremental",
-            mount_path=mount_path,
         )
     elif registry == "gcp":
         full_image_id = push_docker.push_to_gcp(
@@ -272,7 +268,6 @@ if __name__ == "__main__":
             image_name=image_id,
             tag=tag,
             docker_file="docker/tpu/Dockerfile.incremental",
-            mount_path=mount_path,
         )
     else:
         raise ValueError(f"Unknown docker registry: {args.docker_registry}")
