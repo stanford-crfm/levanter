@@ -160,14 +160,14 @@ def build_docker(docker_file, image_name, tag, mount_src) -> str:
 
     # Get mounting path in docker image.
     levanter_path = Path("/opt/levanter")
-    extra_context = levanter_path / mount_src
+    mount_path = levanter_path / mount_src
     _run(
         [
             "docker",
             "buildx",
             "build",
             "--build-arg",
-            f"EXTRA_CTX={extra_context.resolve()}",
+            f"MOUNT_PATH={mount_path.resolve()}",
             "--platform=linux/amd64",
             "-t",
             f"{image_name}:{tag}",
