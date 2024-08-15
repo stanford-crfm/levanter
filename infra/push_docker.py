@@ -183,7 +183,7 @@ def build_docker(docker_file, image_name, tag, mount_src) -> str:
 
 
 # Disabled until we can figure out how Docker hub organizations work
-def push_to_github(local_image, tag, github_user=None, github_token=None, docker_file=None, mount_path=None):
+def push_to_github(local_image, tag, github_user=None, github_token=None, docker_file=None, extra_context=None):
     """Pushes a local Docker image to Docker Hub."""
 
     # Authenticate the docker service with Github if a token exists
@@ -194,17 +194,17 @@ def push_to_github(local_image, tag, github_user=None, github_token=None, docker
         print(login_process.communicate(input=github_token.encode(), timeout=10))
 
     remote_name = f"ghcr.io/{github_user}/{local_image}:{tag}"
-    local_name = build_docker(docker_file=docker_file, image_name=local_image, tag=tag, mont_src=mount_path)
+    local_name = build_docker(docker_file=docker_file, image_name=local_image, tag=tag, mount_src=extra_context)
 
     _run(["docker", "tag", local_name, remote_name])
     _run(["docker", "push", remote_name])
     return remote_name
 
 
-def push_to_gcp(project_id, region, repository, image_name, tag, docker_file, mount_path) -> str:
+def push_to_gcp(project_id, region, repository, image_name, tag, docker_file, extra_context) -> str:
     """Pushes a local Docker image to Artifact Registry."""
     configure_gcp_docker(project_id, region, repository)
-    local_image = build_docker(docker_file=docker_file, image_name=image_name, tag=tag, mount_src=mount_path)
+    local_image = build_docker(docker_file=docker_file, image_name=image_name, tag=tag, mount_src=extra_context)
 
     artifact_repo = f"{region}-docker.pkg.dev/{project_id}/{repository}"
 
@@ -248,5 +248,5 @@ if __name__ == "__main__":
             args.image,
             args.tag,
             docker_file=args.docker_file,
-            mount_path=Path("config"),
+            extra_context=Path("config"),
         )
