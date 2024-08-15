@@ -9,7 +9,7 @@ TPU_NAME="$EXP_NAME-$UNIQUE_ID-$TPU_ZONE-$TPU_TYPE"
 RUN_ID="$EXP_NAME-$UNIQUE_ID-$TPU_ZONE-$TPU_TYPE-$DATE"
 RETRIES=100
 
-CMD="python ray_scripts/ray_tpu_actor.py"
+CMD="python ray_scripts/ray_tpu_task.py"
 echo $CMD
 python infra/launch.py --retries=$RETRIES --foreground \
     --tpu_name $TPU_NAME --tpu_type $TPU_TYPE --zone $TPU_ZONE --node_count $NODE_COUNT \
