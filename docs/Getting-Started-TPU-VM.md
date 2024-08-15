@@ -140,7 +140,7 @@ python infra/launch.py -- python src/levanter/main/train_lm.py --config_path con
 
 ### Using external directory/file
 
-In case that you want to reference some external directory/file outside of the levanter repo, you can do it by mounting the external directory/file to the docker image so that it becomes accessible in TPU instances. You can specify the path you want to mount by `--extra_context` with the `launch.py` script. Then, you should be able to use the mounted files in arguments in `train_lm.py` etc.
+In case that you want to reference some external directory/file outside of the levanter repo, you can do it by adding the external directory/file to the docker image so that it becomes accessible in TPU instances. You can specify the path you want to add as extra buildl context by `--extra_context` with the `launch.py` script. Then, you should be able to use the external files in arguments in `train_lm.py` etc.
 ```bash
 python infra/launch.py --extra_context <external path> -- python src/levanter/main/train_lm.py --config_path <external path> --trainer.checkpointer.base_path gs://<somewhere>'
 ```
