@@ -50,9 +50,9 @@ def _cp(src, dst):
 
 def _rm(path):
     if path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(".mnt", ignore_errors=True)
     elif path.is_file():
-        os.remove(path)
+        os.remove(".mnt")
     elif path.exists():
         raise RuntimeError(f"Remove failed. Path ({path}) is neither a directory nor a file.")
 
