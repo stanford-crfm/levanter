@@ -315,6 +315,7 @@ class _RemoteClassWrapper:
         return self
 
     def __getattr__(self, key):
+        assert len(self.instances) > 0, "Instances not initialized."
         all_values = [
             getattr(inst, key) for inst in self.instances
         ]
