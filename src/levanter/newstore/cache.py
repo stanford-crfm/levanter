@@ -45,8 +45,8 @@ U = TypeVar("U")
 logger = pylogging.getLogger(__name__)
 
 LEDGER_FILE_NAME = "shard_ledger.json"
-DEFAULT_LOG_LEVEL = pylogging.INFO
 
+DEFAULT_LOG_LEVEL = pylogging.INFO
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
@@ -222,6 +222,11 @@ class _OrderedCacheWriter:
             self._tree_store = TreeStoreBuilder.open(exemplar, self.cache_dir, mode="a")
             # careful: trim the store to the total number of rows in the cache that we've committed to
             self._tree_store.trim_to_size(self._ledger.total_num_rows)
+            # we also have to tell the queue how many rows for each shard we've already written
+            for shard, num_rows in self._ledger.shard_rows.items():
+                if num_rows > 0:
+                    logger.info(f"Already written {num_rows} rows for shard {shard}")
+                self._batch_queue.fast_forward(shard, num_rows)
 
             # double check that we're not finished by committing the ledger
             self._attempt_to_write_batches()
@@ -405,7 +410,7 @@ class ShardGroupTaskGroup(PriorityWorkTaskGroup):
             try:
                 current_shard_status[shard_name] = ray.get(self.spec.writer.get_shard_status.remote(shard_name))
             except Exception as e:
-                self.spec.builder_ref.shard_failed(shard_name, ser_exc_info())
+                self.spec.builder_ref.shard_failed.remote(shard_name, ser_exc_info())
                 raise e
 
         batch_size = self.spec.batch_size
@@ -615,6 +620,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             self.logger.warning("No shards to index?!?")
             self._finalize()
         else:
+            self.logger.debug(f"Starting cache build for {source.shard_names}")
             self.logger.info(f"Starting cache build for {len(source.shard_names)} shards")
 
             self_ref = current_actor_handle()
@@ -1011,6 +1017,8 @@ class GroupRoundRobinBuffer(Generic[T]):
         if group not in self._remaining_groups:
             raise ValueError(f"Group {group} already finished")
 
+        logger.debug(f"Appending item {item_serial} to {group}")
+
         heapq.heappush(self.buffers[group], (item_serial, item))
 
     def group_total_known(self, group: str, total: int):
@@ -1039,10 +1047,10 @@ class GroupRoundRobinBuffer(Generic[T]):
 
         cur_serial, item = self.buffers[group][0]
 
-        logger.debug(
-            f"group: {group}, cur_serial: {cur_serial}, totals_written: {self._totals_written[group]},"
-            f" totals_expected: {self._totals_expected.get(group)}"
-        )
+        # logger.debug(
+        #     f"group: {group}, cur_serial: {cur_serial}, totals_written: {self._totals_written[group]},"
+        #     f" totals_expected: {self._totals_expected.get(group)}"
+        # )
 
         if cur_serial > self._totals_written[group]:
             return None
@@ -1050,6 +1058,7 @@ class GroupRoundRobinBuffer(Generic[T]):
             raise ValueError(f"Duplicate serial {cur_serial} for group {group}")
 
         heapq.heappop(self.buffers[group])
+        logger.debug(f"Read item {cur_serial} from {group}")
 
         self._totals_written[group] += 1
 
@@ -1085,3 +1094,16 @@ class GroupRoundRobinBuffer(Generic[T]):
             else:
                 break
         return group
+
+    def fast_forward(self, group, num_rows):
+        """
+        Fast forwards the buffer for a group to a certain number of rows. This sets the "next" item to be the
+        num_rows-th item.
+        """
+        if group not in self.groups:
+            raise ValueError(f"Group {group} not in {self.groups}")
+
+        if self._totals_written[group] != 0:
+            raise ValueError(f"Group {group} already written to: {self._totals_written[group]}")
+
+        self._totals_written[group] = num_rows

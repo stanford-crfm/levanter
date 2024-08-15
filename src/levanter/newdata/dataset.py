@@ -1,16 +1,18 @@
 import abc
 import asyncio
-from typing import Generic, Optional, Sequence, TypeVar
+from typing import Callable, Generic, Optional, Sequence, TypeVar
 
 import jax.random
 import numpy as np
 from async_lru import alru_cache
+from jax.random import PRNGKey
 
 from levanter.newdata.prp import Permutation
 
 
 T_co = TypeVar("T_co", covariant=True)
 T = TypeVar("T")
+U = TypeVar("U")
 
 
 class Dataset(abc.ABC, Generic[T_co]):
@@ -87,18 +89,22 @@ class AsyncDataset(abc.ABC, Generic[T_co]):
         """Returns the length of the dataset once it is at least `length` or if the dataset has a known length."""
         return await naive_busy_wait_until_len_at_least(self, length)
 
+    def map(self, fn: Callable[[T_co], U]) -> "MappedAsyncDataset[U]":
+        return MappedAsyncDataset(self, fn)
+
 
 async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length: int) -> int:
     """You should probably implement this in a more efficient way. This is just a naive implementation."""
-    if await dataset.length_is_known():
-        return await dataset.async_len()
-
-    while True:
+    while not await dataset.length_is_known():
         current_len = await dataset.current_len()
         if current_len is None:
             raise ValueError("Dataset has unknown length")
-        if current_len >= length:
+        if current_len <= length:
             await asyncio.sleep(0.1)
+        else:
+            return current_len
+
+    return await dataset.async_len()
 
 
 class WrappedAsyncDataset(AsyncDataset[T_co]):
@@ -325,3 +331,54 @@ class EraShufflingDataset(AsyncDataset[T_co]):
         # wait until we hit the next era
         next_era_end = (length // self.era_length + 1) * self.era_length
         return await self.dataset.wait_until_len_at_least(next_era_end)
+
+
+class _Unspecified:
+    pass
+
+
+_UNSPECIFIED = _Unspecified()
+
+
+class MappedAsyncDataset(AsyncDataset[U]):
+    def __init__(
+        self,
+        dataset: AsyncDataset[T_co],
+        fn: Callable[[T_co], U] | Callable[[T_co, Optional[PRNGKey]], U],
+        *,
+        key: Optional[PRNGKey] | _Unspecified = _UNSPECIFIED,
+    ):
+        self.dataset = dataset
+        self.fn = fn
+        self.key = key
+
+    async def async_len(self) -> int:
+        return await self.dataset.async_len()
+
+    async def length_is_known(self) -> bool:
+        return await self.dataset.length_is_known()
+
+    def is_finite(self) -> bool:
+        return self.dataset.is_finite()
+
+    async def current_len(self) -> Optional[int]:
+        return await self.dataset.current_len()
+
+    async def async_getitem(self, index: int) -> U:
+        if self.key is not _UNSPECIFIED:
+            return self.fn(await self.dataset.async_getitem(index), self._maybe_fold_in_key(index))  # type: ignore
+        return self.fn(await self.dataset.async_getitem(index))  # type: ignore
+
+    def _maybe_fold_in_key(self, index):
+        key = self.key
+        if key is not None:
+            key = jax.random.fold_in(self.key, index)
+        return key
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[U]:
+        if self.key is not _UNSPECIFIED:
+            return [self.fn(await self.dataset.async_getitem(i), self._maybe_fold_in_key(i)) for i in indices]  # type: ignore
+        return [self.fn(await self.dataset.async_getitem(i)) for i in indices]  # type: ignore
+
+    async def wait_until_len_at_least(self, length: int) -> int:
+        return await self.dataset.wait_until_len_at_least(length)

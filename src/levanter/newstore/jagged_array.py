@@ -164,6 +164,7 @@ class JaggedArrayStore:
 
     @staticmethod
     def open(path: Optional[str], *, mode="a", item_rank=1, dtype) -> "JaggedArrayStore":
+        assert item_rank == 1
         offset_path = _extend_path(path, "offsets")
         offsets = _ts_open_sync(offset_path, jnp.int64, [1], mode=mode)
 
@@ -372,7 +373,7 @@ class JaggedArrayStore:
                 else:
                     raise e
 
-    async def get_batch(self, indices: Sequence[int]):
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[jax.Array]:
         # get indices
         with ts.Batch():
             all_indices_futs = [self._bounds_for_rows_async(indices[i], indices[i] + 1) for i in range(len(indices))]

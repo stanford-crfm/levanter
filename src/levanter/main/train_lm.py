@@ -14,9 +14,10 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig
+from levanter.newdata.new_text import CausalLmDataset
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -107,7 +108,8 @@ def main(config: TrainLmConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
+        # TODO: fix this
+        tagged_eval_datasets: list = []  # config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
             config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
@@ -202,7 +204,7 @@ def main(config: TrainLmConfig):
         #
         # data loader. may need to seek to the right place if we're resuming
 
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
+        train_loader = iter(trainer.new_loader(train_dataset, Batch))
 
         if int(state.step) > 0:
             # step is after the batch, so we need to seek to step

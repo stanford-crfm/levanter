@@ -16,6 +16,7 @@ import levanter.tracker
 from levanter.data import Dataset, ReplicatedBatchLoader
 from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.newdata import AsyncDataset
 from levanter.trainer import StepInfo
 from levanter.utils.stat_utils import RunningMean
 from levanter.utils.tree_utils import inference_mode
@@ -86,7 +87,7 @@ def _join_prefix(prefix: str, tag: str) -> str:
 
 def cb_tagged_lm_evaluate(
     EvalBatch: hax.Axis,
-    tagged_eval_sets: Sequence[tuple[Dataset[LmExample], Sequence[str]]],
+    tagged_eval_sets: Sequence[tuple[AsyncDataset[LmExample], Sequence[str]]],
     device_mesh: Optional[Mesh] = None,
     axis_mapping: ResourceMapping = None,
     max_examples_per_dataset: Optional[int] = None,

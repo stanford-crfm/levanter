@@ -28,7 +28,7 @@ class DataLoader(Iterable[Ex]):
     def __init__(
         self,
         Batch: hax.Axis,
-        data_store: AsyncDataset[Ex],
+        data: AsyncDataset[Ex],
         max_buffered_items: Optional[int],
         mesh: Mesh,
         axis_resources: Optional[ResourceMapping],
@@ -42,14 +42,14 @@ class DataLoader(Iterable[Ex]):
         """
         self.max_capacity = max_buffered_items
         self.axis_resources = axis_resources
-        self.data_store = data_store
+        self.data_store = data
         self.mesh = mesh
         self.Batch = Batch
 
         def _exemplar_shape():
             return blocking_wait(self.data_store.async_getitem(0))
 
-        self._ex_leaves, self._ex_structure = jax.tree_flatten(_exemplar_shape())
+        self._ex_leaves, self._ex_structure = jax.tree_flatten(_exemplar_shape(), is_leaf=is_named_array)
 
     @property
     def batch_size(self):
@@ -94,7 +94,7 @@ class DataLoaderIterator(Iterator[Ex]):
 
             total_ex_loaded += self.dl.batch_size
 
-    async def _produce_batch(self, batch_number):
+    async def _produce_batch(self, batch_number: int):
         with hax.axis_mapping(self.mapping), self.dl.mesh:
             indices = range(batch_number * self.dl.batch_size, (batch_number + 1) * self.dl.batch_size, 1)
 
@@ -165,7 +165,7 @@ class DataLoaderIterator(Iterator[Ex]):
             batch_name = hax.partitioning.physical_axis_name(self.dl.Batch, self.dl.axis_resources)
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
-            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
+            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.dl.axis_resources)  # type: ignore
 
 
 def _abstractify(x):

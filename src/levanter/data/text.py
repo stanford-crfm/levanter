@@ -1,7 +1,6 @@
 import abc
 import copy
 import dataclasses
-import functools
 import logging
 import os
 from dataclasses import dataclass
@@ -11,7 +10,6 @@ from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Uni
 
 import braceexpand
 import datasets
-import equinox as eqx
 import fsspec
 import jax
 import numpy as np
@@ -20,15 +18,12 @@ import regex
 from draccus import field
 from jaxtyping import PRNGKeyArray
 
-import haliax as hax
-from haliax import Axis
-
 from levanter.data.mixture import MixtureDataset, StopStrategy
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
-from levanter.models.attention import AttentionMask
-from levanter.models.lm_model import LmExample
+from levanter.newdata import AsyncDataset
+from levanter.newstore.cache import TreeCache
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
@@ -41,9 +36,11 @@ from levanter.data.dataset import ShardableDataset, ShuffleDataset  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
 from levanter.data.shard_cache import CacheLedger  # noqa
+from levanter.data.shard_cache import ShardCache  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
-from levanter.data.shard_cache import ChunkMetadata, ShardCache, build_or_load_cache  # noqa
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
+from levanter.newdata.new_text import CausalLmDataset, TokenSeqDataset  # noqa
+from levanter.newstore.cache import build_or_load_cache  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
@@ -57,143 +54,6 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
-
-
-class CausalLmDataset(ShardableDataset[LmExample]):
-    def __init__(
-        self,
-        dataset: ShardableDataset[np.ndarray],
-        QPos: Axis,
-        KPos: Axis,
-        fcm_prob: float = 0.0,
-        key: Optional[PRNGKeyArray] = None,
-        ignore_index: Optional[int] = None,
-    ):
-        self.dataset = dataset
-        self.QPos = QPos
-        self.KPos = KPos
-        self.fcm_prob = fcm_prob
-        self.key = key
-        self.ignore_id = ignore_index
-
-        if self.fcm_prob > 0.0 and self.key is None:
-            raise ValueError("must provide key if fcm_prob > 0.0")
-
-    def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
-        return CausalLmDataset(
-            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id
-        )
-
-    def __iter__(self) -> Iterator[LmExample]:
-        key = self.key
-        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
-
-        with use_cpu_device():
-
-            @functools.partial(eqx.filter_jit, out_shardings=sharding)
-            def _create_lm_example(tokens, key):
-                tokens = hax.named(tokens, self.QPos)
-
-                example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
-
-                if self.fcm_prob > 0:
-                    # masks for attention
-                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-                    assert self.key is not None
-                    this_key, key = jax.random.split(key)
-                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-                    attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
-                    example = dataclasses.replace(example, attn_mask=attn_mask)
-
-                return example
-
-            for tokens in self.dataset:
-                example = _create_lm_example(tokens, key)
-                yield example
-
-
-class TokenSeqDataset(ShardableDataset[np.ndarray]):
-    """
-    A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
-
-    :param doc_cache: the TokenizedDocumentCache to draw from
-    :param seq_len: The max length of sequences to emit
-    """
-
-    def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
-        self.doc_cache = doc_cache
-        self.seq_len = seq_len
-        self.stride = stride
-
-    def shard(self, shard_id: int, num_shards: int) -> "TokenSeqDataset":
-        """
-        Split the dataset into num_processes shards.
-        """
-        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
-
-    def __iter__(self) -> Iterator[np.ndarray]:
-        extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
-        for doc in self.doc_cache:
-            # TODO: we could be cleverer here, and avoid these expensive copies etc
-            # should run some benchmarks to see if it's worth it
-            if extra_tokens is not None:
-                doc = _stack_batch_encodings(extra_tokens, doc)
-                extra_tokens = None
-
-            for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride, drop_remainder=False):
-                if len(encoded_slice["input_ids"]) < self.seq_len:
-                    assert extra_tokens is None
-                    extra_tokens = encoded_slice
-                else:
-                    extra_tokens = None
-                    ids = encoded_slice["input_ids"]
-                    yield ids
-
-    @staticmethod
-    def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
-        # Maybe force the cache to be built ahead of time?
-        doc_cache = TokenizedDocumentCache.load(cache_dir, flatten_docs=True)
-        return TokenSeqDataset(doc_cache, seq_len, stride)
-
-
-class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
-    """
-    A Dataset that yields HF BatchEncodings from a ShardCache.
-    This basically yields a dict-of-arrays, just the HF BatchEncoding class version of dict.
-    """
-
-    def __init__(self, cache: ShardCache, return_batches: bool = False):
-        self.cache = cache
-        self.return_batches = return_batches
-
-    def __iter__(self) -> Iterator[BatchEncoding]:
-        for batch in self.cache:
-            encoding = _batch_encoding_from_record_batch(batch, flatten_docs=False)
-            if self.return_batches:
-                yield encoding
-            else:
-                batch_size = 0
-                for v in encoding.values():
-                    batch_size = len(v)
-                    break
-
-                for i in range(batch_size):
-                    # this doesn't work for reconstituted batches, so we have to do this
-                    # I have no idea why this is the case
-                    #     yield encoding[i]
-                    yield BatchEncoding({k: v[i] for k, v in encoding.items()})
-
-    def shard(self, shard_id: int, num_shards: int) -> "BatchEncodingDataset":
-        return BatchEncodingDataset(self.cache.shard(shard_id, num_shards))
-
-    @staticmethod
-    def load(cache_dir: str, return_batches: bool = False, batch_size: Optional[int] = None) -> "BatchEncodingDataset":
-        if batch_size is None:
-            batch_size = 1
-        cache = ShardCache.load(cache_dir, batch_size=batch_size)
-        return BatchEncodingDataset(cache, return_batches=return_batches)
 
 
 class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
@@ -243,8 +103,8 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
             source,
             bt,
             await_finished=await_finished,
-            batch_size=batch_size,
-            rows_per_chunk=rows_per_chunk,
+            # batch_size=batch_size,
+            # rows_per_chunk=rows_per_chunk,
             monitors=monitors,
             cache_config={
                 "tokenizer": tokenizer.name_or_path,
@@ -273,7 +133,7 @@ class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
                     f" {tokenizer.vocab_size}."
                 )
 
-        return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
+        return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)  # type: ignore
 
     @staticmethod
     def load(cache_dir, batch_size: int = 128, flatten_docs=True):
@@ -331,7 +191,7 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
 ws = regex.compile(r"\s")
 
 
-class BatchTokenizer(BatchProcessor[str, BatchEncoding]):
+class BatchTokenizer(BatchProcessor[str, dict]):
     """
     A batch processor that tokenizes a batch of strings using a tokenizer.
     By default, this will append eos to the end of the string, even if the tokenizer doesn't.
@@ -396,8 +256,8 @@ class BatchTokenizer(BatchProcessor[str, BatchEncoding]):
         return encoding
 
     @property
-    def output_exemplar(self) -> BatchEncoding:
-        return self.tokenizer("hi there", return_attention_mask=self.return_attention_mask, verbose=False)
+    def output_exemplar(self) -> dict:
+        return dict(**self.tokenizer("hi there", return_attention_mask=self.return_attention_mask, verbose=False))
 
     @property
     def name_or_path(self):
@@ -595,13 +455,13 @@ class LMTaskConfig(abc.ABC):
     @abc.abstractmethod
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
-    ) -> ShardableDataset[np.ndarray]:
+    ) -> AsyncDataset[np.ndarray]:
         pass
 
     @abc.abstractmethod
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         pass
 
     @property
@@ -611,7 +471,7 @@ class LMTaskConfig(abc.ABC):
 
     def tagged_eval_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> list[Tuple[ShardableDataset[np.ndarray], List[str]]]:
+    ) -> list[Tuple[AsyncDataset[np.ndarray], List[str]]]:
         tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
         eval_sets = self.validation_sets(seq_len, monitors)
 
@@ -624,15 +484,16 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
-    ) -> ShardableDataset[np.ndarray]:
+    ) -> AsyncDataset[np.ndarray]:
         ds = self.token_seq_dataset("train", seq_len, monitors)
         if ds is None:
             raise ValueError("No training set!")
 
         if self.shuffle_buffer_size is not None:
-            if key is None:
-                key = jax.random.PRNGKey(0)
-            return ShuffleDataset(ds, key, self.shuffle_buffer_size)
+            raise NotImplementedError("Shuffle buffer not yet implemented")
+            # if key is None:
+            #     key = jax.random.PRNGKey(0)
+            # return ShuffleDataset(ds, key, self.shuffle_buffer_size)
 
         return ds
 
@@ -643,7 +504,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         validation_set = self.validation_set(seq_len, monitors)
         if validation_set is not None:
             return {"": validation_set}
@@ -679,12 +540,13 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
-    ) -> Optional[TokenizedDocumentCache]:
+    ) -> Optional[TreeCache[BatchEncoding]]:
         split_cache_dir = os.path.join(self.cache_dir, split)
         name = logger_name or os.path.basename(self.cache_dir)
 
         try:
-            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+            # return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int64)})
         except FileNotFoundError:
             pass
 
@@ -703,16 +565,18 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif monitors is False:
             monitors = []
 
-        return TokenizedDocumentCache.build_or_load(
+        bt = BatchTokenizer(self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos)
+
+        return build_or_load_cache(
             split_cache_dir,
             source,
-            self.the_tokenizer,
-            enforce_eos=self.enforce_eos,
-            flatten_docs=True,
-            rows_per_chunk=self.rows_per_chunk,
-            monitors=monitors,
-            # TODO: it would be better if we could just prioritize validation higher (we typically want it after the first grad step)
+            bt,
             await_finished=(split == "validation"),
+            monitors=monitors,
+            cache_config={
+                "tokenizer": self.the_tokenizer.name_or_path,
+                "vocab_size": self.the_tokenizer.vocab_size,
+            },
         )
 
 
@@ -766,9 +630,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
-    ) -> ShardableDataset[np.ndarray]:
+    ) -> AsyncDataset[np.ndarray]:  # type:ignore
         doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
         if key is None:
             key = jax.random.PRNGKey(0)
 
@@ -785,21 +649,21 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
     def training_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, TokenSeqDataset]:
         doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
         return token_datasets
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
         return token_datasets
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Dict[str, TokenizedDocumentCache]:
+    ) -> Dict[str, TreeCache[dict]]:
         # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
         # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the
         # LMDatasetConfig.build_or_load_cache method. We exclude the cache_dir field.

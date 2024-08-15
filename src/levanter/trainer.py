@@ -51,6 +51,8 @@ from levanter.config import JsonAtom
 from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
+from levanter.newdata import AsyncDataset
+from levanter.newdata.loader import DataLoader
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
@@ -481,6 +483,26 @@ class Trainer:
             ShardedBatchLoader: the batch loader
         """
         return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+
+    def new_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
+        """Creates a sharded batch loader for the given dataset. Generally you should use this
+        for training and you don't care about epoch boundaries.
+
+        Args:
+            dataset (Dataset): the dataset to load
+            batch_axis (Axis): the batch axis
+
+        Returns:
+            ShardedBatchLoader: the batch loader
+        """
+        # return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+        return DataLoader(
+            batch_axis,
+            dataset,
+            max_buffered_items=batch_axis.size * 20,
+            mesh=self.device_mesh,
+            axis_resources=self.compute_axis_mapping,
+        )
 
     @cached_property
     def _jit_train_step_fn(self):

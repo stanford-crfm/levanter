@@ -494,7 +494,7 @@ def _initial_shard_metadata(shard_name, shard_group_writer):
     return ray.get(shard_group_writer.current_metadata.remote(shard_name))
 
 
-def _serialize_json_and_commit(path, obj):
+def _serialize_json_and_commit(path: str, obj):
     # just to be paranoid, we write to a temp file and then rename it
     # TODO: probably we could do better here
     with fsspec.open(f"{path}.tmp", "w") as file:
