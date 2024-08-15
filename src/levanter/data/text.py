@@ -546,7 +546,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
         try:
             # return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
-            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int64)})
+            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
         except FileNotFoundError:
             pass
 

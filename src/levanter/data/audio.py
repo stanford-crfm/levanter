@@ -120,8 +120,8 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextS
     def output_exemplar(self):
         return {
             "input_features": np.zeros((0,), dtype=np.float32),
-            "input_ids": np.zeros((0,), dtype=np.int64),
-            "attention_mask": np.zeros((0,), dtype=np.int64),
+            "input_ids": np.zeros((0,), dtype=np.int32),
+            "attention_mask": np.zeros((0,), dtype=np.int32),
             "audio_shape": np.zeros((self.feature_extractor.feature_size,), dtype=np.int64),
         }
 

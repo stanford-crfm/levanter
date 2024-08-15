@@ -201,18 +201,19 @@ def _load_or_initialize_ledger(path):
 @ray.remote(num_cpus=1.0)  # type: ignore
 class _OrderedCacheWriter:
     """
-    This cache writer receives batches from some number of shards (generally out of order) and writes them to the store
+    This cache writer receives examples from some number of shards (generally out of order) and writes them to the store
     in a defined round-robin order. It also keeps track of the metadata for each shard.
 
     Once a shard finishes sending batches, it notifies this writer, which then updates the metadata and writes it to disk.
     """
 
-    def __init__(self, parent, exemplar, cache_dir: str, shards: Sequence[str]):
+    def __init__(self, parent, exemplar, batch_size, cache_dir: str, shards: Sequence[str]):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         with log_failures_to(parent):
             self._parent = parent
             self.cache_dir = cache_dir
             self.shards = shards
+            self.batch_size = batch_size
             self._failed = False
 
             self._batch_queue = GroupRoundRobinBuffer(shards)  # type: ignore
@@ -226,7 +227,15 @@ class _OrderedCacheWriter:
             for shard, num_rows in self._ledger.shard_rows.items():
                 if num_rows > 0:
                     logger.info(f"Already written {num_rows} rows for shard {shard}")
-                self._batch_queue.fast_forward(shard, num_rows)
+                # careful: this is in terms of batch size
+                # Have to round up to the nearest batch size
+                def div_round_up(x, y):
+                    return (x + y - 1) // y
+                self._batch_queue.fast_forward(shard, div_round_up(num_rows, self.batch_size))
+                if shard in self._ledger.finished_shards:
+                    self._expected_num_rows[shard] = num_rows
+                    self._batch_queue.group_total_known(shard, div_round_up(num_rows, self.batch_size))
+
 
             # double check that we're not finished by committing the ledger
             self._attempt_to_write_batches()
@@ -602,7 +611,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         name = f"broker::{path_for_name}"
         self.logger = pylogging.getLogger(f"{name}")
         self._cache_writer = _OrderedCacheWriter.remote(  # type: ignore
-            current_actor_handle(), exemplar, cache_dir, source.shard_names
+            current_actor_handle(), exemplar, processor.batch_size, cache_dir, source.shard_names
         )
 
         try:

@@ -197,7 +197,7 @@ async def test_batch_finished():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             shard_idx = "shard1"
@@ -218,7 +218,7 @@ async def test_shard_finished_reading():
     exemplar = MagicMock()
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             shard_name = "shard1"
@@ -238,7 +238,7 @@ async def test_get_shard_status():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             shard_name = "shard1"
@@ -258,7 +258,7 @@ async def test_shard_failed():
     exemplar = MagicMock()
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             shard_name = "shard1"
@@ -276,13 +276,16 @@ async def test_shard_failed():
             ray.kill(writer)
 
 
+DEFAULT_BATCH_SIZE = 128
+
+
 @pytest.mark.asyncio
 async def test_attempt_to_write_batches():
     parent = PretendParent.remote()
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             shard1_batch = [np.asarray([1, 2, 3])]
@@ -310,7 +313,7 @@ async def test_finalize_cache():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             shard1_batch = [np.array([1, 2, 3])]
@@ -344,7 +347,7 @@ async def test_error_handling():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             with pytest.raises(TypeError):
@@ -363,7 +366,7 @@ async def test_out_of_order_batches_same_shard():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             # Sending batch 1 before batch 0 for shard1
@@ -388,7 +391,7 @@ async def test_out_of_order_batches_different_shards():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             # Sending batches out of order across different shards
@@ -416,7 +419,7 @@ async def test_batches_different_orders_all_shards():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             # Sending batches in different orders across all shards
@@ -447,7 +450,7 @@ async def test_intermixed_batches_same_and_different_shards():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             # Sending intermixed batches from the same and different shards
@@ -481,7 +484,7 @@ async def test_duplicate_batches_same_shard():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             # Sending duplicate batches for the same shard
@@ -501,7 +504,7 @@ async def test_mixed_order_batches_multiple_shards():
     exemplar = np.array([1, 2, 3])
     with tempfile.TemporaryDirectory() as cache_dir:
         shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, exemplar, cache_dir, shards)
+        writer = _OrderedCacheWriter.remote(parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
 
         try:
             # Sending batches in mixed order for multiple shards
