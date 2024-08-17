@@ -109,7 +109,7 @@ def main(config: TrainLmConfig):
         KeyPos = config.model.KeyPos
 
         # TODO: fix this
-        tagged_eval_datasets: list = []  # config.data.tagged_eval_sets(Pos.size)
+        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
             config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
@@ -151,13 +151,14 @@ def main(config: TrainLmConfig):
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
+            max_eval_examples_per_ds = config.trainer.max_eval_batches
+            if max_eval_examples_per_ds is not None:
+                max_eval_examples_per_ds *= config.trainer.eval_batch_size
+
             causal_datasets = [
                 (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
                 for ds, tags in tagged_eval_datasets
             ]
-            max_eval_examples_per_ds = config.trainer.max_eval_batches
-            if max_eval_examples_per_ds is not None:
-                max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
@@ -204,15 +205,7 @@ def main(config: TrainLmConfig):
         #
         # data loader. may need to seek to the right place if we're resuming
 
-        train_loader = iter(trainer.new_loader(train_dataset, Batch))
-
-        if int(state.step) > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader)
+        train_loader = trainer.new_loader(train_dataset, Batch).iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

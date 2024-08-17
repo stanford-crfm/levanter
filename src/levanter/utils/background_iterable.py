@@ -37,7 +37,6 @@ class BackgroundIterator(Iterator[Ex]):
         self._producer_fn = producer_fn
         self._stop_event = threading.Event()
         self.q: queue.Queue = queue.Queue(self.max_capacity or 0)
-        self.loop = asyncio.get_event_loop()
         self.thread = threading.Thread(target=self._fill_queue_with_batches)
         self.thread.daemon = True
         self.thread.start()

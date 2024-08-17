@@ -1,7 +1,7 @@
 import dataclasses
 import logging
 import warnings
-from typing import Callable, Optional, Sequence, TypeVar
+from typing import Callable, Mapping, Optional, Sequence, TypeVar
 
 import jax.numpy as jnp
 import jmp
@@ -13,10 +13,9 @@ import haliax as hax
 from haliax.partitioning import ResourceMapping
 
 import levanter.tracker
-from levanter.data import Dataset, ReplicatedBatchLoader
 from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel
-from levanter.newdata import AsyncDataset
+from levanter.newdata import AsyncDataset, DataLoader, Dataset
 from levanter.trainer import StepInfo
 from levanter.utils.stat_utils import RunningMean
 from levanter.utils.tree_utils import inference_mode
@@ -38,8 +37,13 @@ class EvalResult:
     total_eval_loading_time: float
 
 
+# This class doesn't try to be async or work with incomplete datasets, because it's eval
+
+
 class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
     """Holds multiple datasets, each with its own domain tag. Also indexes the tags to enable easier aggregation."""
+
+    tag_index: Mapping[str, int]
 
     @property
     def tags(self):
@@ -63,20 +67,43 @@ class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
         self.tag_to_index = tag_index
         self.Tag = hax.Axis("tag", len(self.tag_to_index))
         self.max_examples_per_dataset = max_examples_per_dataset
+        self._offsets = self._compute_offsets(max_examples_per_dataset)
+        self._tag_arrays = self._compute_tag_arrays()
 
-    def __iter__(self):
+    def _compute_offsets(self, max_examples_per_dataset):
+        lengths = [len(dataset) for dataset, _ in self.datasets]
+        if max_examples_per_dataset is not None:
+            lengths = [min(length, max_examples_per_dataset) for length in lengths]
+        return np.cumsum([0] + lengths)
+
+    def _compute_tag_arrays(self):
+        tag_arrays = []
         for dataset, tags in self.datasets:
             indexed = [self.tag_to_index[tag] for tag in tags]
             tags = np.zeros(self.Tag.size, dtype=np.int32)
             tags[indexed] = 1
             tags = hax.named(tags, self.Tag)
 
-            count = 0
-            for example in dataset:
-                if self.max_examples_per_dataset is not None and count >= self.max_examples_per_dataset:
-                    break
-                count += 1
-                yield example, tags
+            tag_arrays.append(tags)
+        return tag_arrays
+
+    def __len__(self):
+        return self._offsets[-1]
+
+    def current_len(self) -> Optional[int]:
+        return len(self)
+
+    def has_len(self) -> bool:
+        return True
+
+    def get_batch(self, indices: Sequence[int]) -> Sequence[tuple[T, hax.NamedArray]]:
+        return [self[i] for i in indices]
+
+    def __getitem__(self, item):
+        dataset_index = np.searchsorted(self._offsets, item, side="right") - 1
+        offset = self._offsets[dataset_index]
+        dataset, tags = self.datasets[dataset_index]
+        return dataset[item - offset], self._tag_arrays[dataset_index]
 
 
 def _join_prefix(prefix: str, tag: str) -> str:
@@ -113,8 +140,10 @@ def cb_tagged_lm_evaluate(
         axis_mapping: The axis mapping to use for evaluation
     """
 
+    as_sync_datasets = [(ds.as_sync_dataset(), tags) for (ds, tags) in tagged_eval_sets]
+
     evaluator = TaggedEvaluator(
-        EvalBatch, tagged_eval_sets, device_mesh, axis_mapping, max_examples_per_dataset, mp=mp
+        EvalBatch, as_sync_datasets, device_mesh, axis_mapping, max_examples_per_dataset, mp=mp
     )
 
     def eval_callback(step: StepInfo):
@@ -169,7 +198,7 @@ class TaggedEvaluator:
     def __init__(
         self,
         EvalBatch: hax.Axis,
-        tagged_eval_sets,
+        tagged_eval_sets: Sequence[tuple[Dataset, Sequence[str]]],
         device_mesh=None,
         axis_mapping=None,
         max_examples_per_dataset=None,
@@ -177,8 +206,12 @@ class TaggedEvaluator:
     ):
         self.EvalBatch = EvalBatch
         self.dataset = DomainTaggedDataset(tagged_eval_sets, max_examples_per_dataset)
-        self.loader = ReplicatedBatchLoader(
-            self.dataset, mesh=device_mesh, axis_resources=axis_mapping, Batch=EvalBatch
+        self.loader = DataLoader(
+            EvalBatch,
+            self.dataset.as_async_dataset(),
+            max_buffered_items=EvalBatch.size * 10,
+            mesh=device_mesh,
+            axis_resources=axis_mapping,
         )
         self.mp = mp
 

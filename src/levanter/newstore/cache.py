@@ -227,15 +227,16 @@ class _OrderedCacheWriter:
             for shard, num_rows in self._ledger.shard_rows.items():
                 if num_rows > 0:
                     logger.info(f"Already written {num_rows} rows for shard {shard}")
+
                 # careful: this is in terms of batch size
                 # Have to round up to the nearest batch size
                 def div_round_up(x, y):
                     return (x + y - 1) // y
+
                 self._batch_queue.fast_forward(shard, div_round_up(num_rows, self.batch_size))
                 if shard in self._ledger.finished_shards:
                     self._expected_num_rows[shard] = num_rows
                     self._batch_queue.group_total_known(shard, div_round_up(num_rows, self.batch_size))
-
 
             # double check that we're not finished by committing the ledger
             self._attempt_to_write_batches()
@@ -578,7 +579,7 @@ def _mk_queue_aware_process_task(processor: BatchProcessor[T, U], queue: ActorHa
     return process_task
 
 
-@ray.remote(num_cpus=0.5)  # keep this small b/c it doesn't do a lot
+@ray.remote(num_cpus=0.1)  # keep this small b/c it doesn't do a lot
 class _TreeStoreCacheBuilder(SnitchRecipient):
     """
     Actor that coordinates the building of a cache. It spins up a bunch of workers to read from each shard
@@ -610,7 +611,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
         name = f"broker::{path_for_name}"
         self.logger = pylogging.getLogger(f"{name}")
-        self._cache_writer = _OrderedCacheWriter.remote(  # type: ignore
+        self._cache_writer: Optional[ActorHandle] = _OrderedCacheWriter.remote(  # type: ignore
             current_actor_handle(), exemplar, processor.batch_size, cache_dir, source.shard_names
         )
 
@@ -661,6 +662,8 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
                 # TODO: would probably be better if we didn't create one of these per shard group
                 processor_actor = _BatchProcessorQueue.remote(processor)  # type: ignore
                 self._processor_actors.append(processor_actor)
+
+                assert self._cache_writer is not None
 
                 work_item = ShardGroupToBeProcessed(
                     name=name,
@@ -748,6 +751,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
 
         # notify metrics subscribers
         self._do_notify()
+        self._cache_writer = None
 
 
 def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None):
@@ -789,8 +793,12 @@ class TreeCache(AsyncDataset[T_co]):
         self.logger = pylogging.getLogger(f"TreeCache.{name}")
         self._store_future: threading_Future[TreeStoreBuilder] = threading_Future()
 
-        self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
-        self._monitor_thread.start()
+        if self._broker is not None:
+            self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
+            self._monitor_thread.start()
+        else:
+            self._attempt_to_load_store()
+            assert self._store_future.done()
 
     @property
     def store(self) -> TreeStoreBuilder[T_co]:
@@ -1089,11 +1097,13 @@ class GroupRoundRobinBuffer(Generic[T]):
 
     def _next_group_to_read_from(self):
         """
-        Returns the next group to read from, or None if there are no more groups to
+        Returns the next group to read from. This is always the group with the least that is not finished.
         """
         if len(self._remaining_groups) == 0:
             return None
 
+        # careful: this is only correct if self._current_group is correct. whenever we fast forward, we have to
+        # recompute it
         while True:
             group = self.groups[self._current_group]
             if group not in self._remaining_groups:
@@ -1116,3 +1126,18 @@ class GroupRoundRobinBuffer(Generic[T]):
             raise ValueError(f"Group {group} already written to: {self._totals_written[group]}")
 
         self._totals_written[group] = num_rows
+
+        self._fix_current_group()
+
+    def _fix_current_group(self):
+        # This is always the minimum total written group that is not finished
+        self._current_group = 0
+        min_total = None
+
+        for i, group in enumerate(self.groups):
+            if group not in self._remaining_groups:
+                continue
+            total = self._totals_written[group]
+            if min_total is None or total < min_total:
+                min_total = total
+                self._current_group = i

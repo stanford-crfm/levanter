@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import functools
+import logging
 from typing import Optional, Sequence
 
 import equinox as eqx
@@ -17,6 +18,9 @@ from levanter.models.lm_model import LmExample
 from levanter.newdata.dataset import AsyncDataset, MappedAsyncDataset, T_co
 from levanter.newstore.cache import TreeCache
 from levanter.newstore.jagged_array import JaggedArrayStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class TokenSeqDataset(AsyncDataset[np.ndarray]):

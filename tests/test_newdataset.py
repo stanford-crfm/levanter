@@ -4,11 +4,11 @@ import jax.random
 import pytest
 
 from levanter.newdata.dataset import (
+    AsyncifiedDataset,
     EraShufflingDataset,
     ListAsyncDataset,
     PermutationDataset,
     SequenceDataset,
-    WrappedAsyncDataset,
 )
 from levanter.newdata.prp import Permutation
 
@@ -31,7 +31,7 @@ async def test_sequence_dataset_get_item_returns_correct_item():
 async def test_wrapped_async_dataset_async_len_matches_sync_len():
     data = [1, 2, 3]
     dataset = SequenceDataset(data)
-    wrapped_dataset = WrappedAsyncDataset(dataset)
+    wrapped_dataset = AsyncifiedDataset(dataset)
     assert await wrapped_dataset.async_len() == 3
 
 
@@ -48,7 +48,7 @@ async def test_list_async_dataset_appends_and_finalizes_correctly():
 async def test_permutation_dataset_applies_permutation_correctly():
     data = [1, 2, 3, 4]
     dataset = SequenceDataset(data)
-    wrapped_dataset = WrappedAsyncDataset(dataset)
+    wrapped_dataset = AsyncifiedDataset(dataset)
     permutation = Permutation(4, jax.random.PRNGKey(0))
     permuted_dataset = PermutationDataset(wrapped_dataset, permutation)
     assert await permuted_dataset.get_batch([0, 1, 2, 3]) != [1, 2, 3, 4]

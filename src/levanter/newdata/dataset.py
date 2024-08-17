@@ -1,5 +1,8 @@
 import abc
 import asyncio
+import logging
+from asyncio import AbstractEventLoop
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Generic, Optional, Sequence, TypeVar
 
 import jax.random
@@ -8,6 +11,10 @@ from async_lru import alru_cache
 from jax.random import PRNGKey
 
 from levanter.newdata.prp import Permutation
+from levanter.utils import thread_utils
+
+
+logger = logging.getLogger(__name__)
 
 
 T_co = TypeVar("T_co", covariant=True)
@@ -15,7 +22,20 @@ T = TypeVar("T")
 U = TypeVar("U")
 
 
-class Dataset(abc.ABC, Generic[T_co]):
+_executor = ThreadPoolExecutor(max_workers=10)
+
+
+class DatasetBase(abc.ABC, Generic[T_co]):
+    @abc.abstractmethod
+    def as_async_dataset(self) -> "AsyncDataset[T_co]":
+        raise NotImplementedError("...")
+
+    @abc.abstractmethod
+    def as_sync_dataset(self, loop: Optional[AbstractEventLoop] = None) -> "Dataset[T_co]":
+        raise NotImplementedError("...")
+
+
+class Dataset(DatasetBase[T_co]):
     @abc.abstractmethod
     def __len__(self) -> int:
         """
@@ -46,10 +66,13 @@ class Dataset(abc.ABC, Generic[T_co]):
         pass
 
     def as_async_dataset(self) -> "AsyncDataset[T_co]":
-        return WrappedAsyncDataset(self)
+        return AsyncifiedDataset(self)
+
+    def as_sync_dataset(self, loop: Optional[AbstractEventLoop] = None) -> "Dataset[T_co]":
+        return self
 
 
-class AsyncDataset(abc.ABC, Generic[T_co]):
+class AsyncDataset(DatasetBase[T_co]):
     @abc.abstractmethod
     async def async_len(self) -> int:
         raise NotImplementedError
@@ -89,6 +112,12 @@ class AsyncDataset(abc.ABC, Generic[T_co]):
         """Returns the length of the dataset once it is at least `length` or if the dataset has a known length."""
         return await naive_busy_wait_until_len_at_least(self, length)
 
+    def as_sync_dataset(self, loop=None):
+        return SyncifiedDataset(self, loop)
+
+    def as_async_dataset(self) -> "AsyncDataset[T_co]":
+        return self
+
     def map(self, fn: Callable[[T_co], U]) -> "MappedAsyncDataset[U]":
         return MappedAsyncDataset(self, fn)
 
@@ -107,7 +136,31 @@ async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length
     return await dataset.async_len()
 
 
-class WrappedAsyncDataset(AsyncDataset[T_co]):
+class SyncifiedDataset(Dataset[T_co]):
+    def __init__(self, dataset: AsyncDataset[T_co], loop: Optional[asyncio.AbstractEventLoop] = None):
+        self.dataset = dataset
+        self.loop = loop or asyncio.get_event_loop()
+
+    def _run_coroutine(self, coro):
+        return thread_utils.blocking_wait(coro)
+
+    def __len__(self) -> int:
+        return self._run_coroutine(self.dataset.async_len())
+
+    def has_len(self) -> bool:
+        return self.dataset.is_finite()
+
+    def current_len(self) -> Optional[int]:
+        return self._run_coroutine(self.dataset.current_len())
+
+    def get_batch(self, indices: Sequence[int] | np.ndarray) -> Sequence[T_co]:
+        return self._run_coroutine(self.dataset.get_batch(indices))
+
+    def __getitem__(self, index: int) -> T_co:
+        return self._run_coroutine(self.dataset.async_getitem(index))
+
+
+class AsyncifiedDataset(AsyncDataset[T_co]):
     def __init__(self, dataset: Dataset[T_co]):
         self.dataset = dataset
 
@@ -226,7 +279,7 @@ class PermutationDataset(AsyncDataset[T_co]):
         if isinstance(dataset, AsyncDataset) and not dataset.is_finite():
             raise ValueError("PermutationDataset requires a dataset with an (eventual) known length")
 
-        dataset = dataset if isinstance(dataset, AsyncDataset) else WrappedAsyncDataset(dataset)
+        dataset = dataset if isinstance(dataset, AsyncDataset) else AsyncifiedDataset(dataset)
         length = await dataset.async_len()
         return PermutationDataset(dataset, Permutation(length, key))
 

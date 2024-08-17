@@ -1,6 +1,4 @@
-import asyncio
 import logging
-import threading
 from typing import Iterable, Iterator, Optional, TypeVar
 
 import jax
@@ -16,6 +14,7 @@ from levanter.data.loader import _stack_tree
 from levanter.newdata.dataset import AsyncDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
+from levanter.utils.thread_utils import blocking_wait
 
 
 Ex = TypeVar("Ex")
@@ -193,30 +192,3 @@ def _pspec_for(self, shape_spec: ShapeSpec | NamedShapeSpec) -> PartitionSpec:
         return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
     else:
         return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
-
-
-def blocking_wait(coro):
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            result = [None]
-            exception = [None]
-
-            def run_coro():
-                nonlocal result, exception
-                try:
-                    result[0] = asyncio.run(coro)
-                except Exception as e:
-                    exception[0] = e
-
-            thread = threading.Thread(target=run_coro)
-            thread.start()
-            thread.join()
-
-            if exception[0]:
-                raise exception[0]
-            return result[0]
-        else:
-            return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
