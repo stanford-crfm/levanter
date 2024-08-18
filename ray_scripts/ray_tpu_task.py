@@ -14,7 +14,7 @@ print("Available resources: ", ray_tpu.available_resources())
 
 
 @ray_tpu.remote(
-    accelerator_type="v4-128",
+    accelerator_type="v4-8",
     num_slices=2,
     with_mxla=True,
     env={

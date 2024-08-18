@@ -1,12 +1,10 @@
 EXP_NAME="ivan-ray-multislice"
-TPU_TYPE="v4-128"
+TPU_TYPE="v4-8"
 NODE_COUNT=2
 TPU_ZONE="us-central2-b"
 
-DATE=$(TZ='America/Los_Angeles' date +%m%d)
-UNIQUE_ID=$(uuidgen | md5sum | head -c 8)
-TPU_NAME="$EXP_NAME-$UNIQUE_ID-$TPU_ZONE-$TPU_TYPE"
-RUN_ID="$EXP_NAME-$UNIQUE_ID-$TPU_ZONE-$TPU_TYPE-$DATE"
+TPU_NAME="$EXP_NAME-$TPU_TYPE-$NODE_COUNT-slice"
+RUN_ID=$TPU_NAME
 RETRIES=1
 
 CMD="python ray_scripts/ray_tpu_task.py"
