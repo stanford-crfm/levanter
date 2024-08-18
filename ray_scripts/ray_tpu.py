@@ -133,6 +133,7 @@ class RayTpuPodManager:
             return tpu_name, num_hosts, ip
 
         for key, value in ray.available_resources().items():
+            logging.debug(f"Checking key: {key} with value: {value}")
             match = tpu_pattern.match(key)
             if match:
                 accelerator_type = f"{match.group(1)}"

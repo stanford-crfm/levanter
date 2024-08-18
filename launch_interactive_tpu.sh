@@ -1,10 +1,11 @@
 EXP_NAME="ivan-ray-multislice"
-TPU_TYPE="v4-128"
-NODE_COUNT=2
+TPU_TYPE="v4-8"
+NODE_COUNT=1
 TPU_ZONE="us-central2-b"
 
 DATE=$(TZ='America/Los_Angeles' date +%m%d)
-UNIQUE_ID=$(uuidgen | md5sum | head -c 8)
+# UNIQUE_ID=$(uuidgen | md5sum | head -c 8)
+UNIQUE_ID="c527e44d"
 TPU_NAME="$EXP_NAME-$UNIQUE_ID-$TPU_ZONE-$TPU_TYPE"
 RUN_ID="$EXP_NAME-$UNIQUE_ID-$TPU_ZONE-$TPU_TYPE-$DATE"
 RETRIES=1
