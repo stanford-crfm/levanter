@@ -147,12 +147,14 @@ class MixtureDataset(AsyncDataset[T]):
         batches_per_dataset: list[list[int]] = [[] for _ in range(len(self.datasets))]
         indices_in_final_batch: list[list[int]] = [[] for _ in range(len(self.datasets))]
 
-        for idx, block, block_id in zip(indices, blocks, block_ids):
+        assert len(indices) == len(blocks) == len(block_ids)
+
+        for batch_index, (idx, block, block_id) in enumerate(zip(indices, blocks, block_ids)):
             index_within_block = idx % self.block_size  # which element of the block to get
             id = block[index_within_block]  # for this block, which dataset+base dataset offset
             dataset_id, dataset_index = self._index_into_dataset_for_id(id, block_id)
             batches_per_dataset[dataset_id].append(dataset_index)
-            indices_in_final_batch[dataset_id].append(idx)
+            indices_in_final_batch[dataset_id].append(batch_index)
 
         # get the batches from each dataset
         batch_futures = []
@@ -171,6 +173,8 @@ class MixtureDataset(AsyncDataset[T]):
 
         for dataset_id, indices_into_batch in enumerate(indices_in_final_batch):
             for i, idx in enumerate(indices_into_batch):
+                assert final_batch[idx] is None
+                assert len(final_batch) > idx
                 final_batch[idx] = batches[dataset_id][i]
 
         return final_batch  # type: ignore
@@ -178,6 +182,7 @@ class MixtureDataset(AsyncDataset[T]):
     async def async_getitem(self, index: int) -> T:
         # simpler implementation because there's only one
         block_id = index // self.block_size
+        index = index % self.block_size
         permuted_ids = await self._get_block(block_id)
         dataset_id, dataset_index = self._index_into_dataset_for_id(permuted_ids[index], block_id)
 

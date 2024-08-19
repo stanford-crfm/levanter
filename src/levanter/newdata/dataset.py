@@ -435,8 +435,12 @@ class MappedAsyncDataset(AsyncDataset[U]):
         return key
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[U]:
+        # if self.key is not _UNSPECIFIED:
+        #     return [self.fn(await self.dataset.async_getitem(i), self._maybe_fold_in_key(i)) for i in indices]  # type: ignore
+        # return [self.fn(await self.dataset.async_getitem(i)) for i in indices]  # type: ignore
         if self.key is not _UNSPECIFIED:
-            return [self.fn(await self.dataset.async_getitem(i), self._maybe_fold_in_key(i)) for i in indices]  # type: ignore
+            items = await self.dataset.get_batch(indices)
+            return [self.fn(item, self._maybe_fold_in_key(i)) for i, item in zip(indices, items)]  # type: ignore
         return [self.fn(await self.dataset.async_getitem(i)) for i in indices]  # type: ignore
 
     async def wait_until_len_at_least(self, length: int) -> int:

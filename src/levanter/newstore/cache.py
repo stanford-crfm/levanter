@@ -198,7 +198,7 @@ def _load_or_initialize_ledger(path):
         return CacheLedger(0, {})
 
 
-@ray.remote(num_cpus=1.0)  # type: ignore
+@ray.remote(num_cpus=0.5)  # type: ignore
 class _OrderedCacheWriter:
     """
     This cache writer receives examples from some number of shards (generally out of order) and writes them to the store

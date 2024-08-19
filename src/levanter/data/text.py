@@ -18,11 +18,10 @@ import regex
 from draccus import field
 from jaxtyping import PRNGKeyArray
 
-from levanter.data.mixture import MixtureDataset, StopStrategy
-
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.newdata import AsyncDataset
+from levanter.newdata.mixture import MixtureDataset, StopStrategy
 from levanter.newstore.cache import TreeCache
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
@@ -639,11 +638,15 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         mix_key, shuffle_key = jax.random.split(key)
 
         mixture = MixtureDataset(
-            datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy, key=mix_key
+            datasets=token_datasets,
+            weights=self.train_weights,
+            stop_strategy=self.stop_strategy,
+            key=mix_key,
+            block_size=2048,
         )
 
-        if self.shuffle_buffer_size is not None:
-            return ShuffleDataset(mixture, shuffle_key, self.shuffle_buffer_size)
+        # if self.shuffle_buffer_size is not None:
+        #     return ShuffleDataset(mixture, shuffle_key, self.shuffle_buffer_size)
 
         return mixture
 
