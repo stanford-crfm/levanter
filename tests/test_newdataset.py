@@ -49,7 +49,7 @@ async def test_permutation_dataset_applies_permutation_correctly():
     data = [1, 2, 3, 4]
     dataset = SequenceDataset(data)
     wrapped_dataset = AsyncifiedDataset(dataset)
-    permutation = Permutation(4, jax.random.PRNGKey(0))
+    permutation = Permutation(4, jax.random.PRNGKey(1))
     permuted_dataset = PermutationDataset(wrapped_dataset, permutation)
     assert await permuted_dataset.get_batch([0, 1, 2, 3]) != [1, 2, 3, 4]
 

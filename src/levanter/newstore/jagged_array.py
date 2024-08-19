@@ -11,7 +11,7 @@ import numpy as np
 import tensorstore as ts
 
 from levanter.utils import fsspec_utils
-from levanter.utils.py_utils import future_from_value
+from levanter.utils.thread_utils import future_from_value
 
 
 # zarr suggests 1MB chunk size (in bytes, but whatever)

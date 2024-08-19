@@ -248,7 +248,13 @@ class ListAsyncDataset(AsyncDataset[T]):
     def finalize(self):
         self.is_complete = True
         self.complete_promise.set_result(None)
-        asyncio.create_task(self.notify_length_update())
+        # asyncio.create_task(self.notify_length_update())
+        # if there's no event loop, we can't notify the length update
+        # so we spawn a thread to do it
+        if not asyncio.get_event_loop().is_running():
+            _executor.submit(lambda: asyncio.run(self.notify_length_update()))
+        else:
+            asyncio.create_task(self.notify_length_update())
 
     async def notify_length_update(self):
         async with self.length_updated:

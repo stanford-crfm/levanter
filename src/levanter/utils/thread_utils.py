@@ -20,3 +20,9 @@ def blocking_wait(coro):
         return future.result()
     else:
         return asyncio.run(coro)
+
+
+def future_from_value(value):
+    future = asyncio.Future()
+    future.set_result(value)
+    return future
