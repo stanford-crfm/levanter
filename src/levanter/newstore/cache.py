@@ -230,9 +230,6 @@ class _OrderedCacheWriter:
 
                 # careful: this is in terms of batch size
                 # Have to round up to the nearest batch size
-                def div_round_up(x, y):
-                    return (x + y - 1) // y
-
                 self._batch_queue.fast_forward(shard, div_round_up(num_rows, self.batch_size))
                 if shard in self._ledger.finished_shards:
                     self._expected_num_rows[shard] = num_rows
@@ -262,7 +259,8 @@ class _OrderedCacheWriter:
 
     def shard_finished_reading(self, shard_name: str, expected_num_rows: int):
         with log_failures_to(self._parent):
-            self._batch_queue.group_total_known(shard_name, expected_num_rows)
+            # careful: this is in terms of batch size
+            self._batch_queue.group_total_known(shard_name, div_round_up(expected_num_rows, self.batch_size))
             self._expected_num_rows[shard_name] = expected_num_rows
             logger.debug(
                 f"Attempting to write batches because {shard_name} finished reading with {expected_num_rows} batches."
@@ -443,7 +441,15 @@ class ShardGroupTaskGroup(PriorityWorkTaskGroup):
                 batch_idx = status.num_rows_committed // batch_size
 
                 shard_idx = self.spec.shard_source.shard_names.index(shard_name)
-                item = ShardReaderItem(self, task_name, shard_name, shard_idx, batch_idx=batch_idx, reader=reader)
+                item = ShardReaderItem(
+                    self,
+                    task_name,
+                    shard_name,
+                    shard_idx,
+                    batch_idx=batch_idx,
+                    reader=reader,
+                    current_row=status.num_rows_committed,
+                )
 
                 heapq.heappush(self._items, item)
             except Exception as e:
@@ -473,7 +479,7 @@ class ShardReaderItem(PriorityWorkItem):
     shard_idx: int
     batch_idx: int
     reader: Iterator[list]
-    _total_rows: int = 0
+    current_row: int = 0
 
     @property
     def priority(self):
@@ -508,7 +514,7 @@ class ShardReaderItem(PriorityWorkItem):
                         self.shard_name, self.batch_idx, RefBox(batch_result_ref)
                     )
                     self.batch_idx += 1
-                    self._total_rows += len(batch)
+                    self.current_row += len(batch)
                 except Exception as e:
                     self.group.logger.exception(f"Error while processing batch {self.batch_idx}")
                     # fire and forget
@@ -516,8 +522,8 @@ class ShardReaderItem(PriorityWorkItem):
                     raise e
 
             if exhausted_shard:
-                logger.debug(f"Shard {self.shard_name} exhausted. Expecting {self._total_rows} rows.")
-                writer.shard_finished_reading.remote(self.shard_name, self._total_rows)
+                logger.info(f"Shard {self.shard_name} exhausted. Expecting {self.current_row} rows.")
+                writer.shard_finished_reading.remote(self.shard_name, self.current_row)
 
             self.group.logger.debug(f"Finished reading one batch of shard {self.shard_name}: {self.batch_idx}")
 
@@ -1050,6 +1056,8 @@ class GroupRoundRobinBuffer(Generic[T]):
         if self._totals_written[group] == total:
             assert len(self.buffers[group]) == 0
             self._remaining_groups.remove(group)
+        elif self._totals_written[group] > total:
+            raise ValueError(f"Group {group} has written more than expected: {self._totals_written[group]} > {total}")
 
     def is_finished(self):
         return len(self._remaining_groups) == 0
@@ -1141,3 +1149,7 @@ class GroupRoundRobinBuffer(Generic[T]):
             if min_total is None or total < min_total:
                 min_total = total
                 self._current_group = i
+
+
+def div_round_up(x, y):
+    return (x + y - 1) // y
