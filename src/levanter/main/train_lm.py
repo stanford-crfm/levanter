@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import gc
 import logging
 import os
@@ -16,7 +17,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig
+from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.newdata.new_text import CausalLmDataset
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -42,6 +43,7 @@ class TrainLmConfig:
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
+    z_loss_weight: float = 0.0
 
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
@@ -83,11 +85,13 @@ def main(config: TrainLmConfig):
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
+    loss_function = functools.partial(compute_next_token_loss, logsumexp_weight=config.z_loss_weight)
+
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_function) as trainer:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed

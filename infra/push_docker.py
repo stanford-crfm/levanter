@@ -9,9 +9,12 @@ script will automatically build and deploy an image based on your current code.
 
 import argparse
 import json
+import os
 import pty
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from infra.helpers import cli
 
@@ -33,6 +36,27 @@ GCP_CLEANUP_POLICY = [
         },
     },
 ]
+
+
+def _rm(path):
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    elif path.is_file():
+        os.remove(path)
+    elif path.exists():
+        raise RuntimeError(f"Remove failed. Path ({path}) is neither a directory nor a file.")
+
+
+def _cp(src, dst):
+    # delete dst if exists
+    _rm(dst)
+
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    elif src.is_file():
+        shutil.copy(src, dst)
+    else:
+        raise RuntimeError(f"Copy failed. Source path ({src}) is neither a directory nor a file. Check if it exists.")
 
 
 def _run(argv):
@@ -128,14 +152,22 @@ def configure_gcp_docker(project_id, region, repository):
     _run(["gcloud", "auth", "configure-docker", "--quiet", f"{region}-docker.pkg.dev"])
 
 
-def build_docker(docker_file, image_name, tag) -> str:
+def build_docker(docker_file, image_name, tag, mount_src) -> str:
     """Builds a Docker image, enables artifact access, and pushes to Artifact Registry."""
+    # Copy external files temporarily to .mnt
+    mount_dst = Path(".mnt")
+    _cp(mount_src, mount_dst)
 
+    # Get mounting path in docker image.
+    levanter_path = Path("/opt/levanter")
+    extra_context = levanter_path / mount_src
     _run(
         [
             "docker",
             "buildx",
             "build",
+            "--build-arg",
+            f"EXTRA_CTX={extra_context.resolve()}",
             "--platform=linux/amd64",
             "-t",
             f"{image_name}:{tag}",
@@ -144,12 +176,14 @@ def build_docker(docker_file, image_name, tag) -> str:
             ".",
         ]
     )
+    # clean up after building
+    _rm(mount_dst)
 
     return f"{image_name}:{tag}"
 
 
 # Disabled until we can figure out how Docker hub organizations work
-def push_to_github(local_image, tag, github_user=None, github_token=None, docker_file=None):
+def push_to_github(local_image, tag, github_user=None, github_token=None, docker_file=None, extra_context=None):
     """Pushes a local Docker image to Docker Hub."""
 
     # Authenticate the docker service with Github if a token exists
@@ -160,17 +194,17 @@ def push_to_github(local_image, tag, github_user=None, github_token=None, docker
         print(login_process.communicate(input=github_token.encode(), timeout=10))
 
     remote_name = f"ghcr.io/{github_user}/{local_image}:{tag}"
-    local_name = build_docker(docker_file=docker_file, image_name=local_image, tag=tag)
+    local_name = build_docker(docker_file=docker_file, image_name=local_image, tag=tag, mount_src=extra_context)
 
     _run(["docker", "tag", local_name, remote_name])
     _run(["docker", "push", remote_name])
     return remote_name
 
 
-def push_to_gcp(project_id, region, repository, image_name, tag, docker_file) -> str:
+def push_to_gcp(project_id, region, repository, image_name, tag, docker_file, extra_context) -> str:
     """Pushes a local Docker image to Artifact Registry."""
     configure_gcp_docker(project_id, region, repository)
-    local_image = build_docker(docker_file=docker_file, image_name=image_name, tag=tag)
+    local_image = build_docker(docker_file=docker_file, image_name=image_name, tag=tag, mount_src=extra_context)
 
     artifact_repo = f"{region}-docker.pkg.dev/{project_id}/{repository}"
 
@@ -214,4 +248,5 @@ if __name__ == "__main__":
             args.image,
             args.tag,
             docker_file=args.docker_file,
+            extra_context=Path("config"),
         )

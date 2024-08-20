@@ -3,19 +3,22 @@
 import argparse
 import base64
 import getpass
+import json
 import os
 import subprocess
 import time
+from pathlib import Path
 
 from infra import push_docker
 from infra.helpers import cli
 
 
-def setup_vm_docker(tpu_name, zone, docker_base_image):
+def setup_vm_docker(tpu_name, zone, node_count, docker_base_image):
     """Change docker permissions on `tpu_name`, remove any old runs, and setup the cache volume."""
     cli.tpu_ssh(
         tpu_name,
         zone,
+        node_count,
         "sudo",
         "usermod",
         "-aG",
@@ -38,44 +41,65 @@ def setup_vm_docker(tpu_name, zone, docker_base_image):
 
 
 def list_tpus(zone):
-    tpus = subprocess.check_output(
-        [
-            "gcloud",
-            "alpha",
-            "compute",
-            "tpus",
-            "tpu-vm",
-            "list",
-            "--zone=" + zone,
-        ]
+    return json.loads(
+        subprocess.check_output(
+            [
+                "gcloud",
+                "alpha",
+                "compute",
+                "tpus",
+                "queued-resources",
+                "list",
+                f"--zone={zone}",
+                "--format=json(name.basename(), state)",
+            ]
+        )
     )
-    rows = tpus.decode("utf-8").split("\n")
-    header = rows[0].split()
-    tpus = []
-    for row in rows[1:]:
-        if row:
-            tpus.append(dict(zip(header, row.split())))
-    return tpus
 
 
-def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete):
-    tpu_exists = any([tpu["NAME"] == tpu_name for tpu in list_tpus(zone)])
-    if tpu_exists:
-        if not autodelete:
+def describe_tpu(tpu_name, zone):
+    try:
+        return json.loads(
+            subprocess.check_output(
+                [
+                    "gcloud",
+                    "alpha",
+                    "compute",
+                    "tpus",
+                    "queued-resources",
+                    "describe",
+                    tpu_name,
+                    f"--zone={zone}",
+                    "--format=json(name.basename(), state)",
+                ]
+            )
+        )
+    except subprocess.CalledProcessError:
+        return None
+
+
+def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete, node_count):
+    tpu_stat = describe_tpu(tpu_name, zone)
+    if tpu_stat is not None:
+        if tpu_stat["state"]["state"] in ["FAILED", "SUSPENDED"]:
+            print("TPU suspended, bypassing autodelete config and deleting...")
+        elif not autodelete:
             print("TPU already exists and autodelete is false, leaving it as is.")
             return
+        else:
+            print("TPU already exists, deleting...")
 
-        print("TPU already exists, deleting...")
         cli.run_command(
             "gcloud",
             "alpha",
             "compute",
             "tpus",
-            "tpu-vm",
+            "queued-resources",
             "delete",
+            tpu_name,
             "--quiet",
             f"--zone={zone}",
-            tpu_name,
+            "--force",
         )
 
     print(f"Creating new TPU {tpu_name} in {zone} of type {tpu_type}...")
@@ -84,16 +108,16 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete
         "alpha",
         "compute",
         "tpus",
-        "tpu-vm",
+        "queued-resources",
         "create",
         tpu_name,
         f"--accelerator-type={tpu_type}",
-        f"--version={version}",
-        "--zone=" + zone,
+        f"--runtime-version={version}",
+        f"--zone={zone}",
         "--quiet",
     ]
-    if capacity_type == "preemptible":
-        command.append("--preemptible")
+    if capacity_type in ["preemptible", "best-effort"]:
+        command.append("--best-effort")
     elif capacity_type == "reserved":
         command.append("--reserved")
     elif capacity_type == "spot":
@@ -102,7 +126,33 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete
         pass
     else:
         raise ValueError(f"Unknown capacity type: {capacity_type}")
+
+    if node_count == 1:
+        command.append(f"--node-id={tpu_name}")
+    else:
+        command.append(f"--node-count={node_count}")
+
     cli.run_command(*command)
+
+    # wait for queued resource to complete
+    print("Checking TPU creation status every minute...")
+    waited = 0
+    while True:
+        time.sleep(60)
+        waited += 1
+
+        tpu_stat = describe_tpu(tpu_name, zone)
+        assert tpu_stat is not None, f"{tpu_name} creation failed."
+
+        match tpu_stat["state"]["state"]:
+            case "ACTIVE":
+                break
+            case "FAILED":
+                raise RuntimeError(
+                    f"{tpu_name} creation failed: {tpu_stat['state']['failedData']['error']['message']}"
+                )
+            case _:
+                print(f"Status is {tpu_stat['state']['state']}. Waited {waited} minutes...")
 
 
 def _default_run_id():
@@ -126,12 +176,16 @@ if __name__ == "__main__":
     cli.add_arg(
         parser, config, ["--autodelete"], default=False, action="store_true", help="Delete TPU if it already exists."
     )
-    cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/rjpower/levanter:latest")
+    cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/stanford-crfm/levanter-base:latest")
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
     cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
     cli.add_arg(
-        parser, config, ["--capacity_type"], default=None, choices=["preemptible", "spot", "reserved", "on-demand"]
+        parser,
+        config,
+        ["--capacity_type"],
+        default=None,
+        choices=["preemptible", "spot", "reserved", "on-demand", "best-effort"],
     )
     cli.add_arg(
         parser,
@@ -149,6 +203,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
+    cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
     cli.add_arg(parser, config, ["--zone"], required=True)
     cli.add_arg(parser, config, ["--retries"], default=0, type=int)
@@ -156,6 +211,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
     cli.add_arg(parser, config, ["--github_user"], type=str)
     cli.add_arg(parser, config, ["--github_token"], type=str)
+    cli.add_arg(parser, config, ["--extra_context"], type=Path, default=Path("config"))
 
     parser.add_argument(
         "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
@@ -178,12 +234,14 @@ if __name__ == "__main__":
         retries = args.retries
     tpu_name = args.tpu_name
     tpu_type = args.tpu_type
+    node_count = args.node_count
     version = args.version
     zone = args.zone
     run_id = args.run_id
     registry = args.docker_registry
     github_user = args.github_user
     github_token = args.github_token
+    extra_context = args.extra_context
 
     region = "-".join(zone.split("-")[:-1])
     env = {k: v for k, v in args.env}
@@ -197,14 +255,27 @@ if __name__ == "__main__":
     # make an image tag based on the unix timestamp to ensure we always pull the latest image
     tag = int(time.time())
 
-    full_image_id = push_docker.push_to_gcp(
-        project_id=project,
-        region=region,
-        repository=docker_repository,
-        image_name=image_id,
-        tag=tag,
-        docker_file="docker/tpu/Dockerfile.incremental",
-    )
+    if registry == "ghcr":
+        full_image_id = push_docker.push_to_github(
+            local_image=image_id,
+            tag=tag,
+            github_user=github_user,
+            github_token=github_token,
+            docker_file="docker/tpu/Dockerfile.incremental",
+            extra_context=extra_context,
+        )
+    elif registry == "gcp":
+        full_image_id = push_docker.push_to_gcp(
+            project_id=project,
+            region=region,
+            repository=docker_repository,
+            image_name=image_id,
+            tag=tag,
+            docker_file="docker/tpu/Dockerfile.incremental",
+            extra_context=extra_context,
+        )
+    else:
+        raise ValueError(f"Unknown docker registry: {args.docker_registry}")
 
     for i in range(retries + 1):
         try:
@@ -215,6 +286,7 @@ if __name__ == "__main__":
                 version=version,
                 zone=zone,
                 autodelete=autodelete,
+                node_count=node_count,
             )
 
             # We don't technically need to setup on every run, but if we are working on a
@@ -222,31 +294,9 @@ if __name__ == "__main__":
             setup_vm_docker(
                 tpu_name=tpu_name,
                 zone=zone,
+                node_count=node_count,
                 docker_base_image=docker_base_image,
             )
-
-            # make an image tag based on the unix timestamp to ensure we always pull the latest image
-            tag = int(time.time())
-
-            if registry == "ghcr":
-                full_image_id = push_docker.push_to_github(
-                    local_image=image_id,
-                    tag=tag,
-                    github_user=github_user,
-                    github_token=github_token,
-                    docker_file="docker/tpu/Dockerfile.incremental",
-                )
-            elif registry == "gcp":
-                full_image_id = push_docker.push_to_gcp(
-                    project_id=project,
-                    region=region,
-                    repository=docker_repository,
-                    image_name=image_id,
-                    tag=tag,
-                    docker_file="docker/tpu/Dockerfile.incremental",
-                )
-            else:
-                raise ValueError(f"Unknown docker registry: {args.docker_registry}")
 
             git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
 
@@ -277,8 +327,26 @@ if __name__ == "__main__":
             docker_command.extend([full_image_id, " ".join(command)])
 
             print(f"Running on tpu_name... {tpu_name}")
-            cli.tpu_ssh(tpu_name, zone, *docker_command)
+            cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
         except subprocess.CalledProcessError as e:  # noqa: F841
-            print("Error running command.")
+            print(f"Error running command {e.cmd}")
             if i < retries - 1:
                 print("Retrying... %d/%d" % (i + 1, retries))
+        else:
+            print("Job finished with no error.")
+            break
+
+    if autodelete:
+        print("Autodelete is set to True. Tear down machine...")
+        cli.run_command(
+            "gcloud",
+            "alpha",
+            "compute",
+            "tpus",
+            "queued-resources",
+            "delete",
+            tpu_name,
+            "--quiet",
+            f"--zone={zone}",
+            "--force",
+        )
