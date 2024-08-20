@@ -8,22 +8,24 @@ model:  # 7B class model
   num_heads: 32
   num_kv_heads: 32
   use_flash_attention: True
-  flash_attention_block_size: 1024
 trainer:
   tracker:
     type: wandb
+    entity: "stanford-crfm"
     project: "marin"
     tags: ["dclm", "7B", "llama"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 2048
-  num_train_steps: 750000  # 3,000,000,000,000 / 4,000,000 = 750,000
+  num_train_steps: 69000  # 276e9 / 4M
   steps_per_eval: 1000
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  learning_rate: 4E-4
-  weight_decay: 0.1
+  learning_rate: 2e-3
+  weight_decay: 0.05
   min_lr_ratio: 0.1
-  warmup: 0.01
+  warmup: 5000
+
+z_loss_weight: 5e-6
