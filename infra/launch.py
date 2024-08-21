@@ -205,7 +205,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
     cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
-    cli.add_arg(parser, config, ["--zone"], required=True)
+    cli.add_arg(parser, config, ["--zone"], required=False, default=None)
     cli.add_arg(parser, config, ["--retries"], default=0, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=_default_run_id(), type=str)
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
@@ -237,6 +237,11 @@ if __name__ == "__main__":
     node_count = args.node_count
     version = args.version
     zone = args.zone
+
+    if zone is None:
+        zone = cli.gcloud_config()["compute"]["zone"]
+
+
     run_id = args.run_id
     registry = args.docker_registry
     github_user = args.github_user
@@ -252,101 +257,148 @@ if __name__ == "__main__":
     if command[0] == "--":
         command = command[1:]
 
-    # make an image tag based on the unix timestamp to ensure we always pull the latest image
-    tag = int(time.time())
+    {{REWRITTEN_CODE}}
+    def run_command(
+        tpu_name,
+        tpu_type,
+        *,
+        zone,
+        node_count,
+        docker_base_image,
+        image_id,
+        command,
+        env,
+        run_id,
+        foreground,
+        retries,
+        autodelete,
+        registry,
+        github_user,
+        github_token,
+        extra_context,
+        project,
+        docker_repository,
+        capacity_type,
+        version,
+    ):
+        # make an image tag based on the unix timestamp to ensure we always pull the latest image
+        tag = int(time.time())
 
-    if registry == "ghcr":
-        full_image_id = push_docker.push_to_github(
-            local_image=image_id,
-            tag=tag,
+        if registry == "ghcr":
+            full_image_id = push_docker.push_to_github(
+                local_image=image_id,
+                tag=tag,
+                github_user=github_user,
+                github_token=github_token,
+                docker_file="docker/tpu/Dockerfile.incremental",
+                extra_context=extra_context,
+            )
+        elif registry == "gcp":
+            full_image_id = push_docker.push_to_gcp(
+                project_id=project,
+                region=region,
+                repository=docker_repository,
+                image_name=image_id,
+                tag=tag,
+                docker_file="docker/tpu/Dockerfile.incremental",
+                extra_context=extra_context,
+            )
+        else:
+            raise ValueError(f"Unknown docker registry: {args.docker_registry}")
+
+        for i in range(retries + 1):
+            try:
+                start_tpu_vm(
+                    tpu_name=tpu_name,
+                    tpu_type=tpu_type,
+                    capacity_type=capacity_type,
+                    version=version,
+                    zone=zone,
+                    autodelete=autodelete,
+                    node_count=node_count,
+                )
+
+                # We don't technically need to setup on every run, but if we are working on a
+                # stale VM or a VM from e.g. spin-up-vm.sh, this ensures things always work.
+                setup_vm_docker(
+                    tpu_name=tpu_name,
+                    zone=zone,
+                    node_count=node_count,
+                    docker_base_image=docker_base_image,
+                )
+
+                git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+
+                docker_command = [
+                    "docker",
+                    "run",
+                    "-t" if foreground else "-d",
+                    "--name=levanter",
+                    "--privileged",
+                    "--shm-size=32gb",
+                    "--net=host",
+                    "--init",
+                    "--mount",
+                    "type=volume,source=levanter,target=/home/levanter",
+                    "-v",
+                    "/tmp:/tmp",
+                    "-e",
+                    f"WANDB_DOCKER={image_id}",
+                    "-e",
+                    f"GIT_COMMIT={git_commit}",
+                    "-e",
+                    f"RUN_ID={run_id}",
+                ]
+
+                for k, v in env.items():
+                    docker_command.extend(["-e", k + f"='{str(v)}'"])
+
+                docker_command.extend([full_image_id, " ".join(command)])
+
+                print(f"Running on tpu_name... {tpu_name}")
+                cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
+            except subprocess.CalledProcessError as e:  # noqa: F841
+                print(f"Error running command {e.cmd}")
+                if i < retries - 1:
+                    print("Retrying... %d/%d" % (i + 1, retries))
+            else:
+                print("Job finished with no error.")
+                break
+
+        if autodelete:
+            print("Autodelete is set to True. Tear down machine...")
+            cli.run_command(
+                "gcloud",
+                "alpha",
+                "compute",
+                "tpus",
+                "queued-resources",
+                "delete",
+                tpu_name,
+                "--quiet",
+                f"--zone={zone}",
+                "--force",
+            )
+
+        run_command(
+            tpu_name=tpu_name,
+            zone=zone,
+            node_count=node_count,
+            docker_base_image=docker_base_image,
+            image_id=image_id,
+            command=command,
+            env=env,
+            run_id=run_id,
+            foreground=foreground,
+            retries=retries,
+            autodelete=autodelete,
+            registry=registry,
             github_user=github_user,
             github_token=github_token,
-            docker_file="docker/tpu/Dockerfile.incremental",
             extra_context=extra_context,
-        )
-    elif registry == "gcp":
-        full_image_id = push_docker.push_to_gcp(
-            project_id=project,
-            region=region,
-            repository=docker_repository,
-            image_name=image_id,
-            tag=tag,
-            docker_file="docker/tpu/Dockerfile.incremental",
-            extra_context=extra_context,
-        )
-    else:
-        raise ValueError(f"Unknown docker registry: {args.docker_registry}")
-
-    for i in range(retries + 1):
-        try:
-            start_tpu_vm(
-                tpu_name=tpu_name,
-                tpu_type=tpu_type,
-                capacity_type=capacity_type,
-                version=version,
-                zone=zone,
-                autodelete=autodelete,
-                node_count=node_count,
-            )
-
-            # We don't technically need to setup on every run, but if we are working on a
-            # stale VM or a VM from e.g. spin-up-vm.sh, this ensures things always work.
-            setup_vm_docker(
-                tpu_name=tpu_name,
-                zone=zone,
-                node_count=node_count,
-                docker_base_image=docker_base_image,
-            )
-
-            git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
-
-            docker_command = [
-                "docker",
-                "run",
-                "-t" if foreground else "-d",
-                "--name=levanter",
-                "--privileged",
-                "--shm-size=32gb",
-                "--net=host",
-                "--init",
-                "--mount",
-                "type=volume,source=levanter,target=/home/levanter",
-                "-v",
-                "/tmp:/tmp",
-                "-e",
-                f"WANDB_DOCKER={image_id}",
-                "-e",
-                f"GIT_COMMIT={git_commit}",
-                "-e",
-                f"RUN_ID={run_id}",
-            ]
-
-            for k, v in env.items():
-                docker_command.extend(["-e", k + f"='{str(v)}'"])
-
-            docker_command.extend([full_image_id, " ".join(command)])
-
-            print(f"Running on tpu_name... {tpu_name}")
-            cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
-        except subprocess.CalledProcessError as e:  # noqa: F841
-            print(f"Error running command {e.cmd}")
-            if i < retries - 1:
-                print("Retrying... %d/%d" % (i + 1, retries))
-        else:
-            print("Job finished with no error.")
-            break
-
-    if autodelete:
-        print("Autodelete is set to True. Tear down machine...")
-        cli.run_command(
-            "gcloud",
-            "alpha",
-            "compute",
-            "tpus",
-            "queued-resources",
-            "delete",
-            tpu_name,
-            "--quiet",
-            f"--zone={zone}",
-            "--force",
+            project=project,
+            docker_repository=docker_repository,
+            capacity_type=capacity_type,
+            tpu_type=tpu_type,
+            version=version,
         )
