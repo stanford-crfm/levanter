@@ -7,7 +7,8 @@ TPU_NAME="$EXP_NAME-$TPU_TYPE-$NODE_COUNT-slice"
 RUN_ID=$TPU_NAME
 RETRIES=1
 
-CMD="python ray_scripts/ray_tpu_task.py"
+CMD="ray start --head --port=6379 --num-cpus=0 && python ray_scripts/ray_tpu_task.py"
+CMD="echo 'hello world'"
 echo $CMD
 python infra/launch.py --retries=$RETRIES --foreground \
     --tpu_name $TPU_NAME --tpu_type $TPU_TYPE --zone $TPU_ZONE --node_count $NODE_COUNT \

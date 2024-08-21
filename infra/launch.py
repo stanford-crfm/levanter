@@ -298,6 +298,9 @@ if __name__ == "__main__":
                 docker_base_image=docker_base_image,
             )
 
+            # no need to run the following command
+            break
+
             git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
 
             docker_command = [

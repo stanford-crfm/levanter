@@ -1,6 +1,7 @@
 import ray
 import logging
 from ray_scripts import ray_tpu
+from ray.util.state import list_nodes
 
 
 logger = logging.getLogger()
@@ -9,6 +10,7 @@ logger.setLevel(logging.DEBUG)
 ray.init()
 ray_tpu.init()
 
+print("List nodes: ", list_nodes())
 print("Cluster resources: ", ray_tpu.cluster_resources())
 print("Available resources: ", ray_tpu.available_resources())
 
