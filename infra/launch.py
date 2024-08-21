@@ -9,8 +9,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from infra import push_docker
-from infra.helpers import cli
+from . import push_docker
+from .helpers import cli
 
 
 def setup_vm_docker(tpu_name, zone, node_count, docker_base_image):
