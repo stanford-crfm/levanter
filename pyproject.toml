@@ -98,6 +98,18 @@ test = [
     "pytest-asyncio"
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["levanter", "levanter.*"]
+#[tool.setuptools.packages.find]
+#where = ["src"]
+#include = ["levanter", "levanter.*"]
+
+
+[tool.setuptools]
+packages = ["levanter", "levanter.infra"]
+
+[tool.setuptools.package-dir]
+levanter = "src/levanter"
+"levanter.infra" = "infra"
+
+# set version from package
+[tool.setuptools.dynamic]
+version = "levanter.__version__"

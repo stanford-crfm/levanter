@@ -13,7 +13,7 @@ import pty
 import subprocess
 import sys
 
-from infra.helpers import cli
+from .helpers import cli
 
 
 GCP_CLEANUP_POLICY = [

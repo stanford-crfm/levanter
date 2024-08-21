@@ -11,7 +11,7 @@ model:  # 7B class model
 trainer:
   tracker:
     type: wandb
-    entity: "stanford-crfm"
+    entity: "stanford-mercury"
     project: "marin"
     tags: ["dclm", "7B", "llama"]
 
@@ -23,9 +23,11 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  learning_rate: 2e-3
-  weight_decay: 0.05
+  learning_rate: 4e-4
+  weight_decay: 0.1
   min_lr_ratio: 0.1
+  beta1: 0.9
+  beta2: 0.95
   warmup: 5000
 
 z_loss_weight: 5e-6
