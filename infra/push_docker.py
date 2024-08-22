@@ -9,9 +9,12 @@ script will automatically build and deploy an image based on your current code.
 
 import argparse
 import json
+import os
 import pty
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from .helpers import cli
 
@@ -33,6 +36,27 @@ GCP_CLEANUP_POLICY = [
         },
     },
 ]
+
+
+def _rm(path):
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    elif path.is_file():
+        os.remove(path)
+    elif path.exists():
+        raise RuntimeError(f"Remove failed. Path ({path}) is neither a directory nor a file.")
+
+
+def _cp(src, dst):
+    # delete dst if exists
+    _rm(dst)
+
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    elif src.is_file():
+        shutil.copy(src, dst)
+    else:
+        raise RuntimeError(f"Copy failed. Source path ({src}) is neither a directory nor a file. Check if it exists.")
 
 
 def _run(argv):
@@ -128,14 +152,22 @@ def configure_gcp_docker(project_id, region, repository):
     _run(["gcloud", "auth", "configure-docker", "--quiet", f"{region}-docker.pkg.dev"])
 
 
-def build_docker(docker_file, image_name, tag) -> str:
+def build_docker(docker_file, image_name, tag, mount_src) -> str:
     """Builds a Docker image, enables artifact access, and pushes to Artifact Registry."""
+    # Copy external files temporarily to .mnt
+    mount_dst = Path(".mnt")
+    _cp(mount_src, mount_dst)
 
+    # Get mounting path in docker image.
+    levanter_path = Path("/opt/levanter")
+    extra_context = levanter_path / mount_src
     _run(
         [
             "docker",
             "buildx",
             "build",
+            "--build-arg",
+            f"EXTRA_CTX={extra_context.resolve()}",
             "--platform=linux/amd64",
             "-t",
             f"{image_name}:{tag}",
@@ -144,6 +176,8 @@ def build_docker(docker_file, image_name, tag) -> str:
             ".",
         ]
     )
+    # clean up after building
+    _rm(mount_dst)
 
     return f"{image_name}:{tag}"
 
@@ -195,7 +229,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    local_id = build_docker(docker_file=args.docker_file, image_name=args.image, tag=args.tag)
+    local_id = build_docker(
+        docker_file=args.docker_file, image_name=args.image, tag=args.tag, mount_src=Path("config")
+    )
 
     if args.docker_target in ["github", "ghcr"]:
         assert args.github_user, "Must specify --github_user when pushing to Github"

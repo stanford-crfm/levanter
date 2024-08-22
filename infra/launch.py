@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 # we do this nonsense so that it works as python -m levanter.infra.launch or python infra/launch.py
@@ -218,6 +219,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
     cli.add_arg(parser, config, ["--github_user"], type=str)
     cli.add_arg(parser, config, ["--github_token"], type=str)
+    cli.add_arg(parser, config, ["--extra_context"], type=Path, default=Path("config"))
 
     parser.add_argument(
         "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
@@ -247,6 +249,7 @@ if __name__ == "__main__":
     registry = args.docker_registry
     github_user = args.github_user
     github_token = args.github_token
+    extra_context = args.extra_context
 
     if zone is None:
         zone = cli.gcloud_config()["zone"]
@@ -270,7 +273,10 @@ if __name__ == "__main__":
     # make an image tag based on the unix timestamp to ensure we always pull the latest image
     tag = int(time.time())
 
-    local_id = push_docker.build_docker(docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag)
+    local_id = push_docker.build_docker(
+        docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag, mount_src=extra_context
+    )
+
     if registry == "ghcr":
         full_image_id = push_docker.push_to_github(
             local_id=local_id,
