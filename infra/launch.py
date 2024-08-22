@@ -6,11 +6,19 @@ import getpass
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
-from . import push_docker
-from .helpers import cli
+
+# we do this nonsense so that it works as python -m levanter.infra.launch or python infra/launch.py
+try:
+    from . import push_docker
+    from .helpers import cli  # noqa: E402
+except ImportError:
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from infra import push_docker
+    from infra.helpers import cli  # noqa: E402
 
 
 def setup_vm_docker(tpu_name, zone, node_count, docker_base_image):

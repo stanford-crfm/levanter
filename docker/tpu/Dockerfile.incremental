@@ -16,7 +16,9 @@ ENV TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60\
 WORKDIR /opt/levanter
 
 # We have to mkdir src/ to avoid setuptools error
-RUN mkdir -p /opt/levanter/src
+RUN mkdir -p /opt/levanter/src/levanter /opt/levanter/infra
+# we need the version of the package to be able to install it, which is in src/levanter/__init__.py
+COPY src/levanter/__init__.py /opt/levanter/src/levanter/
 ADD pyproject.toml README.md /opt/levanter/
 RUN pip install -e '.[test]'
 ADD . /opt/levanter
