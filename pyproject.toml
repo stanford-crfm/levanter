@@ -112,4 +112,4 @@ levanter = "src/levanter"
 
 # set version from package
 [tool.setuptools.dynamic]
-version = "levanter.__version__"
+version = {attr = "levanter.__version__"}
