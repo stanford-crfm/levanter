@@ -81,9 +81,20 @@ def _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=False)
 # Oddly enough, there's no API to simply fetch the current gcloud configuration...
 def gcloud_config():
     client = storage.Client()
-    return {
+    out: dict[str, str | None] = {
         "project": client.project,
     }
+    try:
+        out["zone"] = get_default_zone()
+    except subprocess.CalledProcessError:
+        out["zone"] = None
+
+    return out
+
+
+def get_default_zone() -> str:
+    result = subprocess.run(["gcloud", "config", "get-value", "compute/zone"], stdout=subprocess.PIPE, text=True)
+    return result.stdout.strip()
 
 
 def add_arg(

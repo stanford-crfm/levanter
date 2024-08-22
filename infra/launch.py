@@ -213,7 +213,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
     cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
-    cli.add_arg(parser, config, ["--zone"], required=False, default=None)
+    cli.add_arg(parser, config, ["--zone"], required=True)
     cli.add_arg(parser, config, ["--retries"], default=0, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=_default_run_id(), type=str)
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
@@ -255,6 +255,12 @@ if __name__ == "__main__":
     github_user = args.github_user
     github_token = args.github_token
     extra_context = args.extra_context
+
+    if zone is None:
+        zone = cli.gcloud_config()["zone"]
+
+    if zone is None:
+        raise ValueError("Zone must be specified or set in gcloud config.")
 
     region = "-".join(zone.split("-")[:-1])
     env = {k: v for k, v in args.env}
