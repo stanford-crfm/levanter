@@ -148,8 +148,7 @@ def build_docker(docker_file, image_name, tag) -> str:
     return f"{image_name}:{tag}"
 
 
-# Disabled until we can figure out how Docker hub organizations work
-def push_to_github(local_image, tag, github_user=None, github_token=None, docker_file=None):
+def push_to_github(local_id, github_user, github_token=None):
     """Pushes a local Docker image to Docker Hub."""
 
     # Authenticate the docker service with Github if a token exists
@@ -159,26 +158,24 @@ def push_to_github(local_image, tag, github_user=None, github_token=None, docker
         )
         print(login_process.communicate(input=github_token.encode(), timeout=10))
 
-    remote_name = f"ghcr.io/{github_user}/{local_image}:{tag}"
-    local_name = build_docker(docker_file=docker_file, image_name=local_image, tag=tag)
+    remote_name = f"ghcr.io/{github_user}/{local_id}"
 
-    _run(["docker", "tag", local_name, remote_name])
+    _run(["docker", "tag", local_id, remote_name])
     _run(["docker", "push", remote_name])
     return remote_name
 
 
-def push_to_gcp(project_id, region, repository, image_name, tag, docker_file) -> str:
+def push_to_gcp(local_id, project_id, region, repository) -> str:
     """Pushes a local Docker image to Artifact Registry."""
     configure_gcp_docker(project_id, region, repository)
-    local_image = build_docker(docker_file=docker_file, image_name=image_name, tag=tag)
 
     artifact_repo = f"{region}-docker.pkg.dev/{project_id}/{repository}"
 
-    full_image_name = f"{artifact_repo}/{image_name}:{tag}"
-    _run(["docker", "tag", local_image, full_image_name])
+    full_image_name = f"{artifact_repo}/{local_id}"
+    _run(["docker", "tag", local_id, full_image_name])
     _run(["docker", "push", full_image_name])
 
-    return f"{region}-docker.pkg.dev/{project_id}/{repository}/{image_name}:{tag}"
+    return f"{artifact_repo}/{local_id}"
 
 
 if __name__ == "__main__":
@@ -194,24 +191,19 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--docker_file"], default="docker/tpu/Dockerfile.base", help="Dockerfile to use.")
 
     # push to either github or GCP
-    cli.add_arg(parser, config, ["--docker_target"], choices=["github", "gcp"], required=True)
+    cli.add_arg(parser, config, ["--docker_target"], choices=["github", "gcp", "ghcr"], required=True)
 
     args = parser.parse_args()
 
-    if args.docker_target == "github":
+    local_id = build_docker(docker_file=args.docker_file, image_name=args.image, tag=args.tag)
+
+    if args.docker_target in ["github", "ghcr"]:
         assert args.github_user, "Must specify --github_user when pushing to Github"
         assert args.github_token, "Must specify --github_token when pushing to Github"
-        push_to_github(args.image, args.tag, args.github_user, args.github_token, docker_file=args.docker_file)
+        push_to_github(local_id=local_id, github_user=args.github_user, github_token=args.github_token)
     else:
         assert args.region, "Must specify --region when pushing to GCP"
         assert args.project, "Must specify --project when pushing to GCP"
         assert args.repository, "Must specify --repository when pushing to GCP"
 
-        push_to_gcp(
-            args.project,
-            args.region,
-            args.repository,
-            args.image,
-            args.tag,
-            docker_file=args.docker_file,
-        )
+        push_to_gcp(local_id, args.project, args.region, args.repository)

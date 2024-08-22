@@ -121,3 +121,31 @@ def load_config():
         return yaml.load(open(".config", "r"), Loader=yaml.SafeLoader)
     else:
         return {}
+
+
+def get_git_commit():
+    """Get the current git commit hash."""
+    return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+
+
+def make_docker_run_command(image_id, command, *, foreground, env):
+    docker_command = [
+        "docker",
+        "run",
+        "-t" if foreground else "-d",
+        "--name=levanter",
+        "--privileged",
+        "--shm-size=32gb",
+        "--net=host",
+        "--init",
+        "--mount",
+        "type=volume,source=levanter,target=/home/levanter",
+        "-v",
+        "/tmp:/tmp",
+    ]
+
+    for k, v in env.items():
+        docker_command.extend(["-e", k + f"='{str(v)}'"])
+
+    docker_command.extend([image_id, " ".join(command)])
+    return docker_command

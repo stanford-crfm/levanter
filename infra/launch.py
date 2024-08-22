@@ -20,7 +20,7 @@ except ImportError:
     from infra.helpers import cli  # noqa: E402
 
 
-def setup_vm_docker(tpu_name, zone, node_count, docker_base_image):
+def setup_vm_docker(tpu_name, zone, node_count):
     """Change docker permissions on `tpu_name`, remove any old runs, and setup the cache volume."""
     cli.tpu_ssh(
         tpu_name,
@@ -260,28 +260,29 @@ if __name__ == "__main__":
     if "WANDB_PROJECT" not in env:
         env["WANDB_PROJECT"] = "levanter"
 
+    env["GIT_COMMIT"] = cli.get_git_commit()
+    env["RUN_ID"] = run_id
+    env["WANDB_DOCKER"] = image_id
+
     if command[0] == "--":
         command = command[1:]
 
     # make an image tag based on the unix timestamp to ensure we always pull the latest image
     tag = int(time.time())
 
+    local_id = push_docker.build_docker(docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag)
     if registry == "ghcr":
         full_image_id = push_docker.push_to_github(
-            local_image=image_id,
-            tag=tag,
+            local_id=local_id,
             github_user=github_user,
             github_token=github_token,
-            docker_file="docker/tpu/Dockerfile.incremental",
         )
     elif registry == "gcp":
         full_image_id = push_docker.push_to_gcp(
+            local_id=local_id,
             project_id=project,
             region=region,
             repository=docker_repository,
-            image_name=image_id,
-            tag=tag,
-            docker_file="docker/tpu/Dockerfile.incremental",
         )
     else:
         raise ValueError(f"Unknown docker registry: {args.docker_registry}")
@@ -304,36 +305,9 @@ if __name__ == "__main__":
                 tpu_name=tpu_name,
                 zone=zone,
                 node_count=node_count,
-                docker_base_image=docker_base_image,
             )
 
-            git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
-
-            docker_command = [
-                "docker",
-                "run",
-                "-t" if foreground else "-d",
-                "--name=levanter",
-                "--privileged",
-                "--shm-size=32gb",
-                "--net=host",
-                "--init",
-                "--mount",
-                "type=volume,source=levanter,target=/home/levanter",
-                "-v",
-                "/tmp:/tmp",
-                "-e",
-                f"WANDB_DOCKER={image_id}",
-                "-e",
-                f"GIT_COMMIT={git_commit}",
-                "-e",
-                f"RUN_ID={run_id}",
-            ]
-
-            for k, v in env.items():
-                docker_command.extend(["-e", k + f"='{str(v)}'"])
-
-            docker_command.extend([full_image_id, " ".join(command)])
+            docker_command = cli.make_docker_run_command(full_image_id, command, env=env, foreground=foreground)
 
             print(f"Running on tpu_name... {tpu_name}")
             cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
@@ -346,7 +320,7 @@ if __name__ == "__main__":
             break
 
     if autodelete:
-        print("Autodelete is set to True. Tear down machine...")
+        print("Autodelete is set to True. Tearing down machine...")
         cli.run_command(
             "gcloud",
             "alpha",
