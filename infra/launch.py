@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 
 # we do this nonsense so that it works as python -m levanter.infra.launch or python infra/launch.py
@@ -180,12 +181,12 @@ def launch_job(
     tpu_name: str,
     tpu_type: str,
     capacity_type: str,
-    version: str,
     zone: str,
     node_count: int,
     full_image_id: str,
     env: dict[str, str],
     foreground: bool,
+    version: Optional[str] = None,
 ):
     start_tpu_vm(
         tpu_name=tpu_name,
@@ -240,6 +241,9 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--spot"], required=False, action="store_const", const="spot", dest="capacity_type")
     cli.add_arg(
         parser, config, ["--reserved"], required=False, action="store_const", const="reserved", dest="capacity_type"
+    )
+    cli.add_arg(
+        parser, config, ["--on-demand"], required=False, action="store_const", const="on-demand", dest="capacity_type"
     )
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
@@ -359,12 +363,12 @@ if __name__ == "__main__":
                 tpu_name=tpu_name,
                 tpu_type=tpu_type,
                 capacity_type=capacity_type,
-                version=version,
                 zone=zone,
                 node_count=node_count,
                 full_image_id=full_image_id,
                 env=env,
                 foreground=foreground,
+                version=version,
             )
             except subprocess.CalledProcessError as e:  # noqa: F841
                 print(f"Error running command {e.cmd}")
