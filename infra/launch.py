@@ -354,7 +354,7 @@ if __name__ == "__main__":
             repository=docker_repository,
         )
     else:
-        raise ValueError(f"Unknown docker registry: {args.docker_registry}")
+        raise ValueError(f"Unknown docker registry: {registry}")
 
         for i in range(retries + 1):
             try:
