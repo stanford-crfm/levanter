@@ -86,31 +86,29 @@ def describe_tpu(tpu_name, zone):
         return None
 
 
-def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete, node_count):
+def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count):
     tpu_stat = describe_tpu(tpu_name, zone)
     if tpu_stat is not None:
         if tpu_stat["state"]["state"] in ["FAILED", "SUSPENDED"]:
-            print("TPU suspended, bypassing autodelete config and deleting...")
-        elif not autodelete:
-            print("TPU already exists and autodelete is false, leaving it as is.")
-            return
+            print("TPU suspended,  deleting...", file=sys.stderr)
+
+            cli.run_command(
+                "gcloud",
+                "alpha",
+                "compute",
+                "tpus",
+                "queued-resources",
+                "delete",
+                tpu_name,
+                "--quiet",
+                f"--zone={zone}",
+                "--force",
+            )
         else:
-            print("TPU already exists, deleting...")
+            print(f"TPU {tpu_name} already exists and is in state {tpu_stat['state']['state']}.", file=sys.stderr)
+            return
 
-        cli.run_command(
-            "gcloud",
-            "alpha",
-            "compute",
-            "tpus",
-            "queued-resources",
-            "delete",
-            tpu_name,
-            "--quiet",
-            f"--zone={zone}",
-            "--force",
-        )
-
-    print(f"Creating new TPU {tpu_name} in {zone} of type {tpu_type}...")
+    print(f"Creating new TPU {tpu_name} in {zone} of type {tpu_type}...", file=sys.stderr)
     command = [
         "gcloud",
         "alpha",
@@ -163,7 +161,7 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, autodelete
                 print(f"Status is {tpu_stat['state']['state']}. Waited {waited} minutes...")
 
 
-def _default_run_id():
+def default_run_id():
     """Generate a run ID for wandb and continuation.
 
     Wandb expects a base36 encoded ID of exactly 8 lowercase characters
@@ -177,12 +175,47 @@ def _default_run_id():
     return run_id
 
 
+def launch_job(
+    command: list[str],
+    tpu_name: str,
+    tpu_type: str,
+    capacity_type: str,
+    version: str,
+    zone: str,
+    node_count: int,
+    full_image_id: str,
+    env: dict[str, str],
+    foreground: bool,
+):
+    start_tpu_vm(
+        tpu_name=tpu_name,
+        tpu_type=tpu_type,
+        capacity_type=capacity_type,
+        version=version,
+        zone=zone,
+        node_count=node_count,
+    )
+
+    # We don't technically need to setup on every run, but if we are working on a
+    # stale VM or a VM from e.g. spin-up-vm.sh, this ensures things always work.
+    setup_vm_docker(
+        tpu_name=tpu_name,
+        zone=zone,
+        node_count=node_count,
+    )
+
+    docker_command = cli.make_docker_run_command(full_image_id, command, env=env, foreground=foreground)
+
+    print(f"Running on tpu_name... {tpu_name}")
+    cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     config = cli.load_config()
 
     cli.add_arg(
-        parser, config, ["--autodelete"], default=False, action="store_true", help="Delete TPU if it already exists."
+        parser, config, ["--autodelete"], default=False, action="store_true", help="Delete TPU after job completes."
     )
     cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/stanford-crfm/levanter-base:latest")
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
@@ -214,8 +247,8 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
     cli.add_arg(parser, config, ["--zone"], required=True)
-    cli.add_arg(parser, config, ["--retries"], default=0, type=int)
-    cli.add_arg(parser, config, ["--run_id"], default=_default_run_id(), type=str)
+    cli.add_arg(parser, config, ["--retries"], default=10, type=int)
+    cli.add_arg(parser, config, ["--run_id"], default=default_run_id(), type=str)
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
     cli.add_arg(parser, config, ["--github_user"], type=str)
     cli.add_arg(parser, config, ["--github_token"], type=str)
@@ -321,28 +354,18 @@ if __name__ == "__main__":
 
         for i in range(retries + 1):
             try:
-                start_tpu_vm(
-                    tpu_name=tpu_name,
-                    tpu_type=tpu_type,
-                    capacity_type=capacity_type,
-                    version=version,
-                    zone=zone,
-                    autodelete=autodelete,
-                    node_count=node_count,
-                )
-
-            # We don't technically need to setup on every run, but if we are working on a
-            # stale VM or a VM from e.g. spin-up-vm.sh, this ensures things always work.
-            setup_vm_docker(
+                launch_job(
+                command=command,
                 tpu_name=tpu_name,
+                tpu_type=tpu_type,
+                capacity_type=capacity_type,
+                version=version,
                 zone=zone,
                 node_count=node_count,
+                full_image_id=full_image_id,
+                env=env,
+                foreground=foreground,
             )
-
-                docker_command = cli.make_docker_run_command(full_image_id, command, env=env, foreground=foreground)
-
-                print(f"Running on tpu_name... {tpu_name}")
-                cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
             except subprocess.CalledProcessError as e:  # noqa: F841
                 print(f"Error running command {e.cmd}")
                 if i < retries - 1:
