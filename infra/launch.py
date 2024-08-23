@@ -12,7 +12,7 @@ import levanter.infra.tpus
 from levanter.infra.tpus import launch_job
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     config = cli.load_config()
 
@@ -46,7 +46,6 @@ if __name__ == "__main__":
 
     autodelete = args.autodelete
     command = args.command
-    docker_base_image = args.docker_base_image
     docker_repository = args.docker_repository
     foreground = args.foreground
     image_id = args.image_name
@@ -194,3 +193,7 @@ if __name__ == "__main__":
             tpu_type=tpu_type,
             version=version,
         )
+
+
+if __name__ == "__main__":
+    main()
