@@ -104,11 +104,10 @@ test = [
 
 
 [tool.setuptools]
-packages = ["levanter", "levanter.infra"]
+packages = ["levanter"]
 
 [tool.setuptools.package-dir]
 levanter = "src/levanter"
-"levanter.infra" = "infra"
 
 # set version from package
 [tool.setuptools.dynamic]
