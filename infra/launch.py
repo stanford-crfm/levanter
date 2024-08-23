@@ -1,214 +1,15 @@
 #!/usr/bin/python
 
 import argparse
-import base64
 import getpass
-import json
-import os
 import subprocess
-import sys
 import time
 from pathlib import Path
-from typing import Optional
 
-
-# we do this nonsense so that it works as python -m levanter.infra.launch or python infra/launch.py
-try:
-    from . import push_docker
-    from .helpers import cli  # noqa: E402
-except ImportError:
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from infra import push_docker
-    from infra.helpers import cli  # noqa: E402
-
-
-def setup_vm_docker(tpu_name, zone, node_count):
-    """Change docker permissions on `tpu_name`, remove any old runs, and setup the cache volume."""
-    cli.tpu_ssh(
-        tpu_name,
-        zone,
-        node_count,
-        "sudo",
-        "usermod",
-        "-aG",
-        "docker",
-        getpass.getuser(),
-        "&&",
-        "sudo",
-        "docker",
-        "volume",
-        "create",
-        "--driver=local",
-        "levanter",
-        "&&",
-        "sudo",
-        "docker",
-        "rm",
-        "-f",
-        "levanter",
-    )
-
-
-def list_tpus(zone):
-    return json.loads(
-        subprocess.check_output(
-            [
-                "gcloud",
-                "alpha",
-                "compute",
-                "tpus",
-                "queued-resources",
-                "list",
-                f"--zone={zone}",
-                "--format=json(name.basename(), state)",
-            ]
-        )
-    )
-
-
-def describe_tpu(tpu_name, zone):
-    try:
-        return json.loads(
-            subprocess.check_output(
-                [
-                    "gcloud",
-                    "alpha",
-                    "compute",
-                    "tpus",
-                    "queued-resources",
-                    "describe",
-                    tpu_name,
-                    f"--zone={zone}",
-                    "--format=json(name.basename(), state)",
-                ]
-            )
-        )
-    except subprocess.CalledProcessError:
-        return None
-
-
-def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count):
-    tpu_stat = describe_tpu(tpu_name, zone)
-    if tpu_stat is not None:
-        if tpu_stat["state"]["state"] in ["FAILED", "SUSPENDED"]:
-            print("TPU suspended,  deleting...", file=sys.stderr)
-
-            cli.run_command(
-                "gcloud",
-                "alpha",
-                "compute",
-                "tpus",
-                "queued-resources",
-                "delete",
-                tpu_name,
-                "--quiet",
-                f"--zone={zone}",
-                "--force",
-            )
-        else:
-            print(f"TPU {tpu_name} already exists and is in state {tpu_stat['state']['state']}.", file=sys.stderr)
-            return
-
-    print(f"Creating new TPU {tpu_name} in {zone} of type {tpu_type}...", file=sys.stderr)
-    command = [
-        "gcloud",
-        "alpha",
-        "compute",
-        "tpus",
-        "queued-resources",
-        "create",
-        tpu_name,
-        f"--accelerator-type={tpu_type}",
-        f"--runtime-version={version}",
-        f"--zone={zone}",
-        "--quiet",
-    ]
-    if capacity_type in ["preemptible", "best-effort"]:
-        command.append("--best-effort")
-    elif capacity_type == "reserved":
-        command.append("--reserved")
-    elif capacity_type == "spot":
-        command.append("--spot")
-    elif capacity_type == "on-demand" or capacity_type is None:
-        pass
-    else:
-        raise ValueError(f"Unknown capacity type: {capacity_type}")
-
-    if node_count == 1:
-        command.append(f"--node-id={tpu_name}")
-    else:
-        command.append(f"--node-count={node_count}")
-
-    cli.run_command(*command)
-
-    # wait for queued resource to complete
-    print("Checking TPU creation status every minute...")
-    waited = 0
-    while True:
-        time.sleep(60)
-        waited += 1
-
-        tpu_stat = describe_tpu(tpu_name, zone)
-        assert tpu_stat is not None, f"{tpu_name} creation failed."
-
-        match tpu_stat["state"]["state"]:
-            case "ACTIVE":
-                break
-            case "FAILED":
-                raise RuntimeError(
-                    f"{tpu_name} creation failed: {tpu_stat['state']['failedData']['error']['message']}"
-                )
-            case _:
-                print(f"Status is {tpu_stat['state']['state']}. Waited {waited} minutes...")
-
-
-def default_run_id():
-    """Generate a run ID for wandb and continuation.
-
-    Wandb expects a base36 encoded ID of exactly 8 lowercase characters
-    or it won't generate a display name."""
-    rng_bytes = os.urandom(16)
-    run_id = base64.b32encode(rng_bytes)[:8].lower()
-    run_id = run_id.decode("utf-8")
-    assert len(run_id) == 8
-    for char in run_id:
-        assert char in "abcdefghijklmnopqrstuvwxyz0123456789"
-    return run_id
-
-
-def launch_job(
-    command: list[str],
-    tpu_name: str,
-    tpu_type: str,
-    capacity_type: str,
-    zone: str,
-    node_count: int,
-    full_image_id: str,
-    env: dict[str, str],
-    foreground: bool,
-    version: Optional[str] = None,
-):
-    start_tpu_vm(
-        tpu_name=tpu_name,
-        tpu_type=tpu_type,
-        capacity_type=capacity_type,
-        version=version,
-        zone=zone,
-        node_count=node_count,
-    )
-
-    # We don't technically need to setup on every run, but if we are working on a
-    # stale VM or a VM from e.g. spin-up-vm.sh, this ensures things always work.
-    setup_vm_docker(
-        tpu_name=tpu_name,
-        zone=zone,
-        node_count=node_count,
-    )
-
-    docker_command = cli.make_docker_run_command(full_image_id, command, env=env, foreground=foreground)
-
-    print(f"Running on tpu_name... {tpu_name}")
-    cli.tpu_ssh(tpu_name, zone, node_count, *docker_command)
+import levanter.infra.cli_helpers as cli
+import levanter.infra.docker as docker
+import levanter.infra.tpus
+from levanter.infra.tpus import launch_job
 
 
 if __name__ == "__main__":
@@ -222,29 +23,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
     cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
-    cli.add_arg(
-        parser,
-        config,
-        ["--capacity_type"],
-        default=None,
-        choices=["preemptible", "spot", "reserved", "on-demand", "best-effort"],
-    )
-    cli.add_arg(
-        parser,
-        config,
-        ["--preemptible"],
-        required=False,
-        action="store_const",
-        const="preemptible",
-        dest="capacity_type",
-    )
-    cli.add_arg(parser, config, ["--spot"], required=False, action="store_const", const="spot", dest="capacity_type")
-    cli.add_arg(
-        parser, config, ["--reserved"], required=False, action="store_const", const="reserved", dest="capacity_type"
-    )
-    cli.add_arg(
-        parser, config, ["--on-demand"], required=False, action="store_const", const="on-demand", dest="capacity_type"
-    )
+    cli.add_capacity_type_args(parser, config)
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
@@ -252,7 +31,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
     cli.add_arg(parser, config, ["--zone"], required=True)
     cli.add_arg(parser, config, ["--retries"], default=10, type=int)
-    cli.add_arg(parser, config, ["--run_id"], default=default_run_id(), type=str)
+    cli.add_arg(parser, config, ["--run_id"], default=cli.default_run_id(), type=str)
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
     cli.add_arg(parser, config, ["--github_user"], type=str)
     cli.add_arg(parser, config, ["--github_token"], type=str)
@@ -339,15 +118,15 @@ if __name__ == "__main__":
         # make an image tag based on the unix timestamp to ensure we always pull the latest image
         tag = int(time.time())
 
-    local_id = push_docker.build_docker(docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag)
+    local_id = docker.build_docker(docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag)
     if registry == "ghcr":
-        full_image_id = push_docker.push_to_github(
+        full_image_id = docker.push_to_github(
             local_id=local_id,
             github_user=github_user,
             github_token=github_token,
         )
     elif registry == "gcp":
-        full_image_id = push_docker.push_to_gcp(
+        full_image_id = docker.push_to_gcp(
             local_id=local_id,
             project_id=project,
             region=region,
@@ -380,7 +159,7 @@ if __name__ == "__main__":
 
         if autodelete:
             print("Autodelete is set to True. Tearing down machine...")
-            cli.run_command(
+            levanter.infra.tpus.run_command(
                 "gcloud",
                 "alpha",
                 "compute",
