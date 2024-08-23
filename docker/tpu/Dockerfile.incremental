@@ -25,4 +25,4 @@ ADD . /opt/levanter
 # so that the same (config) path(s) specified in train_lm.py argument still works
 #COPY .mnt $EXTRA_CTX
 # it's already in the image, so we don't need to copy it. just move it if we set EXTRA_CTX
-RUN if [ -n ".mnt" ]; then mkdir -p $(dirname $EXTRA_CTX) && mv .mnt $EXTRA_CTX; fi
+RUN if [ -f ".mnt" ]; then mkdir -p $(dirname $EXTRA_CTX) && mv .mnt $EXTRA_CTX; fi
