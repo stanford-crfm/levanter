@@ -1,0 +1,7 @@
+runtime_env:
+  env_vars:
+    WANDB_API_KEY: be441272f3bd2812a2eb009739e26a202f14d7ba
+    WANDB_PROJECT: marin
+    HF_TOKEN: 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
+    TPU_STDERR_LOG_LEVEL: 0
+    TPU_MIN_LOG_LEVEL: 0
