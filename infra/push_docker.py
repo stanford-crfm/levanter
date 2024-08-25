@@ -30,7 +30,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    local_id = build_docker(docker_file=args.docker_file, image_name=args.image, tag=args.tag)
+    local_id = build_docker(
+        docker_file=args.docker_file, image_name=args.image, tag=args.tag, extra_ctx=Path("config")
+    )
 
     if args.docker_target in ["github", "ghcr"]:
         assert args.github_user, "Must specify --github_user when pushing to Github"

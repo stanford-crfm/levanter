@@ -117,7 +117,10 @@ def main():
         # make an image tag based on the unix timestamp to ensure we always pull the latest image
         tag = int(time.time())
 
-    local_id = docker.build_docker(docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag)
+    local_id = docker.build_docker(
+        docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag, extra_ctx=extra_context
+    )
+
     if registry == "ghcr":
         full_image_id = docker.push_to_github(
             local_id=local_id,

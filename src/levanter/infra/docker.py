@@ -140,32 +140,41 @@ def configure_gcp_docker(project_id, region, repository):
     _run(["gcloud", "auth", "configure-docker", "--quiet", f"{region}-docker.pkg.dev"])
 
 
-def build_docker(docker_file, image_name, tag, mount_src) -> str:
+def build_docker(docker_file, image_name, tag, extra_ctx=None) -> str:
     """Builds a Docker image, enables artifact access, and pushes to Artifact Registry."""
     # Copy external files temporarily to .mnt
-    mount_dst = Path(".mnt")
-    _cp(mount_src, mount_dst)
+    if extra_ctx is not None:
+        mount_dst = Path(".mnt")
+        _cp(extra_ctx, mount_dst)
+    else:
+        mount_dst = None  # make type checker happy
 
-    # Get mounting path in docker image.
-    levanter_path = Path("/opt/levanter")
-    extra_context = levanter_path / mount_src
-    _run(
+    args = [
+        "docker",
+        "buildx",
+        "build",
+        "--platform=linux/amd64",
+        "-t",
+        f"{image_name}:{tag}",
+    ]
+    if extra_ctx is not None:
+        # Get mounting path in docker image.
+        levanter_path = Path("/opt/levanter")
+        extra_context = levanter_path / extra_ctx
+        args.extend(["--build-arg", f"EXTRA_CTX={extra_context.resolve()}"])
+
+    args.extend(
         [
-            "docker",
-            "buildx",
-            "build",
-            "--build-arg",
-            f"EXTRA_CTX={extra_context.resolve()}",
-            "--platform=linux/amd64",
-            "-t",
-            f"{image_name}:{tag}",
             "-f",
             docker_file,
             ".",
         ]
     )
+    _run(args)
+
     # clean up after building
-    _rm(mount_dst)
+    if extra_ctx is not None:
+        _rm(mount_dst)
 
     return f"{image_name}:{tag}"
 
