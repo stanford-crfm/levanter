@@ -4,4 +4,4 @@ ray job submit --address http://127.0.0.1:8265 --working-dir . \
     --no-wait \
     -- WANDB_API_KEY=be441272f3bd2812a2eb009739e26a202f14d7ba \
     WANDB_PROJECT=marin \
-    python -m levanter.main.train_lm --config_path config/gpt2_nano.yaml
+    python -m levanter.main.train_lm_ray --config_path config/gpt2_nano.yaml
