@@ -104,7 +104,7 @@ def _maybe_get_config_path_and_cmdline_args(args: List[str]):
             raise ValueError(f"Multiple config args found in {args}")
         config_path_index = found_indices[0] + 1
 
-        config_paths = []
+        config_paths: List[str] = []
         args = args.copy()
         del args[config_path_index - 1]
         config_path_index -= 1
