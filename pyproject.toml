@@ -115,8 +115,3 @@ packages = ["levanter"]
 
 [tool.setuptools.package-dir]
 levanter = "src/levanter"
-
-# set version from package
-[tool.setuptools.dynamic]
-#version = { attr = "levanter.__version__" }
-version = "1.2-PRE"
