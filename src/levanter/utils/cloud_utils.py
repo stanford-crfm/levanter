@@ -29,12 +29,35 @@ def _checked_request(url):
         raise
 
 
+def _shutdown_tpu_with_queued_resource():
+    queued_resource = _checked_request(
+        "http://metadata.google.internal/computeMetadata/v1/instance/attributes/queued-resource-name"
+    )
+    # queued resource looks like:
+    # projects/999999/locations/us-central2-b/queuedResources/NAME
+    if queued_resource:
+        logger.critical(f"Found queued resource {queued_resource}. Attempting to delete it.")
+        zone = queued_resource.split("/")[3]
+        queued_resource = queued_resource.split("/")[-1]
+        # quiet really works like -y
+        os.system(f"gcloud compute tpus queued-resources delete {queued_resource} --zone {zone} --force --quiet")
+        return True
+    else:
+        logger.info("No queued resource found.")
+        return False
+
+
 def shutdown_tpu_vm(sleep_seconds=60 * 5):
     """You should probably call this from atexit or something like that."""
     try:
+        _shutdown_tpu_with_queued_resource()
+    except requests.exceptions.RequestException:
+        logger.info("This is not a queued resource, deleting the old fashioned way.")
+
+    try:
         zone = _checked_request("http://metadata.google.internal/computeMetadata/v1/instance/zone")
         zone = zone.split("/")[-1]
-        name = _checked_request("http://metadata.google.internal/computeMetadata/v1/attributes/instance-id")
+        name = _checked_request("http://metadata.google.internal/computeMetadata/v1/instance/attributes/tpu-env")
     except requests.exceptions.RequestException:
         logger.warning("Could not get zone or instance-id from metadata server. Is this a TPU VM? Not shutting down.")
         return
