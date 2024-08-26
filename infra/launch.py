@@ -35,7 +35,7 @@ def main():
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
     cli.add_arg(parser, config, ["--github_user"], type=str)
     cli.add_arg(parser, config, ["--github_token"], type=str)
-    cli.add_arg(parser, config, ["--extra_context"], type=Path, default=Path("config"))
+    cli.add_arg(parser, config, ["--extra_context"], type=Path, required=False, default=None)
 
     parser.add_argument(
         "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
@@ -117,9 +117,11 @@ def main():
         # make an image tag based on the unix timestamp to ensure we always pull the latest image
         tag = int(time.time())
 
-    local_id = docker.build_docker(
-        docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag, extra_ctx=extra_context
-    )
+    with docker.copy_extra_ctx(extra_context) as extra_context:
+        build_args = {"EXTRA_CTX": extra_context} if extra_context else None
+        local_id = docker.build_docker(
+            docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag, build_args=build_args
+        )
 
     if registry == "ghcr":
         full_image_id = docker.push_to_github(

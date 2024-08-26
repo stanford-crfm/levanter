@@ -7,9 +7,9 @@ It is not necessary to run this yourself unless you are deploying a new base ima
 script will automatically build and deploy an image based on your current code.
 """
 import argparse
-from pathlib import Path
 
 from levanter.infra import cli_helpers as cli
+from levanter.infra import docker
 from levanter.infra.docker import build_docker, push_to_gcp, push_to_github
 
 
@@ -30,9 +30,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    local_id = build_docker(
-        docker_file=args.docker_file, image_name=args.image, tag=args.tag, extra_ctx=Path("config")
-    )
+    with docker.copy_extra_ctx(args.extra_context) as extra_ctx:
+        build_args = {"EXTRA_CTX": extra_ctx} if extra_ctx else None
+        local_id = build_docker(docker_file=args.docker_file, image_name=args.image, tag=args.tag)
 
     if args.docker_target in ["github", "ghcr"]:
         assert args.github_user, "Must specify --github_user when pushing to Github"

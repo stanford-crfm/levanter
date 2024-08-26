@@ -4,6 +4,7 @@ import pty
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -140,15 +141,22 @@ def configure_gcp_docker(project_id, region, repository):
     _run(["gcloud", "auth", "configure-docker", "--quiet", f"{region}-docker.pkg.dev"])
 
 
-def build_docker(docker_file, image_name, tag, extra_ctx=None) -> str:
-    """Builds a Docker image, enables artifact access, and pushes to Artifact Registry."""
-    # Copy external files temporarily to .mnt
+@contextmanager
+def copy_extra_ctx(extra_ctx):
+    """Context manager to handle copying and cleanup of extra context directory."""
     if extra_ctx is not None:
         mount_dst = Path(".mnt")
         _cp(extra_ctx, mount_dst)
+        try:
+            yield mount_dst
+        finally:
+            _rm(mount_dst)
     else:
-        mount_dst = None  # make type checker happy
+        yield None
 
+
+def build_docker(docker_file, image_name, tag, build_args=None) -> str:
+    """Builds a Docker image, enables artifact access, and pushes to Artifact Registry."""
     args = [
         "docker",
         "buildx",
@@ -157,11 +165,10 @@ def build_docker(docker_file, image_name, tag, extra_ctx=None) -> str:
         "-t",
         f"{image_name}:{tag}",
     ]
-    if extra_ctx is not None:
-        # Get mounting path in docker image.
-        levanter_path = Path("/opt/levanter")
-        extra_context = levanter_path / extra_ctx
-        args.extend(["--build-arg", f"EXTRA_CTX={extra_context.resolve()}"])
+
+    if build_args:
+        for key, value in build_args.items():
+            args.extend(["--build-arg", f"{key}={value}"])
 
     args.extend(
         [
@@ -171,10 +178,6 @@ def build_docker(docker_file, image_name, tag, extra_ctx=None) -> str:
         ]
     )
     _run(args)
-
-    # clean up after building
-    if extra_ctx is not None:
-        _rm(mount_dst)
 
     return f"{image_name}:{tag}"
 
