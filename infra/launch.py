@@ -29,7 +29,7 @@ def main():
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
     cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
     cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
-    cli.add_arg(parser, config, ["--zone"], required=True)
+    cli.add_arg(parser, config, ["--zone"], default=None, type=str, required=False)
     cli.add_arg(parser, config, ["--retries"], default=10, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=cli.default_run_id(), type=str)
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
@@ -60,11 +60,6 @@ def main():
     node_count = args.node_count
     version = args.version
     zone = args.zone
-
-    if zone is None:
-        zone = cli.gcloud_config()["compute"]["zone"]
-
-
     run_id = args.run_id
     registry = args.docker_registry
     github_user = args.github_user
@@ -90,32 +85,8 @@ def main():
     if command[0] == "--":
         command = command[1:]
 
-    {{REWRITTEN_CODE}}
-    def run_command(
-        tpu_name,
-        tpu_type,
-        *,
-        zone,
-        node_count,
-        docker_base_image,
-        image_id,
-        command,
-        env,
-        run_id,
-        foreground,
-        retries,
-        autodelete,
-        registry,
-        github_user,
-        github_token,
-        extra_context,
-        project,
-        docker_repository,
-        capacity_type,
-        version,
-    ):
-        # make an image tag based on the unix timestamp to ensure we always pull the latest image
-        tag = int(time.time())
+    # make an image tag based on the unix timestamp to ensure we always pull the latest image
+    tag = int(time.time())
 
     with docker.copy_extra_ctx(extra_context) as extra_context:
         build_args = {"EXTRA_CTX": extra_context} if extra_context else None
@@ -139,9 +110,9 @@ def main():
     else:
         raise ValueError(f"Unknown docker registry: {registry}")
 
-        for i in range(retries + 1):
-            try:
-                launch_job(
+    for i in range(retries + 1):
+        try:
+            launch_job(
                 command=command,
                 tpu_name=tpu_name,
                 tpu_type=tpu_type,
@@ -153,50 +124,27 @@ def main():
                 foreground=foreground,
                 version=version,
             )
-            except subprocess.CalledProcessError as e:  # noqa: F841
-                print(f"Error running command {e.cmd}")
-                if i < retries - 1:
-                    print("Retrying... %d/%d" % (i + 1, retries))
-            else:
-                print("Job finished with no error.")
-                break
+        except subprocess.CalledProcessError as e:  # noqa: F841
+            print(f"Error running command {e.cmd}")
+            if i < retries - 1:
+                print("Retrying... %d/%d" % (i + 1, retries))
+        else:
+            print("Job finished with no error.")
+            break
 
-        if autodelete:
-            print("Autodelete is set to True. Tearing down machine...")
-            levanter.infra.tpus.run_command(
-                "gcloud",
-                "alpha",
-                "compute",
-                "tpus",
-                "queued-resources",
-                "delete",
-                tpu_name,
-                "--quiet",
-                f"--zone={zone}",
-                "--force",
-            )
-
-        run_command(
-            tpu_name=tpu_name,
-            zone=zone,
-            node_count=node_count,
-            docker_base_image=docker_base_image,
-            image_id=image_id,
-            command=command,
-            env=env,
-            run_id=run_id,
-            foreground=foreground,
-            retries=retries,
-            autodelete=autodelete,
-            registry=registry,
-            github_user=github_user,
-            github_token=github_token,
-            extra_context=extra_context,
-            project=project,
-            docker_repository=docker_repository,
-            capacity_type=capacity_type,
-            tpu_type=tpu_type,
-            version=version,
+    if autodelete:
+        print("Autodelete is set to True. Tearing down machine...")
+        levanter.infra.tpus.run_command(
+            "gcloud",
+            "alpha",
+            "compute",
+            "tpus",
+            "queued-resources",
+            "delete",
+            tpu_name,
+            "--quiet",
+            f"--zone={zone}",
+            "--force",
         )
 
 
