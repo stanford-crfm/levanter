@@ -16,6 +16,7 @@ ENV TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60\
 WORKDIR /opt/levanter
 
 ADD pyproject.toml README.md /opt/levanter/
+RUN mkdir -p /opt/levanter/src/levanter
 RUN pip install -e '.[test]'
 ADD . /opt/levanter
 
