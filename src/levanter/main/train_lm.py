@@ -14,6 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
+from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
@@ -50,6 +51,8 @@ class TrainLmConfig:
 
     update_hessian_steps: int = 10
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
+    initialize_from_checkpoint_path: Optional[str] = None
+    # if provided, will initialize from this checkpoint, used for llama style data mixture
 
 
 def main(config: TrainLmConfig):
@@ -125,6 +128,9 @@ def main(config: TrainLmConfig):
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
+
+        if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
+            state = load_checkpoint(state, config.initialize_from_checkpoint_path)
 
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
