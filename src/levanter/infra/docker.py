@@ -50,11 +50,22 @@ def _cp(src, dst):
 
 def _run(argv):
     if sys.stdout.isatty():
-        exit_code = pty.spawn(argv)
+        output = []
+
+        def read(fd):
+            data = os.read(fd, 1024)
+            output.append(data)
+            return data
+
+        exit_code = pty.spawn(argv, master_read=read)
         if exit_code != 0:
-            raise subprocess.CalledProcessError(exit_code, argv)
+            e = subprocess.CalledProcessError(exit_code, argv)
+            e.output = b"".join(output)
+            raise e
+
+        return b"".join(output)
     else:
-        subprocess.check_output(argv, stderr=subprocess.STDOUT)
+        return subprocess.check_output(argv, stderr=subprocess.STDOUT)
 
 
 def configure_gcp_docker(project_id, region, repository):
