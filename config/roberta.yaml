@@ -1,0 +1,38 @@
+data:
+  train_urls:
+    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_train.{1..128}-of-128.jsonl.gz"
+  validation_urls:
+    - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
+  cache_dir: "gs://levanter-data/tokenized/openwebtext_roberta/"
+  tokenizer: "roberta-base"
+
+model:
+  type: roberta
+  vocab_size: 50265
+  hidden_size: 768
+  intermediate_size: 3072
+  num_hidden_layers: 12
+  num_attention_heads: 12
+  max_position_embeddings: 512
+  hidden_act: "gelu"
+  hidden_dropout_prob: 0.1
+  attention_probs_dropout_prob: 0.1
+  gradient_checkpointing: true
+
+trainer:
+  tracker:
+    - type: wandb
+      project: "levanter"
+      tags: ["openwebtext", "roberta", "itest"]
+
+  mp: p=f32,c=bfloat16
+  model_axis_size: 1
+  per_device_parallelism: -1
+
+  train_batch_size: 32
+  num_train_steps: 20000
+
+optimizer:
+  learning_rate: 1E-3
+  weight_decay: 0.1
+  warmup: 0.01

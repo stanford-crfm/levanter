@@ -20,6 +20,7 @@ from levanter.data.text import MaskedLmDataset, LMDatasetConfig, LMMixtureDatase
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig
+from levanter.models.roberta import RobertaConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 class TrainMlmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    model: LmConfig = field(default_factory=LlamaConfig)
+    model: LmConfig = field(default_factory=RobertaConfig)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 
     # config related to continued pretraining
