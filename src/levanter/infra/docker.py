@@ -162,6 +162,7 @@ def build_docker(docker_file, image_name, tag, build_args=None) -> str:
         "buildx",
         "build",
         "--platform=linux/amd64",
+        # "--progress=plain",
         "-t",
         f"{image_name}:{tag}",
     ]

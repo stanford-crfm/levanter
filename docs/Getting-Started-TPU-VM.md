@@ -148,7 +148,7 @@ python infra/launch.py --extra_context <external path> -- python src/levanter/ma
 ### Babysitting Script
 
 If you are using a preemptible TPU VM, you probably want to use the "babysitting" version of the script to keep an eye on
-the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. 
+the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours.
 You can run `launch.py` with the `--retries` and `--foreground` parameter to accomplish this.
 If `--retries` is greater than 1, `launch.py` will automatically attempt to re-create the VM and re-run the command if it fails. (`--foreground` is necessary to keep the script from returning immediately.)
 
@@ -186,28 +186,6 @@ try to load the latest checkpoint if it exists.
 Tokenizers and configuration files are loaded via `fsspec` which supports remote
 filesystems , so you can also copy your tokenizer or config file to GCS and use
 a `gs://` path to access it.
-
-
-## Using Levanter as a Library
-
-Levanter is usually used by cloning the repo and running it from the command line, but you can also use it as a library.
-When you do, levanter is installed in your python environment and you can import it as a module. Furthermore, the
-`launch.py` script is exposed as a module, so you can use it to launch jobs from your python scripts or
-on the command line.
-
-To use on the command line, you can run:
-
-```bash
-python -m levanter.infra.launch ... # same as running launch.py
-```
-
-To use in a python script, you can run:
-
-```python
-from levanter.infra import launch
-
-```
-
 
 
 ## Common Issues

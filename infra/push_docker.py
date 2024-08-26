@@ -24,6 +24,7 @@ if __name__ == "__main__":
     cli.add_arg(parser, config, ["--github_user"], default=None, help="Github user name.")
     cli.add_arg(parser, config, ["--github_token"], default=None, help="Github token.")
     cli.add_arg(parser, config, ["--docker_file"], default="docker/tpu/Dockerfile.base", help="Dockerfile to use.")
+    cli.add_arg(parser, config, ["--extra_context"], required=False, default=None)
 
     # push to either github or GCP
     cli.add_arg(parser, config, ["--docker_target"], choices=["github", "gcp", "ghcr"], required=True)

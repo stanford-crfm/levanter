@@ -1,4 +1,4 @@
-name: Build and Push Docker TPU Base Image
+name: Build and Push Docker TPU Images
 
 on:
   push:
