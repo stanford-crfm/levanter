@@ -76,6 +76,8 @@ def describe_tpu(tpu_name, zone):
 
 
 def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count):
+    if version is None:
+        version = "tpu-ubuntu2204-base"
     tpu_stat = describe_tpu(tpu_name, zone)
     if tpu_stat is not None:
         if tpu_stat["state"]["state"] in ["FAILED", "SUSPENDED"]:
@@ -107,10 +109,11 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count
         "create",
         tpu_name,
         f"--accelerator-type={tpu_type}",
-        f"--runtime-version={version}",
         f"--zone={zone}",
         "--quiet",
     ]
+    if version is not None:
+        command.append(f"--runtime-version={version}")
     if capacity_type in ["preemptible", "best-effort"]:
         command.append("--best-effort")
     elif capacity_type == "reserved":

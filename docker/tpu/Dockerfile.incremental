@@ -16,8 +16,8 @@ ENV TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60\
 WORKDIR /opt/levanter
 
 ADD pyproject.toml README.md /opt/levanter/
-RUN pip install -e '.[test]'
 ADD . /opt/levanter
+RUN pip install -e '.[test]'
 
 # Add $EXTRA_CTX to the same location as in local machine.
 # it's already in the image, so we don't need to copy it. just move it if we set EXTRA_CTX
