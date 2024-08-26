@@ -129,8 +129,10 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
+        seek_dataloader = True
         if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
             state = load_checkpoint(state, config.initialize_from_checkpoint_path)
+            seek_dataloader = False
 
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
@@ -213,7 +215,7 @@ def main(config: TrainLmConfig):
         # data loader. may need to seek to the right place if we're resuming
         train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 
-        if int(state.step) > 0:
+        if int(state.step) > 0 and seek_dataloader:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm
