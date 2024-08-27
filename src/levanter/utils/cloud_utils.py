@@ -31,28 +31,19 @@ def _checked_request(url):
 
 
 def _checked_delete(url):
-    def _do_checked_delete(url):
-        time.sleep(10)
-        # first get the token
-        token = _checked_request(
-            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
-        )
-        token = json.loads(token)["access_token"]
-        headers = {"Authorization": f"Bearer {token}", "Metadata-Flavor": "Google"}
-        try:
-            response = requests.delete(url, headers=headers)
-            response.raise_for_status()
-            return response.text
-        except requests.exceptions.RequestException:
-            logger.exception(f"Could not delete {url} from metadata server. Is this a TPU VM?", exc_info=True)
-            raise
-
-    # fork a process to do the delete so the main process can exit before the delete is done
-    logger.info(f"Forking a process to delete {url}...")
-    import multiprocessing
-
-    p = multiprocessing.Process(target=_do_checked_delete, args=(url,), daemon=True)
-    p.start()
+    # first get the token
+    token = _checked_request(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+    )
+    token = json.loads(token)["access_token"]
+    headers = {"Authorization": f"Bearer {token}", "Metadata-Flavor": "Google"}
+    try:
+        response = requests.delete(url, headers=headers)
+        response.raise_for_status()
+        return response.text
+    except requests.exceptions.RequestException:
+        logger.exception(f"Could not delete {url} from metadata server. Is this a TPU VM?", exc_info=True)
+        raise
 
 
 def _shutdown_tpu_with_queued_resource():
@@ -83,6 +74,17 @@ def _shutdown_tpu_with_queued_resource():
 
 def shutdown_tpu_vm(sleep_seconds=60 * 5):
     """You should probably call this from atexit or something like that."""
+    # fork a process to do the delete so the main process can exit before the delete is done
+    logger.info(f"Forking a process to delete...")
+    logger.critical(f"Create a file {SENTINEL_FILE} to cancel the shutdown")
+    logger.critical(f"$ touch {SENTINEL_FILE}")
+
+    import multiprocessing
+
+    p = multiprocessing.Process(target=_do_shutdown_tpu_vm, args=(sleep_seconds,), daemon=True)
+    p.start()
+
+def _do_shutdown_tpu_vm(sleep_seconds):
     # the gcloud command we would run is something like:
     # gcloud compute tpus tpu-vm delete tpu-vm-1 --zone us-central1-a --quiet
     try:
