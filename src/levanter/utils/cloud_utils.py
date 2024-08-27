@@ -1,4 +1,5 @@
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -29,18 +30,51 @@ def _checked_request(url):
         raise
 
 
+def _checked_delete(url):
+    def _do_checked_delete(url):
+        time.sleep(10)
+        # first get the token
+        token = _checked_request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+        )
+        token = json.loads(token)["access_token"]
+        headers = {"Authorization": f"Bearer {token}", "Metadata-Flavor": "Google"}
+        try:
+            response = requests.delete(url, headers=headers)
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.RequestException:
+            logger.exception(f"Could not delete {url} from metadata server. Is this a TPU VM?", exc_info=True)
+            raise
+
+    # fork a process to do the delete so the main process can exit before the delete is done
+    logger.info(f"Forking a process to delete {url}...")
+    import multiprocessing
+
+    p = multiprocessing.Process(target=_do_checked_delete, args=(url,), daemon=True)
+    p.start()
+
+
 def _shutdown_tpu_with_queued_resource():
     queued_resource = _checked_request(
         "http://metadata.google.internal/computeMetadata/v1/instance/attributes/queued-resource-name"
     )
     # queued resource looks like:
     # projects/999999/locations/us-central2-b/queuedResources/NAME
+    # to delete we need to use delete against
+    # https://tpu.googleapis.com/v2/projects/9999/locations/us-central2-b/queuedResources/NAME?force=true
     if queued_resource:
-        logger.critical(f"Found queued resource {queued_resource}. Attempting to delete it.")
-        zone = queued_resource.split("/")[3]
-        queued_resource = queued_resource.split("/")[-1]
+        queued_resource_name = queued_resource.split("/")[-1]
         # quiet really works like -y
-        os.system(f"gcloud compute tpus queued-resources delete {queued_resource} --zone {zone} --force --quiet")
+        if jax.process_index() == 0:
+            logger.critical(f"Found queued resource {queued_resource_name}. Attempting to delete it.")
+            # We need to use curl
+            # curl -X DELETE -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+            # -H "Content-Type: application/json" \
+            # https://tpu.googleapis.com/v2/projects/my-project/locations/us-central2-b/queuedResources/my-queued-resource?force=true
+            # os.system(f"gcloud compute tpus queued-resources delete {queued_resource} --zone {zone} --force --quiet")
+            url = f"https://tpu.googleapis.com/v2/{queued_resource}?force=true"
+            _checked_delete(url)
         return True
     else:
         logger.info("No queued resource found.")
@@ -49,21 +83,17 @@ def _shutdown_tpu_with_queued_resource():
 
 def shutdown_tpu_vm(sleep_seconds=60 * 5):
     """You should probably call this from atexit or something like that."""
-    try:
-        _shutdown_tpu_with_queued_resource()
-    except requests.exceptions.RequestException:
-        logger.info("This is not a queued resource, deleting the old fashioned way.")
-
+    # the gcloud command we would run is something like:
+    # gcloud compute tpus tpu-vm delete tpu-vm-1 --zone us-central1-a --quiet
     try:
         zone = _checked_request("http://metadata.google.internal/computeMetadata/v1/instance/zone")
         zone = zone.split("/")[-1]
-        name = _checked_request("http://metadata.google.internal/computeMetadata/v1/instance/attributes/tpu-env")
+        name = _checked_request("http://metadata.google.internal/computeMetadata/v1/instance/attributes/instance-id")
+        project = _checked_request("http://metadata.google.internal/computeMetadata/v1/project/project-id")
     except requests.exceptions.RequestException:
         logger.warning("Could not get zone or instance-id from metadata server. Is this a TPU VM? Not shutting down.")
         return
 
-    # the gcloud command we would run is something like:
-    # gcloud compute tpus tpu-vm delete tpu-vm-1 --zone us-central1-a --quiet
     logger.critical(f"Shutting down TPU VM {name} in zone {zone} in {sleep_seconds} seconds")
     logger.critical(f"Create a file {SENTINEL_FILE} to cancel the shutdown")
     logger.critical(f"$ touch {SENTINEL_FILE}")
@@ -73,12 +103,22 @@ def shutdown_tpu_vm(sleep_seconds=60 * 5):
         logger.critical(f"Found sentinel file {SENTINEL_FILE}, not shutting down TPU VM")
         return
 
+    try:
+        success = _shutdown_tpu_with_queued_resource()
+        if success:
+            return
+    except requests.exceptions.RequestException:
+        logger.info("This is not a queued resource, deleting the old fashioned way.")
+
     logger.critical(f"Shutting down TPU VM {name} in zone {zone}")
     if jax.process_index() != 0:
         logger.info(f"Letting process 0 handle the shutdown. We are process {jax.process_index()}")
         return
 
-    os.system(f"gcloud compute tpus tpu-vm delete {name} --zone {zone} --quiet")
+    # os.system(f"gcloud compute tpus tpu-vm delete {name} --zone {zone} --quiet")
+    # https://tpu.googleapis.com/v2/projects/PROJECT/locations/us-central2-b/nodes/NAME
+    url = f"http://tpu.googleapis.com/v2/projects/{project}/locations/{zone}/nodes/{name}"
+    _checked_delete(url)
 
 
 _sync_count = 0
