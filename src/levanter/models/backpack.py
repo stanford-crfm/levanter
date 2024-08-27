@@ -177,7 +177,9 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
 
         k_c, _ = jrandom.split(key, 2)
         # NB: out_first=True b/c the torch implementation uses Linear
-        c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias, out_first=True)
+        c_attn = hnn.Linear.init(
+            In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias, out_first=True
+        )
         dropout = hnn.Dropout(config.attn_pdrop)
 
         return WeightsOnlyAttention(config, c_attn, dropout)
