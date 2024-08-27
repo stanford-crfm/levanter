@@ -68,10 +68,11 @@ class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
         dataset: ShardableDataset[np.ndarray],
         QPos: Axis,
         KPos: Axis,
+        mask_token_id: int,
         mask_prob: float = 0.15,
         noise_prob: float = 0.1,
         key: Optional[PRNGKeyArray] = None,
-        ignore_index: Optional[int] = DEFAULT_IGNORE_INDEX,
+        # ignore_index: Optional[int] = DEFAULT_IGNORE_INDEX,
     ):
         self.dataset = dataset
         self.QPos = QPos
@@ -79,14 +80,16 @@ class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
         self.mask_prob = mask_prob
         self.noise_prob = noise_prob
         self.key = key
-        self.ignore_id = ignore_index if ignore_index is not None else DEFAULT_IGNORE_INDEX 
+        self.mask_token_id = mask_token_id
 
         if self.mask_prob > 0.0 and self.key is None:
             raise ValueError("must provide key if mask_prob > 0.0")
 
     def shard(self, shard_id: int, num_shards: int) -> "MaskedLmDataset":
         return MaskedLmDataset(
-            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.mask_prob, self.noise_prob, self.key, self.ignore_id
+            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos,
+            self.mask_token_id,
+            self.mask_prob, self.noise_prob, self.key
         )
 
     def __iter__(self) -> Iterator[MaskedLmExample]:
@@ -105,13 +108,13 @@ class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
                     mask = jax.random.bernoulli(this_key, self.mask_prob, mask_shape)
 
                     rand = jax.random.uniform(this_key, mask_shape)
-                    mask_token = jnp.where(rand < 0.8, self.ignore_id, tokens_array)
+                    mask_token = jnp.where(rand < 0.8, self.mask_token_id, tokens_array)
                     random_tokens = jax.random.randint(this_key, mask_shape, 0, tokens_array.max() + 1)
                     mask_token = jnp.where((rand >= 0.8) & (rand < 0.8 + self.noise_prob), random_tokens, mask_token)
                     masked_tokens = jnp.where(mask, mask_token, tokens_array)
 
-                    # Set targets to the original tokens where mask is True, otherwise set to ignore_id
-                    targets = jnp.where(mask, tokens_array, self.ignore_id)
+                    # Set targets to the original tokens where mask is True, otherwise set to mask_token_id
+                    targets = jnp.where(mask, tokens_array, self.mask_token_id)
 
                     masked_tokens_named = hax.named(masked_tokens, self.QPos)
                     targets_named = hax.named(targets, self.QPos)
@@ -119,13 +122,13 @@ class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
                     attn_mask_shape = (tokens_array.shape[0], tokens_array.shape[0])
                     attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.QPos, self.KPos))
 
-                    example = MaskedLmExample.masked_lm(tokens=masked_tokens_named, targets=targets_named, ignore_id=self.ignore_id, attn_mask=attn_mask)
+                    example = MaskedLmExample.masked_lm(tokens=masked_tokens_named, targets=targets_named, mask_token_id=self.mask_token_id, attn_mask=attn_mask)
                 else:
                     targets_named = hax.named(targets, self.QPos)
                     attn_mask_shape = (tokens_array.shape[0], tokens_array.shape[0])
                     attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.QPos, self.KPos))
 
-                    example = MaskedLmExample.masked_lm(tokens=tokens, targets=targets_named, ignore_id=self.ignore_id, attn_mask=attn_mask)
+                    example = MaskedLmExample.masked_lm(tokens=tokens, targets=targets_named, mask_token_id=self.mask_token_id, attn_mask=attn_mask)
 
                 return example
 

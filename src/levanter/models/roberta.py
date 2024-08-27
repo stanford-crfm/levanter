@@ -12,6 +12,7 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
+from haliax.nn import cross_entropy_loss
 from haliax.nn.scan import Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
@@ -27,7 +28,7 @@ from levanter.compat.torch_serialization import (
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, simple_attention_with_dropout
 from levanter.models.gpt2 import ACT2FN
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmHeadModel, MaskedLmExample
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
 
@@ -216,8 +217,8 @@ class RobertaConfig(HFCompatConfig):
         )
 
     @property
-    def model_type(self) -> Type["RobertaModel"]:
-        return RobertaModel
+    def model_type(self) -> Type["RobertaModelForMaskedLM"]:
+        return RobertaForMaskedLM
     
     def flops_per_token(self, vocab_size: int):
         return lm_flops_per_token(
@@ -606,6 +607,7 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
             input_embeds = self.word_embeddings(input_ids)
 
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
+        token_type_embeddings = jax.debug.breakpoint(token=token_type_embeddings)
         embeddings = input_embeds + token_type_embeddings
 
         if self.position_embedding_type == "absolute":
@@ -710,6 +712,7 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         sequence_output = self.encoder(embedding_output, attention_mask=attention_mask, key=k_e)
 
         pooled_output = self.pooler(sequence_output, key=k_p) if self.pooler is not None else None
+        pooled_output = jax.debug.breakpoint(token=pooled_output)
 
         return (sequence_output, pooled_output)
 
@@ -781,7 +784,7 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         input_embeds: Optional[NamedArray] = None,
         *,
         key=None
-    ) -> Tuple[NamedArray]:
+    ) -> NamedArray:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
@@ -805,6 +808,26 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         prediction_scores = self.lm_head(outputs[0], key=k_lm)
 
         return prediction_scores
+
+    def compute_loss(
+            self,
+            example: MaskedLmExample,
+            *,
+            key=None,
+            reduction: Optional[hax.ReductionFunction] = hax.mean,
+            reduction_axis: Optional[hax.AxisSelection] = None,
+    ) -> jnp.ndarray | NamedArray:
+        logits = self(example.tokens, example.attn_mask, key=key)
+        logits = logits.astype(jnp.float32)
+        targets = example.targets
+
+        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
+        target_y = jax.debug.breakpoint(token=target_y)
+        loss = cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        )
+
+        return loss
     
     
 def _rotate_half(x: NamedArray) -> NamedArray:
