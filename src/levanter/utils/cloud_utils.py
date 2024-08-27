@@ -75,14 +75,18 @@ def _shutdown_tpu_with_queued_resource():
 def shutdown_tpu_vm(sleep_seconds=60 * 5):
     """You should probably call this from atexit or something like that."""
     # fork a process to do the delete so the main process can exit before the delete is done
-    logger.info(f"Forking a process to delete...")
+    logger.info("Forking a process to delete...")
     logger.critical(f"Create a file {SENTINEL_FILE} to cancel the shutdown")
     logger.critical(f"$ touch {SENTINEL_FILE}")
 
-    import multiprocessing
+    # fork works better for our use case
+    pid = os.fork()
+    if pid == 0:
+        _do_shutdown_tpu_vm(sleep_seconds)
+        os._exit(0)
+    else:
+        logger.info(f"Forked process {pid} to delete TPU VM")
 
-    p = multiprocessing.Process(target=_do_shutdown_tpu_vm, args=(sleep_seconds,), daemon=True)
-    p.start()
 
 def _do_shutdown_tpu_vm(sleep_seconds):
     # the gcloud command we would run is something like:
@@ -97,13 +101,11 @@ def _do_shutdown_tpu_vm(sleep_seconds):
         return
 
     logger.critical(f"Shutting down TPU VM {name} in zone {zone} in {sleep_seconds} seconds")
-    logger.critical(f"Create a file {SENTINEL_FILE} to cancel the shutdown")
-    logger.critical(f"$ touch {SENTINEL_FILE}")
-
     time.sleep(sleep_seconds)
     if os.path.exists(SENTINEL_FILE):
         logger.critical(f"Found sentinel file {SENTINEL_FILE}, not shutting down TPU VM")
         return
+    logger.critical(f"Shutting down TPU VM {name} in zone {zone}")
 
     try:
         success = _shutdown_tpu_with_queued_resource()
