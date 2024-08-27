@@ -7,5 +7,6 @@ runtime_env:
     TPU_MIN_LOG_LEVEL: 0
   pip:
     # - git+https://github.com/stanford-crfm/levanter.git
+    - fire
     - git+https://github.com/stanford-crfm/haliax.git
     - jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
