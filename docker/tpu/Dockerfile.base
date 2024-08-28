@@ -11,7 +11,7 @@ RUN /opt/levanter/.venv/bin/pip install -U "jax[tpu]==0.4.30" -f https://storage
 WORKDIR /tmp/
 ADD pyproject.toml README.md /tmp/
 # work around setuptools bug
-RUN mkdir -p /tmp/src
+RUN mkdir -p /tmp/src/levanter
 RUN pip install .[test]
 
 FROM python:3.10
