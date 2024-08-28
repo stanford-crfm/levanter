@@ -5,6 +5,7 @@ runtime_env:
     HF_TOKEN: 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
     TPU_STDERR_LOG_LEVEL: 0
     TPU_MIN_LOG_LEVEL: 0
+    RAY_ENABLE_RECORD_ACTOR_TASK_LOGGING: 1
   pip:
     # - git+https://github.com/stanford-crfm/levanter.git
     - fire

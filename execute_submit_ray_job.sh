@@ -1,6 +1,10 @@
-COMMAND="pip install git+https://github.com/stanford-crfm/levanter.git@ivan-ray-jobs fire && WANDB_API_KEY=be441272f3bd2812a2eb009739e26a202f14d7ba \
+# pip install git+https://github.com/stanford-crfm/levanter.git@ivan-ray-jobs fire &&
+COMMAND="pip install fire && pip uninstall -y levanter && pip install -U git+https://github.com/stanford-crfm/levanter.git@ivan-ray-jobs && pip install jax[tpu]"
+COMMAND="echo 'Hello, World!'"
+LAUNCH_COMMAND="WANDB_API_KEY=be441272f3bd2812a2eb009739e26a202f14d7ba \
     WANDB_PROJECT=marin \
     python src/levanter/main/train_lm_ray.py --config_path config/gpt2_nano.yaml"
+COMMAND="$COMMAND && $LAUNCH_COMMAND"
 
 echo $COMMAND
 ray job submit --address http://127.0.0.1:8265 --working-dir . \
