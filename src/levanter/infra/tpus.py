@@ -68,7 +68,8 @@ def describe_tpu(tpu_name, zone):
                     tpu_name,
                     f"--zone={zone}",
                     "--format=json(name.basename(), state)",
-                ]
+                ],
+                stderr=subprocess.DEVNULL,
             )
         )
     except subprocess.CalledProcessError:
