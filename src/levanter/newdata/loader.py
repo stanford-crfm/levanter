@@ -1,8 +1,10 @@
+import asyncio
 import logging
 from typing import Iterable, Iterator, Optional, TypeVar
 
 import jax
 from jax import Array
+from jax.experimental.array_serialization.serialization import create_async_array_from_callback
 from jax.sharding import Mesh, PartitionSpec
 
 import haliax as hax
@@ -77,17 +79,17 @@ class DataLoaderIterator(Iterator[Ex]):
     def __next__(self):
         return next(self._batches)
 
-    def _produce_batches(self):
+    async def _produce_batches(self):
         batch_number = self._start_from_batch or 0
         total_ex_loaded = 0
         while True:
             if self.dl.data_store.is_finite():
                 next_end = (batch_number + 1) * self.dl.batch_size
-                available_len = blocking_wait(self.dl.data_store.wait_until_len_at_least(next_end))
+                available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
                 if available_len < next_end:
                     break
 
-            batch = blocking_wait(self._produce_batch(batch_number))
+            batch = await self._produce_batch(batch_number)
             batch_number += 1
             yield batch
 
@@ -100,14 +102,14 @@ class DataLoaderIterator(Iterator[Ex]):
             # (begin, end) -> leaf index -> stacked array
             stacked_local_batch: dict[tuple[int, int], list[Array | hax.NamedArray]] = {}
 
-            def get_local_batch(begin: int, end: int) -> list:
+            async def get_local_batch(begin: int, end: int) -> list:
                 key = (begin, end)
                 if key in stacked_local_batch:
                     return stacked_local_batch[key]
 
                 # TODO: if we ever do "big data" (i.e. huge examples) we might want to be able to load part of an example
                 # which will require support from the datastore (i.e. tensorstore)
-                individual_datums = blocking_wait(self.dl.data_store.get_batch(indices[begin:end]))
+                individual_datums = await self.dl.data_store.get_batch(indices[begin:end])
 
                 device_batch = _stack_tree(self.dl.Batch.name, individual_datums)
                 batch_leaves = hax.tree_util.tree_leaves(device_batch)
@@ -116,13 +118,13 @@ class DataLoaderIterator(Iterator[Ex]):
 
                 return batch_leaves
 
-            def get_local_data_for_leaf(indices: _TensorSliceIndex, leaf_index: int) -> Array | hax.NamedArray:
+            async def get_local_data_for_leaf(indices: _TensorSliceIndex, leaf_index: int) -> Array:
                 batch_slice = indices[0]
                 begin, end, stride = batch_slice.indices(self.dl.batch_size)
                 if stride != 1:
                     raise ValueError("Stride must be 1")
 
-                leaf_data = get_local_batch(begin, end)[leaf_index]
+                leaf_data = (await get_local_batch(begin, end))[leaf_index]
 
                 if isinstance(leaf_data, hax.NamedArray):
                     # select out the batch axis
@@ -139,21 +141,27 @@ class DataLoaderIterator(Iterator[Ex]):
                         # TODO: this doesn't work with named axes
                         return leaf_data[(..., *other_indices)]
 
-            def make_global_array_for_leaf(leaf_index, item_leaf_shape: ShapeSpec | NamedShapeSpec):
-                raw_array = jax.make_array_from_callback(
+            async def make_global_array_for_leaf(leaf_index, item_leaf_shape: ShapeSpec | NamedShapeSpec):
+                async def get_data(indices, device):
+                    arr = await get_local_data_for_leaf(indices, leaf_index)
+                    return jax.device_put(arr, device)
+
+                raw_array = await create_async_array_from_callback(
                     to_raw_shape(item_leaf_shape),
                     jax.sharding.NamedSharding(self.dl.mesh, self._pspec_for(item_leaf_shape)),
-                    lambda indices: get_local_data_for_leaf(indices, leaf_index),
+                    get_data,
                 )
                 if isinstance(item_leaf_shape, NamedShapeSpec):
                     return hax.NamedArray(raw_array, item_leaf_shape.shape)
                 else:
                     return raw_array
 
-            gda_leaves = [
-                make_global_array_for_leaf(leaf_index, _batchified_shape(self.dl.Batch, item_leaf))
-                for leaf_index, item_leaf in enumerate(self.dl._ex_leaves)
-            ]
+            gda_leaves = await asyncio.gather(
+                *[
+                    make_global_array_for_leaf(leaf_index, _batchified_shape(self.dl.Batch, item_leaf))
+                    for leaf_index, item_leaf in enumerate(self.dl._ex_leaves)
+                ]
+            )
 
             gda_tree = jax.tree.unflatten(self.dl._ex_structure, gda_leaves)
 

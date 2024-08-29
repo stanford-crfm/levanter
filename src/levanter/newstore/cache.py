@@ -4,6 +4,7 @@ import heapq
 import logging as pylogging
 import os
 import threading
+import time
 from concurrent.futures import Future as threading_Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -243,13 +244,22 @@ class _OrderedCacheWriter:
             if self._failed:
                 logger.warning("Received batch after failure. Ignoring.")
                 return
+
+            time_in = time.time()
             if isinstance(batch_result_box, RefBox):
                 batch_result = ray.get(batch_result_box.ref)
             else:
                 batch_result = batch_result_box
+
+            time_out = time.time()
+            logger.info(f"Received batch {shard_name}.{shard_batch_idx} in {time_out - time_in:.2f} seconds")
             # we need to keep track of the order of the batches so that we can write them out in order
             self._batch_queue.append_to_group(shard_name, shard_batch_idx, batch_result)
-            return self._attempt_to_write_batches()
+            time_in = time.time()
+            out = self._attempt_to_write_batches()
+            time_out = time.time()
+            logger.info(f"Wrote batch {shard_name}.{shard_batch_idx} in {time_out - time_in:.2f} seconds")
+            return out
 
     def shard_failed(self, shard_name: str, batch_id: int, exc_info: ExceptionInfo):
         with log_failures_to(self._parent):
@@ -284,12 +294,10 @@ class _OrderedCacheWriter:
             logger.warning("Not writing batches because of failure.")
             return
 
-        updated_shards: dict[str, int] = dict()
-        for shard, batch in self._batch_queue.drain():
-            logger.debug(f"Writing batch for {shard}")
-            batch = _canonicalize_batch(batch)
-            self._tree_store.extend(batch)
-            updated_shards[shard] = updated_shards.get(shard, 0) + len(batch)
+        time_in = time.time()
+        updated_shards = self._write_available_batches()
+        time_out = time.time()
+        logger.info(f"Wrote available batches in {time_out - time_in:.2f} seconds")
 
         logger.debug(f"Updated shards: {updated_shards}")
 
@@ -315,6 +323,15 @@ class _OrderedCacheWriter:
                 futures_to_await.append(f)
 
         ray.wait(futures_to_await + futures_to_await_shards)
+
+    def _write_available_batches(self):
+        updated_shards: dict[str, int] = dict()
+        for shard, batch in self._batch_queue.drain():
+            logger.debug(f"Writing batch for {shard}")
+            batch = _canonicalize_batch(batch)
+            self._tree_store.extend(batch)
+            updated_shards[shard] = updated_shards.get(shard, 0) + len(batch)
+        return updated_shards
 
     def _check_for_finished_shards(self):
         futures_to_await_shards = []
@@ -811,7 +828,10 @@ class TreeCache(AsyncDataset[T_co]):
         return self._store_future.result()
 
     async def store_async(self) -> TreeStoreBuilder[T_co]:
-        return await asyncio.wrap_future(self._store_future)
+        if self._broker is not None:
+            return await asyncio.wrap_future(self._store_future)
+        else:
+            return self.store
 
     async def async_len(self) -> int:
         if self._broker is not None:
