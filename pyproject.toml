@@ -105,13 +105,13 @@ test = [
     "pytest-asyncio",
 ]
 
-#[tool.setuptools.packages.find]
-#where = ["src"]
-#include = ["levanter", "levanter.*"]
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["levanter", "levanter.*"]
 
 
-[tool.setuptools]
-packages = ["levanter"]
-
-[tool.setuptools.package-dir]
-levanter = "src/levanter"
+#[tool.setuptools]
+#packages = ["levanter"]
+#
+#[tool.setuptools.package-dir]
+#levanter = "src/levanter"
