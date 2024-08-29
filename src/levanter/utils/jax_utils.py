@@ -41,7 +41,9 @@ def use_cpu_device():
 def local_cpu_mesh():
     """Temporarily sets the default device to CPU"""
     cpu = jax.local_devices(backend="cpu")[0]
-    mesh = jax.sharding.Mesh(np.array([cpu]).reshape(1, 1), ("data", "model"))
+    mesh = jax.sharding.Mesh(
+        np.array([cpu]).reshape(1, 1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    )
     with use_cpu_device(), mesh:
         yield mesh
 
