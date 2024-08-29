@@ -108,10 +108,3 @@ test = [
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["levanter", "levanter.*"]
-
-
-#[tool.setuptools]
-#packages = ["levanter"]
-#
-#[tool.setuptools.package-dir]
-#levanter = "src/levanter"
