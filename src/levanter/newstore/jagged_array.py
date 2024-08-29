@@ -50,6 +50,8 @@ def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
     except ValueError as e:
         if "NOT_FOUND" in str(e):
             raise FileNotFoundError(f"File not found: {path}") from e
+        else:
+            raise e
 
 
 async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
