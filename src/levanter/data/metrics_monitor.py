@@ -132,19 +132,28 @@ class LoggingMetricsMonitor(MetricsMonitor):
 class LoggerMetricsMonitor(MetricsMonitor):
     # TODO: I'd like to get the trainer pbar migrated to rich and just use rich everywhere, but until then,
     # we have separate logging
-    def __init__(self, logger: Optional[Union[pylogging.Logger, str]] = None, level=pylogging.INFO):
+    def __init__(
+        self,
+        logger: Optional[Union[pylogging.Logger, str]] = None,
+        level=pylogging.INFO,
+        log_interval: float | int = 30.0,
+    ):
         if isinstance(logger, str):
             logger = pylogging.getLogger(logger)
         self.logger = logger or pylogging.getLogger(__name__)
         self.level = level
+        self.log_interval = log_interval
+        self._last_log_time = time.time()
 
     def __call__(self, metrics: InProgressCacheMetrics):
         if jax.process_index() == 0:
-            self.logger.log(
-                self.level,
-                f" done: Shards: {metrics.shards_finished} | Chunks: {metrics.chunks_finished} | Docs:"
-                f" {metrics.rows_finished}",
-            )
+            if time.time() - self._last_log_time > self.log_interval:
+                self._last_log_time = time.time()
+
+                self.logger.log(
+                    self.level,
+                    f" done: Shards: {metrics.shards_finished} | Docs: {metrics.rows_finished}",
+                )
 
         if metrics.is_finished:
             self.logger.info("Cache creation finished")
