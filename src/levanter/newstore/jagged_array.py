@@ -200,7 +200,7 @@ class JaggedArrayStore:
         await self.extend_async([data])
 
     def append(self, data: jax.Array):
-        asyncio.run(self.append_async(data))
+        self.extend([data])
 
     async def trim_to_size_async(self, size: int):
         """
