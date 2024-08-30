@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import os
-import time
 
 import jax.random
 import numpy as np
@@ -111,93 +110,6 @@ async def bench_new_cache_permutation_random(exemplar, new_cache_path):
         del elems
 
 
-async def bench_new_cache_serial_tokenseq_minisync(exemplar, new_cache_path):
-    ensure_cache(new_cache_path)
-    cache = TreeCache.load(new_cache_path, exemplar)
-
-    ds = TokenSeqDataset(cache, SEQ_LEN)
-
-    time_in = time.time()
-    num_batches = await ds.async_len()
-    print(f"Time to get len: {time.time() - time_in}")
-    time_in = time.time()
-
-    for b in range(BATCHES):
-        indices = []
-        for j in range(BS):
-            idx = b * BS + j
-            idx = idx % num_batches
-            indices.append(idx)
-        elems = await ds.get_batch(indices)
-        del elems
-
-    print(f"Time to get batches: {time.time() - time_in}")
-
-
-async def bench_new_cache_serial_tokenseq_littlesync(exemplar, new_cache_path):
-    ensure_cache(new_cache_path)
-    cache = TreeCache.load(new_cache_path, exemplar)
-
-    ds = TokenSeqDataset(cache, SEQ_LEN)
-
-    time_in = time.time()
-    num_batches = await ds.async_len()
-    print(f"Time to get len: {time.time() - time_in}")
-    time_in = time.time()
-
-    for b in range(BATCHES):
-        indices = []
-        for j in range(BS):
-            idx = b * BS + j
-            idx = idx % num_batches
-            indices.append(idx)
-        elems = await ds.get_batch_littlesync(indices)
-        del elems
-
-    print(f"Time to get batches: {time.time() - time_in}")
-
-
-async def bench_new_cache_serial_tokenseq_quasisync(exemplar, new_cache_path):
-    ensure_cache(new_cache_path)
-    cache = TreeCache.load(new_cache_path, exemplar)
-
-    ds = TokenSeqDataset(cache, SEQ_LEN)
-
-    time_in = time.time()
-    num_batches = await ds.async_len()
-    print(f"Time to get len: {time.time() - time_in}")
-    time_in = time.time()
-
-    for b in range(BATCHES):
-        indices = []
-        for j in range(BS):
-            idx = b * BS + j
-            idx = idx % num_batches
-            indices.append(idx)
-        elems = await ds.get_batch_quasisync(indices)
-        del elems
-
-    print(f"Time to get batches: {time.time() - time_in}")
-
-
-def bench_new_cache_serial_tokenseq_sync(exemplar, new_cache_path):
-    ensure_cache(new_cache_path)
-    cache = TreeCache.load(new_cache_path, exemplar)
-
-    ds = TokenSeqDataset(cache, SEQ_LEN)
-
-    num_batches = asyncio.run(ds.async_len())
-
-    for b in range(BATCHES):
-        indices = []
-        for j in range(BS):
-            idx = b * BS + j
-            idx = idx % num_batches
-            indices.append(idx)
-        elems = ds.get_batch_sync(indices)
-        del elems
-
-
 def ensure_cache(new_cache_path):
     if not fsspec_utils.exists(os.path.join(new_cache_path, LEDGER_FILE_NAME)):
         ledger = CacheLedger(100000, {}, True)
@@ -227,30 +139,6 @@ if __name__ == "__main__":
             bench_new_cache_serial(exemplar, out_path)
         tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
         print(f"New Cache Serial: {time_fn()} ({tokens_per_second} tps)", flush=True)
-
-        with capture_time() as time_fn:
-            asyncio.run(bench_new_cache_serial_tokenseq_littlesync(exemplar, out_path))
-        tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
-
-        print(f"New Cache Serial TokenSeq littlesync: {time_fn()} ({tokens_per_second} tps)", flush=True)
-
-        with capture_time() as time_fn:
-            bench_new_cache_serial_tokenseq_sync(exemplar, out_path)
-        tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
-
-        print(f"New Cache Serial TokenSeq Sync: {time_fn()} ({tokens_per_second} tps)", flush=True)
-
-        with capture_time() as time_fn:
-            asyncio.run(bench_new_cache_serial_tokenseq_minisync(exemplar, out_path))
-        tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
-
-        print(f"New Cache Serial TokenSeq minisync: {time_fn()} ({tokens_per_second} tps)", flush=True)
-
-        with capture_time() as time_fn:
-            asyncio.run(bench_new_cache_serial_tokenseq_quasisync(exemplar, out_path))
-        tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
-
-        print(f"New Cache Serial TokenSeq quasisync: {time_fn()} ({tokens_per_second} tps)", flush=True)
 
         with capture_time() as time_fn:
             asyncio.run(bench_new_cache_serial_tokenseq(exemplar, out_path))

@@ -141,6 +141,10 @@ class JaggedArrayStore:
 
     Note that JAX doesn't really support jagged arrays, so we have to be careful about how we use them.
     Typically, we just use these for data loading.
+
+    PERFORMANCE: accessing an individual row (or a single small slice of the underlying data) is very slow.
+    Where ever possible, use get_batch to get multiple rows at once for as large a batch as possible.
+    High latency, but high throughput.
     """
 
     offsets: ts.TensorStore  # offsets of the start of each array, except that index[0] is the number of arrays

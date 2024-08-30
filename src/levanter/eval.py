@@ -1,6 +1,7 @@
 import dataclasses
 import logging
 import warnings
+from collections import defaultdict
 from typing import Callable, Mapping, Optional, Sequence, TypeVar
 
 import jax.numpy as jnp
@@ -97,7 +98,27 @@ class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
         return True
 
     def get_batch(self, indices: Sequence[int]) -> Sequence[tuple[T, hax.NamedArray]]:
-        return [self[i] for i in indices]
+        # Chatgpt wrote this. pretty sure it's correct
+        original_order = np.argsort(indices)
+        sorted_indices = np.array(indices)[original_order]
+        dataset_indices = np.searchsorted(self._offsets, sorted_indices, side="right") - 1
+
+        # Group indices by the dataset they belong to
+        grouped_indices = defaultdict(list)
+        for idx, dataset_index in zip(sorted_indices, dataset_indices):
+            grouped_indices[dataset_index].append(idx - self._offsets[dataset_index])
+
+        # Retrieve the batch for each group
+        batch = []
+        for dataset_index, dataset_indices in grouped_indices.items():
+            dataset, tags = self.datasets[dataset_index]
+            dataset_batch = dataset.get_batch(dataset_indices)
+            batch.extend([(item, self._tag_arrays[dataset_index]) for item in dataset_batch])
+
+        # Reorder the batch to match the original order of indices
+        batch = [batch[i] for i in np.argsort(original_order)]
+
+        return batch
 
     def __getitem__(self, item):
         dataset_index = np.searchsorted(self._offsets, item, side="right") - 1
@@ -209,7 +230,7 @@ class TaggedEvaluator:
         self.loader = DataLoader(
             EvalBatch,
             self.dataset.as_async_dataset(),
-            max_buffered_batches=EvalBatch.size * 10,
+            max_buffered_batches=100,
             mesh=device_mesh,
             axis_resources=axis_mapping,
         )
@@ -263,9 +284,11 @@ class TaggedEvaluator:
         state = hax.shard(state)
 
         iterator = LoadingTimeTrackerIterator(self.loader)
+        n = 0
 
         for batch, tags in tqdm.tqdm(iterator, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
+            n += 1
 
         total_loss, losses_per_tag = state
 

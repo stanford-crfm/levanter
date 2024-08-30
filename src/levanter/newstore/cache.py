@@ -199,6 +199,11 @@ def _load_or_initialize_ledger(path):
         return CacheLedger(0, {})
 
 
+# TODO: should probably do this in terms of bytes
+MIN_ITEMS_TO_WRITE = 8192
+MAX_TIME_BETWEEN_WRITES = 100.0
+
+
 @ray.remote(num_cpus=0.5)  # type: ignore
 class _OrderedCacheWriter:
     """
@@ -208,16 +213,32 @@ class _OrderedCacheWriter:
     Once a shard finishes sending batches, it notifies this writer, which then updates the metadata and writes it to disk.
     """
 
-    def __init__(self, parent, exemplar, batch_size, cache_dir: str, shards: Sequence[str]):
+    def __init__(
+        self,
+        parent,
+        exemplar,
+        batch_size,
+        cache_dir: str,
+        shards: Sequence[str],
+        min_items_to_write=MIN_ITEMS_TO_WRITE,
+    ):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         with log_failures_to(parent):
             self._parent = parent
             self.cache_dir = cache_dir
             self.shards = shards
             self.batch_size = batch_size
+            self._min_items_to_write = min_items_to_write
             self._failed = False
 
+            # these are batches that we've received but haven't ordered them for writing yet
             self._batch_queue = GroupRoundRobinBuffer(shards)  # type: ignore
+            # writes are very slow (~2s) so we want to batch them up
+            self._ordered_but_unwritten_items: list = []
+            self._batches_in_next_write_by_shard: dict[str, int] = {shard: 0 for shard in shards}
+            # we also want to write every so often
+            self._last_write_time = time.time()
+
             self._ledger = _load_or_initialize_ledger(os.path.join(cache_dir, LEDGER_FILE_NAME))
             self._expected_num_rows: dict[str, Optional[int]] = {shard: None for shard in shards}
 
@@ -245,20 +266,14 @@ class _OrderedCacheWriter:
                 logger.warning("Received batch after failure. Ignoring.")
                 return
 
-            time_in = time.time()
             if isinstance(batch_result_box, RefBox):
                 batch_result = ray.get(batch_result_box.ref)
             else:
                 batch_result = batch_result_box
 
-            time_out = time.time()
-            logger.info(f"Received batch {shard_name}.{shard_batch_idx} in {time_out - time_in:.2f} seconds")
             # we need to keep track of the order of the batches so that we can write them out in order
             self._batch_queue.append_to_group(shard_name, shard_batch_idx, batch_result)
-            time_in = time.time()
             out = self._attempt_to_write_batches()
-            time_out = time.time()
-            logger.info(f"Wrote batch {shard_name}.{shard_batch_idx} in {time_out - time_in:.2f} seconds")
             return out
 
     def shard_failed(self, shard_name: str, batch_id: int, exc_info: ExceptionInfo):
@@ -294,10 +309,8 @@ class _OrderedCacheWriter:
             logger.warning("Not writing batches because of failure.")
             return
 
-        time_in = time.time()
+        self._dequeue_ready_batches()
         updated_shards = self._write_available_batches()
-        time_out = time.time()
-        logger.info(f"Wrote available batches in {time_out - time_in:.2f} seconds")
 
         logger.debug(f"Updated shards: {updated_shards}")
 
@@ -324,14 +337,35 @@ class _OrderedCacheWriter:
 
         ray.wait(futures_to_await + futures_to_await_shards)
 
-    def _write_available_batches(self):
-        updated_shards: dict[str, int] = dict()
+    def _dequeue_ready_batches(self):
         for shard, batch in self._batch_queue.drain():
             logger.debug(f"Writing batch for {shard}")
             batch = _canonicalize_batch(batch)
-            self._tree_store.extend(batch)
-            updated_shards[shard] = updated_shards.get(shard, 0) + len(batch)
-        return updated_shards
+            self._ordered_but_unwritten_items.extend(batch)
+            self._batches_in_next_write_by_shard[shard] = self._batches_in_next_write_by_shard.get(shard, 0) + len(
+                batch
+            )
+
+    def _write_available_batches(self):
+        any_shard_finished_reading = any(num_rows is not None for num_rows in self._expected_num_rows.values())
+
+        if (
+            len(self._ordered_but_unwritten_items) >= self._min_items_to_write
+            or time.time() - self._last_write_time > MAX_TIME_BETWEEN_WRITES
+            or (any_shard_finished_reading and len(self._ordered_but_unwritten_items) > 0)
+        ):
+            time_in = time.time()
+            self._tree_store.extend(self._ordered_but_unwritten_items)
+            time_out = time.time()
+            logger.debug(f"Wrote {len(self._ordered_but_unwritten_items)} rows in {time_out - time_in:.2f} seconds")
+            self._ordered_but_unwritten_items = []
+
+            written_by_shard = self._batches_in_next_write_by_shard
+            self._batches_in_next_write_by_shard = {}
+            self._last_write_time = time.time()
+            return written_by_shard
+        else:
+            return {}
 
     def _check_for_finished_shards(self):
         futures_to_await_shards = []

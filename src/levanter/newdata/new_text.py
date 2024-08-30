@@ -75,57 +75,6 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
 
         return out
 
-    async def get_batch_littlesync(self, indices: Sequence[int]) -> Sequence[T_co]:
-        token_arrays = await self._await_token_cache()
-        # logger.info(f"Time to get token cache: {time.time() - time_in}")
-        # len = await self.wait_until_len_at_least(max(indices) + 1)
-        # if len is not None and len < max(indices) + 1:
-        # raise ValueError("Requested indices beyond the end of the dataset")
-        offsets = np.array(indices) * self.seq_len
-        with ts.Batch():
-            out = []
-            for offset in offsets:
-                out.append(token_arrays.data[offset : offset + self.seq_len].read())
-        # logger.info(f"Time to read token cache: {time.time() - time_in}")
-
-        out = [x.result() for x in out]
-        # logger.info(f"Time to wait for token cache: {time.time() - time_in}")
-        return out
-
-    async def get_batch_quasisync(self, indices: Sequence[int]) -> Sequence[T_co]:
-        token_arrays = self.doc_cache.store.tree["input_ids"]
-        # logger.info(f"Time to get token cache: {time.time() - time_in}")
-        # len = await self.wait_until_len_at_least(max(indices) + 1)
-        # if len is not None and len < max(indices) + 1:
-        # raise ValueError("Requested indices beyond the end of the dataset")
-        offsets = np.array(indices) * self.seq_len
-        with ts.Batch():
-            out = []
-            for offset in offsets:
-                out.append(token_arrays.data[offset : offset + self.seq_len].read())
-        # logger.info(f"Time to read token cache: {time.time() - time_in}")
-
-        out = [x.result() for x in out]
-        # logger.info(f"Time to wait for token cache: {time.time() - time_in}")
-        return out
-
-    async def get_batch_minisync(self, indices: Sequence[int]) -> Sequence[T_co]:
-        token_arrays = self.doc_cache.store.tree["input_ids"]
-        # logger.info(f"Time to get token cache: {time.time() - time_in}")
-        # len = await self.wait_until_len_at_least(max(indices) + 1)
-        # if len is not None and len < max(indices) + 1:
-        # raise ValueError("Requested indices beyond the end of the dataset")
-        offsets = np.array(indices) * self.seq_len
-        with ts.Batch():
-            out = []
-            for offset in offsets:
-                out.append(token_arrays.data[offset : offset + self.seq_len].read())
-        # logger.info(f"Time to read token cache: {time.time() - time_in}")
-
-        out = await asyncio.gather(*out)
-        # logger.info(f"Time to wait for token cache: {time.time() - time_in}")
-        return out
-
     def get_batch_sync(self, indices: Sequence[int]) -> Sequence[T_co]:
         token_arrays = self.doc_cache.store.tree["input_ids"]
         # logger.info(f"Time to get token cache: {time.time() - time_in}")

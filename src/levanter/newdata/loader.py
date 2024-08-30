@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Iterable, Iterator, Optional, TypeVar
 
 import jax
@@ -10,6 +11,7 @@ from haliax import is_named_array
 from haliax._src.util import index_where
 from haliax.partitioning import ResourceMapping
 
+from levanter.data import batched
 from levanter.data.loader import _stack_tree
 from levanter.newdata.dataset import AsyncDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
@@ -32,7 +34,7 @@ class DataLoader(Iterable[Ex]):
         mesh: Mesh,
         axis_resources: Optional[ResourceMapping],
         # this is set heuristically for the typical tokenseqdataset we use. Should probably tune
-        # prefetch_size: int = 32,
+        prefetch_size: int = 32,
     ):
         """
 
@@ -42,12 +44,12 @@ class DataLoader(Iterable[Ex]):
             max_buffered_batches (Optional[int]): The maximum number of batches to buffer. If None, the buffer is unbounded.
              If <0, the buffer is disabled and single threaded operation is used.
             axis_resources (Optional[ResourceMapping]): axis mapping
-            # prefetch_size (int): The number of batches to prefetch
+            prefetch_size (int): The number of batches to prefetch
             mesh (Mesh): The mesh to use
 
         """
         self.max_buffered_batches = max_buffered_batches
-        # self.prefetch_size = prefetch_size
+        self.prefetch_size = prefetch_size
         self.axis_resources = axis_resources
         self.data_store = data
         self.mesh = mesh
@@ -105,58 +107,71 @@ class DataLoaderIterator(Iterator[Ex]):
         self._batches = iter(BackgroundIterable(self._produce_batches, max_capacity=buffered_batches))
 
     def __next__(self):
-        return next(self._batches)
+        time_start = time.time()
+        out = next(self._batches)
+        time_end = time.time()
+        if (time_end - time_start) > 0.05:
+            logger.info(f"Slow data fetch: {time_end - time_start:.3f}")
+        return out
 
     async def _produce_batches(self):
         batch_number = self._start_from_batch or 0
         total_ex_loaded = 0
-        while True:
-            if self.dl.data_store.is_finite():
-                next_end = (batch_number + 1) * self.dl.batch_size
-                available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
-                if available_len < next_end:
-                    break
+        done = False
+        while not done:
+            next_batch_numbers = []
+            for i in range(self.dl.prefetch_size):
+                if self.dl.data_store.is_finite():
+                    next_end = (batch_number + 1) * self.dl.batch_size
+                    available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
+                    if available_len < next_end:
+                        done = True
+                        break
 
-            batch = await self._produce_batch(batch_number)
-            batch_number += 1
-            yield batch
+                next_batch_numbers.append(batch_number)
+                batch_number += 1
 
-            total_ex_loaded += self.dl.batch_size
+            async for batch in self._retrieve_batches(next_batch_numbers):
+                yield batch
 
-    async def _produce_batch(self, batch_number: int):
+            total_ex_loaded += self.dl.batch_size * len(next_batch_numbers)
+
+    async def _retrieve_batches(self, batch_numbers: list[int]):
         with hax.axis_mapping(self.mapping), self.dl.mesh:
-            indices_this_batch = range(batch_number * self.dl.batch_size, (batch_number + 1) * self.dl.batch_size, 1)
-            indices_this_batch_this_process = [indices_this_batch[i] for i in self.dl._local_indices]
+            indices_for_this_batch_of_batches: list[int] = []
+            for bn in batch_numbers:
+                indices_this_batch = range(bn * self.dl.batch_size, (bn + 1) * self.dl.batch_size, 1)
+                indices_this_batch_this_process = [indices_this_batch[i] for i in self.dl._local_indices]
+                indices_for_this_batch_of_batches.extend(indices_this_batch_this_process)
 
-            individual_datums = await self.dl.data_store.get_batch(indices_this_batch_this_process)
+            time_start = time.time()
+            individual_datums = await self.dl.data_store.get_batch(indices_for_this_batch_of_batches)
+            time_end = time.time()
+            logger.debug(f"Time to get {len(batch_numbers)} batches: {time_end - time_start:.3f}")
+            time_start = time.time()
+            # reshape to be per batch
+            individual_datums = list(batched(individual_datums, len(self.dl._local_indices)))
 
             # below we're gonna get the indices relative to this batch (i.e. 0 to batch_size)
-            index_to_datum = {index: datum for index, datum in zip(self.dl._local_indices, individual_datums)}
+            index_to_datum = [
+                {index: datum for index, datum in zip(self.dl._local_indices, individual_data_batch)}
+                for individual_data_batch in individual_datums
+            ]
 
-            # (begin, end) -> leaf index -> stacked array
-            stacked_local_batch: dict[tuple[int, int], list[Array | hax.NamedArray]] = {}
-
-            def get_local_batch(begin: int, end: int) -> list:
-                key = (begin, end)
-                if key in stacked_local_batch:
-                    return stacked_local_batch[key]
-
+            def get_local_batch(bn: int, begin: int, end: int) -> list:
                 # TODO: if we ever do "big data" (i.e. huge examples) we might want to be able to load part of an example
                 # which will require support from the datastore (i.e. tensorstore)
-                device_batch = _stack_tree(self.dl.Batch.name, [index_to_datum[i] for i in range(begin, end)])
+                device_batch = _stack_tree(self.dl.Batch.name, [index_to_datum[bn][i] for i in range(begin, end)])
                 batch_leaves = hax.tree_util.tree_leaves(device_batch)
-
-                stacked_local_batch[key] = batch_leaves
-
                 return batch_leaves
 
-            def get_local_data_for_leaf(indices: _TensorSliceIndex, leaf_index: int) -> Array:
+            def get_local_data_for_leaf(bn, indices: _TensorSliceIndex, leaf_index: int) -> Array:
                 batch_slice = indices[0]
                 begin, end, stride = batch_slice.indices(self.dl.batch_size)
                 if stride != 1:
                     raise ValueError("Stride must be 1")
 
-                leaf_data = (get_local_batch(begin, end))[leaf_index]
+                leaf_data = (get_local_batch(bn, begin, end))[leaf_index]
 
                 if isinstance(leaf_data, hax.NamedArray):
                     # select out the batch axis
@@ -173,28 +188,29 @@ class DataLoaderIterator(Iterator[Ex]):
                         # TODO: this doesn't work with named axes
                         return leaf_data[(..., *other_indices)]
 
-            def make_global_array_for_leaf(leaf_index, item_leaf_shape: ShapeSpec | NamedShapeSpec):
-                def get_data(indices):
-                    return get_local_data_for_leaf(indices, leaf_index)
+            for batch_offset, bn in enumerate(batch_numbers):
 
-                raw_array = jax.make_array_from_callback(
-                    to_raw_shape(item_leaf_shape),
-                    jax.sharding.NamedSharding(self.dl.mesh, self._pspec_for(item_leaf_shape)),
-                    get_data,
-                )
-                if isinstance(item_leaf_shape, NamedShapeSpec):
-                    return hax.NamedArray(raw_array, item_leaf_shape.shape)
-                else:
-                    return raw_array
+                def make_global_array_for_leaf(leaf_index, item_leaf_shape: ShapeSpec | NamedShapeSpec):
+                    def get_data(indices):
+                        return get_local_data_for_leaf(batch_offset, indices, leaf_index)
 
-            gda_leaves = [
-                make_global_array_for_leaf(leaf_index, _batchified_shape(self.dl.Batch, item_leaf))
-                for leaf_index, item_leaf in enumerate(self.dl._ex_leaves)
-            ]
+                    raw_array = jax.make_array_from_callback(
+                        to_raw_shape(item_leaf_shape),
+                        jax.sharding.NamedSharding(self.dl.mesh, self._pspec_for(item_leaf_shape)),
+                        get_data,
+                    )
+                    if isinstance(item_leaf_shape, NamedShapeSpec):
+                        return hax.NamedArray(raw_array, item_leaf_shape.shape)
+                    else:
+                        return raw_array
 
-            gda_tree = jax.tree.unflatten(self.dl._ex_structure, gda_leaves)
+                gda_leaves = [
+                    make_global_array_for_leaf(leaf_index, _batchified_shape(self.dl.Batch, item_leaf))
+                    for leaf_index, item_leaf in enumerate(self.dl._ex_leaves)
+                ]
 
-            return gda_tree
+                gda_tree = jax.tree.unflatten(self.dl._ex_structure, gda_leaves)
+                yield gda_tree
 
     def _pspec_for(self, shape_spec: ShapeSpec | NamedShapeSpec) -> PartitionSpec:
         if isinstance(shape_spec, ShapeSpec):  # type: ignore
