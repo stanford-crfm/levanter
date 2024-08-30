@@ -70,10 +70,9 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
             out = []
             for offset in offsets:
                 out.append(token_arrays.data[offset : offset + self.seq_len].read())
-        # logger.info(f"Time to read token cache: {time.time() - time_in}")
 
         out = await asyncio.gather(*out)
-        # logger.info(f"Time to wait for token cache: {time.time() - time_in}")
+
         return out
 
     async def get_batch_littlesync(self, indices: Sequence[int]) -> Sequence[T_co]:

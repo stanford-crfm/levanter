@@ -209,7 +209,7 @@ class TaggedEvaluator:
         self.loader = DataLoader(
             EvalBatch,
             self.dataset.as_async_dataset(),
-            max_buffered_items=EvalBatch.size * 10,
+            max_buffered_batches=EvalBatch.size * 10,
             mesh=device_mesh,
             axis_resources=axis_mapping,
         )
