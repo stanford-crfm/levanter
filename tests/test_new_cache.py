@@ -729,7 +729,9 @@ async def test_can_get_elems_before_finished():
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cache = build_or_load_cache(tmpdir, SlowShardSource(), TestProcessor(5), await_finished=False)
+        cache = build_or_load_cache(
+            tmpdir, SlowShardSource(), TestProcessor(5), await_finished=False, items_per_write=5
+        )
 
         # read the first 10 elements
         # ensure the first 10 elements are [{"test": np.array([i] * 10)} for i in range(10)]
@@ -738,16 +740,11 @@ async def test_can_get_elems_before_finished():
         for i, x in enumerate(first_10):
             np.testing.assert_array_equal(x["test"], np.array([i] * 10))
 
-        # now make sure we can't get the next 10 elements in a tight timeout of 0.1
-        print("half?", flush=True)
-
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(cache.get_batch(range(10, 20)), timeout=0.1)
 
-        print("blocked?", flush=True)
         # then unblock:
         ray.get(blocker_to_wait_on_test.unblock.remote())
-        print("unblock?", flush=True)
 
         # now ensure we can get the next 10 elements, which will be
         # [{"test": np.array([i] * 10)} for i in range(10, 20)]

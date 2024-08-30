@@ -50,6 +50,10 @@ LEDGER_FILE_NAME = "shard_ledger.json"
 DEFAULT_LOG_LEVEL = pylogging.INFO
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+# TODO: should probably do this in terms of bytes
+MIN_ITEMS_TO_WRITE = 8192
+MAX_TIME_BETWEEN_WRITES = 100.0
+
 
 def build_or_load_cache(
     cache_dir: str,
@@ -58,6 +62,7 @@ def build_or_load_cache(
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     cache_config: Optional[Dict[str, Any]] = None,
+    items_per_write: int = MIN_ITEMS_TO_WRITE,
 ) -> "TreeCache[U]":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
@@ -82,6 +87,11 @@ def build_or_load_cache(
         monitors: a list of MetricsMonitors to attach to the cache. These will be called periodically with
             metrics about the cache build process. If None, will add a LoggerMetricsMonitor.
 
+        cache_config: A dictionary of configuration options for the cache. This is passed to the cache writer.
+
+        items_per_write: The number of items to write to the cache at a time. This is a performance tuning parameter,
+            and you probably don't need to change it. We mostly use it for testing.
+
     Returns:
        (TreeCache) A TreeCache object that can be used to read the cache.
 
@@ -92,6 +102,7 @@ def build_or_load_cache(
         shard_source=input_shards,
         processor=processor,
         cache_config=cache_config,
+        items_per_write=items_per_write,
     )
 
     if cache.is_finished:
@@ -197,11 +208,6 @@ def _load_or_initialize_ledger(path):
             return CacheLedger.from_json(file.read())
     except FileNotFoundError:
         return CacheLedger(0, {})
-
-
-# TODO: should probably do this in terms of bytes
-MIN_ITEMS_TO_WRITE = 8192
-MAX_TIME_BETWEEN_WRITES = 100.0
 
 
 @ray.remote(num_cpus=0.5)  # type: ignore
@@ -651,6 +657,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         source: ShardedDataset[T],
         processor: BatchProcessor[T, U],
         cache_config: Dict[str, Any],
+        min_items_to_write: int,
     ):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
@@ -669,7 +676,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         name = f"broker::{path_for_name}"
         self.logger = pylogging.getLogger(f"{name}")
         self._cache_writer: Optional[ActorHandle] = _OrderedCacheWriter.remote(  # type: ignore
-            current_actor_handle(), exemplar, processor.batch_size, cache_dir, source.shard_names
+            current_actor_handle(), exemplar, processor.batch_size, cache_dir, source.shard_names, min_items_to_write
         )
 
         try:
@@ -811,7 +818,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self._cache_writer = None
 
 
-def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None):
+def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None, items_per_write=MIN_ITEMS_TO_WRITE):
     name = f"lev_cache_manager::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
@@ -822,6 +829,7 @@ def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None):
         source=input_shards,
         processor=processor,
         cache_config=cache_config,
+        min_items_to_write=items_per_write,
     )
 
 
@@ -930,6 +938,7 @@ class TreeCache(AsyncDataset[T_co]):
         shard_source: ShardedDataset[T],
         processor: BatchProcessor[T, U],
         cache_config: Optional[Dict[str, Any]] = None,
+        items_per_write: int = MIN_ITEMS_TO_WRITE,
     ) -> "TreeCache[U]":
         try:
             return TreeCache.load(cache_dir, processor.output_exemplar)
@@ -939,6 +948,7 @@ class TreeCache(AsyncDataset[T_co]):
                 input_shards=shard_source,
                 processor=processor,
                 cache_config=cache_config,
+                items_per_write=items_per_write,
             )
             return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
 
