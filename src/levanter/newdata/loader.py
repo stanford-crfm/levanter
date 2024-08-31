@@ -11,8 +11,8 @@ from haliax import is_named_array
 from haliax._src.util import index_where
 from haliax.partitioning import ResourceMapping
 
-from levanter.data import batched
 from levanter.data.loader import _stack_tree
+from levanter.data.utils import batched
 from levanter.newdata.dataset import AsyncDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
