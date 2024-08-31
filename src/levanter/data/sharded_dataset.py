@@ -24,7 +24,6 @@ import numpy as np
 from levanter.utils import fsspec_utils
 
 from ..newdata import AsyncDataset
-from ..newstore.cache import build_or_load_cache
 from ._preprocessor import (
     BatchResult,
     _BatchMapTransform,
@@ -99,6 +98,7 @@ class ShardedDataSource(Generic[T_co]):
         """
 
         source, processor = _construct_composite_batch_processor(self)
+        from ..newstore.cache import build_or_load_cache
 
         cache = build_or_load_cache(
             path,
