@@ -16,7 +16,7 @@ import haliax as hax
 import levanter
 from levanter.data import Dataset
 from levanter.data.dataset import ShuffleDataset
-from levanter.data.sharded_dataset import WrappedHFDataset
+from levanter.data.sharded_dataset import WrappedHFDataSource
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,
@@ -97,7 +97,7 @@ class SupervisedDataset(Dataset[LmExample]):
 
 
 def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):
-    dataset = WrappedHFDataset("gsm8k", split="train", name="main")
+    dataset = WrappedHFDataSource("gsm8k", split="train", name="main")
 
     def preprocess(batch):
         def format_example(ex):

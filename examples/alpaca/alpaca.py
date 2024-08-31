@@ -16,7 +16,7 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
-from levanter.data.sharded_dataset import JsonDataset, JsonlDataset, WrappedHFDataset
+from levanter.data.sharded_dataset import JsonDataSource, JsonlDataSource, WrappedHFDataSource
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -138,15 +138,15 @@ def _get_data_source(path_or_id):
     if fsspec_utils.exists(path_or_id):
         # we're a bit generous here b/c we support compression
         if ".jsonl" in path_or_id:
-            return JsonlDataset([path_or_id])
+            return JsonlDataSource([path_or_id])
         elif ".json" in path_or_id:
-            return JsonDataset([path_or_id])
+            return JsonDataSource([path_or_id])
         else:
             raise ValueError(
                 f"We only support HF Datasets or a data file with .json or .jsonl extensions, not {path_or_id}!"
             )
     else:
-        return WrappedHFDataset(path_or_id, split="train")
+        return WrappedHFDataSource(path_or_id, split="train")
 
 
 def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):

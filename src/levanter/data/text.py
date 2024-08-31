@@ -33,9 +33,7 @@ from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.dataset import ShardableDataset, ShuffleDataset  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
-from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
-from levanter.data.shard_cache import ShardCache  # noqa
-from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
+from levanter.data.sharded_dataset import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
 from levanter.newdata.new_text import CausalLmDataset, TokenSeqDataset  # noqa
 from levanter.newstore.cache import build_or_load_cache  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
@@ -260,10 +258,10 @@ class LMDatasetSourceConfig:
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
 
-    def get_shard_source(self, split) -> Optional[ShardedDataset[str]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
         if self.id is not None:
             try:
-                ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
+                ds = WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.stream)
             except ValueError as e:
                 # if the message starts with Bad split, then just return None
                 if str(e).startswith("Bad split"):
@@ -280,7 +278,7 @@ class LMDatasetSourceConfig:
             split_urls = self.urls_for_split(split)
             if len(split_urls) == 0:
                 return None
-            return TextUrlDataset(split_urls, self.text_key)
+            return TextUrlDataSource(split_urls, self.text_key)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
@@ -291,7 +289,7 @@ class LMDatasetSourceConfig:
         else:
             urls = self.urls_for_split(split)
 
-            yield from TextUrlDataset(urls, self.text_key)
+            yield from TextUrlDataSource(urls, self.text_key)
 
     def urls_for_split(self, split):
         if split == "train":

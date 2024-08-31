@@ -1,6 +1,6 @@
 import tempfile
 
-from levanter.data.sharded_dataset import AudioTextUrlDataset, _sniff_format_for_dataset
+from levanter.data.sharded_dataset import AudioTextUrlDataSource, _sniff_format_for_dataset
 from test_utils import skip_if_no_soundlibs
 
 
@@ -26,4 +26,4 @@ def test_sniff_format_for_json():
 
 @skip_if_no_soundlibs
 def test_resolve_audio_pointer():
-    AudioTextUrlDataset.resolve_audio_pointer("https://ccrma.stanford.edu/~jos/mp3/trumpet.mp3", 16_000)
+    AudioTextUrlDataSource.resolve_audio_pointer("https://ccrma.stanford.edu/~jos/mp3/trumpet.mp3", 16_000)

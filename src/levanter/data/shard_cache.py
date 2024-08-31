@@ -37,7 +37,7 @@ from ._queue import (
 )
 from .dataset import ShardableDataset
 from .metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
-from .sharded_dataset import ShardedDataset
+from .sharded_dataset import ShardedDataSource
 
 
 G = TypeVar("G")
@@ -59,7 +59,7 @@ LEVEL_TO_LOG = pylogging.INFO
 
 def build_or_load_cache(
     cache_dir: str,
-    input_shards: ShardedDataset[T],
+    input_shards: ShardedDataSource[T],
     processor: BatchProcessor[T, U],
     batch_size: int = 1,
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK,
@@ -327,7 +327,7 @@ class _ShardMetadataWriter:
 # Ray also seems to get upset about having too many processes, and we can't serialize the iterators over shards.
 
 
-def _shard_reader_generator(shard_source: ShardedDataset[T], shard_name: str, start_row: int, batch_size: int):
+def _shard_reader_generator(shard_source: ShardedDataSource[T], shard_name: str, start_row: int, batch_size: int):
     shard_iter = shard_source.open_shard_at_row(shard_name, start_row)
     batch = []
     for row in shard_iter:
@@ -346,7 +346,7 @@ class ShardGroupToBeProcessed(PriorityWorkTaskGroupSpec):
     name: str
     builder_ref: ray.actor.ActorHandle  # _ChunkCacheBuilder
     writer: ray.actor.ActorHandle  # _GroupedShardWriter
-    shard_source: ShardedDataset
+    shard_source: ShardedDataSource
     shard_names: Sequence[str]
     priority_fn: Callable[[int, int], float]
     processor_actor: ray.actor.ActorHandle  # BatchProcessorQueue
@@ -810,7 +810,7 @@ class ChunkCacheBuilder(SnitchRecipient):
         broker_ref,
         cache_dir: str,
         name: str,
-        source: ShardedDataset[T],
+        source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         rows_per_chunk: int,
     ):
@@ -1007,7 +1007,7 @@ class ChunkCacheBroker(SnitchRecipient):
     def __init__(
         self,
         cache_dir: str,
-        source: ShardedDataset[T],
+        source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         rows_per_chunk: int,
         cache_config: Optional[Dict[str, Any]],
@@ -1272,7 +1272,7 @@ class ShardCache(Iterable[pa.RecordBatch]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        shard_source: ShardedDataset[T],
+        shard_source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         batch_size: int,
         rows_per_chunk: int,

@@ -9,8 +9,8 @@ import pytest
 import ray
 from ray.exceptions import RayTaskError
 
-from levanter.data import BatchProcessor, ShardedDataset, batched
-from levanter.data.sharded_dataset import TextUrlDataset
+from levanter.data import BatchProcessor, ShardedDataSource, batched
+from levanter.data.sharded_dataset import TextUrlDataSource
 from levanter.newstore.cache import (
     SerialCacheWriter,
     TreeStoreBuilder,
@@ -99,7 +99,7 @@ class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
         return {"data": np.array([0], dtype=np.int64)}
 
 
-class SimpleShardSource(ShardedDataset[list[int]]):
+class SimpleShardSource(ShardedDataSource[list[int]]):
     def __init__(self, num_shards: int = 4):
         self._num_shards = num_shards
 
@@ -608,7 +608,7 @@ class _CustomException(Exception):
 
 @pytest.mark.ray
 def test_cache_recover_from_crash():
-    class CrashingShardSource(ShardedDataset[list[int]]):
+    class CrashingShardSource(ShardedDataSource[list[int]]):
         def __init__(self, crash_point: int):
             self.crash_point = crash_point
 
@@ -658,7 +658,7 @@ def test_cache_recover_from_crash():
 
 @pytest.mark.ray
 def test_no_hang_if_empty_shard_source():
-    class EmptyShardSource(ShardedDataset[list[int]]):
+    class EmptyShardSource(ShardedDataSource[list[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return []
@@ -673,7 +673,7 @@ def test_no_hang_if_empty_shard_source():
 
 @pytest.mark.ray
 def test_chunk_ordering_is_correct_with_slow_shards():
-    class SlowShardSource(ShardedDataset[list[int]]):
+    class SlowShardSource(ShardedDataSource[list[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return ["shard_0", "shard_1"]
@@ -716,7 +716,7 @@ async def test_can_get_elems_before_finished():
 
     blocker_to_wait_on_test = Blocker.remote()
 
-    class SlowShardSource(ShardedDataset[list[int]]):
+    class SlowShardSource(ShardedDataSource[list[int]]):
         @property
         def shard_names(self) -> Sequence[str]:
             return ["shard_0"]
@@ -789,14 +789,14 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             f.write("")
 
         with pytest.raises(ValueError):
-            TextUrlDataset(
+            TextUrlDataSource(
                 [f"{tmpdir}/data.txt", f"{tmpdir}/data.txt"],
             )
 
         with open(f"{tmpdir}/data.txt.1", "w") as f:
             f.write("")
 
-            dataset = TextUrlDataset(
+            dataset = TextUrlDataSource(
                 [f"{tmpdir}/data.txt", f"{tmpdir}/data.txt.1"],
             )
 
@@ -810,7 +810,7 @@ async def test_shard_cache_fails_gracefully_with_unknown_file_type():
         with open(f"{tmpdir}/data.not_a_real_extension", "w") as f:
             f.write("")
 
-        dataset = TextUrlDataset(
+        dataset = TextUrlDataSource(
             [f"{tmpdir}/data.not_a_real_extension"],
         )
 

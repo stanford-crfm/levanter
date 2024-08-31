@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import tensorstore as ts
 
-from levanter.data import BatchProcessor, ShardedDataset
+from levanter.data import BatchProcessor, ShardedDataSource
 from levanter.data.utils import batched
 from levanter.newstore.tree_store import TreeStoreBuilder
 
@@ -30,7 +30,7 @@ class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
         return 1
 
 
-class SimpleShardSource(ShardedDataset[List[int]]):
+class SimpleShardSource(ShardedDataSource[List[int]]):
     def __init__(self, num_shards: int = 4):
         self._num_shards = num_shards
 

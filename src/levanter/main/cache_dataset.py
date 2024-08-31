@@ -4,10 +4,10 @@ from dataclasses import dataclass, field
 
 import levanter
 from levanter.data.metrics_monitor import LoggingMetricsMonitor, RichMetricsMonitor
-from levanter.data.shard_cache import build_or_load_cache
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logging
+from levanter.newstore.cache import build_or_load_cache
 from levanter.tracker import NoopConfig, TrackerConfig
 
 
@@ -46,10 +46,8 @@ def main(args: RayCachedLMDatasetConfig):
             cache_dir=split_cache_dir,
             input_shards=source,
             processor=batch_tokenizer,
-            rows_per_chunk=args.rows_per_chunk,
             await_finished=False,
             monitors=monitors,
-            batch_size=128,
         )
 
         cache.await_finished()

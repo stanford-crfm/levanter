@@ -28,7 +28,7 @@ from ..data._queue import (
     _BatchProcessorQueue,
 )
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
-from ..data.sharded_dataset import ShardedDataset
+from ..data.sharded_dataset import ShardedDataSource
 from ..utils.ray_utils import (
     ExceptionInfo,
     RefBox,
@@ -57,7 +57,7 @@ MAX_TIME_BETWEEN_WRITES = 100.0
 
 def build_or_load_cache(
     cache_dir: str,
-    input_shards: ShardedDataset[T],
+    input_shards: ShardedDataSource[T],
     processor: BatchProcessor[T, U],
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
@@ -438,7 +438,7 @@ def _canonicalize_batch(batch: Union[dict, List[dict]]) -> List[dict]:
 # We ideally want to read from shards roughly evenly (at least within a group of shards)
 
 
-def _shard_reader_generator(shard_source: ShardedDataset[T], shard_name: str, start_row: int, batch_size: int):
+def _shard_reader_generator(shard_source: ShardedDataSource[T], shard_name: str, start_row: int, batch_size: int):
     shard_iter = shard_source.open_shard_at_row(shard_name, start_row)
     batch = []
     for row in shard_iter:
@@ -457,7 +457,7 @@ class ShardGroupToBeProcessed(PriorityWorkTaskGroupSpec):
     name: str
     builder_ref: ray.actor.ActorHandle  # _TreeStoreCacheBuilder
     writer: ray.actor.ActorHandle  # _GroupedShardWriter
-    shard_source: ShardedDataset
+    shard_source: ShardedDataSource
     shard_names: Sequence[str]
     priority_fn: Callable[[int, int], float]
     processor_actor: ray.actor.ActorHandle  # BatchProcessorQueue
@@ -657,7 +657,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self,
         cache_dir: str,
         name: str,
-        source: ShardedDataset[T],
+        source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         cache_config: Dict[str, Any],
         min_items_to_write: int,
@@ -938,7 +938,7 @@ class TreeCache(AsyncDataset[T_co]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        shard_source: ShardedDataset[T],
+        shard_source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         cache_config: Optional[Dict[str, Any]] = None,
         items_per_write: int = MIN_ITEMS_TO_WRITE,

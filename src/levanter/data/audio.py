@@ -23,7 +23,7 @@ from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch
 from levanter.data.dataset import ShardableDataset
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor
 from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, ShardCache, build_or_load_cache
-from levanter.data.sharded_dataset import AudioTextUrlDataset, ShardedDataset, WrappedHFDataset
+from levanter.data.sharded_dataset import AudioTextUrlDataSource, ShardedDataSource, WrappedHFDataSource
 from levanter.data.text import BatchTokenizer
 
 # intercept the logging nonsense here
@@ -155,10 +155,10 @@ class AudioDatasetSourceConfig:
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
 
-    def get_shard_source(self, split) -> Optional[ShardedDataset[Tuple[np.ndarray, int, str]]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[Tuple[np.ndarray, int, str]]]:
         if self.id is not None:
             try:
-                ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
+                ds = WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.stream)
             except ValueError as e:
                 # if the message starts with Bad split, then just return None
                 if str(e).startswith("Bad split"):
@@ -173,7 +173,7 @@ class AudioDatasetSourceConfig:
             def decode(x):
                 text = x[self.text_key]
                 audio_pointer = x[self.audio_key]
-                audio = AudioTextUrlDataset.resolve_audio_pointer(audio_pointer, self.sampling_rate)
+                audio = AudioTextUrlDataSource.resolve_audio_pointer(audio_pointer, self.sampling_rate)
                 return (audio["array"], audio["sampling_rate"], text)
 
             return ds.map(decode)
@@ -181,7 +181,7 @@ class AudioDatasetSourceConfig:
             split_urls = self.urls_for_split(split)
             if len(split_urls) == 0:
                 return None
-            return AudioTextUrlDataset(split_urls, self.text_key, self.audio_key, sampling_rate=self.sampling_rate)
+            return AudioTextUrlDataSource(split_urls, self.text_key, self.audio_key, sampling_rate=self.sampling_rate)
 
     def doc_iterator(self, split: str) -> Iterator[Tuple[np.ndarray, int, str]]:
         if self.id is not None:
@@ -191,7 +191,7 @@ class AudioDatasetSourceConfig:
         else:
             urls = self.urls_for_split(split)
 
-            yield from AudioTextUrlDataset(urls, self.text_key, self.audio_key, sampling_rate=self.sampling_rate)
+            yield from AudioTextUrlDataSource(urls, self.text_key, self.audio_key, sampling_rate=self.sampling_rate)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -280,7 +280,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
     @staticmethod
     def build_or_load(
         cache_dir: str,
-        source: ShardedDataset[Tuple[np.ndarray, int, str]],
+        source: ShardedDataSource[Tuple[np.ndarray, int, str]],
         processor: ProcessorMixin,
         tokenizer: PreTrainedTokenizerBase,
         enforce_bos=True,
