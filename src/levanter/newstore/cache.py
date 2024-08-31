@@ -353,12 +353,15 @@ class _OrderedCacheWriter:
             )
 
     def _write_available_batches(self):
+        if len(self._ordered_but_unwritten_items) == 0:
+            return {}
+
         any_shard_finished_reading = any(num_rows is not None for num_rows in self._expected_num_rows.values())
 
         if (
             len(self._ordered_but_unwritten_items) >= self._min_items_to_write
-            or time.time() - self._last_write_time > MAX_TIME_BETWEEN_WRITES
-            or (any_shard_finished_reading and len(self._ordered_but_unwritten_items) > 0)
+            or (time.time() - self._last_write_time > MAX_TIME_BETWEEN_WRITES)
+            or any_shard_finished_reading
         ):
             time_in = time.time()
             self._tree_store.extend(self._ordered_but_unwritten_items)

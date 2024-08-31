@@ -1,4 +1,5 @@
 import jax
+import numpy as np
 import pytest
 
 from levanter.data.mixture import StopStrategy
@@ -128,3 +129,27 @@ async def test_mixture_dataset_respects_weights(datasets, weights, block_size, k
 
     for dataset, count in counts.items():
         assert abs(count / num_samples - weights[dataset]) < 0.1, f"Dataset {dataset} has unexpected weight"
+
+
+@pytest.mark.asyncio
+async def test_mixture_dataset_randomizes_blocks(datasets, weights, block_size, key):
+    mixture_ds = MixtureDataset(datasets, weights, block_size, key=key)
+
+    block_assignment_1 = await mixture_ds._get_block(0)
+    block_assignment_2 = await mixture_ds._get_block(0)
+
+    assert np.all(block_assignment_1 == block_assignment_2), "Block assignments should be randomized"
+
+    block_assignment_3 = await mixture_ds._get_block(1)
+    assert not np.all(block_assignment_1 == block_assignment_3), "Block assignments should be randomized"
+
+
+@pytest.mark.asyncio
+async def test_mixture_dataset_samples_all_elements(datasets, weights, block_size, key):
+    mixture_ds = MixtureDataset(datasets, weights, block_size, key=key)
+
+    num_samples = 1000
+    samples = await mixture_ds.get_batch(list(range(num_samples)))
+
+    assert len(samples) == num_samples
+    assert set(samples) == {1, 2, 3, 4, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500}

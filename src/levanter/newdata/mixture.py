@@ -1,4 +1,5 @@
 import asyncio
+import warnings
 from typing import Mapping, Optional, Sequence, TypeVar
 
 import jax
@@ -28,7 +29,7 @@ class MixtureDataset(AsyncDataset[T]):
     Args:
         datasets: A dict of datasets, where the key is the name of the dataset and the value is the dataset itself
         weights: weights for each dataset
-        stop_strategy: strategy for stopping the iteration, by default RESTART_STRATEGY
+        stop_strategy: strategy for stopping the iteration, by default RESTART_STRATEGY. (Currently only RESTART_STRATEGY is supported)
             - FIRST_STOP_STRATEGY: stop when one dataset has been exhausted
             - ALL_STOP_STRATEGY: stop when all datasets have been exhausted
             - RESTART_STRATEGY: restart the dataset when it has been exhausted
@@ -82,6 +83,14 @@ class MixtureDataset(AsyncDataset[T]):
         # handle remainder by adding to the largest dataset
         largest_dataset = np.argmax(_expected_values_per_block)
         _expected_values_per_block[largest_dataset] += block_size - _expected_values_per_block.sum()
+
+        # check if any dataset has 0 samples (and nonzero weight)
+        for i, dsname in enumerate(self.dataset_index):
+            if _expected_values_per_block[i] == 0 and self.weights[dsname] > 0:
+                warnings.warn(
+                    f"Dataset {dsname} has 0 samples in the block, but weight of {self.weights[dsname]}."
+                    " Recommend increasing block size."
+                )
 
         return _expected_values_per_block
 

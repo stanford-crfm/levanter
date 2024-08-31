@@ -110,7 +110,7 @@ class DataLoaderIterator(Iterator[Ex]):
         time_start = time.time()
         out = next(self._batches)
         time_end = time.time()
-        if (time_end - time_start) > 0.05:
+        if (time_end - time_start) > 0.5:
             logger.info(f"Slow data fetch: {time_end - time_start:.3f}")
         return out
 
