@@ -321,7 +321,7 @@ class ProcessedAudioCache(ShardableDataset[AudioTextStorageBatch]):
     @staticmethod
     def load(cache_dir, batch_size: int = 128):
         """
-        Load a TokenizedDocumentCache from a directory. If the ledger file is not present, this will raise a
+        Load a ProcessedAudioCache from a directory. If the ledger file is not present, this will raise a
         FileNotFoundError.
 
         NOTE: ATM this attempts to migrate old caches to the new format, but this will be removed in the future.

@@ -28,16 +28,6 @@ BATCHES = 1000
 # 3) new cache randomly
 
 
-def bench_old_cache(old_cache_path):
-    from levanter.data.text import TokenizedDocumentCache, TokenSeqDataset
-
-    old_cache = TokenizedDocumentCache.load(old_cache_path, flatten_docs=True)
-    ds = TokenSeqDataset(old_cache, SEQ_LEN)
-    for i, item in enumerate(ds):
-        if i > BS * BATCHES:
-            break
-
-
 def bench_new_cache_serial(exemplar, new_cache_path):
     jagged_array = TreeStoreBuilder.open(exemplar, new_cache_path).tree["input_ids"]
     len_cache = jagged_array.data_size

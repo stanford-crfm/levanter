@@ -33,10 +33,8 @@ from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.dataset import ShardableDataset, ShuffleDataset  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
-from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
-from levanter.data.shard_cache import CacheLedger  # noqa
-from levanter.data.shard_cache import ShardCache  # noqa
 from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
+from levanter.data.shard_cache import ShardCache  # noqa
 from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
 from levanter.newdata.new_text import CausalLmDataset, TokenSeqDataset  # noqa
 from levanter.newstore.cache import build_or_load_cache  # noqa
@@ -53,118 +51,6 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
-
-
-class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
-    """
-    Represents a tokenized document cache, which is a directory of parquet files with a ledger file.
-
-    The difference between this class and the TokenSeqDataset is that this class yields entire documents,
-    while the TokenSeqDataset yields tokens sequences of fixed length from concatenated documents.
-    """
-
-    def __init__(self, chunk_cache: ShardCache, flatten_docs):
-        self.chunk_cache = chunk_cache
-        self.flatten_docs = flatten_docs
-
-    def __iter__(self):
-        """Reads the cache files produced by cache_and_group and yields tokenized sequences.
-        If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
-        then the documents returned are actually concatenated documents, where the number is the number of documents
-        presented as a batch to the caching process."""
-        for batch in self._chunks():
-            yield _batch_encoding_from_record_batch(batch, self.flatten_docs)
-
-    def _chunks(self):
-        return self.chunk_cache.iter_batches_from_chunks()
-
-    @staticmethod
-    def build_or_load(
-        cache_dir,
-        source: ShardedDataset[str],
-        tokenizer: PreTrainedTokenizerBase,
-        *,
-        flatten_docs=True,
-        enforce_bos=True,
-        enforce_eos=True,
-        batch_size=128,
-        rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
-        monitors=None,
-        await_finished=True,
-        override_resources=None,
-    ) -> "TokenizedDocumentCache":
-        bt = BatchTokenizer(
-            tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos, override_resources=override_resources
-        )
-        monitors = monitors or []
-        cache = build_or_load_cache(
-            cache_dir,
-            source,
-            bt,
-            await_finished=await_finished,
-            # batch_size=batch_size,
-            # rows_per_chunk=rows_per_chunk,
-            monitors=monitors,
-            cache_config={
-                "tokenizer": tokenizer.name_or_path,
-                "vocab_size": tokenizer.vocab_size,
-            },
-        )
-
-        if cache.is_finished:
-            logger.info(f"Cache {cache_dir} is complete.")
-        else:
-            logger.info(
-                f"Cache {cache_dir} is incomplete. This will block until at least one chunk per process is complete."
-            )
-
-        if cache.ledger and "tokenizer" in cache.ledger.metadata:
-            cached_tokenizer = cache.ledger.metadata["tokenizer"]
-            cached_vocab_size = cache.ledger.metadata["vocab_size"]
-            if cached_tokenizer != tokenizer.name_or_path:
-                raise ValueError(
-                    f"Cache {cache_dir} was built with tokenizer {cached_tokenizer}, but current tokenizer is"
-                    f" {tokenizer.name_or_path}."
-                )
-            if cached_vocab_size != tokenizer.vocab_size:
-                raise ValueError(
-                    f"Cache {cache_dir} was built with vocab size {cached_vocab_size}, but current vocab size is"
-                    f" {tokenizer.vocab_size}."
-                )
-
-        return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)  # type: ignore
-
-    @staticmethod
-    def load(cache_dir, batch_size: int = 128, flatten_docs=True):
-        """
-        Load a TokenizedDocumentCache from a directory. If the ledger file is not present, this will raise a
-        FileNotFoundError.
-
-        NOTE: ATM this attempts to migrate old caches to the new format, but this will be removed in the future.
-
-        :param cache_dir:
-        :param flatten_docs: If true, then multiple documents from a single batch (when the cache was built) will be
-        concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
-        :return:
-        """
-
-        try:
-            cache = ShardCache.load(cache_dir, batch_size=batch_size)
-            return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"{cache_dir} is not a complete cache")
-        except Exception:
-            logger.exception("error loading cache")
-            raise
-
-    def shard(self, shard_index, num_shards):
-        if num_shards <= shard_index:
-            raise ValueError(f"Shard index {shard_index} is out of range")
-
-        if num_shards == 1:
-            return self
-
-        return TokenizedDocumentCache(self.chunk_cache.shard(shard_index, num_shards), self.flatten_docs)
 
 
 def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
@@ -438,7 +324,7 @@ class LMTaskConfig(abc.ABC):
 
     # config related to caching
     cache_dir: str = "cache/"
-    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
+    tokenizer_batch_size: int = 32
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     ignore_token_id: Optional[int] = None
@@ -544,7 +430,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         name = logger_name or os.path.basename(self.cache_dir)
 
         try:
-            # return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
             return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
         except FileNotFoundError:
             pass
@@ -564,7 +449,9 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif monitors is False:
             monitors = []
 
-        bt = BatchTokenizer(self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos)
+        bt = BatchTokenizer(
+            self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos, batch_size=self.tokenizer_batch_size
+        )
 
         return build_or_load_cache(
             split_cache_dir,
