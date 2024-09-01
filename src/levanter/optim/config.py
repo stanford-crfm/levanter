@@ -33,7 +33,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
     lr_schedule: str = "cosine"  # constant, cosine, linear
     haps: Optional[list[int]] = None
-    """list of integers indicating pit stop steps."""
+    """list of integers indicating pit stop steps. See paper https://openreview.net/pdf?id=RSsavSvAvN"""
     weight_decay_modules: Optional[list[str] | str] = None
     """A regex or a list of strings to identify where to mask weight.
     For nano-GPT, this field can be set as `r".*attn.*weight|.*mlp.*weight|.*token_embeddings|.*position_embeddings"`"""
@@ -235,7 +235,9 @@ class HessianOptConfig(OptimizerConfig, abc.ABC):
 class AdamConfig(OptimizerConfig):
     weight_decay: float = 0.1
     beta1: float = 0.9
-    beta2: float = 0.999
+    # cf https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
+    # https://x.com/giffmana/status/1692641748445438301
+    beta2: float = 0.95
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
