@@ -124,7 +124,7 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         self._need_to_add_eos = should_append_eos
         self._need_to_add_bos = should_append_bos
 
-    def __call__(self, batch: Sequence[str]) -> BatchEncoding:
+    def __call__(self, batch: Sequence[str]) -> dict:
         if self._need_to_add_bos:
             batch = [self.tokenizer.bos_token + " " + d for d in batch]
 
@@ -136,7 +136,10 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         else:
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
 
-        return encoding
+        # debatch the encoding
+        unbatched = [dict(zip(encoding, t)) for t in zip(*[encoding[k] for k in encoding])]
+
+        return unbatched
 
     @property
     def output_exemplar(self) -> dict:

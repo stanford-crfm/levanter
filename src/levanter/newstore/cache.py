@@ -619,32 +619,6 @@ def _load_cache_ledger(cache_dir) -> CacheLedger:
         raise FileNotFoundError(f"Cache ledger not found at {ledger_path}")
 
 
-def _mk_queue_aware_process_task(processor: BatchProcessor[T, U], queue: ActorHandle):
-    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(desc, batch: List[T]):
-        pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
-        logger.debug(f"Processing batch {desc}")
-        queue.task_running.remote()
-        # timer_thread = WaitTimeReportingThread(
-        #     lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
-        # )
-        # timer_thread.start()
-        try:
-            result = processor(batch)
-            del batch
-            logger.debug(f"Finished processing batch {desc}")
-            return result
-        except Exception as e:
-            logger.exception(f"Error while processing batch {desc}")
-            raise e
-        finally:
-            # timer_thread.shutdown()
-            # timer_thread.join()
-            pass
-
-    return process_task
-
-
 @ray.remote(num_cpus=0.1)  # keep this small b/c it doesn't do a lot
 class _TreeStoreCacheBuilder(SnitchRecipient):
     """

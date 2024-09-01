@@ -8,13 +8,12 @@ from dataclasses import dataclass
 from queue import PriorityQueue
 from typing import List, Optional, Protocol, Sequence, TypeVar
 
-import pyarrow as pa
 import ray
 from ray.actor import ActorHandle
 
 from levanter.utils.ray_utils import RefBox
 
-from ._preprocessor import BatchProcessor, as_record_batch
+from ._preprocessor import BatchProcessor
 
 
 logger = pylogging.getLogger(__name__)
@@ -68,26 +67,18 @@ class PriorityWorkItem(Protocol):
 
 def _mk_queue_aware_process_task(processor: BatchProcessor[T, U], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(desc, batch: List[T]) -> pa.RecordBatch:
-        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
+    def process_task(desc, batch: List[T]):
+        # pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         logger.debug(f"Processing batch {desc}")
         queue.task_running.remote()
-        # timer_thread = WaitTimeReportingThread(
-        #     lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
-        # )
-        # timer_thread.start()
         try:
             result = processor(batch)
-            del batch
-            result = as_record_batch(result)
             logger.debug(f"Finished processing batch {desc}")
             return result
         except Exception as e:
             logger.exception(f"Error while processing batch {desc}")
             raise e
         finally:
-            # timer_thread.shutdown()
-            # timer_thread.join()
             pass
 
     return process_task

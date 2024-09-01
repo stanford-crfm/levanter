@@ -50,7 +50,7 @@ AudioTextDict = TypedDict(
 )
 
 AudioTextDict_exemplar = {
-    "input_features": np.zeros((0,), dtype=np.float32),
+    "input_features": np.zeros((0,0), dtype=np.float32),
     "input_ids": np.zeros((0,), dtype=np.int32),
     "attention_mask": np.zeros((0,), dtype=np.int32),
 }
@@ -101,8 +101,8 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         audio_features: BatchFeature = self.feature_extractor(audio_batch, sampling_rate=uniq_sampling_rates.pop())
         text_features: BatchEncoding = self.bt(text_batch)
         combined_features = audio_features | text_features
-        combined_features["input_ids"] = np.array(combined_features["input_ids"])
-        combined_features["attention_mask"] = np.array(combined_features["attention_mask"])
+        combined_features["input_ids"] = np.array(combined_features["input_ids"], dtype=np.int32)
+        combined_features["attention_mask"] = np.array(combined_features["attention_mask"], dtype=np.int32)
         a_features = np.array(combined_features["input_features"])
         combined_features["input_features"] = a_features
         out = []

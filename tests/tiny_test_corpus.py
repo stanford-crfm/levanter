@@ -50,12 +50,12 @@ def construct_small_data_cache(
 
     caches: dict[str, TreeCache] = {}
 
-    exemplar = {"input_ids": numpy.zeros((1, doc_len), dtype=numpy.int32)}
+    exemplar = {"input_ids": numpy.zeros((doc_len,), dtype=numpy.int32)}
 
     for split in ["train", "validation"]:
         with SerialCacheWriter(f"{path}/cache/{split}", exemplar) as writer:
             for shard in range(num_shards):
-                writer.write_batch({"input_ids": rng.integers(0, vocab_size, size=(chunk_size, doc_len))})
+                writer.write_batch([{"input_ids": rng.integers(0, vocab_size, size=(doc_len,))} for _ in range(chunk_size)])
         caches[split] = writer.result()
 
     config = LMDatasetConfig(
