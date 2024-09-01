@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import jax
 import jax.random as jrandom
 
 import haliax as hax
@@ -86,7 +87,7 @@ def main(config: TrainMlmConfig):
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer) as trainer, jax.disable_jit(True):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -108,8 +109,11 @@ def main(config: TrainMlmConfig):
         KeyPos = config.model.KeyPos
 
         tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
+        mask_id = tokenizer.mask_token_id
         train_dataset = MaskedLmDataset(
-            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, mask_prob=config.mlm_prob, key=data_key, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos,
+            mask_token_id=mask_id,
+            mask_prob=config.mlm_prob, key=data_key, #ignore_index=config.data.ignore_token_id
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -150,7 +154,7 @@ def main(config: TrainMlmConfig):
             logger.warning("No evaluation datasets provided.")
         else:
             masked_datasets = [
-                (MaskedLmDataset(ds, Pos, KeyPos, mask_prob=config.mlm_prob, key=data_key, ignore_index=config.data.ignore_token_id), tags)
+                (MaskedLmDataset(ds, Pos, KeyPos, mask_prob=config.mlm_prob, key=data_key, mask_token_id=mask_id), tags)
                 for ds, tags in tagged_eval_datasets
             ]
             max_eval_examples_per_ds = config.trainer.max_eval_batches

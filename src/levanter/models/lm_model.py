@@ -24,7 +24,7 @@ class MaskedLmExample(eqx.Module):
 
     @staticmethod
     def masked_lm(
-        tokens: hax.NamedArray, targets: hax.NamedArray, attn_mask: hax.NamedArray, ignore_id: Optional[int] = None
+        tokens: hax.NamedArray, targets: hax.NamedArray, attn_mask: hax.NamedArray, mask_token_id: Optional[int] = None
     ) -> "MaskedLmExample":
         if tokens.ndim != 1:
             raise ValueError("tokens must be a 1D array")
@@ -40,8 +40,8 @@ class MaskedLmExample(eqx.Module):
         mask = tokens.array != targets.array
         loss_mask = hax.named(mask.astype(jnp.float32), Pos)
 
-        if ignore_id is not None:
-            ignore_mask = targets.array != ignore_id
+        if mask_token_id is not None:
+            ignore_mask = targets.array != mask_token_id
             loss_mask = loss_mask * hax.named(ignore_mask.astype(jnp.float32), Pos)
 
         return MaskedLmExample(tokens=tokens, targets=targets, loss_mask=loss_mask, attn_mask=attn_mask)
