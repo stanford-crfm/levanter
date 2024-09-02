@@ -3,7 +3,6 @@ from typing import Optional, Sequence
 
 import jax
 import numpy as np
-import pytest
 from jax.sharding import Mesh
 
 import haliax
@@ -44,8 +43,7 @@ def test_local_batched_data_loading_model_axis_2():
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
 
 
-@pytest.mark.asyncio
-async def test_local_batched_data_loading_model_axis_1():
+def test_local_batched_data_loading_model_axis_1():
     devices = jax.devices()
     model_axis_size = 1
 
@@ -104,8 +102,7 @@ class StructuredDataset(AsyncDataset):
         return out
 
 
-@pytest.mark.asyncio
-async def test_structured_batches_model_axis_1():
+def test_structured_batches_model_axis_1():
     devices = jax.devices()
     model_axis_size = 1
 
@@ -125,8 +122,7 @@ async def test_structured_batches_model_axis_1():
 
 
 @skip_if_not_enough_devices(2)
-@pytest.mark.asyncio
-async def test_structured_batches_model_axis_2():
+def test_structured_batches_model_axis_2():
     devices = jax.devices()
     model_axis_size = 2
 
@@ -193,8 +189,7 @@ class StructuredDatasetWithNames(AsyncDataset):
             yield self[i]
 
 
-@pytest.mark.asyncio
-async def test_structured_batches_model_axis_1_with_names():
+def test_structured_batches_model_axis_1_with_names():
     devices = jax.devices()
     model_axis_size = 1
 
@@ -217,8 +212,7 @@ async def test_structured_batches_model_axis_1_with_names():
 
 
 @skip_if_not_enough_devices(2)
-@pytest.mark.asyncio
-async def test_structured_batches_model_axis_2_with_names():
+def test_structured_batches_model_axis_2_with_names():
     devices = jax.devices()
     model_axis_size = 2
 
@@ -239,8 +233,7 @@ async def test_structured_batches_model_axis_2_with_names():
 
 
 @skip_if_not_enough_devices(4)
-@pytest.mark.asyncio
-async def test_structured_batches_model_axis_2_subsharded():
+def test_structured_batches_model_axis_2_subsharded():
     """This tests data loading if individual datums are sharded too"""
     devices = jax.devices()
     model_axis_size = 2
@@ -258,11 +251,3 @@ async def test_structured_batches_model_axis_2_subsharded():
 
         for batch in iter(loader):
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
-
-
-async def async_iter_to_list(async_iter):
-    """Helper function to convert an async iterator to a list"""
-    result = []
-    async for item in async_iter:
-        result.append(item)
-    return result
