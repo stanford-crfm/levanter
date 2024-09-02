@@ -138,30 +138,7 @@ class BatchTokenizer(BatchProcessor[str, dict]):
             batch = [d + " " + self.tokenizer.eos_token for d in batch]
 
         if self._needs_long_sequence_workaround:
-            orig_lengths = [len(d) for d in batch]
-            # break any strings that are longer than 50K characters into smaller chunks
-            orig_batch = batch
-            batch = []
-            needs_merge = []
-            for i, d in enumerate(orig_batch):
-                needs_merge.append(False)
-                orig_len = orig_lengths[i]
-                while len(d) > self._workaround_len:
-                    # we'd rather break strings at whitespace, so find the first whitespace
-                    match = ws.search(d, self._workaround_len)
-                    # this is vanishingly unlikely, but if we can't find a whitespace, just break it at the limit
-                    if match is None:
-                        split = len(d)
-                    else:
-                        split = match.start()
-
-                    batch.append(d[:split])
-                    needs_merge.append(True)
-
-                    d = d[split:]
-                    orig_len -= split
-
-                batch.append(d)
+            batch, needs_merge = self._break_for_long_sequences(batch)
         else:
             needs_merge = []
 
@@ -178,6 +155,33 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         unbatched = [dict(zip(encoding, t)) for t in zip(*[encoding[k] for k in encoding])]
 
         return unbatched
+
+    def _break_for_long_sequences(self, batch):
+        orig_lengths = [len(d) for d in batch]
+        # break any strings that are longer than 50K characters into smaller chunks
+        orig_batch = batch
+        batch = []
+        needs_merge = []
+        for i, d in enumerate(orig_batch):
+            needs_merge.append(False)
+            orig_len = orig_lengths[i]
+            while len(d) > self._workaround_len:
+                # we'd rather break strings at whitespace, so find the first whitespace
+                match = ws.search(d, self._workaround_len)
+                # this is vanishingly unlikely, but if we can't find a whitespace, just break it at the limit
+                if match is None:
+                    split = len(d)
+                else:
+                    split = match.start()
+
+                batch.append(d[:split])
+                needs_merge.append(True)
+
+                d = d[split:]
+                orig_len -= split
+
+            batch.append(d)
+        return batch, needs_merge
 
     @property
     def output_exemplar(self) -> dict:
