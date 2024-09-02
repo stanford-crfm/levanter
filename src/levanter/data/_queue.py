@@ -157,8 +157,12 @@ class PriorityProcessorActor:
         self._current_item: Optional[PriorityWorkItem] = None
         self._max_in_flight = max_in_flight
 
+        self._paused = False
         self._processing_thread = threading.Thread(target=self._loop, daemon=True)
         self._processing_thread.start()
+
+    def signal_backpressure(self, paused: bool):
+        self._paused = paused
 
     def assign_work(self, group: PriorityWorkTaskGroupSpec):
         items = group.build().items()
@@ -202,8 +206,9 @@ class PriorityProcessorActor:
                 backpressure_queue = remaining
 
         while not self._shutdown_event.is_set():
-            if should_sleep:
+            if should_sleep or self._paused:
                 time.sleep(0.1)
+                continue
 
             drain_backpressure_to(self._max_in_flight)
 

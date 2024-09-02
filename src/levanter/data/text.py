@@ -17,6 +17,7 @@ import pyarrow as pa
 import regex
 from draccus import field
 from jaxtyping import PRNGKeyArray
+from tokenizers import normalizers
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -71,6 +72,9 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 
+LONG_STRING_WORKAROUND = 10_000
+
+
 ws = regex.compile(r"\s")
 
 
@@ -88,6 +92,7 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         *,
         batch_size=128,
         override_resources=None,
+        _workaround_len=LONG_STRING_WORKAROUND,
         return_attention_mask=False,
         padding=False,
         max_length=None,
@@ -123,18 +128,51 @@ class BatchTokenizer(BatchProcessor[str, dict]):
 
         self._need_to_add_eos = should_append_eos
         self._need_to_add_bos = should_append_bos
+        self._workaround_len = _workaround_len
 
-    def __call__(self, batch: Sequence[str]) -> dict:
+    def __call__(self, batch: Sequence[str]) -> list[dict]:
         if self._need_to_add_bos:
             batch = [self.tokenizer.bos_token + " " + d for d in batch]
 
         if self._need_to_add_eos:
             batch = [d + " " + self.tokenizer.eos_token for d in batch]
 
+        if self._needs_long_sequence_workaround:
+            orig_lengths = [len(d) for d in batch]
+            # break any strings that are longer than 50K characters into smaller chunks
+            orig_batch = batch
+            batch = []
+            needs_merge = []
+            for i, d in enumerate(orig_batch):
+                needs_merge.append(False)
+                orig_len = orig_lengths[i]
+                while len(d) > self._workaround_len:
+                    # we'd rather break strings at whitespace, so find the first whitespace
+                    match = ws.search(d, self._workaround_len)
+                    # this is vanishingly unlikely, but if we can't find a whitespace, just break it at the limit
+                    if match is None:
+                        split = len(d)
+                    else:
+                        split = match.start()
+
+                    batch.append(d[:split])
+                    needs_merge.append(True)
+
+                    d = d[split:]
+                    orig_len -= split
+
+                batch.append(d)
+        else:
+            needs_merge = []
+
         if self.padding is not False:
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
         else:
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
+
+        if needs_merge:
+            new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
+            encoding = BatchEncoding(new_encoding)
 
         # debatch the encoding
         unbatched = [dict(zip(encoding, t)) for t in zip(*[encoding[k] for k in encoding])]
@@ -152,6 +190,59 @@ class BatchTokenizer(BatchProcessor[str, dict]):
     @property
     def vocab_size(self):
         return self.tokenizer.vocab_size
+
+    @staticmethod
+    def _merge_split_encodings(batch, encoding, needs_merge):
+        # merge the encodings back together
+        # we might need to merge multiple encodings together
+        # needs merge marks the first n-1 encodings that need to be merged for each document
+        new_encoding = {}
+        for k, v in encoding.items():
+            if len(v) == 0:
+                continue
+            if isinstance(v[0], np.ndarray):
+                assert len(v) == len(batch)
+                v_out = []
+                vs_to_merge = []
+                for i in range(len(batch)):
+                    if not needs_merge[i]:
+                        v_out.append(np.concatenate(vs_to_merge))
+                        vs_to_merge = []
+                    vs_to_merge.append(v[i])
+
+                if len(vs_to_merge) > 0:
+                    v_out.append(np.concatenate(vs_to_merge))
+
+                new_encoding[k] = v_out
+            elif isinstance(v[0], list):
+                v_out = []
+                vs_to_merge = []
+                for i in range(len(batch)):
+                    if not needs_merge[i]:
+                        if len(vs_to_merge) > 0:
+                            v_out.append(list(chain(*vs_to_merge)))
+                        vs_to_merge = []
+                    vs_to_merge.append(v[i])
+
+                if len(vs_to_merge) > 0:
+                    v_out.append(list(chain(*vs_to_merge)))
+                new_encoding[k] = v_out
+            else:
+                raise ValueError(f"Unknown type {type(v[0])}")
+        return new_encoding
+
+    # TODO remove this when it's resolved https://github.com/huggingface/tokenizers/issues/1495
+    @cached_property
+    def _needs_long_sequence_workaround(self):
+        if isinstance(self.tokenizer, PreTrainedTokenizerFast):
+            normalizer = self.tokenizer.backend_tokenizer.normalizer
+            if normalizer is None:
+                return False
+            # if there's a "Replace" normalizer, then we need to do the workaround
+            # inexplicably there's no way to see inside a Sequence so we also have to assume it needs it
+            return isinstance(normalizer, (normalizers.Replace, normalizers.Sequence))
+        else:
+            return False
 
     @property
     def num_cpus(self) -> int:
@@ -458,7 +549,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             split_cache_dir,
             source,
             bt,
-            await_finished=(split == "validation"),
+            await_finished=False,
             monitors=monitors,
             cache_config={
                 "tokenizer": self.the_tokenizer.name_or_path,
@@ -581,6 +672,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 logger.warning(f"Skipping {name} for split {split} because no source was provided")
             else:
                 caches[name] = cache
+
+        # in practice it works best if we block on validation caches
+        if split == "validation":
+            logger.info("Waiting for validation caches to finish building...")
+            for cache in caches.values():
+                cache.await_finished()
+
         return caches
 
     @property
