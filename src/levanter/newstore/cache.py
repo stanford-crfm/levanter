@@ -164,7 +164,8 @@ class SerialCacheWriter(AbstractContextManager):
         self.cache_dir = cache_dir
         self.cache_config = cache_config
         self._exemplar = exemplar
-        self._tree_store: Optional[TreeStoreBuilder] = None
+        self._tree_store = TreeStoreBuilder.open(exemplar, self.cache_dir, mode="w")  # type: ignore
+        self._is_closed = False
 
     def __enter__(self) -> "SerialCacheWriter":
         return self
@@ -195,9 +196,6 @@ class SerialCacheWriter(AbstractContextManager):
             raise NotImplementedError("Only non-RecordBatch batches are supported for now")
 
         batch = _canonicalize_batch(batch)  # type: ignore
-
-        if self._tree_store is None:
-            self._tree_store = TreeStoreBuilder.open(batch[0], self.cache_dir, mode="w")  # type: ignore
 
         self._tree_store.extend(batch)
 
