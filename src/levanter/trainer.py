@@ -435,7 +435,7 @@ class Trainer:
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
 
-        eval_loader = self.replicated_loader(eval_dataset, self.EvalBatch)
+        eval_loader = self.new_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 

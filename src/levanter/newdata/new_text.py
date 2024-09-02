@@ -103,7 +103,7 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
         return length
 
 
-class CausalLmDataset(MappedAsyncDataset[LmExample]):
+class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
     def __init__(
         self,
         dataset: AsyncDataset[np.ndarray],

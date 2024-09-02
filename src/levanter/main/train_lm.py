@@ -200,15 +200,6 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # engine.add_hook(
-        #     callbacks.compute_and_visualize_log_probs(
-        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-        #     ),
-        #     every=config.trainer.steps_per_eval,
-        # )
-        #
-        # data loader. may need to seek to the right place if we're resuming
-
         train_loader = trainer.new_loader(train_dataset, Batch).iter_from_step(state.step)
 
         ## OK, actually run training!

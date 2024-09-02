@@ -118,7 +118,7 @@ class AsyncDataset(DatasetBase[T_co]):
     def as_async_dataset(self) -> "AsyncDataset[T_co]":
         return self
 
-    def map(self, fn: Callable[[T_co], U]) -> "MappedAsyncDataset[U]":
+    def map(self, fn: Callable[[T_co], U]) -> "MappedAsyncDataset[T_co, U]":
         return MappedAsyncDataset(self, fn)
 
 
@@ -399,11 +399,11 @@ class _Unspecified:
 _UNSPECIFIED = _Unspecified()
 
 
-class MappedAsyncDataset(AsyncDataset[U]):
+class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
     def __init__(
         self,
-        dataset: AsyncDataset[T_co],
-        fn: Callable[[T_co], U] | Callable[[T_co, Optional[PRNGKey]], U],
+        dataset: AsyncDataset[T],
+        fn: Callable[[T], U] | Callable[[T, Optional[PRNGKey]], U],
         *,
         key: Optional[PRNGKey] | _Unspecified = _UNSPECIFIED,
     ):

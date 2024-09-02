@@ -1,4 +1,5 @@
 import abc
+import functools
 import logging
 import os
 from dataclasses import dataclass
@@ -7,7 +8,9 @@ from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
+import equinox as eqx
 import fsspec
+import jax
 import numpy as np
 from jaxtyping import PRNGKeyArray
 from typing_extensions import TypedDict
@@ -25,7 +28,9 @@ from levanter.data.text import BatchTokenizer
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
 from levanter.newdata import AsyncDataset
+from levanter.newdata.dataset import MappedAsyncDataset
 from levanter.newstore.cache import TreeCache, build_or_load_cache
+from levanter.utils.jax_utils import local_cpu_mesh
 
 
 silence_transformer_nag()  # noqa
@@ -424,10 +429,10 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
         )
 
 
-class AudioTextDataset(AsyncDataset[AudioTextExample]):
+class AudioTextDataset(MappedAsyncDataset[AudioTextDict, AudioTextExample]):
     def __init__(
         self,
-        dataset: AsyncDataset[AudioTextExample],
+        dataset: AsyncDataset[AudioTextDict],
         TextPos: Axis,
         AudioPos: hax.AxisSelector,
         KPos: Axis,
@@ -441,14 +446,19 @@ class AudioTextDataset(AsyncDataset[AudioTextExample]):
         self.key = key
         self.ignore_id = ignore_index
 
-    # @functools.partial(eqx.filter_jit, out_shardings=sharding)
-    # def _convert_example(self, inputs: AudioTextDict) -> "AudioTextExample":
-    #     tokens = hax.named(inputs["input_ids"], self.TextPos)
-    #     audio_features = hax.named(inputs["input_features"], self.AudioPos)
-    # return AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        @functools.partial(eqx.filter_jit, out_shardings=sharding)
+        def _convert_example(inputs: AudioTextDict) -> "AudioTextExample":
+            with local_cpu_mesh():
+                tokens = hax.named(inputs["input_ids"], self.TextPos)
+                audio_features = hax.named(inputs["input_features"], self.AudioPos)
+                return AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
+
+        super().__init__(self.dataset, _convert_example)
 
     # def __iter__(self) -> Iterator[AudioTextExample]:
-    #     sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+    #
     #
     #     with use_cpu_device():
     #

@@ -113,7 +113,7 @@ def main(config: TrainASRConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        eval_datasets = config.data.validation_sets(config.batch_size)
+        eval_datasets = config.data.validation_sets()
         train_dataset = AudioTextDataset(
             config.data.train_set(config.batch_size),
             Pos,
@@ -191,16 +191,7 @@ def main(config: TrainASRConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
-
-        if int(state.step) > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader)
+        train_loader = trainer.new_loader(train_dataset, Batch).iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)
