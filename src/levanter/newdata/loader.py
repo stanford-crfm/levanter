@@ -111,7 +111,7 @@ class DataLoaderIterator(Iterator[Ex]):
         out = next(self._batches)
         time_end = time.time()
         if (time_end - time_start) > 0.5:
-            logger.info(f"Slow data fetch: {time_end - time_start:.3f}")
+            logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}")
         return out
 
     async def _produce_batches(self):
