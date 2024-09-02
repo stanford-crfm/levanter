@@ -550,7 +550,7 @@ async def test_mixed_order_batches_multiple_shards():
 
 
 @pytest.mark.ray
-def test_cache_simple():
+def test_full_end_to_end_cache_simple():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
         ray_ds = build_or_load_cache(

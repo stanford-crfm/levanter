@@ -50,7 +50,7 @@ AudioTextDict = TypedDict(
 )
 
 AudioTextDict_exemplar = {
-    "input_features": np.zeros((0,0), dtype=np.float32),
+    "input_features": np.zeros((1, 1), dtype=np.float32),
     "input_ids": np.zeros((0,), dtype=np.int32),
     "attention_mask": np.zeros((0,), dtype=np.int32),
 }
@@ -99,24 +99,28 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         uniq_sampling_rates: set[int] = set(sampling_rates)
         assert len(uniq_sampling_rates) == 1, "Sampling rates should be standardized"
         audio_features: BatchFeature = self.feature_extractor(audio_batch, sampling_rate=uniq_sampling_rates.pop())
-        text_features: BatchEncoding = self.bt(text_batch)
-        combined_features = audio_features | text_features
-        combined_features["input_ids"] = np.array(combined_features["input_ids"], dtype=np.int32)
-        combined_features["attention_mask"] = np.array(combined_features["attention_mask"], dtype=np.int32)
-        a_features = np.array(combined_features["input_features"])
-        combined_features["input_features"] = a_features
+        audio_features["input_features"] = np.array(audio_features["input_features"])
+        text_features: list[dict] = self.bt(text_batch)
+        text_features = [
+            {k: np.array(tf[k], dtype=np.int32) for k in ["input_ids", "attention_mask"]} for tf in text_features
+        ]
+
+        # debatch and return
         out = []
-        for i in range(len(audio_batch)):
-            out.append({k: v[i] for k, v in combined_features.items()})
+        for i, text in enumerate(text_features):
+            out.append(
+                {
+                    "input_features": audio_features["input_features"][i],
+                    "input_ids": text["input_ids"],
+                    "attention_mask": text["attention_mask"],
+                }
+            )
+
         return out  # type: ignore
 
     @property
     def output_exemplar(self):
-        return {
-            "input_features": np.zeros((0,), dtype=np.float32),
-            "input_ids": np.zeros((0,), dtype=np.int32),
-            "attention_mask": np.zeros((0,), dtype=np.int32),
-        }
+        return AudioTextDict_exemplar
 
     @property
     def num_cpus(self) -> int:
@@ -215,6 +219,7 @@ class AudioTaskConfig(abc.ABC):
     cache_dir: str = "cache/"
     enforce_bos: bool = True  # whether to append bos even if the tokenizer doesn't
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
+    max_length: int = 448
 
     @cached_property
     def the_processor(self) -> ProcessorMixin:
@@ -232,7 +237,7 @@ class AudioTaskConfig(abc.ABC):
             return load_tokenizer(self.tokenizer)
 
     @cached_property
-    def the_feature_extractor(self) -> PreTrainedTokenizerBase:
+    def the_feature_extractor(self) -> SequenceFeatureExtractor:
         return self.the_processor.feature_extractor
 
     @abc.abstractmethod
@@ -243,7 +248,7 @@ class AudioTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def validation_sets(
-        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         pass
 
@@ -288,6 +293,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         monitors=None,
         await_finished=True,
         override_resources=None,
+        max_length=448,
     ) -> "ProcessedAudioCache":
         bp = BatchAudioProcessor(
             processor,
@@ -296,6 +302,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
             enforce_eos=enforce_eos,
             batch_size=batch_size,
             override_resources=override_resources,
+            max_length=max_length,
         )
         monitors = monitors or []
         cache = build_or_load_cache(
@@ -346,16 +353,12 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             raise ValueError("No training set!")
         return ds
 
-    def validation_set(
-        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[ProcessedAudioCache]:
-        return self.build_or_load_cache(self.validation_split, batch_size=batch_size, monitors=monitors)
+    def validation_set(self, monitors: Union[bool, List[MetricsMonitor]] = True) -> Optional[ProcessedAudioCache]:
+        return self.build_or_load_cache(self.validation_split, monitors=monitors)
 
-    def validation_sets(
-        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ProcessedAudioCache]:
+    def validation_sets(self, monitors: Union[bool, List[MetricsMonitor]] = True) -> Mapping[str, ProcessedAudioCache]:
         if self._has_validation_set:
-            validation_set = self.validation_set(batch_size, monitors)
+            validation_set = self.validation_set(monitors)
             if validation_set is not None:
                 return {"": validation_set}
         return {}
@@ -417,6 +420,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             batch_size=batch_size,
             monitors=monitors,
             await_finished=(split == "validation"),
+            max_length=self.max_length,
         )
 
 

@@ -170,7 +170,6 @@ class JaggedArrayStore:
 
     @staticmethod
     def open(path: Optional[str], *, mode="a", item_rank=1, dtype) -> "JaggedArrayStore":
-        assert item_rank == 1
         offset_path = _extend_path(path, "offsets")
         offsets = _ts_open_sync(offset_path, jnp.int64, [1], mode=mode)
 
@@ -404,6 +403,24 @@ class JaggedArrayStore:
 
         return data
 
+    def get_batch_sync(self, indices: Sequence[int]) -> Sequence[jax.Array]:
+        all_indices = self._bounds_for_rows_batch(indices)
+
+        with ts.Batch():
+            # shapes, if applicable
+            if self.shapes is not None:
+                shapes_futs = [self.shapes[i].read() for i in indices]
+
+            data_futs = [self.data[start:stop].read() for start, stop in all_indices]
+
+        data = [d.result() for d in data_futs]
+
+        if self.shapes is not None:
+            shapes = [s.result() for s in shapes_futs]  # noqa
+            data = [d.reshape(*s, -1) for d, s in zip(data, shapes)]
+
+        return data
+
     def __getitem__(self, item):
         if isinstance(item, slice):
             # raise NotImplementedError("Slicing not supported")
@@ -450,6 +467,30 @@ class JaggedArrayStore:
             offsets[0] = 0
 
         return data_start, data_stop, offsets
+
+    def _bounds_for_rows_batch(self, indices):
+        num_rows = self.num_rows
+        offsets_futs: list = []
+
+        zero_pos = None
+
+        with ts.Batch():
+            for index in indices:
+                if index >= num_rows or index < 0:
+                    raise IndexError("Index out of bounds")
+                offsets = self.offsets[index : index + 2].read()
+                offsets_futs.append(offsets)
+
+                if index == 0:
+                    zero_pos = len(offsets_futs) - 1
+
+        offsets = [fut.result() for fut in offsets_futs]
+        offsets = [(offset[0], offset[-1]) for offset in offsets]
+
+        if zero_pos is not None:
+            offsets[zero_pos] = [0, offsets[zero_pos][1]]
+
+        return offsets
 
     async def _bounds_for_rows_async(self, start, stop):
         offsets = await self.offsets[start : stop + 1].read()
