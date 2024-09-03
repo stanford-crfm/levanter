@@ -25,7 +25,7 @@ from levanter.lora import (
     save_peft_checkpoint_callback,
 )
 from levanter.models.llama import LlamaConfig
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
@@ -155,7 +155,7 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 

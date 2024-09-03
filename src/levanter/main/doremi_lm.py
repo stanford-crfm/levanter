@@ -13,7 +13,7 @@ from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data.text import CausalLmDataset, LMMixtureDatasetConfig
 from levanter.doremi import DoReMiConfig, estimate_mixture_weights
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import TrainerConfig
 from levanter.utils.tree_utils import inference_mode
@@ -77,6 +77,8 @@ def main(config: TrainLmConfig):
 
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
+    loss_function = compute_next_token_loss
+
     with config.trainer.device_mesh:
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
@@ -119,6 +121,7 @@ def main(config: TrainLmConfig):
         }
 
         mixture_weights = estimate_mixture_weights(
+            loss_function,
             proxy_model,
             ref=ref_model,
             data_sources=train_datasets,

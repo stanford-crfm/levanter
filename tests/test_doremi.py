@@ -113,6 +113,7 @@ def test_estimate_mixture_weights():
             (),
             use_bias=True,
             key=model_key,
+            out_first=True,
         )
 
     m1, loss1 = fit_to_dataset(ds1)

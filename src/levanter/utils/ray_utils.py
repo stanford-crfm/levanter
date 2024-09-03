@@ -91,4 +91,3 @@ def log_failures_to(parent):
         yield
     except Exception as e:
         parent._child_failed.remote(current_actor_handle(), ser_exc_info(e))
-        raise e

@@ -18,7 +18,7 @@ from levanter.data import ShardableDataset
 from levanter.data.mixture import MixtureDataset
 from levanter.tracker import capture_time
 from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
-from levanter.types import ComputeLossFunction, ModuleComputeLoss
+from levanter.types import ComputeLossFunction
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -53,6 +53,7 @@ DEFAULT_DOREMI_TRAINER_CONFIG = TrainerConfig(
 
 
 def estimate_mixture_weights(
+    loss_fn: ComputeLossFunction[M, T],
     initial_proxy: M,
     ref: M,
     data_sources: dict[str, ShardableDataset[T]],
@@ -61,7 +62,6 @@ def estimate_mixture_weights(
     validation_sets: Optional[dict[str, ShardableDataset[T]]] = None,
     trainer_config: TrainerConfig = DEFAULT_DOREMI_TRAINER_CONFIG,
     optimizer: optax.GradientTransformation = optax.adamw(1e-3),
-    loss_fn: ComputeLossFunction[M, T] = ModuleComputeLoss(),
     domain_weight_step_size: float = 1.0,
     smoothing: float = 1e-3,
     key: PRNGKeyArray,
@@ -92,7 +92,7 @@ def estimate_mixture_weights(
     Domain = hax.Axis("domain", len(domain_indices))
     initial_alpha = hax.ones(Domain) / Domain.size
 
-    trainer = Trainer(trainer_config, optimizer)
+    trainer = Trainer(trainer_config, optimizer, loss_fn)
     with trainer:
         ref = _prepare_ref_model(ref, trainer_config)
 

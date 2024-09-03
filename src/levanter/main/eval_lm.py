@@ -19,7 +19,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
@@ -75,7 +75,7 @@ def main(config: EvalLmConfig):
         def compute_loss(model: LmHeadModel, example: LmExample):
             model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
-            return model.compute_loss(example, key=None)
+            return compute_next_token_loss(model, example, key=None)
 
         total = config.trainer.max_eval_batches
 

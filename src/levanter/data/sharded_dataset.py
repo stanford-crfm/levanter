@@ -69,7 +69,6 @@ class ShardedDataset(Dataset[T_co]):
         rows_per_chunk: Optional[int] = None,
         await_finished: bool = True,
         monitors: Optional[Sequence["MetricsMonitor"]] = None,
-        randomize_shards: bool = False,
     ) -> ShardableDataset[dict]:
         """
         Constructs a shard cache version of this dataset using Ray.
@@ -101,7 +100,6 @@ class ShardedDataset(Dataset[T_co]):
             rows_per_chunk=rows_per_chunk,
             await_finished=await_finished,
             monitors=monitors,
-            randomize_shards=randomize_shards,
         )
         return DictCacheDataset(cache)
 
@@ -208,7 +206,10 @@ class TextUrlDataset(ShardedDataset[str]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
-        with fsspec.open(url, "r", compression="infer") as f:
+        compression = "infer"
+        if url.endswith(".zstd"):  # hacky way to detect zstd
+            compression = "zstd"
+        with fsspec.open(url, "r", compression=compression) as f:
             format = _sniff_format_for_dataset(url)
             match format:
                 case ".jsonl":
