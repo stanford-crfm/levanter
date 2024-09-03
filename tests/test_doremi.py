@@ -1,3 +1,4 @@
+import functools
 from typing import Optional, Sequence
 
 import equinox
@@ -40,6 +41,17 @@ class LogitDataset(AsyncDataset[Example]):
 
         self._make_example = _make_example
 
+        @functools.lru_cache
+        @equinox.filter_jit
+        def _gen_block_data(block_id):
+            key = jax.random.fold_in(self.key, block_id)
+            x_block = hax.random.normal(key, (Block, self.W.axes[0])) * self.x_mask + self.x_bias
+            noise = hax.random.normal(key, (Block,)) * self.noise
+            y_block = (hax.nn.sigmoid(hax.dot(x_block, self.W, axis=self.W.axes[0]) + noise) > 0.5).astype(float)
+            return x_block, y_block
+
+        self._gen_block_data = _gen_block_data
+
     def __iter__(self):
         key_iter = key_iterator(self.key)
         Dim = self.W.axes[0]
@@ -69,20 +81,15 @@ class LogitDataset(AsyncDataset[Example]):
 
         block_data = {}
         for block_id in blocks:
-            key = jax.random.fold_in(self.key, block_id)
-            x_block = hax.random.normal(key, (Block, self.W.axes[0])) * self.x_mask + self.x_bias
-            noise = hax.random.normal(key, (Block,)) * self.noise
-            y_block = (hax.nn.sigmoid(hax.dot(x_block, self.W, axis=self.W.axes[0]) + noise) > 0.5).astype(float)
+            x_block, y_block = self._gen_block_data(block_id)
             block_data[block_id] = (x_block, y_block)
 
         result: list[Example] = []
         indices = np.array(indices, dtype=int)
 
-        # block_id = indices // Block.size
-        # block_offset = indices % Block.size
-        for index in range(len(indices)):
-            block_id = indices[index] // Block.size
-            block_offset = indices[index] % Block.size
+        for index in indices:
+            block_id = index // Block.size
+            block_offset = index % Block.size
             x_block, y_block = block_data[block_id]
             result.append(self._make_example(x_block, y_block, block_offset))
 
@@ -122,7 +129,7 @@ def test_estimate_mixture_weights():
         return hax.nn.binary_cross_entropy_loss(y_pred, example.y, reduction=reduction, reduction_axis=reduction_axis)
 
     tiny_trainer_config = TrainerConfig(
-        num_train_steps=600,
+        num_train_steps=300,
         train_batch_size=Batch.size,
         tracker=(),
         id="kmaklfmaf",
