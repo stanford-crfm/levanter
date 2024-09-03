@@ -12,6 +12,7 @@ from jax.random import PRNGKey
 
 from levanter.newdata.prp import Permutation
 from levanter.utils import thread_utils
+from levanter.utils.thread_utils import blocking_wait
 
 
 logger = logging.getLogger(__name__)
@@ -279,14 +280,29 @@ class PermutationDataset(AsyncDataset[T_co]):
         self.dataset = dataset
 
     @staticmethod
-    async def from_dataset(
+    async def from_dataset_async(
         dataset: AsyncDataset[T_co] | Dataset[T_co], key: jax.random.PRNGKey
     ) -> "PermutationDataset[T_co]":
         if isinstance(dataset, AsyncDataset) and not dataset.is_finite():
             raise ValueError("PermutationDataset requires a dataset with an (eventual) known length")
 
-        dataset = dataset if isinstance(dataset, AsyncDataset) else AsyncifiedDataset(dataset)
+        dataset = dataset.as_async_dataset()
         length = await dataset.async_len()
+        return PermutationDataset(dataset, Permutation(length, key))
+
+    @staticmethod
+    def from_dataset(
+        dataset: AsyncDataset[T_co] | Dataset[T_co], key: jax.random.PRNGKey
+    ) -> "PermutationDataset[T_co]":
+        if isinstance(dataset, AsyncDataset) and not dataset.is_finite():
+            raise ValueError("PermutationDataset requires a dataset with an (eventual) known length")
+
+        if isinstance(dataset, Dataset):
+            length = len(dataset)
+        else:
+            length = blocking_wait(dataset.async_len())
+
+        dataset = dataset.as_async_dataset()
         return PermutationDataset(dataset, Permutation(length, key))
 
     async def async_len(self) -> int:
