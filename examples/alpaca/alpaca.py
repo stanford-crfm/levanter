@@ -15,9 +15,9 @@ import haliax as hax
 
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
+from levanter.data import PermutationDataset
 from levanter.data.sharded_datasource import JsonDataSource, JsonlDataSource, WrappedHFDataSource
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
-from levanter.newdata import PermutationDataset
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils import fsspec_utils

@@ -14,6 +14,7 @@ import transformers
 import haliax as hax
 
 import levanter
+from levanter.data import PermutationDataset
 from levanter.data.sharded_datasource import WrappedHFDataSource
 from levanter.lora import (
     LoraConfig,
@@ -24,7 +25,6 @@ from levanter.lora import (
 )
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
-from levanter.newdata import PermutationDataset
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer

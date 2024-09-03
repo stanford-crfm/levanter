@@ -23,7 +23,7 @@ import numpy as np
 
 from levanter.utils import fsspec_utils
 
-from ..newdata import AsyncDataset
+from ..data import AsyncDataset
 from ._preprocessor import (
     BatchResult,
     _BatchMapTransform,

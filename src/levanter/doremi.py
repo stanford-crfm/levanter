@@ -14,8 +14,8 @@ from haliax.types import IntScalar
 import levanter.tracker
 from levanter.callbacks import eval_loss_loop
 from levanter.checkpoint import load_checkpoint_or_initialize
-from levanter.newdata.dataset import AsyncDataset, MappedAsyncDataset
-from levanter.newdata.mixture import MixtureDataset
+from levanter.data import AsyncDataset, MappedAsyncDataset
+from levanter.data.mixture import MixtureDataset
 from levanter.tracker import capture_time
 from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
 from levanter.types import ComputeLossFunction

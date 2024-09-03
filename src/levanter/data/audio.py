@@ -19,7 +19,9 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.compat.hf_checkpoints import load_processor, load_tokenizer
+from levanter.data import AsyncDataset
 from levanter.data._preprocessor import BatchProcessor
+from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor
 from levanter.data.sharded_datasource import AudioTextUrlDataSource, ShardedDataSource, WrappedHFDataSource
 from levanter.data.text import BatchTokenizer
@@ -27,8 +29,6 @@ from levanter.data.text import BatchTokenizer
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
-from levanter.newdata import AsyncDataset
-from levanter.newdata.dataset import MappedAsyncDataset
 from levanter.store.cache import TreeCache, build_or_load_cache
 from levanter.utils.jax_utils import local_cpu_mesh
 

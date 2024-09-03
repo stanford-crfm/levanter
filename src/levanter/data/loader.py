@@ -17,8 +17,8 @@ from haliax import is_named_array
 from haliax._src.util import index_where
 from haliax.partitioning import ResourceMapping
 
+from levanter.data.dataset import AsyncDataset
 from levanter.data.utils import batched
-from levanter.newdata.dataset import AsyncDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
 from levanter.utils.thread_utils import blocking_wait
@@ -42,6 +42,8 @@ class DataLoader(Iterable[Ex]):
         prefetch_size: int = 32,
     ):
         """
+
+        TODO: document this
 
         Args:
             Batch (hax.Axis): The batch axis

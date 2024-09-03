@@ -14,9 +14,9 @@ import haliax as hax
 from haliax.partitioning import ResourceMapping
 
 import levanter.tracker
+from levanter.data import AsyncDataset, DataLoader, Dataset
 from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
-from levanter.newdata import AsyncDataset, DataLoader, Dataset
 from levanter.trainer import StepInfo
 from levanter.utils.stat_utils import RunningMean
 from levanter.utils.tree_utils import inference_mode

@@ -7,8 +7,8 @@ import jax.random
 import numpy as np
 import tensorstore as ts
 
-from levanter.newdata import PermutationDataset
-from levanter.newdata.new_text import TokenSeqDataset
+from levanter.data import PermutationDataset
+from levanter.data.text import TokenSeqDataset
 from levanter.store.cache import LEDGER_FILE_NAME, CacheLedger, TreeCache, _serialize_json_and_commit
 from levanter.store.tree_store import TreeStoreBuilder
 from levanter.tracker import capture_time

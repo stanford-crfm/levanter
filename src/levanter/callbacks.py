@@ -15,8 +15,8 @@ import jax
 from tqdm import tqdm
 
 import levanter.tracker
+from levanter.data import DataLoader
 from levanter.logging import save_xla_dumps_to_wandb
-from levanter.newdata import DataLoader
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
 from levanter.trainer import StepInfo

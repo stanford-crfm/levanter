@@ -12,8 +12,8 @@ import haliax as hax
 
 import levanter.tracker
 from levanter.callbacks import eval_loss_loop
-from levanter.newdata import AsyncDataset
-from levanter.newdata.mixture import MixtureDataset
+from levanter.data import AsyncDataset
+from levanter.data.mixture import MixtureDataset
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import key_iterator
 from levanter.utils.py_utils import non_caching_cycle

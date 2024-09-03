@@ -3,14 +3,9 @@ import asyncio
 import jax.random
 import pytest
 
-from levanter.newdata.dataset import (
-    AsyncifiedDataset,
-    EraShufflingDataset,
-    ListAsyncDataset,
-    PermutationDataset,
-    SequenceDataset,
-)
-from levanter.newdata.prp import Permutation
+from levanter.data import EraShufflingDataset, PermutationDataset
+from levanter.data._prp import Permutation
+from levanter.data.dataset import AsyncifiedDataset, ListAsyncDataset, SequenceDataset
 
 
 @pytest.mark.asyncio

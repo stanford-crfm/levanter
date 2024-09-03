@@ -10,7 +10,7 @@ from jaxtyping import PRNGKeyArray
 
 from haliax.util import StringHolderEnum
 
-from levanter.newdata import AsyncDataset
+from levanter.data import AsyncDataset
 from levanter.utils.index import Index
 from levanter.utils.thread_utils import future_from_value
 

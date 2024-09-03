@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import pytest
 
-from levanter.newdata.prp import Permutation
+from levanter.data._prp import Permutation
 
 
 def test_permutation_creates_valid_instance():

@@ -17,7 +17,7 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
 
-from levanter.newdata.dataset import AsyncDataset, T_co
+from levanter.data.dataset import AsyncDataset, T_co
 
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data._queue import (
