@@ -9,9 +9,8 @@ import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
 
-from levanter.data.loader import check_sharded_consistency
 from levanter.newdata.dataset import AsyncDataset, SequenceDataset, T_co
-from levanter.newdata.loader import DataLoader
+from levanter.newdata.loader import DataLoader, check_sharded_consistency
 
 from .test_utils import skip_if_not_enough_devices
 

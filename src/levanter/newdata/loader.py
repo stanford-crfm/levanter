@@ -1,17 +1,22 @@
+import functools
 import logging
 import time
-from typing import Iterable, Iterator, Optional, TypeVar
+from collections import defaultdict
+from typing import Iterable, Iterator, Optional, Tuple, TypeVar
 
 import jax
 from jax import Array
+from jax import numpy as jnp
+from jax import tree_util as jtu
+from jax.experimental import multihost_utils
 from jax.sharding import Mesh, PartitionSpec
+from jaxtyping import PyTree
 
 import haliax as hax
 from haliax import is_named_array
 from haliax._src.util import index_where
 from haliax.partitioning import ResourceMapping
 
-from levanter.data.loader import _stack_tree
 from levanter.data.utils import batched
 from levanter.newdata.dataset import AsyncDataset
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
@@ -245,3 +250,76 @@ def _pspec_for(self, shape_spec: ShapeSpec | NamedShapeSpec) -> PartitionSpec:
         return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
     else:
         return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
+
+
+@functools.partial(jax.jit, static_argnums=(0,))
+def _stack_tree(batch_name, individual_datums):
+    def _stack_leaves_unchecked(*leaves):
+        if is_named_array(leaves[0]):
+            return hax.stack(batch_name, leaves)
+        else:
+            return jnp.stack(leaves)
+
+    return jax.tree_map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
+
+
+def check_sharded_consistency(tree: PyTree, check_disjoint_indices_are_different: bool = False):
+    """Checks the following consistency conditions on an array:
+    - all replicas have the same data
+    - if check_disjoint_indices_are_different is True, then all shards with disjoint indices have different data
+    """
+    # index is a tuple[slice, ...], slices are obnoxiously not hashable so we have to convert to tuple
+
+    def check_array(array):
+        def _to_tuple(index: Tuple[slice, ...]) -> Tuple[Tuple[int, int], ...]:
+            my_indices: Tuple[Tuple[int, int], ...] = tuple(
+                s.indices(axis_size)[0:2] for axis_size, s in zip(array.shape, index)
+            )
+
+            return my_indices
+
+        replicas_by_index = defaultdict(list)
+        for shard in array.global_shards:
+            replicas_by_index[_to_tuple(shard.index)].append(shard)
+
+        # global shards is not necessarily sorted consistently, so we have to sort the indices
+        sorted_indices = sorted(replicas_by_index.keys())
+
+        # ok now get canonical versions of each index
+        replica_0_arrays = {}
+
+        for index in sorted_indices:
+            shards = replicas_by_index[index]
+            try:
+                leader = next(s for s in shards if s.replica_id == 0)
+            except StopIteration:
+                raise ValueError("No replica 0 for index", index)
+
+            data = leader.data
+            if data is None:
+                shard_shape = [s[1] - s[0] for s in index]
+                data = jnp.zeros(shard_shape, dtype=array.dtype)
+
+            replica_0_array = multihost_utils.broadcast_one_to_all(data, is_source=leader.data is not None)
+            replica_0_arrays[index] = replica_0_array
+
+        for shard in array.addressable_shards:
+            replica_0_array = replica_0_arrays[_to_tuple(shard.index)]
+            assert shard.data is not None
+
+            if not jnp.array_equal(shard.data, replica_0_array, equal_nan=True):
+                raise ValueError("Shard data does not match replica 0 data", shard, replica_0_array)
+
+            if check_disjoint_indices_are_different:
+                for other_index, other_array in replica_0_arrays.items():
+                    if other_index == _to_tuple(shard.index):
+                        continue
+
+                    if shard.index != other_index:
+                        if jnp.array_equal(shard.data, other_array, equal_nan=True):
+                            raise ValueError(
+                                "Shard data is the same as another shard with disjoint indices", shard, other_array
+                            )
+
+    for leaf in jtu.tree_leaves(tree):
+        check_array(leaf)
