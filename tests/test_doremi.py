@@ -1,6 +1,9 @@
+from typing import Optional, Sequence
+
 import equinox
 import jax
 import jax.random
+import numpy as np
 import optax
 import pytest
 
@@ -8,8 +11,8 @@ import haliax as hax
 
 import levanter.tracker
 from levanter.callbacks import eval_loss_loop
-from levanter.data.dataset import ShardableDataset
-from levanter.data.mixture import MixtureDataset
+from levanter.newdata import AsyncDataset
+from levanter.newdata.mixture import MixtureDataset
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import key_iterator
 from levanter.utils.py_utils import non_caching_cycle
@@ -23,7 +26,7 @@ class Example(equinox.Module):
 Block = hax.Axis("Block", 1024)
 
 
-class LogitDataset(ShardableDataset[Example]):
+class LogitDataset(AsyncDataset[Example]):
     def __init__(self, W, noise, x_mask, x_bias, *, key):
         self.W = W
         self.noise = noise
@@ -31,18 +34,59 @@ class LogitDataset(ShardableDataset[Example]):
         self.x_bias = x_bias
         self.key = key
 
+        @equinox.filter_jit
+        def _make_example(x_block, y_block, offset):
+            return Example(x=x_block[Block, offset], y=y_block[Block, offset])
+
+        self._make_example = _make_example
+
     def __iter__(self):
         key_iter = key_iterator(self.key)
         Dim = self.W.axes[0]
         while True:
-            x_block = hax.random.normal(next(key_iter), (Block, Dim)) * self.x_mask + self.x_bias
-            noise = hax.random.normal(next(key_iter), (Block,)) * self.noise
+            kk = next(key_iter)
+            this_key_iter = key_iterator(kk)
+            x_block = hax.random.normal(next(this_key_iter), (Block, Dim)) * self.x_mask + self.x_bias
+            noise = hax.random.normal(next(this_key_iter), (Block,)) * self.noise
             y_block = (hax.nn.sigmoid(hax.dot(x_block, self.W, axis=Dim) + noise) > 0.5).astype(float)
             for i in range(Block.size):
-                yield Example(x=x_block[Block, i], y=y_block[Block, i])
+                yield self._make_example(x_block, y_block, i)
 
-    def shard(self, shard_id: int, num_shards: int):
-        return LogitDataset(self.W, self.noise, self.x_mask, self.x_bias, key=jax.random.fold_in(self.key, shard_id))
+    async def async_len(self) -> int:
+        raise ValueError("Infinitely long dataset")
+
+    async def length_is_known(self) -> bool:
+        return False
+
+    def is_finite(self) -> bool:
+        return False
+
+    async def current_len(self) -> Optional[int]:
+        return None
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[Example]:
+        blocks = set(i // Block.size for i in indices)
+
+        block_data = {}
+        for block_id in blocks:
+            key = jax.random.fold_in(self.key, block_id)
+            x_block = hax.random.normal(key, (Block, self.W.axes[0])) * self.x_mask + self.x_bias
+            noise = hax.random.normal(key, (Block,)) * self.noise
+            y_block = (hax.nn.sigmoid(hax.dot(x_block, self.W, axis=self.W.axes[0]) + noise) > 0.5).astype(float)
+            block_data[block_id] = (x_block, y_block)
+
+        result: list[Example] = []
+        indices = np.array(indices, dtype=int)
+
+        # block_id = indices // Block.size
+        # block_offset = indices % Block.size
+        for index in range(len(indices)):
+            block_id = indices[index] // Block.size
+            block_offset = indices[index] % Block.size
+            x_block, y_block = block_data[block_id]
+            result.append(self._make_example(x_block, y_block, block_offset))
+
+        return result
 
 
 @pytest.mark.slow
@@ -89,11 +133,11 @@ def test_estimate_mixture_weights():
 
     trainer = Trainer(tiny_trainer_config, optimizer, compute_loss_fn)
 
-    def fit_to_dataset(dataset):
+    def fit_to_dataset(dataset: AsyncDataset):
         initial_model = init_model()
         with trainer:
             state = trainer.initial_state(next(keys), model=initial_model)
-            loader = trainer.replicated_loader(dataset, Batch)
+            loader = trainer.new_loader(dataset, Batch)
             loader = non_caching_cycle(loader)
 
             loss = 0.0
@@ -125,19 +169,13 @@ def test_estimate_mixture_weights():
     datasets = {"d1": ds1, "d2": ds2, "d3": ds3}
 
     ref_model, ref_loss = fit_to_dataset(
-        MixtureDataset(datasets, weights={k: 1 / 3.0 for k in datasets.keys()}, key=next(keys))
+        MixtureDataset(datasets, weights={k: 1 / 3.0 for k in datasets.keys()}, key=next(keys), block_size=2048)
     )
 
     # let's see the loss on each dataset
-    l1_ref = eval_loss_loop(
-        compute_loss_fn, ref_model, trainer.replicated_loader(ds1, Batch), max_batches=10, name="d1"
-    )
-    l2_ref = eval_loss_loop(
-        compute_loss_fn, ref_model, trainer.replicated_loader(ds2, Batch), max_batches=10, name="d2"
-    )
-    l3_ref = eval_loss_loop(
-        compute_loss_fn, ref_model, trainer.replicated_loader(ds3, Batch), max_batches=10, name="d3"
-    )
+    l1_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.new_loader(ds1, Batch), max_batches=10, name="d1")
+    l2_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.new_loader(ds2, Batch), max_batches=10, name="d2")
+    l3_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.new_loader(ds3, Batch), max_batches=10, name="d3")
 
     assert l3_ref < l1_ref < l2_ref
 
