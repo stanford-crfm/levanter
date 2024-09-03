@@ -2,6 +2,7 @@ import json
 import os
 
 import numpy
+import numpy as np
 
 from levanter.data.audio import AudioIODatasetConfig
 from levanter.data.text import LMDatasetConfig
@@ -55,7 +56,12 @@ def construct_small_data_cache(
     for split in ["train", "validation"]:
         with SerialCacheWriter(f"{path}/cache/{split}", exemplar) as writer:
             for shard in range(num_shards):
-                writer.write_batch([{"input_ids": rng.integers(0, vocab_size, size=(doc_len,))} for _ in range(chunk_size)])
+                writer.write_batch(
+                    [
+                        {"input_ids": rng.integers(0, vocab_size, size=(doc_len,), dtype=np.int32)}
+                        for _ in range(chunk_size)
+                    ]
+                )
         caches[split] = writer.result()
 
     config = LMDatasetConfig(
