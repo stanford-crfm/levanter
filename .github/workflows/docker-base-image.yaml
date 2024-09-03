@@ -1,4 +1,4 @@
-name: Build and Push Docker TPU Base Image
+name: Build and Push Docker TPU Images
 
 on:
   push:
@@ -38,3 +38,7 @@ jobs:
       - name: Build and Push Docker image
         run: |
           docker buildx build --file docker/tpu/Dockerfile.base --tag ghcr.io/${{ github.repository_owner }}/levanter-base:latest --tag ghcr.io/${{ github.repository_owner }}/levanter-base:${{ env.DATE }} --push .
+
+      - name: Build and Push Incremental Docker image
+        run: |
+          docker buildx build --file docker/tpu/Dockerfile.incremental --tag ghcr.io/${{ github.repository_owner }}/levanter-tpu:latest --tag ghcr.io/${{ github.repository_owner }}/levanter-tpu:${{ env.DATE }} --push .

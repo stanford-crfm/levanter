@@ -14,6 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
+from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
@@ -51,6 +52,8 @@ class TrainLmConfig:
 
     update_hessian_steps: int = 10
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
+    initialize_from_checkpoint_path: Optional[str] = None
+    # if provided, will initialize from this checkpoint, used for llama style data mixture
 
 
 def main(config: TrainLmConfig):
@@ -128,6 +131,11 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
+        seek_dataloader = True
+        if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
+            state = load_checkpoint(state, config.initialize_from_checkpoint_path)
+            seek_dataloader = False
+
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
@@ -200,7 +208,11 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        train_loader = trainer.new_loader(train_dataset, Batch).iter_from_step(state.step)
+        train_loader = trainer.new_loader(train_dataset, Batch)
+        if seek_dataloader:
+            train_loader = train_loader.iter_from_step(state.step)
+        else:
+            train_loader = iter(train_loader)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

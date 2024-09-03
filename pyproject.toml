@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "levanter"
 version = "1.1"
 authors = [
-  { name="David Hall", email="dlwh@cs.stanford.edu" },
-  { name="Ivan Zhou", email="ivanz@stanford.edu" }
+    { name = "David Hall", email = "dlwh@cs.stanford.edu" },
+    { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
 ]
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
@@ -48,7 +48,7 @@ dependencies = [
     "pydantic<3",
     "rich~=13.0",
     "filelock~=3.13",
-#    "ai2-olmo",
+    #    "ai2-olmo",
     "async-lru~=2.0",
 ]
 
@@ -72,7 +72,14 @@ ensure_newline_before_comments = true
 line_length = 119
 src_paths = ["src", "tests"]
 known_haliax = ["haliax"]
-sections = ["FUTURE", "STDLIB", "THIRDPARTY", "HALIAX", "FIRSTPARTY", "LOCALFOLDER"]
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "THIRDPARTY",
+    "HALIAX",
+    "FIRSTPARTY",
+    "LOCALFOLDER",
+]
 
 [tool.mypy]
 python_version = "3.10"
@@ -96,7 +103,7 @@ test = [
     "soundfile",
     "librosa",
     "pytest-forked",
-    "pytest-asyncio"
+    "pytest-asyncio",
 ]
 
 [tool.setuptools.packages.find]

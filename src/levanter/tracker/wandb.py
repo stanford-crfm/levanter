@@ -182,9 +182,9 @@ class WandbConfig(TrackerConfig):
             if wandb.run is not None:
                 wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
 
-        wandb.summary["num_devices"] = jax.device_count()
-        wandb.summary["num_hosts"] = jax.process_count()
-        wandb.summary["backend"] = jax.default_backend()
+        wandb.summary["num_devices"] = jax.device_count()  # type: ignore
+        wandb.summary["num_hosts"] = jax.process_count()  # type: ignore
+        wandb.summary["backend"] = jax.default_backend()  # type: ignore
 
         return WandbTracker(r)
 
