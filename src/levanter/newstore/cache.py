@@ -237,6 +237,7 @@ class _OrderedCacheWriter:
 
             # these are batches that we've received but haven't ordered them for writing yet
             self._batch_queue = GroupRoundRobinBuffer(shards)  # type: ignore
+            self._total_queue_length = 0
             # writes are very slow (~2s) so we want to batch them up
             self._ordered_but_unwritten_items: list = []
             self._batches_in_next_write_by_shard: dict[str, int] = {shard: 0 for shard in shards}
@@ -275,10 +276,22 @@ class _OrderedCacheWriter:
             else:
                 batch_result = batch_result_box
 
+            was_overwhelmed = self.is_overwhelmed()
+
             # we need to keep track of the order of the batches so that we can write them out in order
+            self._total_queue_length += len(batch_result)
             self._batch_queue.append_to_group(shard_name, shard_batch_idx, batch_result)
-            out = self._attempt_to_write_batches()
-            return out
+            self._attempt_to_write_batches()
+            next_missing_item = self._batch_queue.next_missing_item_index()
+
+            if self.is_overwhelmed():
+                logger.warning("Writer is overwhelmed. Signaling backpressure.")
+                self._parent.signal_backpressure.remote(next_missing_item)
+            elif was_overwhelmed:
+                logger.info("Writer is no longer overwhelmed. Signaling backpressure.")
+                self._parent.signal_backpressure.remote(None)
+
+            return
 
     def shard_failed(self, shard_name: str, batch_id: int, exc_info: ExceptionInfo):
         with log_failures_to(self._parent):
@@ -345,6 +358,7 @@ class _OrderedCacheWriter:
         for shard, batch in self._batch_queue.drain():
             logger.debug(f"Writing batch for {shard}")
             batch = _canonicalize_batch(batch)
+            self._total_queue_length -= len(batch)
             self._ordered_but_unwritten_items.extend(batch)
             self._batches_in_next_write_by_shard[shard] = self._batches_in_next_write_by_shard.get(shard, 0) + len(
                 batch
@@ -397,6 +411,10 @@ class _OrderedCacheWriter:
             self._ledger.is_finished = True
             need_to_commit_for_shards = True
         return futures_to_await_shards, need_to_commit_for_shards
+
+    def is_overwhelmed(self) -> bool:
+        max_queue_size = self._min_items_to_write * 2
+        return self._total_queue_length + len(self._ordered_but_unwritten_items) > max_queue_size
 
 
 def _to_list_of_dicts(batch: dict) -> List[dict]:
@@ -792,6 +810,21 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self._do_notify()
         self._cache_writer = None
 
+    def signal_backpressure(self, next_item_desired: Optional[int]):
+        # get the priority of the item we want
+        if next_item_desired is not None:
+            self.logger.debug(f"Signaling backpressure for {next_item_desired}")
+            # our priority function above is basically (batch_index, shard_index). We just ask we don't get more
+            # than one round of batches ahead
+            max_priority = (next_item_desired + 1) * len(self.source.shard_names)
+
+            for reader in self._shard_readers:
+                reader.set_max_dispatch_priority.remote(max_priority)
+        else:
+            self.logger.debug("Signaling no backpressure")
+            for reader in self._shard_readers:
+                reader.set_max_dispatch_priority.remote(None)
+
 
 def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None, items_per_write=MIN_ITEMS_TO_WRITE):
     name = f"lev_cache_manager::{cache_dir}"
@@ -876,12 +909,17 @@ class TreeCache(AsyncDataset[T_co]):
 
         return len(await self.store_async())
 
-    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
-        max_idx = max(indices) + 1
-        await self._wait_for_len(max_idx)
-        store = await self.store_async()
+    async def get_batch(self, indices: Sequence[int] | slice):
+        # this is tricky: we want to wait until either the cache is finished or we have the max index
+        if isinstance(indices, slice):
+            start, step, stop = await self._get_start_stops_async(indices)
+            await self._wait_for_len(max(stop, start))
+            indices = range(start, stop, step)
 
-        return await store.get_batch(indices)
+        max_index = max(indices)
+        await self._wait_for_len(max_index + 1)
+
+        return await self.store.get_batch(indices)
 
     async def _wait_for_len(self, needed_len):
         if self._broker is not None:
@@ -897,6 +935,9 @@ class TreeCache(AsyncDataset[T_co]):
                             f"Index {needed_len} out of bounds for cache of size {new_ledger.total_num_rows}"
                         )
                     break
+        else:
+            if needed_len > len(self.store):
+                raise IndexError(f"Index {needed_len} out of bounds for cache of size {len(self.store)}")
 
     @staticmethod
     def load(cache_dir: str, exemplar: T) -> "TreeCache":
@@ -953,31 +994,14 @@ class TreeCache(AsyncDataset[T_co]):
                 raise IndexError(f"Index {item} out of bounds for cache of size {len(self)}")
             return self.store[item]
 
-    # async def get_batch_async(self, indices: Sequence[int] | slice):
-    #     # this is tricky: we want to wait until either the cache is finished or we have the max index
-    #     if isinstance(indices, slice):
-    #         # TODO: don't block event loop for negative indices
-    #         start, step, stop = self._get_start_stops(indices)
-    #         await self._wait_for_len(max(stop, start))
-    #         indices = range(start, stop, step)
-    #
-    #     max_index = max(indices)
-    #     await self._wait_for_len(max_index + 1)
-    #
-    #     if await self.current_len() <= max_index:
-    #         raise IndexError(f"Index {max_index} out of bounds for cache of size {await self.current_len()}")
-    #
-    #     return await self.get_batch(indices)
-
     def get_batch_sync(self, indices_or_slice, *, timeout=None):
-        # TODO: wait until we have a cache
         store = self.store
 
         if isinstance(indices_or_slice, slice):
             start, step, stop = self._get_start_stops(indices_or_slice)
-            return store.get_batch(range(start, stop, step))
+            return store.get_batch_sync(range(start, stop, step))
         else:
-            return store.get_batch(indices_or_slice)
+            return store.get_batch_sync(indices_or_slice)
 
     def _get_start_stops(self, slice):
         start = slice.start or 0
@@ -989,6 +1013,20 @@ class TreeCache(AsyncDataset[T_co]):
             stop = slice.stop
         if start < 0:
             start = len(self) + slice.start
+        step = slice.step or 1
+        return start, step, stop
+
+    async def _get_start_stops_async(self, slice):
+        start = slice.start or 0
+        if slice.stop is None:
+            stop = await self.async_len()
+        elif slice.stop < 0:
+            stop = (await self.async_len()) + slice.stop
+        else:
+            stop = slice.stop
+        if start < 0:
+            start = (await self.async_len()) + slice.start
+
         step = slice.step or 1
         return start, step, stop
 
@@ -1042,6 +1080,10 @@ class TreeCache(AsyncDataset[T_co]):
                         break
                 except TimeoutError:
                     pass
+                except Exception as e:
+                    if str(e).startswith("Failed to submit task to actor"):
+                        logger.warning("Cache builder actor is gone. Stopping monitoring.")
+                        break
                 self._attempt_to_load_store()
             except Exception as e:
                 self.logger.exception("Error while reading metrics from shard cache.")
@@ -1071,6 +1113,9 @@ class GroupRoundRobinBuffer(Generic[T]):
         self._remaining_groups = set(groups)
         self._totals_written: dict[str, int] = {group: 0 for group in groups}
         self._totals_expected: dict[str, Optional[int]] = {group: None for group in groups}
+
+    def __len__(self):
+        return sum(len(buffer) for buffer in self.buffers.values())
 
     def append_to_group(self, group: str, item_serial: int, item: T):
         if group not in self.groups:
@@ -1188,6 +1233,31 @@ class GroupRoundRobinBuffer(Generic[T]):
             if min_total is None or total < min_total:
                 min_total = total
                 self._current_group = i
+
+    def next_missing_item_index(self):
+        """
+        Returns the index of the next item that is not in the buffer
+        (i.e. what's stopping us from yielding the next item).
+        """
+        if len(self._remaining_groups) == 0:
+            return None
+
+        group = self.groups[self._current_group]
+        if group not in self._remaining_groups:
+            self._fix_current_group()
+            return self.next_missing_item_index()
+
+        if len(self.buffers[group]) == 0:
+            return self._totals_written[group]
+
+        cur_serial, _ = self.buffers[group][0]
+
+        if cur_serial > self._totals_written[group]:
+            return self._totals_written[group]
+        elif cur_serial < self._totals_written[group]:
+            raise ValueError(f"Duplicate serial {cur_serial} for group {group}")
+
+        return None
 
 
 def div_round_up(x, y):

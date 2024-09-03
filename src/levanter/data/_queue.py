@@ -157,12 +157,16 @@ class PriorityProcessorActor:
         self._current_item: Optional[PriorityWorkItem] = None
         self._max_in_flight = max_in_flight
 
-        self._paused = False
+        self._max_priority: Optional[float] = None
         self._processing_thread = threading.Thread(target=self._loop, daemon=True)
         self._processing_thread.start()
 
-    def signal_backpressure(self, paused: bool):
-        self._paused = paused
+    def set_max_dispatch_priority(self, max_priority: Optional[float]):
+        """
+        When the sink is full, we will not dispatch items with a priority higher than this.
+        """
+        with self._queue_lock:
+            self._max_priority = max_priority
 
     def assign_work(self, group: PriorityWorkTaskGroupSpec):
         items = group.build().items()
@@ -206,9 +210,8 @@ class PriorityProcessorActor:
                 backpressure_queue = remaining
 
         while not self._shutdown_event.is_set():
-            if should_sleep or self._paused:
+            if should_sleep:
                 time.sleep(0.1)
-                continue
 
             drain_backpressure_to(self._max_in_flight)
 
@@ -220,6 +223,10 @@ class PriorityProcessorActor:
                     should_sleep = False
 
                 item = heapq.heappop(self._queue)
+                if self._max_priority is not None and item.priority > self._max_priority:
+                    logger.debug(f"Item {item.name} has priority {item.priority} which is too high. Rescheduling.")
+                    heapq.heappush(self._queue, item)
+                    continue
                 self._current_item = item
 
             try:

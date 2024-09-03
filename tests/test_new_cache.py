@@ -155,6 +155,7 @@ class PretendParent(SnitchRecipient):
         self._finished_shards = set()
         self._finished = False
         self._ledger = None
+        self._desired_next_item = None
 
     def _child_failed(self, child: ray.actor.ActorHandle, exception: ExceptionInfo):
         try:
@@ -189,6 +190,12 @@ class PretendParent(SnitchRecipient):
 
     def is_finished(self):
         return self._finished
+
+    def signal_backpressure(self, desired_next_item: float):
+        self._desired_next_item = desired_next_item
+
+    def desired_next_item(self):
+        return self._desired_next_item
 
 
 @pytest.mark.asyncio
@@ -826,3 +833,57 @@ async def test_shard_cache_fails_gracefully_with_unknown_file_type():
 
         with pytest.raises(ValueError):
             cache.await_finished(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_backpressure_mechanism():
+    parent = PretendParent.remote()
+    exemplar = np.array([1, 2, 3])
+    with tempfile.TemporaryDirectory() as cache_dir:
+        shards = ["shard1", "shard2", "shard3"]
+        writer = _OrderedCacheWriter.remote(
+            parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=1
+        )
+
+        try:
+            # Simulate batches being processed
+            shard1_batch = [np.array([1, 2, 3])]
+            shard2_batch = [np.array([4, 5, 6])]
+            shard3_batch = [np.array([7, 8, 9])]
+
+            # await writer.batch_finished.remote("shard1", 0, shard1_batch)
+            await writer.batch_finished.remote("shard2", 0, shard2_batch)
+            await writer.batch_finished.remote("shard3", 0, shard3_batch)
+            await writer.batch_finished.remote("shard1", 1, shard3_batch)
+            await writer.batch_finished.remote("shard1", 2, shard3_batch)
+            await writer.batch_finished.remote("shard1", 3, shard3_batch)
+
+            # Check if backpressure is signaled
+            is_overwhelmed = await writer.is_overwhelmed.remote()
+            assert is_overwhelmed is True
+
+            for i in range(4):
+                if (await parent.desired_next_item.remote()) == 0:
+                    break
+
+                await asyncio.sleep(0.1 * (i + 1) * (i + 1))
+            else:
+                assert False, "Backpressure wasn't sent"
+
+            await writer.batch_finished.remote("shard1", 0, shard1_batch)
+
+            # Reduce the queue size to relieve backpressure
+            # Check if backpressure is relieved
+            is_overwhelmed = await writer.is_overwhelmed.remote()
+            assert is_overwhelmed is False
+
+            for i in range(4):
+                if (await parent.desired_next_item.remote()) is None:
+                    break
+
+                await asyncio.sleep(0.1 * (i + 1) * (i + 1))
+            else:
+                assert False, "Backpressure wasn't relieved"
+        finally:
+            ray.kill(parent)
+            ray.kill(writer)
