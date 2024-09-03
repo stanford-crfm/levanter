@@ -214,9 +214,10 @@ class AudioTaskConfig(abc.ABC):
     rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
     enforce_bos: bool = True  # whether to append bos even if the tokenizer doesn't
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
+    max_length: int = 448
 
     @cached_property
-    def the_processor(self) -> PreTrainedTokenizerBase:
+    def the_processor(self) -> ProcessorMixin:
         return load_processor(self.processor)
 
     @cached_property

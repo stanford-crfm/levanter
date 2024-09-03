@@ -137,7 +137,7 @@ def test_hf_roundtrip():
     torch_model: HfWhisperModel = HfWhisperModel.from_pretrained(model_id)
     torch_model.eval()
 
-    model: WhisperModel = cast(WhisperModel, converter.load_pretrained(config.model_type, config, RepoRef(model_id)))
+    model: WhisperModel = cast(WhisperModel, converter.load_pretrained(config.model_type, RepoRef(model_id), config))
     model = inference_mode(model, True)
 
     ds = load_dataset("WillHeld/test_librispeech_parquet", split="validation")

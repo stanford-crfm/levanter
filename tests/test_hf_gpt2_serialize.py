@@ -53,7 +53,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     config = config or converter.default_config
     model: Gpt2LMHeadModel = cast(
         Gpt2LMHeadModel,
-        converter.load_pretrained(config.model_type, config, RepoRef(model_id, revision=revision)),
+        converter.load_pretrained(config.model_type, RepoRef(model_id, revision=revision), config),
     )
     model = inference_mode(model, True)
 
@@ -111,7 +111,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = cast(Gpt2LMHeadModel, converter.load_pretrained(config.model_type, config, RepoRef(model_id, revision)))
+    model = cast(Gpt2LMHeadModel, converter.load_pretrained(config.model_type, RepoRef(model_id, revision), config))
     model = inference_mode(model, True)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
@@ -193,7 +193,7 @@ def test_hf_save_to_fs_spec():
         fs: AbstractFileSystem = fsspec.filesystem("memory")
         fs.get("model/", f"{tmpdir}/test", recursive=True)
 
-        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, config, ref=f"{tmpdir}/test")
+        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
 
         simple_dict = simple_model.to_state_dict()
         loaded_dict = loaded_model.to_state_dict()
