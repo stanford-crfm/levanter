@@ -48,11 +48,9 @@ import levanter.tracker.wandb
 from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
-from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
-from levanter.newdata import AsyncDataset
-from levanter.newdata.loader import DataLoader
+from levanter.newdata import AsyncDataset, DataLoader
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.types import ComputeLossFunction, FilterSpec
@@ -452,44 +450,16 @@ class Trainer:
                 every=self.config.steps_per_eval,
             )
 
-    def replicated_loader(self, dataset: Dataset[X], batch_axis: Axis) -> ReplicatedBatchLoader[X]:
-        """Creates a replicated batch loader for the given dataset. Generally you should use this
-        if you either be able to make a single pass over the dataset.
-
-        Args:
-            dataset (Dataset): the dataset to load
-            batch_axis (Axis): the batch axis
-
-        Returns:
-            ReplicatedBatchLoader: the batch loader
-        """
-        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
-
-    def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
-        """Creates a sharded batch loader for the given dataset. Generally you should use this
-        for training and you don't care about epoch boundaries.
-
-        Args:
-            dataset (Dataset): the dataset to load
-            batch_axis (Axis): the batch axis
-
-        Returns:
-            ShardedBatchLoader: the batch loader
-        """
-        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
-
     def new_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
-        """Creates a sharded batch loader for the given dataset. Generally you should use this
-        for training and you don't care about epoch boundaries.
+        """Creates a data loader for the given dataset.
 
         Args:
-            dataset (Dataset): the dataset to load
+            dataset (AsyncDataset): the dataset to load
             batch_axis (Axis): the batch axis
 
         Returns:
-            ShardedBatchLoader: the batch loader
+            DataLoader: the data loader
         """
-        # return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
         return DataLoader(
             batch_axis,
             dataset,
