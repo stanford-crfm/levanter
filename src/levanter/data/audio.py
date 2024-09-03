@@ -21,7 +21,7 @@ from haliax import Axis
 from levanter.compat.hf_checkpoints import load_processor, load_tokenizer
 from levanter.data._preprocessor import BatchProcessor
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor
-from levanter.data.sharded_dataset import AudioTextUrlDataSource, ShardedDataSource, WrappedHFDataSource
+from levanter.data.sharded_datasource import AudioTextUrlDataSource, ShardedDataSource, WrappedHFDataSource
 from levanter.data.text import BatchTokenizer
 
 # intercept the logging nonsense here

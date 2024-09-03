@@ -8,13 +8,20 @@ from async_lru import alru_cache
 from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 
-from levanter.data.mixture import StopStrategy
+from haliax.util import StringHolderEnum
+
 from levanter.newdata import AsyncDataset
 from levanter.utils.index import Index
 from levanter.utils.thread_utils import future_from_value
 
 
 T = TypeVar("T")
+
+
+class StopStrategy(metaclass=StringHolderEnum):
+    FIRST_STOP_STRATEGY = "first_exhausted"
+    ALL_STOP_STRATEGY = "all_exhausted"
+    RESTART_STRATEGY = "restart"
 
 
 class MixtureDataset(AsyncDataset[T]):

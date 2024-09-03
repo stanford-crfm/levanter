@@ -14,7 +14,7 @@ import transformers
 import haliax as hax
 
 import levanter
-from levanter.data.sharded_dataset import WrappedHFDataSource
+from levanter.data.sharded_datasource import WrappedHFDataSource
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,

@@ -28,7 +28,7 @@ from ..data._queue import (
     _BatchProcessorQueue,
 )
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
-from ..data.sharded_dataset import ShardedDataSource
+from ..data.sharded_datasource import ShardedDataSource
 from ..utils.ray_utils import (
     ExceptionInfo,
     RefBox,

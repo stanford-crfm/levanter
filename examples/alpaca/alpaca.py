@@ -15,8 +15,7 @@ import haliax as hax
 
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
-from levanter.data import Dataset
-from levanter.data.sharded_dataset import JsonDataSource, JsonlDataSource, WrappedHFDataSource
+from levanter.data.sharded_datasource import JsonDataSource, JsonlDataSource, WrappedHFDataSource
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.newdata import PermutationDataset
 from levanter.optim import OptimizerConfig
@@ -99,38 +98,6 @@ class TrainArgs:
     hf_save_path: Optional[str] = "alpaca_hf_ckpts"  # Path to save the HuggingFace checkpoint, can be gcs
     hf_upload: Union[bool, str] = False  # Name of the HuggingFace repo to upload to (if any).
     hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
-
-
-# Encoder/Decoder dataset for Alpaca.
-# We basically do string interpolation of the (instruction, input, output) triples with the prompt,
-# and mask out the prompt and padding.
-class SupervisedDataset(Dataset[LmExample]):
-    def __init__(self, preproc_dataset, tokenizer, mask_inputs):
-        self.preproc_dataset = preproc_dataset
-        self.tokenizer = tokenizer
-        self.mask_inputs = mask_inputs
-
-    def __iter__(self):
-        for ex in self.preproc_dataset:
-            # annoyingly, pad expects things to be batched so we have to prepend a batch axis
-            ex = self.tokenizer.pad(
-                {k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length"
-            )
-            ex = {k: v[0] for k, v in ex.items()}
-            input_ids = hax.named(ex["input_ids"], "position")
-
-            # mask out padding and anything before the start of the target
-            Pos = input_ids.resolve_axis("position")
-            if self.mask_inputs:
-                loss_mask = hax.arange(Pos) >= ex["source_lens"]
-
-                # don't predict the padding
-                targets = hax.roll(input_ids, -1, Pos)
-                loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
-            else:
-                loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
-
-            yield LmExample(input_ids, loss_mask)
 
 
 def _get_data_source(path_or_id):

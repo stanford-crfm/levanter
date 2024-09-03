@@ -32,9 +32,8 @@ from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizer
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
-from levanter.data.dataset import ShardableDataset, ShuffleDataset  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
-from levanter.data.sharded_dataset import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
+from levanter.data.sharded_datasource import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
 from levanter.newdata.new_text import CausalLmDataset, TokenSeqDataset  # noqa
 from levanter.newstore.cache import build_or_load_cache  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
@@ -158,7 +157,7 @@ class BatchTokenizer(BatchProcessor[str, dict]):
 
     def _break_for_long_sequences(self, batch):
         orig_lengths = [len(d) for d in batch]
-        # break any strings that are longer than 50K characters into smaller chunks
+        # break any strings that are longer than LONG_STRING_WORKAROUND characters into smaller chunks
         orig_batch = batch
         batch = []
         needs_merge = []

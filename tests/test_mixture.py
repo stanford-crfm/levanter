@@ -2,8 +2,8 @@ import jax
 import numpy as np
 import pytest
 
-from levanter.data.mixture import StopStrategy
 from levanter.newdata import ListAsyncDataset, MixtureDataset
+from levanter.newdata.mixture import StopStrategy
 
 
 def datasets():

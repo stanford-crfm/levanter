@@ -25,7 +25,6 @@ import levanter.tracker
 @dataclass
 class InProgressCacheMetrics:
     rows_finished: int = 0
-    chunks_finished: int = 0
     shards_finished: int = 0
     field_counts: Dict[str, int] = dataclasses.field(default_factory=dict)
     is_finished: bool = False
@@ -63,7 +62,6 @@ class RichMetricsMonitor(MetricsMonitor):
         columns = [
             BarColumn(),
             TaskProgressColumn(),
-            TextColumn("| {task.fields[chunks_finished]} chunks", justify="center"),
             TextColumn("| {task.fields[rows_finished]} docs", justify="center"),
         ]
 
@@ -103,7 +101,6 @@ class LoggingMetricsMonitor(MetricsMonitor):
         to_log: Dict[str, Any] = {}
 
         to_log[f"{self.prefix}/shards"] = metrics.shards_finished
-        to_log[f"{self.prefix}/chunks"] = metrics.chunks_finished
         to_log[f"{self.prefix}/rows"] = metrics.rows_finished
 
         for field, count in metrics.field_counts.items():
@@ -117,7 +114,6 @@ class LoggingMetricsMonitor(MetricsMonitor):
         #     assert self.last_time is not None
         #     elapsed = time.time() - self.last_time
         #     to_log[f"{self.prefix}/shards_per_s"] = (metrics.shards_finished - self.last_metrics.shards_finished) / elapsed
-        #     to_log[f"{self.prefix}/chunks_per_s"] = (metrics.chunks_finished - self.last_metrics.chunks_finished) / elapsed
         #     to_log[f"{self.prefix}/rows_per_s"] = (metrics.rows_finished - self.last_metrics.rows_finished) / elapsed
         #
         #     for field, count in metrics.field_counts.items():
