@@ -1,7 +1,6 @@
 import abc
 import asyncio
 import logging
-from asyncio import AbstractEventLoop
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Generic, Optional, Sequence, TypeVar
 
@@ -32,7 +31,7 @@ class DatasetBase(abc.ABC, Generic[T_co]):
         raise NotImplementedError("...")
 
     @abc.abstractmethod
-    def as_sync_dataset(self, loop: Optional[AbstractEventLoop] = None) -> "Dataset[T_co]":
+    def as_sync_dataset(self) -> "Dataset[T_co]":
         raise NotImplementedError("...")
 
 
@@ -69,7 +68,7 @@ class Dataset(DatasetBase[T_co]):
     def as_async_dataset(self) -> "AsyncDataset[T_co]":
         return AsyncifiedDataset(self)
 
-    def as_sync_dataset(self, loop: Optional[AbstractEventLoop] = None) -> "Dataset[T_co]":
+    def as_sync_dataset(self) -> "Dataset[T_co]":
         return self
 
 
@@ -113,8 +112,8 @@ class AsyncDataset(DatasetBase[T_co]):
         """Returns the length of the dataset once it is at least `length` or if the dataset has a known length."""
         return await naive_busy_wait_until_len_at_least(self, length)
 
-    def as_sync_dataset(self, loop=None):
-        return SyncifiedDataset(self, loop)
+    def as_sync_dataset(self):
+        return SyncifiedDataset(self)
 
     def as_async_dataset(self) -> "AsyncDataset[T_co]":
         return self
@@ -138,9 +137,8 @@ async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length
 
 
 class SyncifiedDataset(Dataset[T_co]):
-    def __init__(self, dataset: AsyncDataset[T_co], loop: Optional[asyncio.AbstractEventLoop] = None):
+    def __init__(self, dataset: AsyncDataset[T_co]):
         self.dataset = dataset
-        self.loop = loop or asyncio.get_event_loop()
 
     def _run_coroutine(self, coro):
         return thread_utils.blocking_wait(coro)
@@ -249,9 +247,6 @@ class ListAsyncDataset(AsyncDataset[T]):
     def finalize(self):
         self.is_complete = True
         self.complete_promise.set_result(None)
-        # asyncio.create_task(self.notify_length_update())
-        # if there's no event loop, we can't notify the length update
-        # so we spawn a thread to do it
         if not asyncio.get_event_loop().is_running():
             _executor.submit(lambda: asyncio.run(self.notify_length_update()))
         else:

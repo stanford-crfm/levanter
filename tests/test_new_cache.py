@@ -72,7 +72,9 @@ def process_interleave(processor, source):
 
 
 def setup_module(module):
-    ray.init("local", num_cpus=max(2 * logical_cpu_core_count(), 8))  # 2x cpu count is faster on my m1
+    ray.init(
+        "local", num_cpus=max(2 * logical_cpu_core_count(), 8), ignore_reinit_error=True
+    )  # 2x cpu count is faster on my m1
 
 
 def teardown_module(module):
