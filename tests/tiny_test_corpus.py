@@ -6,7 +6,7 @@ import numpy as np
 
 from levanter.data.audio import AudioIODatasetConfig
 from levanter.data.text import LMDatasetConfig
-from levanter.newstore.cache import TreeCache
+from levanter.store.cache import TreeCache
 
 
 def _write_tiny_corpus(path):
@@ -45,7 +45,7 @@ def tiny_asr_corpus_config(path):
 def construct_small_data_cache(
     path, num_shards=8, chunk_size=512, doc_len=128, vocab_size=1024
 ) -> tuple[LMDatasetConfig, dict[str, TreeCache]]:
-    from levanter.newstore.cache import SerialCacheWriter
+    from levanter.store.cache import SerialCacheWriter
 
     rng = numpy.random.default_rng(0)
 

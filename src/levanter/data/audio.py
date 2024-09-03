@@ -29,7 +29,7 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
 from levanter.newdata import AsyncDataset
 from levanter.newdata.dataset import MappedAsyncDataset
-from levanter.newstore.cache import TreeCache, build_or_load_cache
+from levanter.store.cache import TreeCache, build_or_load_cache
 from levanter.utils.jax_utils import local_cpu_mesh
 
 

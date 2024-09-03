@@ -7,7 +7,7 @@ import tensorstore as ts
 
 from levanter.data import BatchProcessor, ShardedDataSource
 from levanter.data.utils import batched
-from levanter.newstore.tree_store import TreeStoreBuilder
+from levanter.store.tree_store import TreeStoreBuilder
 
 
 class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):

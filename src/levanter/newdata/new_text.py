@@ -16,9 +16,9 @@ from haliax import Axis
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.newdata.dataset import AsyncDataset, MappedAsyncDataset, T_co
-from levanter.newstore.cache import TreeCache
-from levanter.newstore.jagged_array import JaggedArrayStore
-from levanter.newstore.tree_store import TreeStoreBuilder
+from levanter.store.cache import TreeCache
+from levanter.store.jagged_array import JaggedArrayStore
+from levanter.store.tree_store import TreeStoreBuilder
 from levanter.utils.jax_utils import local_cpu_mesh
 
 

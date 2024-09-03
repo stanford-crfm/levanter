@@ -7,7 +7,7 @@ from levanter.data.metrics_monitor import LoggingMetricsMonitor, RichMetricsMoni
 from levanter.data.text import BatchTokenizer, LMDatasetConfig
 from levanter.distributed import RayConfig
 from levanter.logging import init_logging
-from levanter.newstore.cache import build_or_load_cache
+from levanter.store.cache import build_or_load_cache
 from levanter.tracker import NoopConfig, TrackerConfig
 
 

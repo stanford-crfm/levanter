@@ -5,7 +5,7 @@ from datasets import load_dataset
 from transformers import AutoProcessor, AutoTokenizer
 
 from levanter.data.audio import AudioDatasetSourceConfig, AudioIODatasetConfig, BatchAudioProcessor
-from levanter.newstore.cache import SerialCacheWriter
+from levanter.store.cache import SerialCacheWriter
 from test_utils import skip_if_hf_model_not_accessible, skip_if_no_soundlibs
 
 

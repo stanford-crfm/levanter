@@ -20,119 +20,6 @@ DEFAULT_CHUNK_SIZE = 256 * 1024
 DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 512
 
 
-def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
-    spec = _get_spec(path, shape)
-    mode = _mode_to_open_mode(mode)
-
-    # Basically, we want to load the existing shape metadata if it exists
-    if not mode.get("delete_existing", False):
-        try:
-            return ts.open(spec, **mode).result()
-        except FileNotFoundError:
-            pass
-        except ValueError:
-            pass
-
-    # TODO: groups?
-    # TODO: set chunk sizes
-    try:
-        return ts.open(
-            spec,
-            dtype=jnp.dtype(dtype).name,
-            shape=[2**54, *shape[1:]],
-            # chunk_layout=ts.ChunkLayout(
-            #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
-            #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
-            # ),
-            # compression={"codec": "zstd", "compression_level": 5},
-            **mode,
-        ).result()
-    except ValueError as e:
-        if "NOT_FOUND" in str(e):
-            raise FileNotFoundError(f"File not found: {path}") from e
-        else:
-            raise e
-
-
-async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
-    spec = _get_spec(path, shape)
-    mode = _mode_to_open_mode(mode)
-
-    # Basically, we want to load the existing shape metadata if it exists
-    if not mode.get("delete_existing", False):
-        try:
-            return await ts.open(spec, **mode)
-        except FileNotFoundError:
-            pass
-        except ValueError:
-            pass
-
-    # TODO: groups?
-    # TODO: set chunk sizes
-    return await ts.open(
-        spec,
-        dtype=jnp.dtype(dtype).name,
-        shape=[2**54, *shape[1:]],
-        # chunk_layout=ts.ChunkLayout(
-        #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
-        #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
-        # ),
-        # compression={"codec": "zstd", "compression_level": 5},
-        **mode,
-    )
-
-
-def _get_spec(path, shape):
-    if path is None:
-        import uuid
-
-        random_name = str(uuid.uuid4())
-        spec = ts.Spec({"driver": "zarr", "kvstore": f"memory://{random_name}"})
-    else:
-        # make path absolute if it's not already
-        protocol, _ = fsspec.core.split_protocol(path)
-        if protocol is None:
-            path = os.path.abspath(path)
-        spec = ser.get_tensorstore_spec(path, ocdbt=False)
-        store = spec.get("kvstore")
-        spec = {"driver": "zarr3", "kvstore": store}
-        fsspec_utils.mkdirs(os.path.dirname(path))
-        spec["metadata"] = {
-            "chunk_grid": {
-                "name": "regular",
-                "configuration": {"chunk_shape": [DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]},
-            },
-            "codecs": [
-                {
-                    "name": "sharding_indexed",
-                    "configuration": {
-                        "chunk_shape": [DEFAULT_CHUNK_SIZE, *shape[1:]],
-                        "codecs": [{"name": "blosc", "configuration": {"clevel": 5}}],
-                    },
-                }
-            ],
-        }
-    return spec
-
-
-def _mode_to_open_mode(mode: str):
-    if mode == "r":
-        return {"open_mode": ts.OpenMode(open=True)}
-    elif mode == "w":
-        return {"open_mode": ts.OpenMode(create=True, delete_existing=True)}
-    elif mode == "a":
-        return {"open_mode": ts.OpenMode(create=True, open=True, delete_existing=False)}
-    else:
-        raise ValueError(f"Invalid mode: {mode}")
-
-
-def _extend_path(path: Optional[str], extra: str):
-    if path == "memory" or path is None:
-        return path
-    else:
-        return os.path.join(path, extra)
-
-
 @dataclass
 class JaggedArrayStore:
     """
@@ -506,3 +393,116 @@ class JaggedArrayStore:
 def _unshaped_spec(store: ts.TensorStore) -> ts.Spec:
     spec = store.spec(retain_context=True)
     return spec
+
+
+def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
+    spec = _get_spec(path, shape)
+    mode = _mode_to_open_mode(mode)
+
+    # Basically, we want to load the existing shape metadata if it exists
+    if not mode.get("delete_existing", False):
+        try:
+            return ts.open(spec, **mode).result()
+        except FileNotFoundError:
+            pass
+        except ValueError:
+            pass
+
+    # TODO: groups?
+    # TODO: set chunk sizes
+    try:
+        return ts.open(
+            spec,
+            dtype=jnp.dtype(dtype).name,
+            shape=[2**54, *shape[1:]],
+            # chunk_layout=ts.ChunkLayout(
+            #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
+            #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
+            # ),
+            # compression={"codec": "zstd", "compression_level": 5},
+            **mode,
+        ).result()
+    except ValueError as e:
+        if "NOT_FOUND" in str(e):
+            raise FileNotFoundError(f"File not found: {path}") from e
+        else:
+            raise e
+
+
+async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
+    spec = _get_spec(path, shape)
+    mode = _mode_to_open_mode(mode)
+
+    # Basically, we want to load the existing shape metadata if it exists
+    if not mode.get("delete_existing", False):
+        try:
+            return await ts.open(spec, **mode)
+        except FileNotFoundError:
+            pass
+        except ValueError:
+            pass
+
+    # TODO: groups?
+    # TODO: set chunk sizes
+    return await ts.open(
+        spec,
+        dtype=jnp.dtype(dtype).name,
+        shape=[2**54, *shape[1:]],
+        # chunk_layout=ts.ChunkLayout(
+        #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
+        #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
+        # ),
+        # compression={"codec": "zstd", "compression_level": 5},
+        **mode,
+    )
+
+
+def _get_spec(path, shape):
+    if path is None:
+        import uuid
+
+        random_name = str(uuid.uuid4())
+        spec = ts.Spec({"driver": "zarr", "kvstore": f"memory://{random_name}"})
+    else:
+        # make path absolute if it's not already
+        protocol, _ = fsspec.core.split_protocol(path)
+        if protocol is None:
+            path = os.path.abspath(path)
+        spec = ser.get_tensorstore_spec(path, ocdbt=False)
+        store = spec.get("kvstore")
+        spec = {"driver": "zarr3", "kvstore": store}
+        fsspec_utils.mkdirs(os.path.dirname(path))
+        spec["metadata"] = {
+            "chunk_grid": {
+                "name": "regular",
+                "configuration": {"chunk_shape": [DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]},
+            },
+            "codecs": [
+                {
+                    "name": "sharding_indexed",
+                    "configuration": {
+                        "chunk_shape": [DEFAULT_CHUNK_SIZE, *shape[1:]],
+                        "codecs": [{"name": "blosc", "configuration": {"clevel": 5}}],
+                    },
+                }
+            ],
+        }
+    return spec
+
+
+def _mode_to_open_mode(mode: str):
+    if mode == "r":
+        return {"open_mode": ts.OpenMode(open=True)}
+    elif mode == "w":
+        return {"open_mode": ts.OpenMode(create=True, delete_existing=True)}
+    elif mode == "a":
+        return {"open_mode": ts.OpenMode(create=True, open=True, delete_existing=False)}
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+
+
+def _extend_path(path: Optional[str], extra: str):
+    if path == "memory" or path is None:
+        return path
+    else:
+        return os.path.join(path, extra)

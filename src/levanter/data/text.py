@@ -23,7 +23,7 @@ from tokenizers import normalizers
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.newdata import AsyncDataset
 from levanter.newdata.mixture import MixtureDataset, StopStrategy
-from levanter.newstore.cache import TreeCache
+from levanter.store.cache import TreeCache
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
@@ -35,8 +35,8 @@ from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batc
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
 from levanter.data.sharded_datasource import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
 from levanter.newdata.new_text import CausalLmDataset, TokenSeqDataset  # noqa
-from levanter.newstore.cache import build_or_load_cache  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
+from levanter.store.cache import build_or_load_cache  # noqa
 from levanter.utils.jax_utils import use_cpu_device  # noqa
 
 

@@ -11,7 +11,7 @@ from ray.exceptions import RayTaskError
 
 from levanter.data import BatchProcessor, ShardedDataSource, batched
 from levanter.data.sharded_datasource import TextUrlDataSource
-from levanter.newstore.cache import (
+from levanter.store.cache import (
     SerialCacheWriter,
     TreeStoreBuilder,
     _get_builder_actor,

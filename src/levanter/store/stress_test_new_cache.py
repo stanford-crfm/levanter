@@ -9,8 +9,8 @@ import tensorstore as ts
 
 from levanter.newdata import PermutationDataset
 from levanter.newdata.new_text import TokenSeqDataset
-from levanter.newstore.cache import LEDGER_FILE_NAME, CacheLedger, TreeCache, _serialize_json_and_commit
-from levanter.newstore.tree_store import TreeStoreBuilder
+from levanter.store.cache import LEDGER_FILE_NAME, CacheLedger, TreeCache, _serialize_json_and_commit
+from levanter.store.tree_store import TreeStoreBuilder
 from levanter.tracker import capture_time
 from levanter.utils import fsspec_utils
 

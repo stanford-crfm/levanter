@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from levanter.newstore.jagged_array import JaggedArrayStore
+from levanter.store.jagged_array import JaggedArrayStore
 
 
 class TestJaggedArrayStore:
