@@ -45,13 +45,17 @@ async def test_list_async_dataset_appends_and_finalizes_correctly():
 
 
 @pytest.mark.asyncio
-async def test_permutation_dataset_applies_permutation_correctly():
-    data = [1, 2, 3, 4]
-    dataset = SequenceDataset(data)
-    wrapped_dataset = AsyncifiedDataset(dataset)
-    permutation = Permutation(4, jax.random.PRNGKey(1))
-    permuted_dataset = PermutationDataset(wrapped_dataset, permutation)
-    assert await permuted_dataset.get_batch([0, 1, 2, 3]) != [1, 2, 3, 4]
+async def test_permutation_dataset_is_at_least_sometimes_permuted():
+    for seed in range(10):
+        data = [1, 2, 3, 4]
+        dataset = SequenceDataset(data)
+        wrapped_dataset = AsyncifiedDataset(dataset)
+        permutation = Permutation(4, jax.random.PRNGKey(seed))
+        permuted_dataset = PermutationDataset(wrapped_dataset, permutation)
+        if await permuted_dataset.get_batch([0, 1, 2, 3]) != [1, 2, 3, 4]:
+            return
+
+    pytest.fail("PermutationDataset did not permute the data")
 
 
 @pytest.mark.asyncio

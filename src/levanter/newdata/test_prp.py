@@ -57,7 +57,31 @@ def test_permutation_rejects_invalid_indices():
     length = 10
     prng_key = jrandom.PRNGKey(0)
     permutation = Permutation(length, prng_key)
-    with pytest.raises(ValueError):
+    with pytest.raises(IndexError):
         permutation(-1)  # Test negative index
-    with pytest.raises(ValueError):
+    with pytest.raises(IndexError):
         permutation(length)  # Test index equal to length
+
+
+def test_permutation_is_deterministic():
+    length = 4
+    prng_key = jrandom.PRNGKey(0)
+    permutation = Permutation(length, prng_key)
+    indices = jnp.arange(length)
+    results = permutation(indices)
+    prng_key = jrandom.PRNGKey(0)
+    permutation = Permutation(length, prng_key)
+    results2 = permutation(indices)
+    assert jnp.all(results == results2)
+
+
+def test_permutation_is_deterministic1():
+    length = 4
+    prng_key = jrandom.PRNGKey(1)
+    permutation = Permutation(length, prng_key)
+    indices = jnp.arange(length)
+    results = permutation(indices)
+    prng_key = jrandom.PRNGKey(1)
+    permutation = Permutation(length, prng_key)
+    results2 = permutation(indices)
+    assert jnp.all(results == results2)
