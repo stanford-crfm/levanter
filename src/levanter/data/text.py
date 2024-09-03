@@ -37,7 +37,7 @@ from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.store.cache import TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
-from levanter.store.tree_store import TreeStoreBuilder
+from levanter.store.tree_store import TreeStore
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
@@ -715,7 +715,7 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
     def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
         self.doc_cache = doc_cache
         self.seq_len = seq_len
-        self._store: Optional[TreeStoreBuilder] = None
+        self._store: Optional[TreeStore] = None
         self._cached_len: Optional[int] = None
 
     async def async_len(self) -> int:

@@ -37,7 +37,7 @@ from ..utils.ray_utils import (
     log_failures_to,
     ser_exc_info,
 )
-from .tree_store import TreeStoreBuilder
+from .tree_store import TreeStore
 
 
 T = TypeVar("T")
@@ -164,7 +164,7 @@ class SerialCacheWriter(AbstractContextManager):
         self.cache_dir = cache_dir
         self.cache_config = cache_config
         self._exemplar = exemplar
-        self._tree_store = TreeStoreBuilder.open(exemplar, self.cache_dir, mode="w")  # type: ignore
+        self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="w")  # type: ignore
         self._is_closed = False
 
     def __enter__(self) -> "SerialCacheWriter":
@@ -247,7 +247,7 @@ class _OrderedCacheWriter:
             self._ledger = _load_or_initialize_ledger(os.path.join(cache_dir, LEDGER_FILE_NAME))
             self._expected_num_rows: dict[str, Optional[int]] = {shard: None for shard in shards}
 
-            self._tree_store = TreeStoreBuilder.open(exemplar, self.cache_dir, mode="a")
+            self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")
             # careful: trim the store to the total number of rows in the cache that we've committed to
             self._tree_store.trim_to_size(self._ledger.total_num_rows)
             # we also have to tell the queue how many rows for each shard we've already written
@@ -864,7 +864,7 @@ class TreeCache(AsyncDataset[T_co]):
         self._metrics_monitors = []
         name = os.path.join(*cache_dir.split("/")[-2:])
         self.logger = pylogging.getLogger(f"TreeCache.{name}")
-        self._store_future: threading_Future[TreeStoreBuilder] = threading_Future()
+        self._store_future: threading_Future[TreeStore] = threading_Future()
 
         if self._broker is not None:
             self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
@@ -874,10 +874,10 @@ class TreeCache(AsyncDataset[T_co]):
             assert self._store_future.done()
 
     @property
-    def store(self) -> TreeStoreBuilder[T_co]:
+    def store(self) -> TreeStore[T_co]:
         return self._store_future.result()
 
-    async def store_async(self) -> TreeStoreBuilder[T_co]:
+    async def store_async(self) -> TreeStore[T_co]:
         if self._broker is not None:
             return await asyncio.wrap_future(self._store_future)
         else:
@@ -1046,7 +1046,7 @@ class TreeCache(AsyncDataset[T_co]):
             return
 
         try:
-            store = TreeStoreBuilder.open(self._exemplar, self.cache_dir, mode="r")
+            store = TreeStore.open(self._exemplar, self.cache_dir, mode="r")
         except FileNotFoundError:
             logger.error(f"Cache at {self.cache_dir} not found.")
             assert self._broker is not None
@@ -1054,7 +1054,7 @@ class TreeCache(AsyncDataset[T_co]):
             metrics = _ledger_to_metrics(ledger)
             if metrics.rows_finished == 0 and metrics.is_finished:
                 # this means we built an empty cache. go with it
-                store = TreeStoreBuilder.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
+                store = TreeStore.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
             else:
                 raise
         self._store_future.set_result(store)

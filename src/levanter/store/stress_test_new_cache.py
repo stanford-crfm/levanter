@@ -10,7 +10,7 @@ import tensorstore as ts
 from levanter.data import PermutationDataset
 from levanter.data.text import TokenSeqDataset
 from levanter.store.cache import LEDGER_FILE_NAME, CacheLedger, TreeCache, _serialize_json_and_commit
-from levanter.store.tree_store import TreeStoreBuilder
+from levanter.store.tree_store import TreeStore
 from levanter.tracker import capture_time
 from levanter.utils import fsspec_utils
 
@@ -29,7 +29,7 @@ BATCHES = 1000
 
 
 def bench_new_cache_serial(exemplar, new_cache_path):
-    jagged_array = TreeStoreBuilder.open(exemplar, new_cache_path).tree["input_ids"]
+    jagged_array = TreeStore.open(exemplar, new_cache_path).tree["input_ids"]
     len_cache = jagged_array.data_size
     new_cache = jagged_array.data
     num_batches = len_cache // SEQ_LEN
@@ -47,7 +47,7 @@ def bench_new_cache_serial(exemplar, new_cache_path):
 
 
 def bench_new_cache_random(exemplar, new_cache_path):
-    jagged_array = TreeStoreBuilder.open(exemplar, new_cache_path).tree["input_ids"]
+    jagged_array = TreeStore.open(exemplar, new_cache_path).tree["input_ids"]
     len_cache = jagged_array.data_size
     new_cache = jagged_array.data
     num_batches = len_cache // SEQ_LEN

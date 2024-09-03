@@ -7,7 +7,7 @@ import tensorstore as ts
 
 from levanter.data import BatchProcessor, ShardedDataSource
 from levanter.data.utils import batched
-from levanter.store.tree_store import TreeStoreBuilder
+from levanter.store.tree_store import TreeStore
 
 
 class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
@@ -48,7 +48,7 @@ def test_tree_builder_with_processor():
     with tempfile.TemporaryDirectory() as tempdir:
         exemplar = {"data": np.array([0], dtype=np.int64)}
 
-        builder = TreeStoreBuilder.open(exemplar, tempdir, mode="w")
+        builder = TreeStore.open(exemplar, tempdir, mode="w")
         processor = SimpleProcessor()
         source = SimpleShardSource()
 
@@ -78,7 +78,7 @@ def test_tree_builder_with_processor():
 def test_append_batch():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch1 = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -104,7 +104,7 @@ def test_append_batch_different_shapes():
             return np.asarray(x, dtype=np.float32)
 
         exemplar = {"a": _f32([0]), "b": _f32([0])}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
         batch1 = [
             {"a": _f32([1.0, 2.0]), "b": _f32([3.0, 4.0])},
             {"a": _f32([5.0, 6.0]), "b": _f32([7.0, 8.0])},
@@ -131,7 +131,7 @@ def test_append_batch_different_shapes():
 def test_extend_batch_different_shapes():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch1 = {"a": [np.array([1.0, 2.0]), np.array([5.0, 6.0])], "b": [np.array([3.0, 4.0]), np.array([7.0, 8.0])]}
         builder.extend_with_batch(batch1)
@@ -156,7 +156,7 @@ def test_extend_batch_different_shapes():
 def test_len():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         assert len(builder) == 0
 
@@ -172,7 +172,7 @@ def test_len():
 def test_getitem():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -197,7 +197,7 @@ def test_getitem():
 def test_getitem_out_of_bounds():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -212,7 +212,7 @@ def test_getitem_out_of_bounds():
 def test_iter():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -234,7 +234,7 @@ def test_iter():
 def test_reading_from_written():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir, mode="w")
+        builder = TreeStore.open(exemplar, tmpdir, mode="w")
 
         batch = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -244,7 +244,7 @@ def test_reading_from_written():
 
         del builder
 
-        builder2 = TreeStoreBuilder.open(exemplar, tmpdir, mode="r")
+        builder2 = TreeStore.open(exemplar, tmpdir, mode="r")
 
         for i, result in enumerate(builder2):
             if i == 0:
@@ -260,8 +260,8 @@ def test_reading_from_written():
 def test_resolve_changed_cache_size():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir, mode="w")
-        follower = TreeStoreBuilder.open(exemplar, tmpdir, mode="r")
+        builder = TreeStore.open(exemplar, tmpdir, mode="w")
+        follower = TreeStore.open(exemplar, tmpdir, mode="r")
 
         batch = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -270,7 +270,7 @@ def test_resolve_changed_cache_size():
         builder.extend(batch)
 
         follower = follower.reload()
-        follower2 = TreeStoreBuilder.open(exemplar, tmpdir, mode="r")
+        follower2 = TreeStore.open(exemplar, tmpdir, mode="r")
 
         assert len(follower2) == 2
         assert len(follower) == 2
@@ -332,7 +332,7 @@ def test_simple_resize_bounds():
 async def test_get_batch_single_item():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch1 = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -353,7 +353,7 @@ async def test_get_batch_single_item():
 async def test_get_batch_multiple_items():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch1 = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -376,7 +376,7 @@ async def test_get_batch_multiple_items():
 async def test_get_batch_out_of_order():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch1 = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},
@@ -399,7 +399,7 @@ async def test_get_batch_out_of_order():
 async def test_get_batch_with_shapes():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([[0]], dtype=np.float64), "b": np.array([[0]], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch1 = [
             {"a": np.array([[1.0, 2.0], [3.0, 4.0]]), "b": np.array([[5.0, 6.0], [7.0, 8.0]])},
@@ -421,7 +421,7 @@ async def test_get_batch_with_shapes():
 async def test_get_batch_empty():
     with tempfile.TemporaryDirectory() as tmpdir:
         exemplar = {"a": np.array([0], dtype=np.float64), "b": np.array([0], dtype=np.float64)}
-        builder = TreeStoreBuilder.open(exemplar, tmpdir)
+        builder = TreeStore.open(exemplar, tmpdir)
 
         batch1 = [
             {"a": np.array([1.0, 2.0]), "b": np.array([3.0, 4.0])},

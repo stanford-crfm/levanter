@@ -35,7 +35,7 @@ def heuristic_is_leaf_batched(x):
         return False
 
 
-class TreeStoreBuilder(Generic[T]):
+class TreeStore(Generic[T]):
     """
     A TreeStoreBuilder stores batched data as a tree of ragged arrays.
     """
@@ -50,12 +50,12 @@ class TreeStoreBuilder(Generic[T]):
         self.tree = tree
 
     @staticmethod
-    def open(exemplar: T, path: str, *, mode="a") -> "TreeStoreBuilder":
+    def open(exemplar: T, path: str, *, mode="a") -> "TreeStore":
         """
         Open a TreeStoreBuilder from a file.
         """
         tree = _construct_builder_tree(exemplar, path, mode)
-        return TreeStoreBuilder(tree, path, mode)
+        return TreeStore(tree, path, mode)
 
     def append(self, ex: T):
         return self.extend([ex])
@@ -118,12 +118,12 @@ class TreeStoreBuilder(Generic[T]):
 
         await asyncio.gather(*leaves)
 
-    def reload(self) -> "TreeStoreBuilder":
+    def reload(self) -> "TreeStore":
         """
         Close the builder and return a TreeStore.
         """
         tree = jtu.tree_map(lambda builder: builder.reload(), self.tree, is_leaf=heuristic_is_leaf)
-        return TreeStoreBuilder(tree, self.path, self.mode)
+        return TreeStore(tree, self.path, self.mode)
 
     def __len__(self):
         if self.tree is None:

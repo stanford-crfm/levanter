@@ -13,7 +13,7 @@ from levanter.data import BatchProcessor, ShardedDataSource, batched
 from levanter.data.sharded_datasource import TextUrlDataSource
 from levanter.store.cache import (
     SerialCacheWriter,
-    TreeStoreBuilder,
+    TreeStore,
     _get_builder_actor,
     _OrderedCacheWriter,
     build_or_load_cache,
@@ -130,7 +130,7 @@ def test_serial_cache_writer():
         _ = writer.result()
         data_path = writer._tree_store.path
 
-        builder = TreeStoreBuilder.open(exemplar, data_path, mode="r")
+        builder = TreeStore.open(exemplar, data_path, mode="r")
 
         assert len(builder) == 40
 
@@ -311,7 +311,7 @@ async def test_attempt_to_write_batches():
             assert ledger.is_finished is False
             assert ledger.total_num_rows == 2  # Assuming each batch has 1 row for simplicity
 
-            store = TreeStoreBuilder.open(exemplar, cache_dir, mode="r")
+            store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 2
             np.testing.assert_array_equal(store[0], shard1_batch[0])
             np.testing.assert_array_equal(store[1], shard2_batch[0])
@@ -391,7 +391,7 @@ async def test_out_of_order_batches_same_shard():
             await writer.batch_finished.remote("shard1", 1, shard1_batch1)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
 
-            store = TreeStoreBuilder.open(exemplar, cache_dir, mode="r")
+            store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 2
             np.testing.assert_array_equal(store[0], shard1_batch0[0])
             np.testing.assert_array_equal(store[1], shard1_batch1[0])
@@ -420,7 +420,7 @@ async def test_out_of_order_batches_different_shards():
             await writer.batch_finished.remote("shard2", 0, shard2_batch0)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
 
-            store = TreeStoreBuilder.open(exemplar, cache_dir, mode="r")
+            store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 3
             np.testing.assert_array_equal(store[0], shard1_batch0[0])
             np.testing.assert_array_equal(store[1], shard2_batch0[0])
@@ -452,7 +452,7 @@ async def test_batches_different_orders_all_shards():
             await writer.batch_finished.remote("shard1", 1, shard1_batch1)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
 
-            store = TreeStoreBuilder.open(exemplar, cache_dir, mode="r")
+            store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 4
             np.testing.assert_array_equal(store[0], shard1_batch0[0])
             np.testing.assert_array_equal(store[1], shard2_batch0[0])
@@ -487,7 +487,7 @@ async def test_intermixed_batches_same_and_different_shards():
             await writer.batch_finished.remote("shard2", 1, shard2_batch1)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
 
-            store = TreeStoreBuilder.open(exemplar, cache_dir, mode="r")
+            store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 5
             np.testing.assert_array_equal(store[0], shard1_batch0[0])
             np.testing.assert_array_equal(store[1], shard2_batch0[0])
@@ -545,7 +545,7 @@ async def test_mixed_order_batches_multiple_shards():
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
             await writer.batch_finished.remote("shard3", 1, shard3_batch1)
 
-            store = TreeStoreBuilder.open(exemplar, cache_dir, mode="r")
+            store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 6
             np.testing.assert_array_equal(store[0], shard1_batch0[0])
             np.testing.assert_array_equal(store[1], shard2_batch0[0])

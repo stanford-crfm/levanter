@@ -190,11 +190,11 @@ python -m levanter.main.cache_dataset \
 ### Direct Cache Construction
 
 As a final option, you can directly construct a cache of preprocessed data without using Ray. This is useful if you
-have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.data.SerialCacheWriter][]
+have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.store.SerialCacheWriter][]
 to write batches directly. Here's an example:
 
 ```python
-from levanter.data import SerialCacheWriter
+from levanter.store import SerialCacheWriter
 
 with SerialCacheWriter(cache_dir, rows_per_chunk=1024) as writer:
     for batch in process_batches():
