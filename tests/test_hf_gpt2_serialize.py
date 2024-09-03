@@ -39,7 +39,7 @@ def test_hf_gpt2_roundtrip_fa():
 
 
 # TODO: gotta figure out why this regressed
-@pytest.skip
+@pytest.mark.skip
 @skip_if_no_torch
 def test_mistral_gpt2_roundtrip():
     _roundtrip_compare_gpt2_checkpoint("stanford-crfm/expanse-gpt2-small-x777", "checkpoint-60000")
