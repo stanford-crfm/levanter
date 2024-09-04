@@ -61,7 +61,7 @@ async def test_era_shuffling_dataset_returns_correct_length():
     key = jax.random.PRNGKey(0)
     shuffling_dataset = EraShufflingDataset(dataset, era_length, key=key)
     assert await shuffling_dataset.current_len() == 100
-    assert not await shuffling_dataset.length_is_known()
+    assert not await shuffling_dataset.final_length_is_known()
 
     dataset.append(1)
     assert await shuffling_dataset.current_len() == 100
@@ -96,7 +96,7 @@ async def test_era_shuffling_can_grow():
         dataset.append(i + 5)
 
     assert await shuffling_dataset.current_len() == 10
-    assert not await shuffling_dataset.length_is_known()
+    assert not await shuffling_dataset.final_length_is_known()
     batch = await shuffling_dataset.get_batch(list(range(10)))
 
     assert set(batch) == set(range(10))
@@ -117,7 +117,7 @@ async def test_era_shuffling_can_grow():
         for i in range(10, 15):
             dataset.append(i)
 
-    coro = dataset.async_getitem(11)
+    coro = dataset.getitem_async(11)
 
     _, r = await asyncio.gather(append_data(), coro)
     assert r in range(10, 15)

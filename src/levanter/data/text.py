@@ -89,8 +89,8 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
             self._store = await self.doc_cache.store_async()
         return self._store.tree["input_ids"]
 
-    async def length_is_known(self) -> bool:
-        return await self.doc_cache.length_is_known()
+    async def final_length_is_known(self) -> bool:
+        return await self.doc_cache.final_length_is_known()
 
     def is_finite(self) -> bool:
         return True
@@ -158,6 +158,7 @@ class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
         self.KPos = KPos
         self.fcm_prob = fcm_prob
         self.ignore_id = ignore_index
+        self.key = key
 
         if self.fcm_prob > 0.0 and self.key is None:
             raise ValueError("must provide key if fcm_prob > 0.0")

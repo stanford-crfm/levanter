@@ -67,7 +67,7 @@ class LogitDataset(AsyncDataset[Example]):
     async def async_len(self) -> int:
         raise ValueError("Infinitely long dataset")
 
-    async def length_is_known(self) -> bool:
+    async def final_length_is_known(self) -> bool:
         return False
 
     def is_finite(self) -> bool:

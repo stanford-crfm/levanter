@@ -902,7 +902,7 @@ class TreeCache(AsyncDataset[T_co]):
 
         return len(self.store)
 
-    async def length_is_known(self) -> bool:
+    async def final_length_is_known(self) -> bool:
         if self._broker is not None:
             return await self._broker.is_finished.remote()
 

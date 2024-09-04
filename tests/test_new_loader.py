@@ -72,7 +72,7 @@ class StructuredDataset(AsyncDataset):
     async def async_len(self) -> int:
         return (self.end - self.begin) // self.stride
 
-    async def async_getitem(self, index: int) -> dict:
+    async def getitem_async(self, index: int) -> dict:
         index = self.begin + index * self.stride
         return {
             "input_ids": np.arange(self.seq_len, dtype=np.int32) + index * 1000,
@@ -87,7 +87,7 @@ class StructuredDataset(AsyncDataset):
         for i in range(self.begin, self.end, self.stride):
             yield self[i]
 
-    async def length_is_known(self) -> bool:
+    async def final_length_is_known(self) -> bool:
         return True
 
     def is_finite(self) -> bool:
@@ -97,7 +97,7 @@ class StructuredDataset(AsyncDataset):
         return await self.async_len()
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
-        out = await asyncio.gather(*(self.async_getitem(i) for i in indices))
+        out = await asyncio.gather(*(self.getitem_async(i) for i in indices))
         return out
 
 
@@ -148,7 +148,7 @@ class StructuredDatasetWithNames(AsyncDataset):
         self.end = end
         self.stride = stride
 
-    async def length_is_known(self) -> bool:
+    async def final_length_is_known(self) -> bool:
         return True
 
     def is_finite(self) -> bool:
@@ -158,13 +158,13 @@ class StructuredDatasetWithNames(AsyncDataset):
         return True
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
-        out = await asyncio.gather(*(self.async_getitem(i) for i in indices))
+        out = await asyncio.gather(*(self.getitem_async(i) for i in indices))
         return out
 
     async def async_len(self) -> int:
         return (self.end - self.begin) // self.stride
 
-    async def async_getitem(self, index: int) -> dict:
+    async def getitem_async(self, index: int) -> dict:
         index = self.begin + index * self.stride
         return {
             "input_ids": self._gen_image(index),

@@ -63,7 +63,7 @@ class DataLoader(Iterable[Ex]):
         self.Batch = Batch
 
         def _exemplar_shape():
-            return blocking_wait(self.data_store.async_getitem(0))
+            return blocking_wait(self.data_store.getitem_async(0))
 
         self._ex_leaves, self._ex_structure = jax.tree_flatten(_exemplar_shape(), is_leaf=is_named_array)
 

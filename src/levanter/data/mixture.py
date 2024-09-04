@@ -124,7 +124,7 @@ class MixtureDataset(AsyncDataset[T]):
 
         raise NotImplementedError("Length is not implemented for other strategies")
 
-    async def length_is_known(self) -> bool:
+    async def final_length_is_known(self) -> bool:
         if self.stop_strategy == StopStrategy.RESTART_STRATEGY:
             return False
 
@@ -195,7 +195,7 @@ class MixtureDataset(AsyncDataset[T]):
 
         return final_batch  # type: ignore
 
-    async def async_getitem(self, index: int) -> T:
+    async def getitem_async(self, index: int) -> T:
         # simpler implementation because there's only one
         block_id = index // self.block_size
         index = index % self.block_size
@@ -205,7 +205,7 @@ class MixtureDataset(AsyncDataset[T]):
         dataset = self._dataset_of_id(dataset_id)
         dataset_index = (await self._remap_indices(dataset, [dataset_index]))[0]
 
-        return await dataset.async_getitem(dataset_index)
+        return await dataset.getitem_async(dataset_index)
 
     async def _remap_indices(self, ds, indices_into_ds):
         """

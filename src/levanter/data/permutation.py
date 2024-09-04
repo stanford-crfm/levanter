@@ -45,8 +45,8 @@ class PermutationDataset(AsyncDataset[T_co]):
     async def async_len(self) -> int:
         return await self.dataset.async_len()
 
-    async def length_is_known(self) -> bool:
-        return await self.dataset.length_is_known()
+    async def final_length_is_known(self) -> bool:
+        return await self.dataset.final_length_is_known()
 
     def is_finite(self) -> bool:
         return self.dataset.is_finite()
@@ -54,8 +54,8 @@ class PermutationDataset(AsyncDataset[T_co]):
     async def current_len(self) -> Optional[int]:
         return await self.dataset.current_len()
 
-    async def async_getitem(self, index: int) -> T_co:
-        return await self.dataset.async_getitem(self.permutation(index))
+    async def getitem_async(self, index: int) -> T_co:
+        return await self.dataset.getitem_async(self.permutation(index))
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         return await self.dataset.get_batch([self.permutation(i) for i in indices])
@@ -107,8 +107,8 @@ class EraShufflingDataset(AsyncDataset[T_co]):
     async def async_len(self) -> int:
         return await self.dataset.async_len()
 
-    async def length_is_known(self) -> bool:
-        return await self.dataset.length_is_known()
+    async def final_length_is_known(self) -> bool:
+        return await self.dataset.final_length_is_known()
 
     def is_finite(self) -> bool:
         return self.dataset.is_finite()
@@ -120,15 +120,15 @@ class EraShufflingDataset(AsyncDataset[T_co]):
             return None
 
         # if we have the final length, and it's the inner_current_len, then we can return the final length
-        if await self.length_is_known() and inner_current_len == await self.async_len():
+        if await self.final_length_is_known() and inner_current_len == await self.async_len():
             return inner_current_len
 
         # otherwise, we need to wait for the era to fill
         era = inner_current_len // self.era_length
         return era * self.era_length
 
-    async def async_getitem(self, index: int) -> T_co:
-        return await self.dataset.async_getitem(await self._get_index(index))
+    async def getitem_async(self, index: int) -> T_co:
+        return await self.dataset.getitem_async(await self._get_index(index))
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         return await self.dataset.get_batch([await self._get_index(i) for i in indices])

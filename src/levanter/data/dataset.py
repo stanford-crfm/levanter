@@ -75,8 +75,8 @@ class AsyncDataset(DatasetBase[T_co]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def length_is_known(self) -> bool:
-        """Returns whether the length of the dataset is known.
+    async def final_length_is_known(self) -> bool:
+        """Returns whether the final length of the dataset is known.
         If this returns False, the current_len of the dataset may change in the future."""
         raise NotImplementedError
 
@@ -93,12 +93,17 @@ class AsyncDataset(DatasetBase[T_co]):
         """
         Returns the current length of the dataset that won't require (expensive) waiting.
 
-        If the current length is not known, returns None. This can block (TODO: should it?) if the length is not known
-        yet but will be known in the future.
+        If the current length is not known, returns None. This might block temporarily for a short time to get the
+        current length.
         """
         raise NotImplementedError
 
-    async def async_getitem(self, index: int) -> T_co:
+    async def getitem_async(self, index: int) -> T_co:
+        """
+        Returns the item at the given index. Typically implemented as a wrapper around `get_batch`.
+
+        In general, it is better to call (and override) `get_batch` instead of this method.
+        """
         return (await self.get_batch([index]))[0]
 
     @abc.abstractmethod
@@ -106,7 +111,12 @@ class AsyncDataset(DatasetBase[T_co]):
         raise NotImplementedError
 
     async def wait_until_len_at_least(self, length: int) -> int:
-        """Returns the length of the dataset once it is at least `length` or if the dataset has a known length."""
+        """
+        Returns the length of the dataset once it is at least `length` or if the dataset has a known length.
+
+        The default implementation is a naive busy-wait loop. You should override this method for more efficient
+        implementations.
+        """
         return await naive_busy_wait_until_len_at_least(self, length)
 
     def as_sync_dataset(self):
@@ -121,7 +131,7 @@ class AsyncDataset(DatasetBase[T_co]):
 
 async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length: int) -> int:
     """You should probably implement this in a more efficient way. This is just a naive implementation."""
-    while not await dataset.length_is_known():
+    while not await dataset.final_length_is_known():
         current_len = await dataset.current_len()
         if current_len is None:
             raise ValueError("Dataset has unknown length")
@@ -153,7 +163,7 @@ class SyncifiedDataset(Dataset[T_co]):
         return self._run_coroutine(self.dataset.get_batch(indices))
 
     def __getitem__(self, index: int) -> T_co:
-        return self._run_coroutine(self.dataset.async_getitem(index))
+        return self._run_coroutine(self.dataset.getitem_async(index))
 
 
 class AsyncifiedDataset(AsyncDataset[T_co]):
@@ -163,7 +173,7 @@ class AsyncifiedDataset(AsyncDataset[T_co]):
     async def async_len(self) -> int:
         return len(self.dataset)
 
-    async def length_is_known(self) -> bool:
+    async def final_length_is_known(self) -> bool:
         return self.dataset.has_len()
 
     def is_finite(self) -> bool:
@@ -175,7 +185,7 @@ class AsyncifiedDataset(AsyncDataset[T_co]):
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         return self.dataset.get_batch(indices)
 
-    async def async_getitem(self, index: int) -> T_co:
+    async def getitem_async(self, index: int) -> T_co:
         return self.dataset[index]
 
     def __repr__(self):
@@ -224,7 +234,7 @@ class ListAsyncDataset(AsyncDataset[T]):
             await self.complete_promise
         return len(self.data)
 
-    async def length_is_known(self) -> bool:
+    async def final_length_is_known(self) -> bool:
         return self.is_complete
 
     def is_finite(self) -> bool:
@@ -280,8 +290,8 @@ class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
     async def async_len(self) -> int:
         return await self.dataset.async_len()
 
-    async def length_is_known(self) -> bool:
-        return await self.dataset.length_is_known()
+    async def final_length_is_known(self) -> bool:
+        return await self.dataset.final_length_is_known()
 
     def is_finite(self) -> bool:
         return self.dataset.is_finite()
@@ -298,8 +308,8 @@ class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
         items = await self.dataset.get_batch(indices)
         return [self._call_fn(i, item) for i, item in zip(indices, items)]
 
-    async def async_getitem(self, index: int) -> U:
-        return self._call_fn(index, await self.dataset.async_getitem(index))
+    async def getitem_async(self, index: int) -> U:
+        return self._call_fn(index, await self.dataset.getitem_async(index))
 
     async def wait_until_len_at_least(self, length: int) -> int:
         return await self.dataset.wait_until_len_at_least(length)
