@@ -559,7 +559,6 @@ async def test_mixed_order_batches_multiple_shards():
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_full_end_to_end_cache_simple():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
@@ -578,7 +577,6 @@ def test_full_end_to_end_cache_simple():
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
@@ -618,7 +616,6 @@ class _CustomException(Exception):
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataSource[list[int]]):
         def __init__(self, crash_point: int):
@@ -669,7 +666,6 @@ def test_cache_recover_from_crash():
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_no_hang_if_empty_shard_source():
     class EmptyShardSource(ShardedDataSource[list[int]]):
         @property
