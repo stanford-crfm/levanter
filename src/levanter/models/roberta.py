@@ -12,7 +12,7 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
-from haliax.nn.scan import Stacked
+from haliax.nn.scan import BlockSeq
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.compat.torch_serialization import (
@@ -482,27 +482,26 @@ class RobertaLayer(eqx.Module, StateDictSerializationMixin):
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output, key=k_o)
 
-        return layer_output
+        # jax.debug.print("{layer_output}", layer_output=layer_output)
+
+        return (layer_output, layer_output)
 
 
 class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
     config: RobertaConfig
     layer: BlockFoldable[RobertaLayer]
+    output_hidden_states: bool
 
     @staticmethod
-    def init(config: RobertaConfig, *, key) -> "RobertaEncoder":
-        S = Stacked
-        if not config.scan_layers:
-            from haliax.nn.scan import BlockSeq
-
-            S = BlockSeq
+    def init(config: RobertaConfig, output_hidden_states: bool, *, key) -> "RobertaEncoder":
+        S = BlockSeq
 
         layer = S.init(config.Layers, RobertaLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
             key=shaped_rng_split(key, config.num_hidden_layers), #TODO: config.gradient_checkpointing
         )
 
-        return RobertaEncoder(config, layer)
+        return RobertaEncoder(config, layer, output_hidden_states)
 
     @named_call
     def __call__(
@@ -514,14 +513,15 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
     ) -> Tuple[NamedArray]:
         
         keys = maybe_rng_split(key, self.config.num_hidden_layers) if key is not None else None
-        x = self.layer.fold(hidden_states, attention_mask, key=keys)
 
-        return x
+        x, intermediates = self.layer.scan(hidden_states, attention_mask, key=keys)
+
+        if not self.output_hidden_states:
+            return x, None
+        else:
+             return x, intermediates
     
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        if isinstance(self.layer, Stacked):
-            state_dict = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layer"))
-
         out = super().from_state_dict(state_dict, prefix=prefix)
         return out
 
@@ -529,11 +529,7 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
         my_state_dict: StateDict = {}
         super().update_state_dict(my_state_dict, prefix=prefix)
 
-        if isinstance(self.layer, Stacked):
-            stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layer"))
-            state_dict.update(stacked_dict)
-        else:
-            state_dict.update(my_state_dict)
+        state_dict.update(my_state_dict)
 
         return state_dict
 
@@ -638,15 +634,16 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
     encoder: RobertaEncoder
     embeddings: RobertaEmbedding
     pooler : Optional[RobertaPooler]
+    output_hidden_states: bool
 
     @staticmethod
-    def init(Vocab: Axis, config: RobertaConfig, add_pooling_layer: bool = True, *, key) -> "RobertaModel":
+    def init(Vocab: Axis, config: RobertaConfig, add_pooling_layer: bool = True, output_hidden_states: bool = False, *, key) -> "RobertaModel":
         k_t, k_emb, k_p = jrandom.split(key, 3)
-        encoder = RobertaEncoder.init(config=config, key=k_t)
+        encoder = RobertaEncoder.init(config=config, output_hidden_states=output_hidden_states, key=k_t)
         embeddings = RobertaEmbedding.init(Vocab, config, key=k_emb)
 
         pooler = RobertaPooler.init(config, key=k_p) if add_pooling_layer else None
-        return RobertaModel(encoder, embeddings, pooler)
+        return RobertaModel(encoder, embeddings, pooler, output_hidden_states)
 
     @property
     def config(self):
@@ -707,11 +704,14 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         attention_mask = (attention_mask == 0) * -jnp.inf
         
         embedding_output = self.embeddings.embed(input_ids, token_type_ids, position_ids, input_embeds, key=k_emb)
-        sequence_output = self.encoder(embedding_output, attention_mask=attention_mask, key=k_e)
+
+        encoder_outputs = self.encoder(embedding_output, attention_mask=attention_mask, key=k_e)
+        
+        sequence_output = encoder_outputs[0]
 
         pooled_output = self.pooler(sequence_output, key=k_p) if self.pooler is not None else None
 
-        return (sequence_output, pooled_output)
+        return (sequence_output, pooled_output) + encoder_outputs[1:] if self.output_hidden_states else (sequence_output, pooled_output)
 
 class RobertaLMHead(eqx.Module, StateDictSerializationMixin):
     """Roberta Head for masked language modeling."""
@@ -752,18 +752,19 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
     roberta: RobertaModel
     lm_head: RobertaLMHead
     Vocab: Axis
+    output_hidden_states: bool
 
     @classmethod
-    def init(self, Vocab: Axis, config: RobertaConfig, *, key):
+    def init(self, Vocab: Axis, config: RobertaConfig, output_hidden_states: bool = False, *, key):
 
         # if config.is_decoder:
         #     raise AttributeError("Model is being run as a MaskedLM aka an encoder model, but is_decoder is true")
 
         key_rob, key_head = jrandom.split(key, 2)
-        roberta = RobertaModel.init(Vocab, config, add_pooling_layer=False, key=key_rob)
+        roberta = RobertaModel.init(Vocab, config, add_pooling_layer=False, output_hidden_states=output_hidden_states, key=key_rob)
         lm_head = RobertaLMHead.init(Vocab, config, key=key_head)
 
-        return RobertaForMaskedLM(roberta, lm_head, Vocab)
+        return RobertaForMaskedLM(roberta, lm_head, Vocab, output_hidden_states)
 
     def get_output_embeddings(self):
         return self.lm_head.decoder
@@ -804,7 +805,7 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
 
         prediction_scores = self.lm_head(outputs[0], key=k_lm)
 
-        return prediction_scores
+        return (prediction_scores,) + outputs[2:]
     
     
 def _rotate_half(x: NamedArray) -> NamedArray:
