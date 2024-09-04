@@ -106,10 +106,6 @@ data:
 
 ### Mixture of Sources
 
-!!! warning
-
-    This feature is experimental and may change in the future.
-
 If you have multiple sources of data (e.g., multiple domains, or distinct subsets of data), you can use the `data` section of your training configuration to specify them:
 
 ```yaml
@@ -145,13 +141,13 @@ validation data.
 ## Data Preprocessing
 
 Levanter supports both online and offline preprocessing. Online preprocessing is done on-the-fly
-during training. With online preprocessing, you don't need to think about preprocessing your data.
+during training. With online preprocessing, you don't need to think about preprocessing your data
+except to make sure it's in the right format and where you'd like to store the cached preprocessing
+results.
 
 Our data loading pipeline will automatically break and concatenate documents into chunks equal
 to the model's `seq_len` parameter. It will also automatically add special tokens to the
 end of documents.
-
-We don't yet handle sequence-to-sequence tasks, but we plan to.
 
 ### Online Preprocessing
 
@@ -160,8 +156,7 @@ that builds a cache of preprocessed data on the fly. Online caching happens tran
 in the background, using the mostly-idle CPU-cores of the machine(s) you are training on.
 
 The cache that is built is fully reproducible, and can be used for future training runs.
-Training will start as soon as each training machine has its first shard of data cached
-and once the validation data is cached.
+Training will start as soon as the system has the data it needs.
 
 ### Offline Preprocessing
 
@@ -194,15 +189,24 @@ have custom preprocessing logic or Ray isn't working for you for some reason. To
 to write batches directly. Here's an example:
 
 ```python
+import numpy as np
+
 from levanter.store import SerialCacheWriter
 
-with SerialCacheWriter(cache_dir, rows_per_chunk=1024) as writer:
+exemplar = {
+    "input_ids": np.zeros((0), dtype=np.int32),
+    "attention_mask": np.zeros((0), dtype=np.int32),
+    "labels": np.zeros((0), dtype=np.int32),
+}
+
+with SerialCacheWriter(cache_dir, exemplar) as writer:
     for batch in process_batches():
+        # batch should be a list of dicts, each with keys "input_ids", "attention_mask", and "labels"
         writer.write_batch(batch)
 ```
 
-`batch` can be a `list[dict]`, `dict[list]`, or `pyarrow.RecordBatch`. To work with `train_lm`, it should have an
-`input_ids` key that is a list of `int`s.
+In this case, `batch` should be a list of dicts, each with keys `"input_ids"`, `"attention_mask"`, and `"labels"`.
+To work with `train_lm`, it should have an `input_ids` key that is a list of `int`s.
 
 To use a cache like this, you can use the `passthrough` tokenizer:
 

@@ -148,7 +148,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 
 
 @ray.remote(num_cpus=0.5, scheduling_strategy="SPREAD")
-class PriorityProcessorActor:
+class WorkQueueDispatcherActor:
     def __init__(self, max_in_flight: Optional[int] = 200):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self._queue: list[PriorityWorkItem] = []  # heapq
@@ -199,7 +199,7 @@ class PriorityProcessorActor:
             if self._processing_thread.is_alive():
                 self._processing_thread.join()
 
-    def _loop(self: "PriorityProcessorActor"):
+    def _loop(self: "WorkQueueDispatcherActor"):
         should_sleep = False
         backpressure_queue: list[ray.ObjectRef] = []
 

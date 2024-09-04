@@ -21,10 +21,10 @@ from levanter.data.dataset import AsyncDataset, T_co
 
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data._queue import (
-    PriorityProcessorActor,
     PriorityWorkItem,
     PriorityWorkTaskGroup,
     PriorityWorkTaskGroupSpec,
+    WorkQueueDispatcherActor,
     _BatchProcessorQueue,
 )
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
@@ -738,7 +738,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
                 worker_to_assign = (group_id + group_offset) % num_worker_groups
                 priority_actor_name = f"priority_processor.{worker_to_assign}"
 
-                reader_actor = PriorityProcessorActor.options(  # type: ignore
+                reader_actor = WorkQueueDispatcherActor.options(  # type: ignore
                     name=priority_actor_name, get_if_exists=True
                 ).remote()
 
