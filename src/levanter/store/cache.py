@@ -881,11 +881,6 @@ class TreeCache(AsyncDataset[T_co]):
             self._attempt_to_load_store()
             assert self._store_future.done()
 
-    def __del__(self):
-        self._stop = True
-        if self._monitor_thread is not None:
-            self._monitor_thread.join()
-
     @property
     def store(self) -> TreeStore[T_co]:
         return self._store_future.result()
