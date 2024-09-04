@@ -115,8 +115,8 @@ class AsyncDataset(DatasetBase[T_co]):
     def as_async_dataset(self) -> "AsyncDataset[T_co]":
         return self
 
-    def map(self, fn: Callable[[T_co], U]) -> "MappedAsyncDataset[T_co, U]":
-        return MappedAsyncDataset(self, fn)
+    def map(self, fn: Callable[[T_co], U], *extra_args, **extra_kwargs) -> "MappedAsyncDataset[T_co, U]":
+        return MappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
 
 
 async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length: int) -> int:
@@ -264,24 +264,18 @@ class ListAsyncDataset(AsyncDataset[T]):
         return len(self.data)
 
 
-class _Unspecified:
-    pass
-
-
-_UNSPECIFIED = _Unspecified()
-
-
 class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
     def __init__(
         self,
         dataset: AsyncDataset[T],
         fn: Callable[[T], U] | Callable[[T, Optional[PRNGKey]], U],
-        *,
-        key: Optional[PRNGKey] | _Unspecified = _UNSPECIFIED,
+        *extra_args,
+        **extra_kwargs,
     ):
         self.dataset = dataset
         self.fn = fn
-        self.key = key
+        self._extra_args = extra_args
+        self._extra_kwargs = extra_kwargs
 
     async def async_len(self) -> int:
         return await self.dataset.async_len()
@@ -295,25 +289,25 @@ class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
     async def current_len(self) -> Optional[int]:
         return await self.dataset.current_len()
 
-    async def async_getitem(self, index: int) -> U:
-        if self.key is not _UNSPECIFIED:
-            return self.fn(await self.dataset.async_getitem(index), self._maybe_fold_in_key(index))  # type: ignore
-        return self.fn(await self.dataset.async_getitem(index))  # type: ignore
-
-    def _maybe_fold_in_key(self, index):
-        key = self.key
+    def _maybe_fold_in_key(self, key, index):
         if key is not None:
-            key = jax.random.fold_in(self.key, index)
+            key = jax.random.fold_in(key, index)
         return key
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[U]:
-        # if self.key is not _UNSPECIFIED:
-        #     return [self.fn(await self.dataset.async_getitem(i), self._maybe_fold_in_key(i)) for i in indices]  # type: ignore
-        # return [self.fn(await self.dataset.async_getitem(i)) for i in indices]  # type: ignore
         items = await self.dataset.get_batch(indices)
-        if self.key is not _UNSPECIFIED:
-            return [self.fn(item, self._maybe_fold_in_key(i)) for i, item in zip(indices, items)]  # type: ignore
-        return [self.fn(item) for item in items]  # type: ignore
+        return [self._call_fn(i, item) for i, item in zip(indices, items)]
+
+    async def async_getitem(self, index: int) -> U:
+        return self._call_fn(index, await self.dataset.async_getitem(index))
 
     async def wait_until_len_at_least(self, length: int) -> int:
         return await self.dataset.wait_until_len_at_least(length)
+
+    def _call_fn(self, index, item):
+        if "key" in self._extra_kwargs:
+            key = self._maybe_fold_in_key(self._extra_kwargs["key"], index)
+            kwargs = {**self._extra_kwargs, "key": key}
+        else:
+            kwargs = self._extra_kwargs
+        return self.fn(item, *self._extra_args, **kwargs)
