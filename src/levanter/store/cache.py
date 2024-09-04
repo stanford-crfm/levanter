@@ -1088,7 +1088,10 @@ class TreeCache(AsyncDataset[T_co]):
                     if str(e).startswith("Failed to submit task to actor"):
                         logger.warning("Cache builder actor is gone. Stopping monitoring.")
                         break
-                self._attempt_to_load_store()
+                try:
+                    self._attempt_to_load_store()
+                except FileNotFoundError:
+                    pass
             except Exception as e:
                 self.logger.exception("Error while reading metrics from shard cache.")
                 raise e
