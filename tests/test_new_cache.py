@@ -710,7 +710,6 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         check_datasets_equal(list(cache[:]), expected)
 
 
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.asyncio
 @pytest.mark.ray
 async def test_can_get_elems_before_finished():
@@ -871,7 +870,6 @@ def test_shard_cache_fails_gracefully_with_unknown_file_type():
         del cache
 
 
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 @pytest.mark.asyncio
 async def test_backpressure_mechanism():
