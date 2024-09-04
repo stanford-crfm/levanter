@@ -667,7 +667,6 @@ def test_cache_recover_from_crash():
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_no_hang_if_empty_shard_source():
     class EmptyShardSource(ShardedDataSource[list[int]]):
         @property
@@ -683,7 +682,6 @@ def test_no_hang_if_empty_shard_source():
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_chunk_ordering_is_correct_with_slow_shards():
     class SlowShardSource(ShardedDataSource[list[int]]):
         @property
