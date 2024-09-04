@@ -1,5 +1,5 @@
 from ._preprocessor import BatchProcessor
-from .dataset import AsyncDataset, Dataset, ListAsyncDataset, MappedAsyncDataset
+from .dataset import AsyncDataset, ListAsyncDataset, MappedAsyncDataset, SyncDataset
 from .loader import DataLoader
 from .mixture import MixtureDataset, StopStrategy
 from .permutation import EraShufflingDataset, PermutationDataset
@@ -16,7 +16,7 @@ __all__ = [
     "BatchProcessor",
     "AsyncDataset",
     "MappedAsyncDataset",
-    "Dataset",
+    "SyncDataset",
     "ListAsyncDataset",
     "DataLoader",
     "MixtureDataset",

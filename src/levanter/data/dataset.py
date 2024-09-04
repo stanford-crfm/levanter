@@ -23,56 +23,17 @@ _executor = ThreadPoolExecutor(max_workers=10)
 
 
 class DatasetBase(abc.ABC, Generic[T_co]):
+    """
+    Base class for sync and async datasets. This class is not meant to be used directly.
+    """
+
     @abc.abstractmethod
     def as_async_dataset(self) -> "AsyncDataset[T_co]":
         raise NotImplementedError("...")
 
     @abc.abstractmethod
-    def as_sync_dataset(self) -> "Dataset[T_co]":
+    def as_sync_dataset(self) -> "SyncDataset[T_co]":
         raise NotImplementedError("...")
-
-
-class Dataset(DatasetBase[T_co]):
-    """
-    A synchronous dataset that can be used with regular Python syntax. In Levanter, we mainly do not use this class.
-    You can use this class if it's easier, then convert it to an AsyncDataset using `as_async_dataset`. This
-    is not as efficient as using an AsyncDataset directly, but it can be useful for testing or for simpler code.
-    """
-
-    @abc.abstractmethod
-    def __len__(self) -> int:
-        """
-        Returns the final length of the data store.
-        May raise if the length is not known.
-        """
-
-    @abc.abstractmethod
-    def has_len(self) -> bool:
-        """
-        Whether the data store currently has a known length. If this returns False, then the length of the data store
-        may change in the future.
-        """
-        pass
-
-    @abc.abstractmethod
-    def current_len(self) -> Optional[int]:
-        """
-        Returns the current length of the data store. If the length is infinite or not known, returns None.
-        """
-        pass
-
-    def __getitem__(self, index: int) -> T_co:
-        return self.get_batch([index])[0]
-
-    @abc.abstractmethod
-    def get_batch(self, indices: Sequence[int] | np.ndarray) -> Sequence[T_co]:
-        pass
-
-    def as_async_dataset(self) -> "AsyncDataset[T_co]":
-        return AsyncifiedDataset(self)
-
-    def as_sync_dataset(self) -> "Dataset[T_co]":
-        return self
 
 
 class AsyncDataset(DatasetBase[T_co]):
@@ -167,7 +128,50 @@ async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length
     return await dataset.async_len()
 
 
-class SyncifiedDataset(Dataset[T_co]):
+class SyncDataset(DatasetBase[T_co]):
+    """
+    A synchronous dataset that can be used with regular Python syntax. In Levanter, we mainly do not use this class.
+    You can use this class if it's easier, then convert it to an AsyncDataset using `as_async_dataset`. This
+    is not as efficient as using an AsyncDataset directly, but it can be useful for testing or for simpler code.
+    """
+
+    @abc.abstractmethod
+    def __len__(self) -> int:
+        """
+        Returns the final length of the data store.
+        May raise if the length is not known.
+        """
+
+    @abc.abstractmethod
+    def has_len(self) -> bool:
+        """
+        Whether the data store currently has a known length. If this returns False, then the length of the data store
+        may change in the future.
+        """
+        pass
+
+    @abc.abstractmethod
+    def current_len(self) -> Optional[int]:
+        """
+        Returns the current length of the data store. If the length is infinite or not known, returns None.
+        """
+        pass
+
+    def __getitem__(self, index: int) -> T_co:
+        return self.get_batch([index])[0]
+
+    @abc.abstractmethod
+    def get_batch(self, indices: Sequence[int] | np.ndarray) -> Sequence[T_co]:
+        pass
+
+    def as_async_dataset(self) -> "AsyncDataset[T_co]":
+        return AsyncifiedDataset(self)
+
+    def as_sync_dataset(self) -> "SyncDataset[T_co]":
+        return self
+
+
+class SyncifiedDataset(SyncDataset[T_co]):
     def __init__(self, dataset: AsyncDataset[T_co]):
         self.dataset = dataset
 
@@ -191,7 +195,7 @@ class SyncifiedDataset(Dataset[T_co]):
 
 
 class AsyncifiedDataset(AsyncDataset[T_co]):
-    def __init__(self, dataset: Dataset[T_co]):
+    def __init__(self, dataset: SyncDataset[T_co]):
         self.dataset = dataset
 
     async def async_len(self) -> int:
@@ -277,6 +281,13 @@ class ListAsyncDataset(AsyncDataset[T]):
 
 
 class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
+    """
+    A dataset that applies a function to each item in the dataset.
+    You can pass extra arguments to the function using `*extra_args` and `**extra_kwargs`.
+    If a kwarg called `key` is passed, it will be treated as a PRNGKey and folded in with the index of the item
+    for each call to the function.
+    """
+
     def __init__(
         self,
         dataset: AsyncDataset[T],
