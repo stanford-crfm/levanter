@@ -49,7 +49,7 @@ def main(config: VizGpt2Config):
         CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
         32,
         config.trainer.device_mesh,
-        config.trainer.axis_resources,
+        config.trainer.compute_axis_mapping,
     )
 
     # some axes we use outside the model proper
