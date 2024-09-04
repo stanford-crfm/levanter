@@ -19,7 +19,7 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
 
-from levanter.data.dataset import AsyncDataset, T_co
+from levanter.data.dataset import AsyncDataset
 
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data._queue import (
@@ -44,6 +44,7 @@ from .tree_store import TreeStore
 
 T = TypeVar("T")
 U = TypeVar("U")
+T_co = TypeVar("T_co", covariant=True)
 
 logger = pylogging.getLogger(__name__)
 

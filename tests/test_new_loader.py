@@ -9,7 +9,7 @@ import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
 
-from levanter.data.dataset import AsyncDataset, SequenceDataset, T_co
+from levanter.data.dataset import AsyncDataset, ListAsyncDataset
 from levanter.data.loader import DataLoader, check_sharded_consistency
 
 from .test_utils import skip_if_not_enough_devices
@@ -18,7 +18,7 @@ from .test_utils import skip_if_not_enough_devices
 def _small_dataset(seq_len=128, num_sequences=200) -> AsyncDataset[Sequence[int]]:
     sequences = [np.arange(seq_len) + 1000 * i for i in range(num_sequences)]
 
-    return SequenceDataset(sequences).as_async_dataset()
+    return ListAsyncDataset(sequences, is_complete=True)
 
 
 @skip_if_not_enough_devices(2)
@@ -63,11 +63,11 @@ def test_local_batched_data_loading_model_axis_1():
 
 
 class StructuredDataset(AsyncDataset):
-    def __init__(self, seq_len, begin, end, stride):
+    def __init__(self, seq_len):
         self.seq_len = seq_len
-        self.begin = begin
-        self.end = end
-        self.stride = stride
+        self.begin = 0
+        self.end = 256
+        self.stride = 1
 
     async def async_len(self) -> int:
         return (self.end - self.begin) // self.stride
@@ -83,10 +83,6 @@ class StructuredDataset(AsyncDataset):
             },
         }
 
-    def __iter__(self):
-        for i in range(self.begin, self.end, self.stride):
-            yield self[i]
-
     async def final_length_is_known(self) -> bool:
         return True
 
@@ -96,7 +92,7 @@ class StructuredDataset(AsyncDataset):
     async def current_len(self) -> Optional[int]:
         return await self.async_len()
 
-    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+    async def get_batch(self, indices: Sequence[int]):
         out = await asyncio.gather(*(self.getitem_async(i) for i in indices))
         return out
 
@@ -111,7 +107,7 @@ def test_structured_batches_model_axis_1():
     )
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
-        dataset = StructuredDataset(seq_len, 0, 256, 1)
+        dataset = StructuredDataset(seq_len)
         Batch = Axis("batch", len(devices))
         loader = DataLoader(Batch, dataset, max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
@@ -131,7 +127,7 @@ def test_structured_batches_model_axis_2():
     )
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
-        dataset = StructuredDataset(seq_len, 0, 256, 1)
+        dataset = StructuredDataset(seq_len)
         Batch = Axis("batch", len(devices))
         loader = DataLoader(Batch, dataset, max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
@@ -157,7 +153,7 @@ class StructuredDatasetWithNames(AsyncDataset):
     async def current_len(self) -> Optional[int]:
         return True
 
-    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+    async def get_batch(self, indices: Sequence[int]):
         out = await asyncio.gather(*(self.getitem_async(i) for i in indices))
         return out
 

@@ -33,6 +33,12 @@ class DatasetBase(abc.ABC, Generic[T_co]):
 
 
 class Dataset(DatasetBase[T_co]):
+    """
+    A synchronous dataset that can be used with regular Python syntax. In Levanter, we mainly do not use this class.
+    You can use this class if it's easier, then convert it to an AsyncDataset using `as_async_dataset`. This
+    is not as efficient as using an AsyncDataset directly, but it can be useful for testing or for simpler code.
+    """
+
     @abc.abstractmethod
     def __len__(self) -> int:
         """
@@ -70,6 +76,17 @@ class Dataset(DatasetBase[T_co]):
 
 
 class AsyncDataset(DatasetBase[T_co]):
+    """
+    An asynchronous dataset that can be used with async/await syntax. In Levanter, we use AsyncDataset for two purposes:
+    * To represent datasets that are inherently asynchronous (e.g. reading from disk, network, etc.).
+    * To represent datasets that are still being constructed.
+
+    The core methods in this class are:
+    * `async_len`: Returns the final length of the dataset.
+    * `get_batch`: Returns a batch of items from the dataset.
+    * `current_len`: Returns the current length of the dataset. This may be None if no current length is known.
+    """
+
     @abc.abstractmethod
     async def async_len(self) -> int:
         raise NotImplementedError
@@ -112,7 +129,7 @@ class AsyncDataset(DatasetBase[T_co]):
 
     async def wait_until_len_at_least(self, length: int) -> int:
         """
-        Returns the length of the dataset once it is at least `length` or if the dataset has a known length.
+        Returns the length of the dataset once it is at least `length` or if the dataset has a known (finished) length.
 
         The default implementation is a naive busy-wait loop. You should override this method for more efficient
         implementations.
@@ -130,7 +147,14 @@ class AsyncDataset(DatasetBase[T_co]):
 
 
 async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length: int) -> int:
-    """You should probably implement this in a more efficient way. This is just a naive implementation."""
+    """
+    Runs a busy-wait loop until the dataset has at least `length` items or the final length is known.
+
+    Returns the current length of the dataset when either the dataset has at least `length` items or the final length is
+    known.
+
+    You should probably implement this in a more efficient way. This is just a naive implementation.
+    """
     while not await dataset.final_length_is_known():
         current_len = await dataset.current_len()
         if current_len is None:
@@ -195,36 +219,14 @@ class AsyncifiedDataset(AsyncDataset[T_co]):
         return f"WrappedAsyncDataset({str(self.dataset)})"
 
 
-class SequenceDataset(Dataset[T_co]):
-    """Minimal implementation of a dataset that wraps a sequence. Mostly for testing purposes."""
-
-    def __init__(self, data: Sequence[T_co]):
-        self.data = data
-
-    def __len__(self) -> int:
-        return len(self.data)
-
-    def has_len(self) -> bool:
-        return True
-
-    def current_len(self) -> Optional[int]:
-        return len(self.data)
-
-    def __getitem__(self, idx: int) -> T_co:
-        return self.data[idx]
-
-    def get_batch(self, indices: Sequence[int] | np.ndarray) -> Sequence[T_co]:
-        return [self.data[i] for i in indices]
-
-
 class ListAsyncDataset(AsyncDataset[T]):
     """
     A simple dataset that wraps a list. Mostly for testing.
     """
 
-    def __init__(self, data: list[T]):
+    def __init__(self, data: list[T], is_complete: bool = False):
         self.data = data
-        self.is_complete = False
+        self.is_complete = is_complete
         self.complete_promise: asyncio.Future[None] = asyncio.Future()
         self.length_updated = asyncio.Condition()
 

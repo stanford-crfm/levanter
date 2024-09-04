@@ -5,29 +5,26 @@ import pytest
 
 from levanter.data import EraShufflingDataset, PermutationDataset
 from levanter.data._prp import Permutation
-from levanter.data.dataset import AsyncifiedDataset, ListAsyncDataset, SequenceDataset
+from levanter.data.dataset import ListAsyncDataset
 
 
 @pytest.mark.asyncio
 async def test_length_of_sequence_dataset_is_accurate():
     data = [1, 2, 3]
-    dataset = SequenceDataset(data)
-    assert len(dataset) == 3
+    dataset = ListAsyncDataset(data)
+    assert (await dataset.current_len()) == 3
+    assert not (await dataset.final_length_is_known())
+    dataset.finalize()
+    assert (await dataset.current_len()) == 3
+    assert await dataset.final_length_is_known()
+    assert (await dataset.async_len()) == 3
 
 
 @pytest.mark.asyncio
-async def test_sequence_dataset_get_item_returns_correct_item():
+async def test_list_dataset_get_item_returns_correct_item():
     data = ["a", "b", "c"]
-    dataset = SequenceDataset(data)
-    assert dataset[1] == "b"
-
-
-@pytest.mark.asyncio
-async def test_wrapped_async_dataset_async_len_matches_sync_len():
-    data = [1, 2, 3]
-    dataset = SequenceDataset(data)
-    wrapped_dataset = AsyncifiedDataset(dataset)
-    assert await wrapped_dataset.async_len() == 3
+    dataset = ListAsyncDataset(data)
+    assert await dataset.getitem_async(1) == "b"
 
 
 @pytest.mark.asyncio
@@ -43,10 +40,9 @@ async def test_list_async_dataset_appends_and_finalizes_correctly():
 async def test_permutation_dataset_is_at_least_sometimes_permuted():
     for seed in range(10):
         data = [1, 2, 3, 4]
-        dataset = SequenceDataset(data)
-        wrapped_dataset = AsyncifiedDataset(dataset)
+        dataset = ListAsyncDataset(data, is_complete=True)
         permutation = Permutation(4, jax.random.PRNGKey(seed))
-        permuted_dataset = PermutationDataset(wrapped_dataset, permutation)
+        permuted_dataset = PermutationDataset(dataset, permutation)
         if await permuted_dataset.get_batch([0, 1, 2, 3]) != [1, 2, 3, 4]:
             return
 
@@ -56,7 +52,7 @@ async def test_permutation_dataset_is_at_least_sometimes_permuted():
 @pytest.mark.asyncio
 async def test_era_shuffling_dataset_returns_correct_length():
     data = list(range(100))
-    dataset = ListAsyncDataset(data)
+    dataset = ListAsyncDataset(data, is_complete=False)
     era_length = 10
     key = jax.random.PRNGKey(0)
     shuffling_dataset = EraShufflingDataset(dataset, era_length, key=key)
