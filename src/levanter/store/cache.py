@@ -1099,8 +1099,12 @@ class TreeCache(AsyncDataset[T_co]):
                 except FileNotFoundError:
                     pass
             except Exception as e:
-                self.logger.exception("Error while reading metrics from shard cache.")
-                raise e
+                if str(e).startswith("Failed to submit task to actor"):
+                    logger.warning("Cache builder actor is gone. Stopping monitoring.")
+                    break
+                else:
+                    self.logger.exception("Error while reading metrics from shard cache.")
+                    raise e
 
 
 def _ledger_to_metrics(ledger: CacheLedger) -> InProgressCacheMetrics:
