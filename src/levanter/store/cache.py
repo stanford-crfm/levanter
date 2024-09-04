@@ -5,6 +5,7 @@ import logging as pylogging
 import os
 import threading
 import time
+from asyncio import InvalidStateError
 from concurrent.futures import Future as threading_Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -787,7 +788,10 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
 
         logger.exception(f"Writer task {shard_name} failed with exception", exc_info=info)
 
-        self._finished_promise.set_exception(info[1])
+        try:
+            self._finished_promise.set_exception(info[1])
+        except InvalidStateError:
+            pass
         self._do_notify()
 
     def _do_notify(self):
