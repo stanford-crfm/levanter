@@ -111,10 +111,7 @@ def test_mistral_roundtrip(num_kv_heads):
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            converter.default_config.model_type,
-            converter.default_config,
-            f"{tmpdir}/torch_model",
-            resize_vocab_to_match_tokenizer=False,
+            converter.default_config.model_type, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
         def compute(input):

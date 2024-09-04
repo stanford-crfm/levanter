@@ -90,7 +90,7 @@ def train(config: TrainArgs):
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         # load untrainable params in compute precision to save memory
         model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            model_config.model_type, model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+            model_config.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
         )
 
         # Major difference from Alpaca: we loraize the model.

@@ -65,7 +65,7 @@ class GemmaConfig(HFCompatConfig):
         rope_scaling (Dict, ignored): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
-    activation_function: str = "gelu"
+    activation_function: str = "gelu_new"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
 
@@ -130,7 +130,7 @@ class GemmaConfig(HFCompatConfig):
         if hf_config.hidden_activation:
             activation_function = hf_config.hidden_activation
         else:
-            activation_function = hf_config.hidden_act
+            activation_function = "gelu_pytorch_tanh"
 
         if activation_function == "gelu_pytorch_tanh":
             activation_function = "gelu_new"

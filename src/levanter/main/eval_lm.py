@@ -104,7 +104,7 @@ def main(config: EvalLmConfig):
             converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             model_from_hf_checkpoint = converter.load_pretrained(
-                model_config.model_type, model_config, config.hf_checkpoint, dtype=mp.compute_dtype
+                model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
             )
             loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 
