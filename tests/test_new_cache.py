@@ -812,9 +812,8 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
-@pytest.mark.asyncio
 @pytest.mark.ray
-async def test_shard_cache_fails_gracefully_with_unknown_file_type():
+def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
         with open(f"{tmpdir}/data.not_a_real_extension", "w") as f:
             f.write("")
@@ -831,7 +830,7 @@ async def test_shard_cache_fails_gracefully_with_unknown_file_type():
         cache = build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=False)
 
         with pytest.raises(ValueError):
-            await cache.get_batch([0])
+            cache.get_batch_sync([0])
 
         with pytest.raises(ValueError):
             cache.await_finished(timeout=10)
@@ -847,45 +846,41 @@ async def test_backpressure_mechanism():
             parent, exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=1
         )
 
-        try:
-            # Simulate batches being processed
-            shard1_batch = [np.array([1, 2, 3])]
-            shard2_batch = [np.array([4, 5, 6])]
-            shard3_batch = [np.array([7, 8, 9])]
+        # Simulate batches being processed
+        shard1_batch = [np.array([1, 2, 3])]
+        shard2_batch = [np.array([4, 5, 6])]
+        shard3_batch = [np.array([7, 8, 9])]
 
-            # await writer.batch_finished.remote("shard1", 0, shard1_batch)
-            await writer.batch_finished.remote("shard2", 0, shard2_batch)
-            await writer.batch_finished.remote("shard3", 0, shard3_batch)
-            await writer.batch_finished.remote("shard1", 1, shard3_batch)
-            await writer.batch_finished.remote("shard1", 2, shard3_batch)
-            await writer.batch_finished.remote("shard1", 3, shard3_batch)
+        # await writer.batch_finished.remote("shard1", 0, shard1_batch)
+        await writer.batch_finished.remote("shard2", 0, shard2_batch)
+        await writer.batch_finished.remote("shard3", 0, shard3_batch)
+        await writer.batch_finished.remote("shard1", 1, shard3_batch)
+        await writer.batch_finished.remote("shard1", 2, shard3_batch)
+        await writer.batch_finished.remote("shard1", 3, shard3_batch)
 
-            # Check if backpressure is signaled
-            is_overwhelmed = await writer.is_overwhelmed.remote()
-            assert is_overwhelmed is True
+        # Check if backpressure is signaled
+        is_overwhelmed = await writer.is_overwhelmed.remote()
+        assert is_overwhelmed is True
 
-            for i in range(4):
-                if (await parent.desired_next_item.remote()) == 0:
-                    break
+        for i in range(4):
+            if (await parent.desired_next_item.remote()) == 0:
+                break
 
-                await asyncio.sleep(0.1 * (i + 1) * (i + 1))
-            else:
-                assert False, "Backpressure wasn't sent"
+            await asyncio.sleep(0.1 * (i + 1) * (i + 1))
+        else:
+            assert False, "Backpressure wasn't sent"
 
-            await writer.batch_finished.remote("shard1", 0, shard1_batch)
+        await writer.batch_finished.remote("shard1", 0, shard1_batch)
 
-            # Reduce the queue size to relieve backpressure
-            # Check if backpressure is relieved
-            is_overwhelmed = await writer.is_overwhelmed.remote()
-            assert is_overwhelmed is False
+        # Reduce the queue size to relieve backpressure
+        # Check if backpressure is relieved
+        is_overwhelmed = await writer.is_overwhelmed.remote()
+        assert is_overwhelmed is False
 
-            for i in range(4):
-                if (await parent.desired_next_item.remote()) is None:
-                    break
+        for i in range(4):
+            if (await parent.desired_next_item.remote()) is None:
+                break
 
-                await asyncio.sleep(0.1 * (i + 1) * (i + 1))
-            else:
-                assert False, "Backpressure wasn't relieved"
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
+            await asyncio.sleep(0.1 * (i + 1) * (i + 1))
+        else:
+            assert False, "Backpressure wasn't relieved"
