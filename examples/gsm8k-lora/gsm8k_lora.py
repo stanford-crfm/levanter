@@ -161,11 +161,8 @@ def train(config: TrainArgs):
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            config.model.model_type,
-            converter.default_config,
-            axis_mapping=parameter_axis_mapping,
-            dtype=trainer.mp.compute_dtype,
+        model: LmHeadModel = converter.load_pretrained(
+            config.model.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
         )
 
         # Major difference from Alpaca: we loraize the model.

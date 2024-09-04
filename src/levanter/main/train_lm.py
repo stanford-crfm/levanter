@@ -147,7 +147,7 @@ def main(config: TrainLmConfig):
                 gc.collect()
                 model = converter.load_pretrained(
                     config.model.model_type,
-                    config.model,
+                    config=config.model if not config.use_hf_model_config else None,
                     axis_mapping=parameter_axis_mapping,
                     dtype=trainer.mp.compute_dtype,
                 )

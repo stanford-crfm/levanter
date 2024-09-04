@@ -86,7 +86,7 @@ def test_llama_roundtrip():
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            LlamaLMHeadModel, config, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            LlamaLMHeadModel, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
         @hax.named_jit
