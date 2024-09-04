@@ -1,4 +1,5 @@
 import asyncio
+import concurrent
 import dataclasses
 import heapq
 import logging as pylogging
@@ -792,6 +793,8 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             self._finished_promise.set_exception(info[1])
         except InvalidStateError:
             pass
+        except concurrent.futures.InvalidStateError:
+            pass
         self._do_notify()
 
     def _do_notify(self):
@@ -1061,7 +1064,10 @@ class TreeCache(AsyncDataset[T_co]):
                 store = TreeStore.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
             else:
                 raise
-        self._store_future.set_result(store)
+        try:
+            self._store_future.set_result(store)
+        except concurrent.futures.InvalidStateError:
+            pass
 
     def attach_metrics_monitor(self, monitor: MetricsMonitor):
         if self._broker is None:
