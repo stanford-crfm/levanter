@@ -866,6 +866,8 @@ def test_shard_cache_fails_gracefully_with_unknown_file_type():
         del cache
 
 
+@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+@pytest.mark.ray
 @pytest.mark.asyncio
 async def test_backpressure_mechanism():
     parent = PretendParent.remote()
