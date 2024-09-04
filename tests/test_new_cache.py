@@ -813,6 +813,33 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
 
 
 @pytest.mark.ray
+@pytest.mark.asyncio
+async def test_shard_cache_fails_gracefully_with_unknown_file_type_async():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(f"{tmpdir}/data.not_a_real_extension", "w") as f:
+            f.write("")
+
+        dataset = TextUrlDataSource(
+            [f"{tmpdir}/data.not_a_real_extension"],
+        )
+
+        with pytest.raises(ValueError):
+            build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
+
+        # now make sure it works in non-blocking mode
+
+        cache = build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=False)
+
+        with pytest.raises(ValueError):
+            await cache.get_batch([0])
+
+        with pytest.raises(ValueError):
+            cache.await_finished(timeout=10)
+
+        del cache
+
+
+@pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
         with open(f"{tmpdir}/data.not_a_real_extension", "w") as f:
@@ -834,6 +861,8 @@ def test_shard_cache_fails_gracefully_with_unknown_file_type():
 
         with pytest.raises(ValueError):
             cache.await_finished(timeout=10)
+
+        del cache
 
 
 @pytest.mark.asyncio

@@ -163,7 +163,6 @@ class TreeStore(Generic[T]):
         # TODO: would be better to batch these up
         grouped = jtu.tree_map(lambda reader: reader.get_batch_sync(indices), self.tree, is_leaf=heuristic_is_leaf)
 
-        # awaited_leaves = await asyncio.gather(*leaves)
         out = [jtu.tree_map(lambda _, leaf: leaf[i], self.tree, grouped) for i in range(len(indices))]
 
         return out

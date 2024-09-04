@@ -872,6 +872,7 @@ class TreeCache(AsyncDataset[T_co]):
         name = os.path.join(*cache_dir.split("/")[-2:])
         self.logger = pylogging.getLogger(f"TreeCache.{name}")
         self._store_future: threading_Future[TreeStore] = threading_Future()
+        self._stop = False
 
         if self._broker is not None:
             self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
@@ -879,6 +880,11 @@ class TreeCache(AsyncDataset[T_co]):
         else:
             self._attempt_to_load_store()
             assert self._store_future.done()
+
+    def __del__(self):
+        self._stop = True
+        if self._monitor_thread is not None:
+            self._monitor_thread.join()
 
     @property
     def store(self) -> TreeStore[T_co]:
@@ -932,6 +938,32 @@ class TreeCache(AsyncDataset[T_co]):
         if self._broker is not None:
             while needed_len > await self.current_len():
                 new_ledger = await self._broker.updated_ledger.remote()
+
+                if needed_len <= new_ledger.total_num_rows:
+                    break
+
+                if new_ledger.is_finished:
+                    if needed_len >= new_ledger.rows_finished:
+                        raise IndexError(
+                            f"Index {needed_len} out of bounds for cache of size {new_ledger.total_num_rows}"
+                        )
+                    break
+        else:
+            if needed_len > len(self.store):
+                raise IndexError(f"Index {needed_len} out of bounds for cache of size {len(self.store)}")
+
+    def _wait_for_len_sync(self, needed_len, timeout: Optional[float] = None):
+        time_in = time.time()
+        t_max = time_in + (timeout or 1e6)
+        if self._broker is not None:
+            while needed_len > len(self.store):
+                cur_time = time.time()
+                if cur_time > t_max:
+                    raise TimeoutError(f"Timed out waiting for cache to reach {needed_len}")
+                try:
+                    new_ledger = ray.get(self._broker.updated_ledger.remote(), timeout=max(t_max - cur_time, 10))
+                except TimeoutError:
+                    continue
 
                 if needed_len <= new_ledger.total_num_rows:
                     break
@@ -1001,14 +1033,17 @@ class TreeCache(AsyncDataset[T_co]):
                 raise IndexError(f"Index {item} out of bounds for cache of size {len(self)}")
             return self.store[item]
 
-    def get_batch_sync(self, indices_or_slice, *, timeout=None):
+    def get_batch_sync(self, indices_or_slice, *, timeout: Optional[float] = None):
         store = self.store
-
         if isinstance(indices_or_slice, slice):
             start, step, stop = self._get_start_stops(indices_or_slice)
-            return store.get_batch_sync(range(start, stop, step))
-        else:
-            return store.get_batch_sync(indices_or_slice)
+            indices_or_slice = range(start, stop, step)
+
+        max_index = max(indices_or_slice)
+
+        self._wait_for_len_sync(max_index + 1, timeout=timeout)
+
+        return store.get_batch_sync(indices_or_slice)
 
     def _get_start_stops(self, slice):
         start = slice.start or 0
@@ -1079,7 +1114,7 @@ class TreeCache(AsyncDataset[T_co]):
         self._metrics_monitors.append(monitor)
 
     def _monitor_metrics(self):
-        while True:
+        while not self._stop:
             try:
                 try:
                     ledger = ray.get(self._broker.updated_ledger.remote(), timeout=10.0)
