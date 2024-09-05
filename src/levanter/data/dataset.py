@@ -259,6 +259,8 @@ class ListAsyncDataset(AsyncDataset[T]):
         return [self.data[i] for i in indices]
 
     def append(self, item: T):
+        if self.is_complete:
+            raise ValueError("Cannot append to a finalized dataset")
         self.data.append(item)
         asyncio.create_task(self.notify_length_update())
 
