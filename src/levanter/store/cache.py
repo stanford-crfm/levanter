@@ -223,6 +223,7 @@ class _OrderedCacheWriter:
     def __init__(
         self,
         parent,
+        name,
         exemplar,
         batch_size,
         cache_dir: str,
@@ -237,10 +238,12 @@ class _OrderedCacheWriter:
             self.batch_size = batch_size
             self._min_items_to_write = min_items_to_write
             self._failed = False
+            self._logger = pylogging.getLogger(name)
 
             # these are batches that we've received but haven't ordered them for writing yet
             self._batch_queue = GroupRoundRobinBuffer(shards)  # type: ignore
             self._total_queue_length = 0
+            self._was_overwhelmed = False  # whether the queue has gotten too big
             # writes are very slow (~2s) so we want to batch them up
             self._ordered_but_unwritten_items: list = []
             self._batches_in_next_write_by_shard: dict[str, int] = {shard: 0 for shard in shards}
@@ -256,7 +259,7 @@ class _OrderedCacheWriter:
             # we also have to tell the queue how many rows for each shard we've already written
             for shard, num_rows in self._ledger.shard_rows.items():
                 if num_rows > 0:
-                    logger.info(f"Already written {num_rows} rows for shard {shard}")
+                    self._logger.info(f"Already written {num_rows} rows for shard {shard}")
 
                 # careful: this is in terms of batch size
                 # Have to round up to the nearest batch size
@@ -271,7 +274,7 @@ class _OrderedCacheWriter:
     def batch_finished(self, shard_name: str, shard_batch_idx: int, batch_result_box):
         with log_failures_to(self._parent):
             if self._failed:
-                logger.warning("Received batch after failure. Ignoring.")
+                self._logger.warning("Received batch after failure. Ignoring.")
                 return
 
             if isinstance(batch_result_box, RefBox):
@@ -279,22 +282,22 @@ class _OrderedCacheWriter:
             else:
                 batch_result = batch_result_box
 
-            was_overwhelmed = self.is_overwhelmed()
-
             # we need to keep track of the order of the batches so that we can write them out in order
             self._total_queue_length += len(batch_result)
             self._batch_queue.append_to_group(shard_name, shard_batch_idx, batch_result)
             self._attempt_to_write_batches()
             next_missing_item = self._batch_queue.next_missing_item_index()
 
-            if self.is_overwhelmed():
-                logger.warning("Writer is overwhelmed. Signaling backpressure.")
+            overwhelmed = self.is_overwhelmed()
+            if overwhelmed:
+                if not self._was_overwhelmed:
+                    self._logger.warning(f"Writer queue is getting long ({self._total_queue_length}).")
                 self._parent.signal_backpressure.remote(next_missing_item)
-            elif was_overwhelmed:
-                logger.info("Writer is no longer overwhelmed. Signaling backpressure.")
+            elif self._was_overwhelmed:
+                self._logger.info(f"Writer queue is no longer overwhelmed ({self._total_queue_length}).")
                 self._parent.signal_backpressure.remote(None)
 
-            return
+            self._was_overwhelmed = overwhelmed
 
     def shard_failed(self, shard_name: str, batch_id: int, exc_info: ExceptionInfo):
         with log_failures_to(self._parent):
@@ -416,8 +419,8 @@ class _OrderedCacheWriter:
         return futures_to_await_shards, need_to_commit_for_shards
 
     def is_overwhelmed(self) -> bool:
-        max_queue_size = self._min_items_to_write * 2
-        return self._total_queue_length + len(self._ordered_but_unwritten_items) > max_queue_size
+        max_queue_size = self._min_items_to_write * 3
+        return self._total_queue_length > max_queue_size
 
 
 def _to_list_of_dicts(batch: dict) -> List[dict]:
@@ -672,7 +675,13 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         name = f"broker::{path_for_name}"
         self.logger = pylogging.getLogger(f"{name}")
         self._cache_writer: Optional[ActorHandle] = _OrderedCacheWriter.remote(  # type: ignore
-            current_actor_handle(), exemplar, processor.batch_size, cache_dir, source.shard_names, min_items_to_write
+            current_actor_handle(),
+            f"writer::{path_for_name}",
+            exemplar,
+            processor.batch_size,
+            cache_dir,
+            source.shard_names,
+            min_items_to_write,
         )
 
         try:

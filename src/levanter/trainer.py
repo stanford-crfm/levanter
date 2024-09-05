@@ -463,7 +463,7 @@ class Trainer:
         return DataLoader(
             batch_axis,
             dataset,
-            max_buffered_batches=batch_axis.size * 32,
+            max_buffered_batches=128,
             mesh=self.device_mesh,
             axis_resources=self.compute_axis_mapping,
             prefetch_size=32,

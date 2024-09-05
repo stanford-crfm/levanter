@@ -51,7 +51,7 @@ class DataLoader(Iterable[Ex]):
             max_buffered_batches (Optional[int]): The maximum number of batches to buffer. If None, the buffer is unbounded.
              If <0, the buffer is disabled and single threaded operation is used.
             axis_resources (Optional[ResourceMapping]): axis mapping
-            prefetch_size (int): The number of batches to prefetch
+            prefetch_size (int): The number of batches to prefetch at once
             mesh (Mesh): The mesh to use
 
         """
