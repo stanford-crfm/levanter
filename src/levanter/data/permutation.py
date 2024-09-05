@@ -1,44 +1,23 @@
+import dataclasses
 from typing import Optional, Sequence
 
 import jax.random
 from async_lru import alru_cache
 
-from levanter.data import AsyncDataset, SyncDataset
+from levanter.data import AsyncDataset
 from levanter.data._prp import Permutation
 from levanter.data.dataset import T_co
-from levanter.utils.thread_utils import blocking_wait
 
 
 class PermutationDataset(AsyncDataset[T_co]):
     """A permutation dataset that wraps another dataset and applies a permutation to the indices."""
 
-    def __init__(self, dataset: AsyncDataset[T_co], permutation: Permutation):
-        self.permutation = permutation
+    # TODO: add epoch reshuffling
+
+    def __init__(self, dataset: AsyncDataset[T_co], key: jax.random.PRNGKey):
         self.dataset = dataset
-
-    @staticmethod
-    async def from_dataset_async(dataset: AsyncDataset[T_co], key: jax.random.PRNGKey) -> "PermutationDataset[T_co]":
-        if not dataset.is_finite():
-            raise ValueError("PermutationDataset requires a dataset with an (eventual) known length")
-
-        dataset = dataset.as_async_dataset()
-        length = await dataset.async_len()
-        return PermutationDataset(dataset, Permutation(length, key))
-
-    @staticmethod
-    def from_dataset(
-        dataset: AsyncDataset[T_co] | SyncDataset[T_co], key: jax.random.PRNGKey
-    ) -> "PermutationDataset[T_co]":
-        if isinstance(dataset, AsyncDataset) and not dataset.is_finite():
-            raise ValueError("PermutationDataset requires a dataset with an (eventual) known length")
-
-        if isinstance(dataset, SyncDataset):
-            length = len(dataset)
-        else:
-            length = blocking_wait(dataset.async_len())
-
-        dataset = dataset.as_async_dataset()
-        return PermutationDataset(dataset, Permutation(length, key))
+        self.key = key
+        self._permutation: Optional[Permutation] = None
 
     async def async_len(self) -> int:
         return await self.dataset.async_len()
@@ -53,10 +32,17 @@ class PermutationDataset(AsyncDataset[T_co]):
         return await self.dataset.current_len()
 
     async def getitem_async(self, index: int) -> T_co:
-        return await self.dataset.getitem_async(self.permutation(index))
+        permutation = await self._get_permutation()
+        return await self.dataset.getitem_async(permutation(index))
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
-        return await self.dataset.get_batch([self.permutation(i) for i in indices])
+        permutation = await self._get_permutation()
+        return await self.dataset.get_batch([permutation(i) for i in indices])
+
+    async def _get_permutation(self):
+        if self._permutation is None:
+            self._permutation = Permutation(await self.dataset.async_len(), self.key)
+        return self._permutation
 
 
 class EraShufflingDataset(AsyncDataset[T_co]):
@@ -80,12 +66,13 @@ class EraShufflingDataset(AsyncDataset[T_co]):
     """
 
     def __init__(self, dataset: AsyncDataset[T_co], era_length: int, *, key: jax.random.PRNGKey):
-        self.era_length = era_length
         self.dataset = dataset
+        self.era_length = era_length
         self.key = key
 
         @alru_cache(maxsize=4)  # we're mostly going to be going sequentially
         async def gen_era_permutation(era: int) -> Permutation:
+            # TODO: support epochs
             # edge case: final era may be shorter than era_length
             current_len = await self.dataset.wait_until_len_at_least((era + 1) * self.era_length)
             era_length = min(self.era_length, current_len - era * self.era_length)
@@ -141,3 +128,8 @@ class EraShufflingDataset(AsyncDataset[T_co]):
         # wait until we hit the next era
         next_era_end = (length // self.era_length + 1) * self.era_length
         return await self.dataset.wait_until_len_at_least(next_era_end)
+
+
+@dataclasses.dataclass
+class EraConfig:
+    era_length: int

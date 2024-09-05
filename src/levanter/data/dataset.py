@@ -106,6 +106,16 @@ class AsyncDataset(DatasetBase[T_co]):
     def map(self, fn: Callable[[T_co], U], *extra_args, **extra_kwargs) -> "MappedAsyncDataset[T_co, U]":
         return MappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
 
+    def shuffle(self, key: PRNGKey):
+        import levanter.data.permutation as permutation
+
+        return permutation.PermutationDataset(self, key)
+
+    def era_shuffle(self, era_length: int, key: PRNGKey):
+        import levanter.data.permutation as permutation
+
+        return permutation.EraShufflingDataset(self, era_length, key=key)
+
 
 async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length: int) -> int:
     """

@@ -86,7 +86,7 @@ async def bench_new_cache_permutation_random(exemplar, new_cache_path):
     cache = TreeCache.load(new_cache_path, exemplar)
 
     ds = TokenSeqDataset(cache, SEQ_LEN)
-    ds = PermutationDataset.from_dataset(ds, jax.random.PRNGKey(0))
+    ds = PermutationDataset(ds, jax.random.PRNGKey(0))
 
     num_batches = await ds.async_len()
 

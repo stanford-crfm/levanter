@@ -216,7 +216,7 @@ def train(config: TrainArgs):
     converter = converter.replaced(tokenizer=tokenizer)
 
     train_dataset = mk_dataset(config, tokenizer)
-    train_dataset = PermutationDataset.from_dataset(train_dataset, data_key)
+    train_dataset = PermutationDataset(train_dataset, data_key)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 

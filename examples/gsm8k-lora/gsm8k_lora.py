@@ -146,7 +146,7 @@ def train(config: TrainArgs):
         data_key = jrandom.PRNGKey(config.data_seed)
 
     train_dataset = mk_dataset(config, tokenizer)
-    train_dataset = PermutationDataset.from_dataset(train_dataset, data_key)
+    train_dataset = PermutationDataset(train_dataset, data_key)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 

@@ -29,6 +29,7 @@ from haliax import Axis
 from levanter.data import AsyncDataset
 from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy
+from levanter.data.permutation import EraConfig
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -49,7 +50,7 @@ from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMo
 from levanter.data.sharded_datasource import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.store.cache import build_or_load_cache  # noqa
-from levanter.utils.jax_utils import local_cpu_mesh, use_cpu_device  # noqa
+from levanter.utils.jax_utils import key_iterator, local_cpu_mesh, use_cpu_device  # noqa
 
 
 T_co = TypeVar("T_co", covariant=True)
@@ -548,7 +549,9 @@ class LMTaskConfig(abc.ABC):
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     ignore_token_id: Optional[int] = None
-    shuffle_buffer_size: Optional[int] = None
+    shuffle: bool | EraConfig = False
+    """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
+    If you want to shuffle in eras, provide an EraConfig (which asks for an era_length)"""
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
@@ -594,13 +597,12 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         if ds is None:
             raise ValueError("No training set!")
 
-        if self.shuffle_buffer_size is not None:
-            raise NotImplementedError("Shuffle buffer not yet implemented")
-            # if key is None:
-            #     key = jax.random.PRNGKey(0)
-            # return ShuffleDataset(ds, key, self.shuffle_buffer_size)
+        if self.shuffle is True:
+            ds = ds.shuffle(key)
+        elif isinstance(self.shuffle, EraConfig):
+            ds = ds.era_shuffle(self.shuffle.era_length, key=key)
 
-        return ds
+        return ds  # type: ignore
 
     def validation_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -723,6 +725,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+    mixture_block_size: int = 2048
+    """ block size for the mixture dataset."""
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -736,13 +740,31 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
-    ) -> AsyncDataset[np.ndarray]:  # type:ignore
+    ) -> AsyncDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+
         if key is None:
             key = jax.random.PRNGKey(0)
 
         mix_key, shuffle_key = jax.random.split(key)
+
+        # We shuffle the components and not the overall mixture because this lets us preserve
+        # the "stable batch" property of the mixture dataset.
+        def shuffle_ds(ds, key):
+            if self.shuffle is True:
+                ds = ds.shuffle(key)
+            elif isinstance(self.shuffle, EraConfig):
+                ds = ds.era_shuffle(self.shuffle.era_length, key=key)
+
+            return ds
+
+        if self.shuffle:
+            out_token_datasets = {}
+            key_iter = key_iterator(shuffle_key)
+            for name, ds in token_datasets.items():
+                out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
+            token_datasets = out_token_datasets
 
         mixture = MixtureDataset(
             datasets=token_datasets,
@@ -751,9 +773,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             key=mix_key,
             block_size=2048,
         )
-
-        # if self.shuffle_buffer_size is not None:
-        #     return ShuffleDataset(mixture, shuffle_key, self.shuffle_buffer_size)
 
         return mixture
 
