@@ -4,7 +4,6 @@ import jax.random
 import pytest
 
 from levanter.data import EraShufflingDataset, PermutationDataset
-from levanter.data._prp import Permutation
 from levanter.data.dataset import ListAsyncDataset
 
 
@@ -41,8 +40,7 @@ async def test_permutation_dataset_is_at_least_sometimes_permuted():
     for seed in range(10):
         data = [1, 2, 3, 4]
         dataset = ListAsyncDataset(data, is_complete=True)
-        permutation = Permutation(4, jax.random.PRNGKey(seed))
-        permuted_dataset = PermutationDataset(dataset, permutation)
+        permuted_dataset = PermutationDataset(dataset, jax.random.PRNGKey(seed))
         if await permuted_dataset.get_batch([0, 1, 2, 3]) != [1, 2, 3, 4]:
             return
 
