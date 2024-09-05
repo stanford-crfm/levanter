@@ -975,7 +975,7 @@ def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key
             else:
                 return None
 
-        return jax.tree_map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
+        return jax.tree.map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
 
     new_buffers = _init_buffers()
 

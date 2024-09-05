@@ -17,7 +17,7 @@ import haliax as hax
 
 from levanter.checkpoint import _get_fs_and_plain_path
 from levanter.data._preprocessor import BatchProcessor
-from levanter.data.sharded_dataset import ShardedDataset
+from levanter.data.sharded_datasource import ShardedDataSource
 from levanter.data.text import _stack_batch_encodings
 from levanter.models.attention import AttentionMask
 
@@ -193,17 +193,21 @@ def skip_in_ci(fn_or_msg):
     return pytest.mark.skipif("CI" in os.environ, reason="skipped in CI")(fn_or_msg)
 
 
-class IdentityProcessor(BatchProcessor[BatchEncoding]):
+class IdentityProcessor(BatchProcessor[BatchEncoding, BatchEncoding]):
     def __call__(self, batch: Sequence[BatchEncoding]) -> BatchEncoding:
         stacked = reduce(_stack_batch_encodings, batch)
         return stacked
+
+    @property
+    def output_exemplar(self):
+        return BatchEncoding({})
 
     @property
     def num_cpus(self) -> int:
         return 0
 
 
-class ShardsDataset(ShardedDataset[T]):
+class ShardsDataSource(ShardedDataSource[T]):
     def __init__(self, docs: List[List[T]]):
         self.docs = docs
 
@@ -215,7 +219,7 @@ class ShardsDataset(ShardedDataset[T]):
         return self.docs[int(shard_name)][row:]
 
 
-class SingleShardDocumentSource(ShardedDataset[T]):
+class SingleShardDocumentSource(ShardedDataSource[T]):
     def __init__(self, docs: List[T]):
         self.docs = docs
 

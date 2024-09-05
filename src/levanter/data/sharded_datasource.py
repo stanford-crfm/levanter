@@ -2,7 +2,20 @@ import io
 import json
 import os
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, List, Optional, Sequence, Sized, Tuple, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Sized,
+    Tuple,
+    TypeVar,
+)
 
 import datasets
 import fsspec
@@ -10,6 +23,7 @@ import numpy as np
 
 from levanter.utils import fsspec_utils
 
+from ..data import AsyncDataset
 from ._preprocessor import (
     BatchResult,
     _BatchMapTransform,
@@ -17,7 +31,6 @@ from ._preprocessor import (
     _DatasetTransform,
     _MapTransform,
 )
-from .dataset import Dataset, ShardableDataset
 from .utils import batched
 
 
@@ -30,7 +43,7 @@ T_co = TypeVar("T_co", covariant=True)
 U = TypeVar("U")
 
 
-class ShardedDataset(Dataset[T_co]):
+class ShardedDataSource(Generic[T_co]):
     """
     A ShardedDataset is the main interface for reading data. It's basically a mapping from shard names to iterators,
     with the extra feature that it exposes the ability to skip to a particular row in a shard.
@@ -66,10 +79,9 @@ class ShardedDataset(Dataset[T_co]):
         self,
         path: str,
         *,
-        rows_per_chunk: Optional[int] = None,
         await_finished: bool = True,
         monitors: Optional[Sequence["MetricsMonitor"]] = None,
-    ) -> ShardableDataset[dict]:
+    ) -> AsyncDataset[T]:
         """
         Constructs a shard cache version of this dataset using Ray.
 
@@ -79,36 +91,30 @@ class ShardedDataset(Dataset[T_co]):
         * interruptible and resumable
         * streaming results (no need to wait for everything to finish)
 
-        *Note that build_cache does not in general preserve the order of the data.*
-
         Note that this is an experimental API and is subject to change.
 
         Returns:
-            A new dataset that is backed by the cache.
+            A new AsyncDataset that is backed by the cache.
         """
-        from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, DictCacheDataset, build_or_load_cache
-
-        if rows_per_chunk is None:
-            rows_per_chunk = DEFAULT_ROWS_PER_CHUNK
 
         source, processor = _construct_composite_batch_processor(self)
+        from ..store.cache import build_or_load_cache
 
         cache = build_or_load_cache(
             path,
             source,
             processor,
-            rows_per_chunk=rows_per_chunk,
             await_finished=await_finished,
             monitors=monitors,
         )
-        return DictCacheDataset(cache)
+        return cache
 
-    def map(self, fn: Callable[[T_co], U]) -> "ShardedDataset[U]":
-        return _MappedShardedDataset(self, fn)
+    def map(self, fn: Callable[[T_co], U]) -> "ShardedDataSource[U]":
+        return _MappedShardedDataSource(self, fn)
 
     def map_batches(
         self, fn: Callable[[list[T_co]], BatchResult], batch_size, *, num_cpus=1, num_gpus=0, **resources
-    ) -> "ShardedDataset[dict]":
+    ) -> "ShardedDataSource[dict]":
         """
         **Lazily** map a function over batches of data. This is useful for doing things like batching data for a model,
         or for batched preprocessing.
@@ -125,21 +131,25 @@ class ShardedDataset(Dataset[T_co]):
         Returns:
             A new ShardedDataset.
         """
-        return _BatchMappedShardedDataset(self, fn, batch_size, num_cpus=num_cpus, num_gpus=num_gpus, **resources)
+        return _BatchMappedShardedDataSource(self, fn, batch_size, num_cpus=num_cpus, num_gpus=num_gpus, **resources)
 
 
-def dataset_from_hf(id: str, *, split, **kwargs) -> ShardedDataset[dict]:
+def datasource_from_hf(id: str, *, split, **kwargs) -> ShardedDataSource[dict]:
     """
     Create a ShardedDataset from a HuggingFace dataset. Arguments are passed to load_dataset.
     """
-    return WrappedHFDataset(id, split=split, **kwargs)
+    return WrappedHFDataSource(id, split=split, **kwargs)
 
 
-def dataset_from_jsonl(urls_or_paths: Sequence[str]) -> ShardedDataset[dict]:
-    return JsonlDataset(urls_or_paths)
+def datasource_from_jsonl(urls_or_paths: Sequence[str]) -> ShardedDataSource[dict]:
+    return JsonlDataSource(urls_or_paths)
 
 
-class WrappedHFDataset(ShardedDataset[dict]):
+def datasource_from_json(urls_or_paths: Sequence[str]) -> ShardedDataSource[dict]:
+    return JsonDataSource(urls_or_paths)
+
+
+class WrappedHFDataSource(ShardedDataSource[dict]):
     """
     This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
     Only (some) IterableDatasets are actually sharded in any meaningful way, so we just return a single shard
@@ -189,7 +199,7 @@ class WrappedHFDataset(ShardedDataset[dict]):
         return datasets.load_dataset(self.id, split=self.split, streaming=self.streaming, **self.kwargs)
 
 
-class TextUrlDataset(ShardedDataset[str]):
+class TextUrlDataSource(ShardedDataSource[str]):
     """
     Dataset for various text formats.
     """
@@ -232,7 +242,7 @@ class TextUrlDataset(ShardedDataset[str]):
                     raise ValueError(f"Unknown format {format}")
 
 
-class AudioTextUrlDataset(ShardedDataset[Tuple[np.ndarray, int, str]]):
+class AudioTextUrlDataSource(ShardedDataSource[Tuple[np.ndarray, int, str]]):
     """
     Dataset for various audio and text formats.
     """
@@ -267,6 +277,8 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[np.ndarray, int, str]]):
                 audio = {"array": array, "sampling_rate": sr}
             elif "path" in audio_pointer:
                 audio = _load_audio_file(audio_pointer["path"], sampling_rate)
+            else:
+                raise ValueError(f"Unsupported audio format {audio_pointer}")
         elif isinstance(audio_pointer, str):
             # This supports filename pointers to arbitrary audio types
             audio = _load_audio_file(audio_pointer, sampling_rate)
@@ -287,14 +299,14 @@ class AudioTextUrlDataset(ShardedDataset[Tuple[np.ndarray, int, str]]):
                         if i >= row:
                             mat_json = json.loads(line)
                             audio_pointer = mat_json[self.audio_key]
-                            audio = AudioTextUrlDataset.resolve_audio_pointer(audio_pointer, self.sampling_rate)
+                            audio = AudioTextUrlDataSource.resolve_audio_pointer(audio_pointer, self.sampling_rate)
                             yield (audio["array"], audio["sampling_rate"], mat_json[self.text_key])
                         i += 1
                 case ".json":
                     data = json.load(f)
                     for doc in data[row:]:
                         audio_pointer = doc[self.audio_key]
-                        audio = AudioTextUrlDataset.resolve_audio_pointer(audio_pointer, self.sampling_rate)
+                        audio = AudioTextUrlDataSource.resolve_audio_pointer(audio_pointer, self.sampling_rate)
                         yield (audio["array"], audio["sampling_rate"], doc[self.text_key])
                 case _:
                     raise ValueError(f"Unknown format {format}")
@@ -348,7 +360,7 @@ def _sniff_format_for_dataset(url):
     return format_from_url
 
 
-class JsonlDataset(ShardedDataset[dict]):
+class JsonlDataSource(ShardedDataSource[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -369,7 +381,7 @@ class JsonlDataset(ShardedDataset[dict]):
                 i += 1
 
 
-class TextDataset(ShardedDataset[dict]):
+class TextDataSource(ShardedDataSource[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -388,7 +400,7 @@ class TextDataset(ShardedDataset[dict]):
                 i += 1
 
 
-class JsonDataset(ShardedDataset[dict]):
+class JsonDataSource(ShardedDataSource[dict]):
     def __init__(self, urls):
         self.urls = urls
         self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
@@ -440,12 +452,12 @@ def _mk_shard_name_mapping(urls):
 
 
 class _TransformedDataset:
-    source: ShardedDataset
+    source: ShardedDataSource
     _transform: _DatasetTransform
 
 
-class _MappedShardedDataset(ShardedDataset[T], _TransformedDataset):
-    def __init__(self, source: ShardedDataset[T_co], fn: Callable[[T_co], T]):
+class _MappedShardedDataSource(ShardedDataSource[T], _TransformedDataset):
+    def __init__(self, source: ShardedDataSource[T_co], fn: Callable[[T_co], T]):
         self.source = source
         self.fn = fn
         self._transform = _MapTransform(fn)
@@ -458,10 +470,10 @@ class _MappedShardedDataset(ShardedDataset[T], _TransformedDataset):
         return map(self.fn, self.source.open_shard_at_row(shard_name, row))
 
 
-class _BatchMappedShardedDataset(ShardedDataset[T], _TransformedDataset):
+class _BatchMappedShardedDataSource(ShardedDataSource[T], _TransformedDataset):
     def __init__(
         self,
-        source: ShardedDataset[T_co],
+        source: ShardedDataSource[T_co],
         fn: Callable[[list[T_co]], Iterable[U]],
         batch_size,
         num_cpus=1,

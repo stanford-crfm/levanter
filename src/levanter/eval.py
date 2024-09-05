@@ -1,7 +1,9 @@
+import asyncio
 import dataclasses
 import logging
 import warnings
-from typing import Callable, Optional, Sequence, TypeVar
+from collections import defaultdict
+from typing import Callable, Mapping, Optional, Sequence, TypeVar
 
 import jax.numpy as jnp
 import jmp
@@ -13,7 +15,7 @@ import haliax as hax
 from haliax.partitioning import ResourceMapping
 
 import levanter.tracker
-from levanter.data import Dataset, ReplicatedBatchLoader
+from levanter.data import AsyncDataset, DataLoader
 from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import StepInfo
@@ -37,15 +39,20 @@ class EvalResult:
     total_eval_loading_time: float
 
 
-class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
+# This class doesn't try to be async or work with incomplete datasets, because it's eval
+
+
+class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
     """Holds multiple datasets, each with its own domain tag. Also indexes the tags to enable easier aggregation."""
+
+    tag_index: Mapping[str, int]
 
     @property
     def tags(self):
         return self.tag_to_index.keys()
 
     def __init__(
-        self, datasets: Sequence[tuple[Dataset[T], Sequence[str]]], max_examples_per_dataset: Optional[int] = None
+        self, datasets: Sequence[tuple[AsyncDataset[T], Sequence[str]]], max_examples_per_dataset: Optional[int] = None
     ):
         self.datasets = []
         tag_index: dict[str, int] = {}
@@ -62,20 +69,78 @@ class DomainTaggedDataset(Dataset[tuple[T, hax.NamedArray]]):
         self.tag_to_index = tag_index
         self.Tag = hax.Axis("tag", len(self.tag_to_index))
         self.max_examples_per_dataset = max_examples_per_dataset
+        self._tag_arrays = self._compute_tag_arrays()
+        self._offsets: Optional[np.ndarray] = None
+        self._max_examples_per_dataset = max_examples_per_dataset
 
-    def __iter__(self):
+    async def _get_offsets(self) -> np.ndarray:
+        if self._offsets is None:
+            lengths = await asyncio.gather(*[dataset.async_len() for dataset, _ in self.datasets])
+            if self._max_examples_per_dataset is not None:
+                lengths = [min(length, self._max_examples_per_dataset) for length in lengths]
+            self._offsets = np.cumsum([0] + lengths)
+
+        return self._offsets  # type: ignore
+
+    def _compute_tag_arrays(self):
+        tag_arrays = []
         for dataset, tags in self.datasets:
             indexed = [self.tag_to_index[tag] for tag in tags]
             tags = np.zeros(self.Tag.size, dtype=np.int32)
             tags[indexed] = 1
             tags = hax.named(tags, self.Tag)
 
-            count = 0
-            for example in dataset:
-                if self.max_examples_per_dataset is not None and count >= self.max_examples_per_dataset:
-                    break
-                count += 1
-                yield example, tags
+            tag_arrays.append(tags)
+        return tag_arrays
+
+    async def async_len(self) -> int:
+        return int((await self._get_offsets())[-1])
+
+    async def getitem_async(self, item: int) -> tuple[T, hax.NamedArray]:
+        offsets = await self._get_offsets()
+        dataset_index = np.searchsorted(offsets, item, side="right") - 1
+        offset = offsets[dataset_index]
+        dataset, tags = self.datasets[dataset_index]
+        return await dataset.getitem_async(int(item - offset)), self._tag_arrays[dataset_index]
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[tuple[T, hax.NamedArray]]:
+        # Chatgpt wrote this. pretty sure it's correct
+        offsets = await self._get_offsets()
+        original_order = np.argsort(indices)
+        sorted_indices = np.array(indices)[original_order]
+        dataset_indices = np.searchsorted(offsets, sorted_indices, side="right") - 1
+
+        # Group indices by the dataset they belong to
+        grouped_indices = defaultdict(list)
+        for idx, dataset_index in zip(sorted_indices, dataset_indices):
+            grouped_indices[dataset_index].append(idx - offsets[dataset_index])
+
+        # Retrieve the batch for each group
+        batch_futures: list = []
+        for dataset_index, dataset_indices in grouped_indices.items():
+            dataset, tags = self.datasets[dataset_index]
+            dataset_batch = dataset.get_batch(dataset_indices)
+            batch_futures.append(dataset_batch)
+
+        batch_groups = await asyncio.gather(*batch_futures)
+        batch = []
+        for dataset_index, dataset_batch in zip(grouped_indices.keys(), batch_groups):
+            batch.extend([(item, self._tag_arrays[dataset_index]) for item in dataset_batch])
+
+        # Reorder the batch to match the original order of indices
+        batch = [batch[i] for i in np.argsort(original_order)]
+
+        return batch
+
+    async def final_length_is_known(self) -> bool:
+        return all(await asyncio.gather(*[dataset.final_length_is_known() for dataset, _ in self.datasets]))
+
+    def is_finite(self) -> bool:
+        return all(dataset.is_finite() for dataset, _ in self.datasets)
+
+    async def current_len(self) -> Optional[int]:
+        # We currently require all datasets to be finished before we do anything with this dataset, so...
+        return await self.async_len()
 
 
 def _join_prefix(prefix: str, tag: str) -> str:
@@ -86,7 +151,7 @@ def _join_prefix(prefix: str, tag: str) -> str:
 
 def cb_tagged_lm_evaluate(
     EvalBatch: hax.Axis,
-    tagged_eval_sets: Sequence[tuple[Dataset[LmExample], Sequence[str]]],
+    tagged_eval_sets: Sequence[tuple[AsyncDataset[LmExample], Sequence[str]]],
     device_mesh: Optional[Mesh] = None,
     axis_mapping: ResourceMapping = None,
     max_examples_per_dataset: Optional[int] = None,
@@ -168,7 +233,7 @@ class TaggedEvaluator:
     def __init__(
         self,
         EvalBatch: hax.Axis,
-        tagged_eval_sets,
+        tagged_eval_sets: Sequence[tuple[AsyncDataset, Sequence[str]]],
         device_mesh=None,
         axis_mapping=None,
         max_examples_per_dataset=None,
@@ -176,8 +241,12 @@ class TaggedEvaluator:
     ):
         self.EvalBatch = EvalBatch
         self.dataset = DomainTaggedDataset(tagged_eval_sets, max_examples_per_dataset)
-        self.loader = ReplicatedBatchLoader(
-            self.dataset, mesh=device_mesh, axis_resources=axis_mapping, Batch=EvalBatch
+        self.loader = DataLoader(
+            EvalBatch,
+            self.dataset.as_async_dataset(),
+            max_buffered_batches=100,
+            mesh=device_mesh,
+            axis_resources=axis_mapping,
         )
         self.mp = mp
 
@@ -229,9 +298,11 @@ class TaggedEvaluator:
         state = hax.shard(state)
 
         iterator = LoadingTimeTrackerIterator(self.loader)
+        n = 0
 
         for batch, tags in tqdm.tqdm(iterator, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
+            n += 1
 
         total_loss, losses_per_tag = state
 

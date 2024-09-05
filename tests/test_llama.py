@@ -51,7 +51,6 @@ def test_llama_flops():
     llama_config = LlamaConfig.from_hf_config(hf_config)
     n_params = 6.738415616e9
     ratio = llama_config.flops_per_token(hf_config.vocab_size) / (2 * n_params)
-    print(ratio)
     assert ratio > 1.1, f"ratio {ratio} < 1.1"
     assert ratio < 1.2, f"ratio {ratio} > 1.2"
 
@@ -386,6 +385,4 @@ def test_state_dict_consistency(scan_layers, num_kv_heads):
     model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
     hf_config = config.to_hf_config(Vocab.size)
     hf_model = LlamaForCausalLM(hf_config)
-    print(hf_model.state_dict().keys())
-    print(model.to_state_dict().keys())
     assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())

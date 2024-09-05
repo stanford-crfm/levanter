@@ -7,7 +7,7 @@ data:
       id: dlwh/wikitext_103_detokenized
   train_weights:
     wikitext: 1.0
-    w2: 0
+    w2: 1.0
 model:
   type: gpt2
   hidden_dim: 32
