@@ -107,7 +107,7 @@ def estimate_mixture_weights(
                 loss = eval_loss_loop(
                     eval_loss,
                     ref,
-                    trainer.new_loader(dataset, trainer.EvalBatch),
+                    trainer.data_loader(dataset, trainer.EvalBatch),
                     name=f"ref {domain}",
                     max_batches=trainer_config.max_eval_batches,
                 )
@@ -201,7 +201,7 @@ def estimate_mixture_weights(
             average_alpha=initial_alpha,
         )
         del initial_proxy
-        train_loader = iter(trainer.new_loader(tagged_mixture, trainer.TrainBatch))
+        train_loader = iter(trainer.data_loader(tagged_mixture, trainer.TrainBatch))
 
         if state.step > 0:
             # step is after the batch, so we need to seek to step

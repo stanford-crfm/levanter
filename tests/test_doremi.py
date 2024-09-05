@@ -144,7 +144,7 @@ def test_estimate_mixture_weights():
         initial_model = init_model()
         with trainer:
             state = trainer.initial_state(next(keys), model=initial_model)
-            loader = trainer.new_loader(dataset, Batch)
+            loader = trainer.data_loader(dataset, Batch)
             loader = non_caching_cycle(loader)
 
             loss = 0.0
@@ -180,9 +180,9 @@ def test_estimate_mixture_weights():
     )
 
     # let's see the loss on each dataset
-    l1_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.new_loader(ds1, Batch), max_batches=10, name="d1")
-    l2_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.new_loader(ds2, Batch), max_batches=10, name="d2")
-    l3_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.new_loader(ds3, Batch), max_batches=10, name="d3")
+    l1_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.data_loader(ds1, Batch), max_batches=10, name="d1")
+    l2_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.data_loader(ds2, Batch), max_batches=10, name="d2")
+    l3_ref = eval_loss_loop(compute_loss_fn, ref_model, trainer.data_loader(ds3, Batch), max_batches=10, name="d3")
 
     assert l3_ref < l1_ref < l2_ref
 

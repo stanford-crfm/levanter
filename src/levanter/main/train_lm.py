@@ -207,7 +207,7 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        train_loader = trainer.new_loader(train_dataset, Batch)
+        train_loader = trainer.data_loader(train_dataset, Batch)
         if seek_dataloader:
             train_loader = train_loader.iter_from_step(state.step)
         else:

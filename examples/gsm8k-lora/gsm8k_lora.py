@@ -191,7 +191,7 @@ def train(config: TrainArgs):
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
         # datasets. We use replicated here since the dataset is small.
-        loader = trainer.loader(train_dataset, trainer.TrainBatch)
+        loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
         if int(state.step) != 0:

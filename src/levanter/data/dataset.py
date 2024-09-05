@@ -231,12 +231,17 @@ class ListAsyncDataset(AsyncDataset[T]):
     def __init__(self, data: list[T], is_complete: bool = False):
         self.data = data
         self.is_complete = is_complete
-        self.complete_promise: asyncio.Future[None] = asyncio.Future()
-        self.length_updated = asyncio.Condition()
+        if not is_complete:
+            self.complete_promise: Optional[asyncio.Future[None]] = asyncio.Future()
+            self.length_updated: Optional[asyncio.Condition] = asyncio.Condition()
+        else:
+            self.complete_promise = None
+            self.length_updated = None
 
     async def async_len(self) -> int:
         # this is the final length
         if not self.is_complete:
+            assert self.complete_promise is not None
             await self.complete_promise
         return len(self.data)
 
@@ -259,11 +264,12 @@ class ListAsyncDataset(AsyncDataset[T]):
 
     def finalize(self):
         self.is_complete = True
-        self.complete_promise.set_result(None)
-        if not asyncio.get_event_loop().is_running():
-            _executor.submit(lambda: asyncio.run(self.notify_length_update()))
-        else:
-            asyncio.create_task(self.notify_length_update())
+        if self.complete_promise is not None:
+            self.complete_promise.set_result(None)
+            if not asyncio.get_event_loop().is_running():
+                _executor.submit(lambda: asyncio.run(self.notify_length_update()))
+            else:
+                asyncio.create_task(self.notify_length_update())
 
     async def notify_length_update(self):
         async with self.length_updated:
@@ -271,7 +277,9 @@ class ListAsyncDataset(AsyncDataset[T]):
 
     async def wait_until_len_at_least(self, length: int) -> int:
         if self.is_complete:
-            return await self.async_len()
+            return len(self.data)
+
+        assert self.length_updated is not None
 
         async with self.length_updated:
             while len(self.data) < length and not self.is_complete:

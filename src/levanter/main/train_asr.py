@@ -189,7 +189,7 @@ def main(config: TrainASRConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        train_loader = trainer.new_loader(train_dataset, Batch).iter_from_step(state.step)
+        train_loader = trainer.data_loader(train_dataset, Batch).iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

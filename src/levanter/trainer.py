@@ -433,7 +433,7 @@ class Trainer:
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
 
-        eval_loader = self.new_loader(eval_dataset, self.EvalBatch)
+        eval_loader = self.data_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
@@ -450,8 +450,8 @@ class Trainer:
                 every=self.config.steps_per_eval,
             )
 
-    def new_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
-        """Creates a data loader for the given dataset.
+    def data_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
+        """Creates a data loader for the given dataset and batch axis.
 
         Args:
             dataset (AsyncDataset): the dataset to load
@@ -463,9 +463,10 @@ class Trainer:
         return DataLoader(
             batch_axis,
             dataset,
-            max_buffered_batches=batch_axis.size * 20,
+            max_buffered_batches=batch_axis.size * 32,
             mesh=self.device_mesh,
             axis_resources=self.compute_axis_mapping,
+            prefetch_size=32,
         )
 
     @cached_property

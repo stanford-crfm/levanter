@@ -262,7 +262,7 @@ def _stack_tree(batch_name, individual_datums):
         else:
             return jnp.stack(leaves)
 
-    return jax.tree_map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
+    return jax.tree.map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
 
 
 def check_sharded_consistency(tree: PyTree, check_disjoint_indices_are_different: bool = False):
