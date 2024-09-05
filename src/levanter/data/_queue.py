@@ -8,18 +8,18 @@ from dataclasses import dataclass
 from queue import PriorityQueue
 from typing import List, Optional, Protocol, Sequence, TypeVar
 
-import pyarrow as pa
 import ray
 from ray.actor import ActorHandle
 
 from levanter.utils.ray_utils import RefBox
 
-from ._preprocessor import BatchProcessor, as_record_batch
+from ._preprocessor import BatchProcessor
 
 
 logger = pylogging.getLogger(__name__)
 
 T = TypeVar("T")
+U = TypeVar("U")
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
@@ -65,28 +65,20 @@ class PriorityWorkItem(Protocol):
             return self.priority <= other.priority
 
 
-def _mk_queue_aware_process_task(processor: BatchProcessor[T], queue: ActorHandle):
+def _mk_queue_aware_process_task(processor: BatchProcessor[T, U], queue: ActorHandle):
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(desc, batch: List[T]) -> pa.RecordBatch:
-        pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
+    def process_task(desc, batch: List[T]):
+        # pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         logger.debug(f"Processing batch {desc}")
         queue.task_running.remote()
-        # timer_thread = WaitTimeReportingThread(
-        #     lambda t: logger.info(f"Waiting for {desc} to be processed for {t} seconds"), interval=30
-        # )
-        # timer_thread.start()
         try:
             result = processor(batch)
-            del batch
-            result = as_record_batch(result)
             logger.debug(f"Finished processing batch {desc}")
             return result
         except Exception as e:
             logger.exception(f"Error while processing batch {desc}")
             raise e
         finally:
-            # timer_thread.shutdown()
-            # timer_thread.join()
             pass
 
     return process_task
@@ -120,7 +112,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
     def batch_size(self):
         return self.processor.batch_size
 
-    def __init__(self, batch_processor: BatchProcessor[T]):
+    def __init__(self, batch_processor: BatchProcessor[T, U]):
         self.pqueue = PriorityQueue()
         self.processor = batch_processor
         self._next_task_id = 0
@@ -145,7 +137,10 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
             self.ready = False
             item = self.pqueue.get()
             batch = item.batch
-            item.task_future.set_result(self._task_processor.remote(item.desc, batch))
+            try:
+                item.task_future.set_result(self._task_processor.remote(item.desc, batch))
+            except Exception as e:
+                item.task_future.set_exception(e)
 
     def task_running(self):
         self.ready = True
@@ -153,7 +148,7 @@ class _BatchProcessorQueue:  # (Generic[T]): ray doesn't like generics
 
 
 @ray.remote(num_cpus=0.5, scheduling_strategy="SPREAD")
-class PriorityProcessorActor:
+class WorkQueueDispatcherActor:
     def __init__(self, max_in_flight: Optional[int] = 200):
         pylogging.basicConfig(level=pylogging.INFO, format=LOG_FORMAT)
         self._queue: list[PriorityWorkItem] = []  # heapq
@@ -162,8 +157,16 @@ class PriorityProcessorActor:
         self._current_item: Optional[PriorityWorkItem] = None
         self._max_in_flight = max_in_flight
 
+        self._max_priority: Optional[float] = None
         self._processing_thread = threading.Thread(target=self._loop, daemon=True)
         self._processing_thread.start()
+
+    def set_max_dispatch_priority(self, max_priority: Optional[float]):
+        """
+        When the sink is full, we will not dispatch items with a priority higher than this.
+        """
+        with self._queue_lock:
+            self._max_priority = max_priority
 
     def assign_work(self, group: PriorityWorkTaskGroupSpec):
         items = group.build().items()
@@ -196,7 +199,7 @@ class PriorityProcessorActor:
             if self._processing_thread.is_alive():
                 self._processing_thread.join()
 
-    def _loop(self: "PriorityProcessorActor"):
+    def _loop(self: "WorkQueueDispatcherActor"):
         should_sleep = False
         backpressure_queue: list[ray.ObjectRef] = []
 
@@ -220,6 +223,10 @@ class PriorityProcessorActor:
                     should_sleep = False
 
                 item = heapq.heappop(self._queue)
+                if self._max_priority is not None and item.priority > self._max_priority:
+                    logger.debug(f"Item {item.name} has priority {item.priority} which is too high. Rescheduling.")
+                    heapq.heappush(self._queue, item)
+                    continue
                 self._current_item = item
 
             try:

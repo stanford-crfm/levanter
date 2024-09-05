@@ -16,7 +16,7 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
-from levanter.data import ReplicatedBatchLoader
+from levanter.data import DataLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
@@ -57,7 +57,9 @@ def main(config: EvalLmConfig):
 
         raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
 
-    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
+    eval_loader = DataLoader(
+        Batch, raw_dataset, None, config.trainer.device_mesh, config.trainer.parameter_axis_mapping
+    )
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 

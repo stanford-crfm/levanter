@@ -8,13 +8,14 @@ import tempfile
 import threading
 import time
 import warnings
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 import humanfriendly
 import jax
 from tqdm import tqdm
 
 import levanter.tracker
+from levanter.data import DataLoader
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
@@ -69,7 +70,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
 
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
-    dataset: Iterable,
+    dataset: DataLoader,
     max_batches: Optional[int] = None,
     name: Optional[str] = None,
 ):

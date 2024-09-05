@@ -11,7 +11,7 @@ from haliax.partitioning import fsdp, round_axis_for_partitioning
 
 import levanter
 from levanter.checkpoint import load_checkpoint
-from levanter.data import ReplicatedBatchLoader
+from levanter.data import DataLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
@@ -44,10 +44,12 @@ def main(config: VizGpt2Config):
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
-    eval_loader = ReplicatedBatchLoader(
-        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
-        config.trainer.device_mesh,
+    eval_loader = DataLoader(
         EvalBatch,
+        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
+        32,
+        config.trainer.device_mesh,
+        config.trainer.compute_axis_mapping,
     )
 
     # some axes we use outside the model proper

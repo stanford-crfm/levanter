@@ -114,7 +114,8 @@ def main(config: TrainLmConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
+        # TODO: fix this
+        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
             config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
@@ -161,13 +162,14 @@ def main(config: TrainLmConfig):
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
+            max_eval_examples_per_ds = config.trainer.max_eval_batches
+            if max_eval_examples_per_ds is not None:
+                max_eval_examples_per_ds *= config.trainer.eval_batch_size
+
             causal_datasets = [
                 (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
                 for ds, tags in tagged_eval_datasets
             ]
-            max_eval_examples_per_ds = config.trainer.max_eval_batches
-            if max_eval_examples_per_ds is not None:
-                max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
@@ -205,23 +207,11 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # engine.add_hook(
-        #     callbacks.compute_and_visualize_log_probs(
-        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-        #     ),
-        #     every=config.trainer.steps_per_eval,
-        # )
-        #
-        # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
-
-        if int(state.step) > 0 and seek_dataloader:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader)
+        train_loader = trainer.data_loader(train_dataset, Batch)
+        if seek_dataloader:
+            train_loader = train_loader.iter_from_step(state.step)
+        else:
+            train_loader = iter(train_loader)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

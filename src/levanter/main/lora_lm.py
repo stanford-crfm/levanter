@@ -22,7 +22,6 @@ from levanter.models.lm_model import compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
-from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -87,7 +86,7 @@ def main(config: LoraLmConfig):
             logger.warning("No evaluation datasets provided.")
 
         train_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=data_key), Pos, KeyPos)
-        train_loader = trainer.sharded_loader(train_dataset, Batch)
+        train_loader = trainer.data_loader(train_dataset, Batch)
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
@@ -150,16 +149,7 @@ def main(config: LoraLmConfig):
                 every=config.hf_save_steps,
             )
 
-        # data loader. may need to seek to the right place if we're resuming
-        iter_data = non_caching_cycle(train_loader)
-
-        if int(state.step) > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(iter_data)
+        iter_data = train_loader.iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, iter_data)

@@ -113,6 +113,7 @@ def test_lora_peft_integration():
     hf_dict = get_peft_model_state_dict(model)
 
     converter = Gpt2Config().hf_checkpoint_converter()
+
     lev_model = converter.load_pretrained(converter.default_config.model_type, "stanford-crfm/expanse-gpt2-small-x777")
 
     lora_lev_model = loraize(lev_model, LoraConfig(r=8, target_modules=["c_attn"]), key=jax.random.PRNGKey(0))
@@ -168,8 +169,8 @@ def test_merge_lora():
             return PreciseDotGeneralOp()
         return x
 
-    merged = jax.tree_map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
-    loraized = jax.tree_map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    merged = jax.tree.map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    loraized = jax.tree.map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
 
     input = hax.random.normal(k0, (In,))
     # light tolerances for TPU
