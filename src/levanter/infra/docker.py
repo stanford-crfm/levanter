@@ -65,7 +65,12 @@ def _run(argv):
 
         return b"".join(output)
     else:
-        return subprocess.check_output(argv, stderr=subprocess.STDOUT)
+        try:
+            return subprocess.check_output(argv, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as e:
+            # print the output if the command failed, reraising the exception
+            print(e.output.decode())
+            raise e
 
 
 def configure_gcp_docker(project_id, region, repository):
