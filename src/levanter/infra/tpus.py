@@ -49,6 +49,7 @@ def list_tpus(zone):
                 "list",
                 f"--zone={zone}",
                 "--format=json(name.basename(), state)",
+                "--quiet",
             ]
         )
     )
@@ -68,6 +69,7 @@ def describe_tpu(tpu_name, zone):
                     tpu_name,
                     f"--zone={zone}",
                     "--format=json(name.basename(), state)",
+                    "--quiet",
                 ],
                 stderr=subprocess.DEVNULL,
             )
@@ -219,6 +221,7 @@ def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
             "tpu-vm",
             "ssh",
             tpu_name,
+            "--quiet",
             "--worker=all",
             f"--zone={zone}",
             "--command=%s" % " ".join(args),
@@ -243,6 +246,7 @@ def _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=False)
                 "ssh",
                 f"{tpu_name}-{i}",
                 "--worker=all",
+                "--quiet",
                 f"--zone={zone}",
                 "--command=%s" % " ".join(args),
             )
