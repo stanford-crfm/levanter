@@ -34,15 +34,14 @@ jobs:
       - name: Configure Google Cloud
         run: |
           gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+          REGION=${TPU_ZONE%-*}
+          echo "$REGION"
+          gcloud auth configure-docker  $REGION-docker.pkg.dev
 
       - name: Install locally
         run: |
           python -m pip install --upgrade pip
           pip install -e .[test] "jax[cpu]==0.4.30"
-
-      - name: Do we have docker?
-        run: |
-          docker --version
 
       - name: Launch Small Fast TPU Train LM job
         run: |
