@@ -1,7 +1,7 @@
 data: !include data/dclm_gpt_neo.yaml
 model:  # 22B class model
   type: llama
-  seq_len: 2048
+  seq_len: 4096
   hidden_dim: 6144
   intermediate_dim: 16384
   num_layers: 56
@@ -16,7 +16,7 @@ trainer:
     tags: ["dclm", "22B", "llama"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 2048
+  train_batch_size: 512
   num_train_steps: 100000
   steps_per_eval: 1000
   tensor_parallel_axes: ["mlp", "heads"]
