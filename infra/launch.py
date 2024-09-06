@@ -110,6 +110,8 @@ def main():
     else:
         raise ValueError(f"Unknown docker registry: {registry}")
 
+    failure = None
+
     for i in range(retries + 1):
         try:
             launch_job(
@@ -132,25 +134,35 @@ def main():
                 print("Retries exhausted. Raising error.")
                 print(f"Error running command {e.cmd}")
                 print(f"Output: {e.output}")
-                raise
+                failure = e
         else:
             print("Job finished with no error.")
             break
 
-    if autodelete:
-        print("Autodelete is set to True. Tearing down machine...")
-        levanter.infra.tpus.run_command(
-            "gcloud",
-            "alpha",
-            "compute",
-            "tpus",
-            "queued-resources",
-            "delete",
-            tpu_name,
-            "--quiet",
-            f"--zone={zone}",
-            "--force",
-        )
+    try:
+        if autodelete:
+            print("Autodelete is set to True. Tearing down machine...")
+            levanter.infra.tpus.run_command(
+                "gcloud",
+                "alpha",
+                "compute",
+                "tpus",
+                "queued-resources",
+                "delete",
+                tpu_name,
+                "--quiet",
+                f"--zone={zone}",
+                "--force",
+            )
+    except Exception as e:
+        print(f"Error tearing down TPU {tpu_name}: {e}")
+        if failure:
+            raise failure
+        else:
+            raise e
+
+    if failure:
+        raise failure
 
 
 if __name__ == "__main__":
