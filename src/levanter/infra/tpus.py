@@ -79,6 +79,8 @@ def describe_tpu(tpu_name, zone):
 
 
 def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count):
+    # ensure alpha is enabled
+    run_command("gcloud", "components", "install", "alpha", "--quiet")
     if version is None:
         version = "tpu-ubuntu2204-base"
     tpu_stat = describe_tpu(tpu_name, zone)
