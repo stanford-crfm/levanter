@@ -16,7 +16,7 @@ trainer:
     tags: ["dclm", "22B", "llama"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 512
+  train_batch_size: 768
   num_train_steps: 100000
   steps_per_eval: 1000
   tensor_parallel_axes: ["mlp", "heads"]
