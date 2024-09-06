@@ -128,6 +128,11 @@ def main():
             print(f"Error running command {e.cmd}")
             if i < retries - 1:
                 print("Retrying... %d/%d" % (i + 1, retries))
+            else:
+                print("Retries exhausted. Raising error.")
+                print(f"Error running command {e.cmd}")
+                print(f"Output: {e.output}")
+                raise
         else:
             print("Job finished with no error.")
             break
