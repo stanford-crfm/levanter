@@ -200,6 +200,9 @@ def run_command(*args, **kwargs):
 
 def add_ssh_key(ssh_key_filename):
     # format 3072 SHA256:... key-name (RSA)
+    # have to make sure .ssh exists
+    if not os.path.exists(os.path.expanduser("~/.ssh")):
+        os.makedirs(os.path.expanduser("~/.ssh"))
     key_hash = subprocess.check_output(["ssh-keygen", "-lf", ssh_key_filename]).decode("utf-8").split()[1]
     existing_keys = subprocess.check_output(["ssh-add", "-l"]).decode("utf-8").split("\n")
     for key in existing_keys:
