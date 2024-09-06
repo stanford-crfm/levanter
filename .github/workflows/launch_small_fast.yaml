@@ -35,6 +35,11 @@ jobs:
         run: |
           gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
 
+      - name: Install locally
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test] "jax[cpu]==0.4.30"
+
       - name: Launch Small Fast TPU Train LM job
         run: |
           export TPU_NAME=small-fast-${{ github.run_id }}
