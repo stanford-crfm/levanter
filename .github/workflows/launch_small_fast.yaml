@@ -40,6 +40,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[test] "jax[cpu]==0.4.30"
 
+      - name: Do we have docker?
+        run: |
+          docker --version
+
       - name: Launch Small Fast TPU Train LM job
         run: |
           export TPU_NAME=small-fast-${{ github.run_id }}
