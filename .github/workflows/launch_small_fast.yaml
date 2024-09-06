@@ -55,4 +55,4 @@ jobs:
         if: ${{ always() }}
         run: |
           export TPU_NAME=small-fast-${{ github.run_id }}
-          gcloud compute tpus tpu-vm queued-resources delete $TPU_NAME --zone ${TPU_ZONE} --quiet --force
+          gcloud compute tpus queued-resources delete $TPU_NAME --zone ${TPU_ZONE} --quiet --force
