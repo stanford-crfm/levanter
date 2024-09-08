@@ -50,7 +50,7 @@ jobs:
           export RUN_ID=small_fast_${{ github.run_id }}
           python infra/launch.py --foreground --tpu_name ${TPU_NAME} --run_id $RUN_ID --zone ${TPU_ZONE} --tpu_type ${TPU_TYPE} --preemptible -- \
              python -m levanter.main.train_lm \
-               --config_path config/llama2_small_fast.yaml \
+               --config_path config/llama_small_fast.yaml \
                --trainer.checkpointer.base_path gs://levanter-checkpoints/llama-itest/ \
                --trainer.checkpointer.save_interval 10m
 
