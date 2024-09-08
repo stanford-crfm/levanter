@@ -200,8 +200,6 @@ def run_command(*args, **kwargs):
 
 def add_ssh_key(ssh_key_filename):
     # format 3072 SHA256:... key-name (RSA)
-    # have to make sure .ssh exists
-    os.makedirs(os.path.expanduser("~/.ssh"), exist_ok=True)
     try:
         key_hash = (
             subprocess.check_output(["ssh-keygen", "-lf", ssh_key_filename], stderr=subprocess.STDOUT)
@@ -216,13 +214,17 @@ def add_ssh_key(ssh_key_filename):
                 return
 
             subprocess.check_call(["ssh-add", ssh_key_filename])
-    except subprocess.CalledProcessError as e:
-        print("Error adding key:", e.output)
+    except subprocess.CalledProcessError:
         raise
 
 
 def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
-    add_ssh_key(os.path.expanduser("~/.ssh/google_compute_engine"))
+    try:
+        add_ssh_key(os.path.expanduser("~/.ssh/google_compute_engine"))
+    except subprocess.CalledProcessError as e:
+        print("Failed to add ssh key. This may lead to problems.", e)
+        pass
+
     try:
         if node_count > 1:
             return _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=ignore_failure)
