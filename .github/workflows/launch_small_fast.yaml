@@ -48,6 +48,16 @@ jobs:
           export TPU_NAME=small-fast-${{ github.run_id }}
           export WANDB_API_KEY=${{ secrets.WANDB_API_KEY }}
           export RUN_ID=small_fast_${{ github.run_id }}
+          export HF_TOKEN=${{ secrets.HF_TOKEN }}
+          
+          cat > .config <<EOF
+          env:
+              WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+              WANDB_ENTITY: stanford-mercury
+              WANDB_PROJECT: levanter
+              HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          EOF
+          
           python infra/launch.py --foreground --tpu_name ${TPU_NAME} --run_id $RUN_ID --zone ${TPU_ZONE} --tpu_type ${TPU_TYPE} --preemptible -- \
              python -m levanter.main.train_lm \
                --config_path config/llama_small_fast.yaml \
