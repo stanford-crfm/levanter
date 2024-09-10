@@ -493,7 +493,7 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
     output_hidden_states: bool
 
     @staticmethod
-    def init(config: RobertaConfig, output_hidden_states: bool, *, key) -> "RobertaEncoder":
+    def init(config: RobertaConfig, output_hidden_states: bool = False, *, key) -> "RobertaEncoder":
         S = BlockSeq
 
         layer = S.init(config.Layers, RobertaLayer, gradient_checkpointing=config.gradient_checkpointing)(
@@ -570,7 +570,9 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
         return incremental_indices + self.padding_idx
 
     def create_position_ids_from_inputs_embeds(self, input_axes, PosInput):
+        # position_ids = hax.arange(axis = PosInput, start = 0, dtype=jnp.int32)
         position_ids = hax.arange(axis = PosInput, start = self.padding_idx + 1, dtype=jnp.int32)
+
         return hax.broadcast_to(position_ids, input_axes)
 
     @named_call
@@ -700,8 +702,8 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         if attention_mask is None:
             attention_mask = hax.ones(input_axes)
         
-        # Attention mask from mask to actual numbers
-        attention_mask = (attention_mask == 0) * -jnp.inf
+        # Attention mask from mask to actual numbers 0 -> -inf
+        attention_mask = (attention_mask == 0) * jnp.finfo(jnp.bfloat16).min
         
         embedding_output = self.embeddings.embed(input_ids, token_type_ids, position_ids, input_embeds, key=k_emb)
 
