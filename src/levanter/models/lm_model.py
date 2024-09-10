@@ -3,6 +3,7 @@ from typing import Generic, Optional, Type, TypeVar
 
 import draccus
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
@@ -15,6 +16,36 @@ from levanter.models.loss import next_token_loss
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
+
+class MaskedLmExample(eqx.Module):
+    tokens: hax.NamedArray
+    loss_mask: hax.NamedArray
+    attn_mask: hax.NamedArray
+    targets: Optional[hax.NamedArray] = None
+
+    @staticmethod
+    def masked_lm(
+        tokens: hax.NamedArray, targets: hax.NamedArray, attn_mask: hax.NamedArray, mask_token_id: Optional[int] = None
+    ) -> "MaskedLmExample":
+        if tokens.ndim != 1:
+            raise ValueError("tokens must be a 1D array")
+
+        if not jnp.issubdtype(tokens.dtype, jnp.integer):
+            raise ValueError("tokens must be an integer array")
+
+        if tokens.shape != targets.shape:
+            raise ValueError("tokens and targets must have the same shape")
+
+        Pos = tokens.axes[0]
+
+        mask = tokens.array != targets.array
+        loss_mask = hax.named(mask.astype(jnp.float32), Pos)
+
+        if mask_token_id is not None:
+            ignore_mask = targets.array != mask_token_id
+            loss_mask = loss_mask * hax.named(ignore_mask.astype(jnp.float32), Pos)
+
+        return MaskedLmExample(tokens=tokens, targets=targets, loss_mask=loss_mask, attn_mask=attn_mask)
 
 
 class LmExample(eqx.Module):
@@ -34,12 +65,10 @@ class LmExample(eqx.Module):
 
         Pos = tokens.axes[0]
 
-        # don't predict the last token.
         if loss_mask is None:
             loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
 
         if ignore_id is not None:
-            # we don't compute loss for any tokens matching the ignore index
             ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
             loss_mask = loss_mask * ignore_mask
 
@@ -47,7 +76,6 @@ class LmExample(eqx.Module):
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 
-# TODO: for some reason, mypy doesn't like the discover_packages_path argument?
 class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_path="levanter.models"):  # type: ignore
     @property
     @abc.abstractmethod
@@ -70,12 +98,7 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def build(self, Vocab: Axis, *, key: PRNGKey) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 
-
 class LmHeadModel(Generic[LmConfigT], abc.ABC):
-    """
-    Superclass for models with a language modeling head.
-    """
-
     @property
     @abc.abstractmethod
     def config(self) -> LmConfigT:
@@ -103,14 +126,11 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
     def __call__(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
-        pass
+        print(f"input_ids shape: {input_ids.shape}")
+        print(f"attn_mask shape: {attn_mask.shape}")
 
     @abc.abstractmethod
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "LmHeadModel[LmConfigT]":
-        """
-        Resizes the vocabulary of the model. Key may be provided to use random initialization, otherwise, there
-        should be some deterministic initialization of any new parameters.
-        """
         pass
 
     @property
