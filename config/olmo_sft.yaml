@@ -7,7 +7,7 @@ data:
   cache_dir: "gs://marin-data/tokenized/tuluv2/"
   tokenizer: "allenai/OLMo-1B"
 model:  # 7B class model
-  type: olmo
+  type: llama
   # seq_len: 2048
   # hidden_dim: 4096
   # intermediate_dim: 11008
@@ -15,8 +15,8 @@ model:  # 7B class model
   # num_heads: 32
   # num_kv_heads: 32
   # use_flash_attention: True
-  # use_bias: false
-  # use_layer_norm_weight: false
+  use_bias: false
+  use_layer_norm_weight: false
 initialize_from_hf: "allenai/OLMo-7B-0724-hf"
 use_hf_model_config: true
   #flash_attention_block_size: 1024
