@@ -22,4 +22,4 @@ ADD . /opt/levanter
 
 # Add $EXTRA_CTX to the same location as in local machine.
 # it's already in the image, so we don't need to copy it. just move it if we set EXTRA_CTX
-RUN if [ -f ".mnt" ]; then mkdir -p $(dirname $EXTRA_CTX) && mv .mnt $EXTRA_CTX; fi
+RUN if [ -f ".mnt" ] || [ -d ".mnt" ]; then mkdir -p $(dirname $EXTRA_CTX) && mv .mnt $EXTRA_CTX; fi
