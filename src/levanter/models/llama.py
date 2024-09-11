@@ -109,6 +109,9 @@ class LlamaConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
+        print(f'\n hf_config: {hf_config}')
+        print(type(hf_config))
+        print(dir(hf_config))
         return LlamaConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
