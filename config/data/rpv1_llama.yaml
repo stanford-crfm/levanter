@@ -1,5 +1,4 @@
 cache_dir: gs://levanter-data/tokenized/redpajama_v1_llama_mixture
-rows_per_chunk: 4096
 tokenizer: "meta-llama/Llama-2-7b-hf"
 configs:
   arxiv:

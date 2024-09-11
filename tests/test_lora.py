@@ -112,8 +112,9 @@ def test_lora_peft_integration():
 
     hf_dict = get_peft_model_state_dict(model)
 
-    converter = Gpt2Config.default_hf_checkpoint_converter
-    lev_model = converter.load_pretrained(Gpt2LMHeadModel, "stanford-crfm/expanse-gpt2-small-x777")
+    converter = Gpt2Config().hf_checkpoint_converter()
+
+    lev_model = converter.load_pretrained(converter.default_config.model_type, "stanford-crfm/expanse-gpt2-small-x777")
 
     lora_lev_model = loraize(lev_model, LoraConfig(r=8, target_modules=["c_attn"]), key=jax.random.PRNGKey(0))
     # for some dumb reason, the hf state dict starts with this prefix
@@ -168,8 +169,8 @@ def test_merge_lora():
             return PreciseDotGeneralOp()
         return x
 
-    merged = jax.tree_map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
-    loraized = jax.tree_map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    merged = jax.tree.map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    loraized = jax.tree.map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
 
     input = hax.random.normal(k0, (In,))
     # light tolerances for TPU
@@ -180,7 +181,7 @@ def test_merge_lora():
 def test_lora_load_in_peft():
     import torch
 
-    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
+    converter: HFCheckpointConverter = Gpt2Config().hf_checkpoint_converter()
     config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
     Vocab = converter.Vocab
 
@@ -229,7 +230,7 @@ def test_lora_load_in_peft():
 def test_lora_merged_load_in_hf():
     import torch
 
-    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
+    converter: HFCheckpointConverter = Gpt2Config().hf_checkpoint_converter()
     config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
     Vocab = converter.Vocab
 

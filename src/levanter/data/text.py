@@ -1,4 +1,5 @@
 import abc
+import asyncio
 import copy
 import dataclasses
 import functools
@@ -7,7 +8,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
 import braceexpand
 import datasets
@@ -15,20 +16,28 @@ import equinox as eqx
 import fsspec
 import jax
 import numpy as np
-import pyarrow as pa
 import regex
+import tensorstore as ts
 from draccus import field
+from jax._src.random import PRNGKey
 from jaxtyping import PRNGKeyArray
+from tokenizers import normalizers
 
 import haliax as hax
 from haliax import Axis
 
+from levanter.data import AsyncDataset
+from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy
+from levanter.data.permutation import EraConfig
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
+from levanter.store.cache import TreeCache
+from levanter.store.jagged_array import JaggedArrayStore
+from levanter.store.tree_store import TreeStore
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
@@ -36,24 +45,15 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
-from levanter.data._preprocessor import BatchProcessor, dict_from_record_batch  # noqa
-from levanter.data.dataset import ShardableDataset, ShuffleDataset  # noqa
-from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK  # noqa
-from levanter.data.shard_cache import CacheLedger  # noqa
-from levanter.data.shard_cache import LEDGER_FILE_NAME as NEW_LEDGER_FILE_NAME  # noqa
-from levanter.data.shard_cache import (  # noqa
-    ChunkMetadata,
-    LoggerMetricsMonitor,
-    LoggingMetricsMonitor,
-    MetricsMonitor,
-    ShardCache,
-    _serialize_json_and_commit,
-    build_cache,
-)
-from levanter.data.sharded_dataset import ShardedDataset, TextUrlDataset, WrappedHFDataset  # noqa
+from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
+from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
+from levanter.data.sharded_datasource import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
-from levanter.utils.jax_utils import use_cpu_device  # noqa
+from levanter.store.cache import build_or_load_cache  # noqa
+from levanter.utils.jax_utils import key_iterator, local_cpu_mesh, use_cpu_device  # noqa
 
+
+T_co = TypeVar("T_co", covariant=True)
 
 logger = logging.getLogger("levanter.data.text")
 
@@ -66,41 +66,110 @@ LEDGER_FILE = "ledger.json"
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
 
-class CausalLmDataset(ShardableDataset[LmExample]):
+class TokenSeqDataset(AsyncDataset[np.ndarray]):
+    """
+    A dataset that yields sequences of tokens of fixed length from an underlying TreeCache.
+
+    :param doc_cache: the TreeCache to read from
+    :param seq_len: The max length of sequences to emit
+    """
+
+    def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
+        self.doc_cache = doc_cache
+        self.seq_len = seq_len
+        self._store: Optional[TreeStore] = None
+        self._cached_len: Optional[int] = None
+
+    async def async_len(self) -> int:
+        await self.doc_cache.finished()
+        token_arrays = await self._await_token_cache()
+        return token_arrays.data_size // self.seq_len
+
+    async def _await_token_cache(self) -> JaggedArrayStore:
+        if self._store is None:
+            self._store = await self.doc_cache.store_async()
+        return self._store.tree["input_ids"]
+
+    async def final_length_is_known(self) -> bool:
+        return await self.doc_cache.final_length_is_known()
+
+    def is_finite(self) -> bool:
+        return True
+
+    async def current_len(self) -> Optional[int]:
+        store = await self._await_token_cache()
+        return store.data_size // self.seq_len
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+        token_arrays = await self._await_token_cache()
+        # logger.info(f"Time to get token cache: {time.time() - time_in}")
+        len = await self.wait_until_len_at_least(max(indices) + 1)
+        if len is not None and len < max(indices) + 1:
+            raise ValueError("Requested indices beyond the end of the dataset")
+        offsets = np.array(indices) * self.seq_len
+        with ts.Batch():
+            out = []
+            for offset in offsets:
+                out.append(token_arrays.data[offset : offset + self.seq_len].read())
+
+        out = await asyncio.gather(*out)
+
+        return out
+
+    def get_batch_sync(self, indices: Sequence[int]) -> Sequence[T_co]:
+        token_arrays = self.doc_cache.store.tree["input_ids"]
+        # logger.info(f"Time to get token cache: {time.time() - time_in}")
+        # len = await self.wait_until_len_at_least(max(indices) + 1)
+        # if len is not None and len < max(indices) + 1:
+        # raise ValueError("Requested indices beyond the end of the dataset")
+        offsets = np.array(indices) * self.seq_len
+        with ts.Batch():
+            out = []
+            for offset in offsets:
+                out.append(token_arrays.data[offset : offset + self.seq_len].read())
+        # logger.info(f"Time to read token cache: {time.time() - time_in}")
+
+        out = [x.result() for x in out]
+        # logger.info(f"Time to wait for token cache: {time.time() - time_in}")
+        return out
+
+    async def wait_until_len_at_least(self, length: int) -> int:
+        # length is brutally slow to compute, so we cache it
+        if self._cached_len is not None and self._cached_len >= length:
+            return self._cached_len
+
+        # TODO: would be better to listen for cache updates
+        length = await super().wait_until_len_at_least(length)
+        self._cached_len = length
+        return length
+
+
+class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
     def __init__(
         self,
-        dataset: ShardableDataset[np.ndarray],
+        dataset: AsyncDataset[np.ndarray],
         QPos: Axis,
         KPos: Axis,
         fcm_prob: float = 0.0,
-        key: Optional[PRNGKeyArray] = None,
+        key: Optional[PRNGKey] = None,
         ignore_index: Optional[int] = None,
     ):
         self.dataset = dataset
         self.QPos = QPos
         self.KPos = KPos
         self.fcm_prob = fcm_prob
-        self.key = key
         self.ignore_id = ignore_index
+        self.key = key
 
         if self.fcm_prob > 0.0 and self.key is None:
             raise ValueError("must provide key if fcm_prob > 0.0")
 
-    def shard(self, shard_id: int, num_shards: int) -> "CausalLmDataset":
-        return CausalLmDataset(
-            self.dataset.shard(shard_id, num_shards), self.QPos, self.KPos, self.fcm_prob, self.key, self.ignore_id
-        )
-
-    def __iter__(self) -> Iterator[LmExample]:
-        key = self.key
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
 
-        with use_cpu_device():
-
-            @functools.partial(eqx.filter_jit, out_shardings=sharding)
-            def _create_lm_example(tokens, key):
+        @functools.partial(eqx.filter_jit, out_shardings=sharding)
+        def _create_lm_example(tokens, key):
+            with local_cpu_mesh():
                 tokens = hax.named(tokens, self.QPos)
-
                 example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
 
                 if self.fcm_prob > 0:
@@ -116,196 +185,10 @@ class CausalLmDataset(ShardableDataset[LmExample]):
 
                 return example
 
-            for tokens in self.dataset:
-                example = _create_lm_example(tokens, key)
-                yield example
+        super().__init__(self.dataset, _create_lm_example, key=key)
 
-
-class TokenSeqDataset(ShardableDataset[np.ndarray]):
-    """
-    A dataset that yields sequences of tokens of fixed length from a TokenizedDocumentCache.
-
-    :param doc_cache: the TokenizedDocumentCache to draw from
-    :param seq_len: The max length of sequences to emit
-    """
-
-    def __init__(self, doc_cache, seq_len: int, stride: Optional[int] = None):
-        self.doc_cache = doc_cache
-        self.seq_len = seq_len
-        self.stride = stride
-
-    def shard(self, shard_id: int, num_shards: int) -> "TokenSeqDataset":
-        """
-        Split the dataset into num_processes shards.
-        """
-        return TokenSeqDataset(self.doc_cache.shard(shard_id, num_shards), self.seq_len, self.stride)
-
-    def __iter__(self) -> Iterator[np.ndarray]:
-        extra_tokens = None  # BatchEncoding of the last tokens from the previous doc
-        for doc in self.doc_cache:
-            # TODO: we could be cleverer here, and avoid these expensive copies etc
-            # should run some benchmarks to see if it's worth it
-            if extra_tokens is not None:
-                doc = _stack_batch_encodings(extra_tokens, doc)
-                extra_tokens = None
-
-            for encoded_slice in concatenate_and_group_texts(doc, self.seq_len, self.stride, drop_remainder=False):
-                if len(encoded_slice["input_ids"]) < self.seq_len:
-                    assert extra_tokens is None
-                    extra_tokens = encoded_slice
-                else:
-                    extra_tokens = None
-                    ids = encoded_slice["input_ids"]
-                    yield ids
-
-    @staticmethod
-    def load(seq_len: int, cache_dir: str, stride: Optional[int] = None) -> "TokenSeqDataset":
-        doc_cache = TokenizedDocumentCache.load(cache_dir, True)
-        return TokenSeqDataset(doc_cache, seq_len, stride)
-
-
-class BatchEncodingDataset(ShardableDataset[BatchEncoding]):
-    """
-    A Dataset that yields HF BatchEncodings from a ShardCache.
-    This basically yields a dict-of-arrays, just the HF BatchEncoding class version of dict.
-    """
-
-    def __init__(self, cache: ShardCache, return_batches: bool = False):
-        self.cache = cache
-        self.return_batches = return_batches
-
-    def __iter__(self) -> Iterator[BatchEncoding]:
-        for batch in self.cache:
-            encoding = _batch_encoding_from_record_batch(batch, flatten_docs=False)
-            if self.return_batches:
-                yield encoding
-            else:
-                batch_size = 0
-                for v in encoding.values():
-                    batch_size = len(v)
-                    break
-
-                for i in range(batch_size):
-                    # this doesn't work for reconstituted batches, so we have to do this
-                    # I have no idea why this is the case
-                    #     yield encoding[i]
-                    yield BatchEncoding({k: v[i] for k, v in encoding.items()})
-
-    def shard(self, shard_id: int, num_shards: int) -> "BatchEncodingDataset":
-        return BatchEncodingDataset(self.cache.shard(shard_id, num_shards))
-
-    @staticmethod
-    def load(cache_dir: str, return_batches: bool = False, batch_size: Optional[int] = None) -> "BatchEncodingDataset":
-        if batch_size is None:
-            batch_size = 1
-        cache = ShardCache.load(cache_dir, batch_size=batch_size)
-        return BatchEncodingDataset(cache, return_batches=return_batches)
-
-
-class TokenizedDocumentCache(ShardableDataset[BatchEncoding]):
-    """
-    Represents a tokenized document cache, which is a directory of parquet files with a ledger file.
-
-    The difference between this class and the TokenSeqDataset is that this class yields entire documents,
-    while the TokenSeqDataset yields tokens sequences of fixed length from concatenated documents.
-    """
-
-    def __init__(self, chunk_cache: ShardCache, flatten_docs):
-        self.chunk_cache = chunk_cache
-        self.flatten_docs = flatten_docs
-
-    def __iter__(self):
-        """Reads the cache files produced by cache_and_group and yields tokenized sequences.
-        If flatten is false, this returns the docs as they were presented to the caching process. If flatten is True,
-        then the documents returned are actually concatenated documents, where the number is the number of documents
-        presented as a batch to the caching process."""
-        for batch in self._chunks():
-            yield _batch_encoding_from_record_batch(batch, self.flatten_docs)
-
-    def _chunks(self):
-        return self.chunk_cache.iter_batches_from_chunks()
-
-    @staticmethod
-    def build_or_load(
-        cache_dir,
-        source: ShardedDataset[str],
-        tokenizer: PreTrainedTokenizerBase,
-        *,
-        flatten_docs=True,
-        enforce_bos=True,
-        enforce_eos=True,
-        batch_size=128,
-        rows_per_chunk=DEFAULT_ROWS_PER_CHUNK,
-        monitors=None,
-        await_finished=True,
-        override_resources=None,
-    ) -> "TokenizedDocumentCache":
-        bt = BatchTokenizer(
-            tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos, override_resources=override_resources
-        )
-        monitors = monitors or []
-        cache = build_cache(
-            cache_dir,
-            source,
-            bt,
-            await_finished=await_finished,
-            batch_size=batch_size,
-            rows_per_chunk=rows_per_chunk,
-            monitors=monitors,
-        )
-        if cache.is_finished:
-            logger.info(f"Cache {cache_dir} is complete.")
-        else:
-            logger.info(
-                f"Cache {cache_dir} is incomplete. This will block until at least one chunk per process is complete."
-            )
-
-        return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
-
-    @staticmethod
-    def load(cache_dir, batch_size: int = 128, flatten_docs=True):
-        """
-        Load a TokenizedDocumentCache from a directory. If the ledger file is not present, this will raise a
-        FileNotFoundError.
-
-        NOTE: ATM this attempts to migrate old caches to the new format, but this will be removed in the future.
-
-        :param cache_dir:
-        :param flatten_docs: If true, then multiple documents from a single batch (when the cache was built) will be
-        concatenated into a single document. Often one is concatenating documents anyway, so this is a useful option.
-        :return:
-        """
-
-        try:
-            cache = ShardCache.load(cache_dir, batch_size=batch_size)
-            return TokenizedDocumentCache(cache, flatten_docs=flatten_docs)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"{cache_dir} is not a complete cache")
-        except Exception:
-            logger.exception("error loading cache")
-            raise
-
-    def shard(self, shard_index, num_shards):
-        if num_shards <= shard_index:
-            raise ValueError(f"Shard index {shard_index} is out of range")
-
-        if num_shards == 1:
-            return self
-
-        return TokenizedDocumentCache(self.chunk_cache.shard(shard_index, num_shards), self.flatten_docs)
-
-
-def _batch_encoding_from_record_batch(b: pa.RecordBatch, flatten_docs: bool):
-    if flatten_docs:
-        # insert a newaxis to the beginning so that it appears to be bs=1
-        return BatchEncoding(
-            {
-                b.field(i).name: b.column(i).values.to_numpy(zero_copy_only=False)[np.newaxis, :]
-                for i in range(b.num_columns)
-            },
-        )
-    else:
-        return BatchEncoding(dict_from_record_batch(b))
+    async def async_len(self) -> int:
+        return await self.dataset.async_len()
 
 
 def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
@@ -315,10 +198,12 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 
+LONG_STRING_WORKAROUND = 10_000
+
 ws = regex.compile(r"\s")
 
 
-class BatchTokenizer(BatchProcessor[str]):
+class BatchTokenizer(BatchProcessor[str, dict]):
     """
     A batch processor that tokenizes a batch of strings using a tokenizer.
     By default, this will append eos to the end of the string, even if the tokenizer doesn't.
@@ -332,6 +217,7 @@ class BatchTokenizer(BatchProcessor[str]):
         *,
         batch_size=128,
         override_resources=None,
+        _workaround_len=LONG_STRING_WORKAROUND,
         return_attention_mask=False,
         padding=False,
         max_length=None,
@@ -367,20 +253,125 @@ class BatchTokenizer(BatchProcessor[str]):
 
         self._need_to_add_eos = should_append_eos
         self._need_to_add_bos = should_append_bos
+        self._workaround_len = _workaround_len
 
-    def __call__(self, batch: Sequence[str]) -> BatchEncoding:
+    def __call__(self, batch: Sequence[str]) -> list[dict]:
         if self._need_to_add_bos:
             batch = [self.tokenizer.bos_token + " " + d for d in batch]
 
         if self._need_to_add_eos:
             batch = [d + " " + self.tokenizer.eos_token for d in batch]
 
+        if self._needs_long_sequence_workaround:
+            batch, needs_merge = self._break_for_long_sequences(batch)
+        else:
+            needs_merge = []
+
         if self.padding is not False:
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
         else:
             encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
 
-        return encoding
+        if needs_merge:
+            new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
+            encoding = BatchEncoding(new_encoding)
+
+        # debatch the encoding
+        unbatched = [dict(zip(encoding, t)) for t in zip(*[encoding[k] for k in encoding])]
+
+        return unbatched
+
+    def _break_for_long_sequences(self, batch):
+        orig_lengths = [len(d) for d in batch]
+        # break any strings that are longer than LONG_STRING_WORKAROUND characters into smaller chunks
+        orig_batch = batch
+        batch = []
+        needs_merge = []
+        for i, d in enumerate(orig_batch):
+            needs_merge.append(False)
+            orig_len = orig_lengths[i]
+            while len(d) > self._workaround_len:
+                # we'd rather break strings at whitespace, so find the first whitespace
+                match = ws.search(d, self._workaround_len)
+                # this is vanishingly unlikely, but if we can't find a whitespace, just break it at the limit
+                if match is None:
+                    split = len(d)
+                else:
+                    split = match.start()
+
+                batch.append(d[:split])
+                needs_merge.append(True)
+
+                d = d[split:]
+                orig_len -= split
+
+            batch.append(d)
+        return batch, needs_merge
+
+    @property
+    def output_exemplar(self) -> dict:
+        return dict(**self.tokenizer("hi there", return_attention_mask=self.return_attention_mask, verbose=False))
+
+    @property
+    def name_or_path(self):
+        return self.tokenizer.name_or_path
+
+    @property
+    def vocab_size(self):
+        return self.tokenizer.vocab_size
+
+    @staticmethod
+    def _merge_split_encodings(batch, encoding, needs_merge):
+        # merge the encodings back together
+        # we might need to merge multiple encodings together
+        # needs merge marks the first n-1 encodings that need to be merged for each document
+        new_encoding = {}
+        for k, v in encoding.items():
+            if len(v) == 0:
+                continue
+            if isinstance(v[0], np.ndarray):
+                assert len(v) == len(batch)
+                v_out = []
+                vs_to_merge = []
+                for i in range(len(batch)):
+                    if not needs_merge[i]:
+                        v_out.append(np.concatenate(vs_to_merge))
+                        vs_to_merge = []
+                    vs_to_merge.append(v[i])
+
+                if len(vs_to_merge) > 0:
+                    v_out.append(np.concatenate(vs_to_merge))
+
+                new_encoding[k] = v_out
+            elif isinstance(v[0], list):
+                v_out = []
+                vs_to_merge = []
+                for i in range(len(batch)):
+                    if not needs_merge[i]:
+                        if len(vs_to_merge) > 0:
+                            v_out.append(list(chain(*vs_to_merge)))
+                        vs_to_merge = []
+                    vs_to_merge.append(v[i])
+
+                if len(vs_to_merge) > 0:
+                    v_out.append(list(chain(*vs_to_merge)))
+                new_encoding[k] = v_out
+            else:
+                raise ValueError(f"Unknown type {type(v[0])}")
+        return new_encoding
+
+    # TODO remove this when it's resolved https://github.com/huggingface/tokenizers/issues/1495
+    @cached_property
+    def _needs_long_sequence_workaround(self):
+        if isinstance(self.tokenizer, PreTrainedTokenizerFast):
+            normalizer = self.tokenizer.backend_tokenizer.normalizer
+            if normalizer is None:
+                return False
+            # if there's a "Replace" normalizer, then we need to do the workaround
+            # inexplicably there's no way to see inside a Sequence so we also have to assume it needs it
+            return isinstance(normalizer, (normalizers.Replace, normalizers.Sequence))
+        else:
+            return False
 
     @property
     def num_cpus(self) -> int:
@@ -490,10 +481,10 @@ class LMDatasetSourceConfig:
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
 
-    def get_shard_source(self, split) -> Optional[ShardedDataset[str]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
         if self.id is not None:
             try:
-                ds = WrappedHFDataset(self.id, split=split, name=self.name, streaming=self.stream)
+                ds = WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.stream)
             except ValueError as e:
                 # if the message starts with Bad split, then just return None
                 if str(e).startswith("Bad split"):
@@ -510,7 +501,7 @@ class LMDatasetSourceConfig:
             split_urls = self.urls_for_split(split)
             if len(split_urls) == 0:
                 return None
-            return TextUrlDataset(split_urls, self.text_key)
+            return TextUrlDataSource(split_urls, self.text_key)
 
     def doc_iterator(self, split: str):
         if self.id is not None:
@@ -521,7 +512,7 @@ class LMDatasetSourceConfig:
         else:
             urls = self.urls_for_split(split)
 
-            yield from TextUrlDataset(urls, self.text_key)
+            yield from TextUrlDataSource(urls, self.text_key)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -554,11 +545,13 @@ class LMTaskConfig(abc.ABC):
 
     # config related to caching
     cache_dir: str = "cache/"
-    rows_per_chunk: int = DEFAULT_ROWS_PER_CHUNK  # number of rows to process and cache per chunk
+    tokenizer_batch_size: int = 32
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     ignore_token_id: Optional[int] = None
-    shuffle_buffer_size: Optional[int] = None
+    shuffle: bool | EraConfig = False
+    """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
+    If you want to shuffle in eras, provide an EraConfig (which asks for an era_length)"""
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
@@ -570,13 +563,13 @@ class LMTaskConfig(abc.ABC):
     @abc.abstractmethod
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
-    ) -> ShardableDataset[np.ndarray]:
+    ) -> AsyncDataset[np.ndarray]:
         pass
 
     @abc.abstractmethod
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         pass
 
     @property
@@ -586,7 +579,7 @@ class LMTaskConfig(abc.ABC):
 
     def tagged_eval_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> list[Tuple[ShardableDataset[np.ndarray], List[str]]]:
+    ) -> list[Tuple[AsyncDataset[np.ndarray], List[str]]]:
         tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
         eval_sets = self.validation_sets(seq_len, monitors)
 
@@ -599,17 +592,17 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
-    ) -> ShardableDataset[np.ndarray]:
+    ) -> AsyncDataset[np.ndarray]:
         ds = self.token_seq_dataset("train", seq_len, monitors)
         if ds is None:
             raise ValueError("No training set!")
 
-        if self.shuffle_buffer_size is not None:
-            if key is None:
-                key = jax.random.PRNGKey(0)
-            return ShuffleDataset(ds, key, self.shuffle_buffer_size)
+        if self.shuffle is True:
+            ds = ds.shuffle(key)
+        elif isinstance(self.shuffle, EraConfig):
+            ds = ds.era_shuffle(self.shuffle.era_length, key=key)
 
-        return ds
+        return ds  # type: ignore
 
     def validation_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -618,7 +611,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         validation_set = self.validation_set(seq_len, monitors)
         if validation_set is not None:
             return {"": validation_set}
@@ -654,12 +647,12 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
-    ) -> Optional[TokenizedDocumentCache]:
+    ) -> Optional[TreeCache[BatchEncoding]]:
         split_cache_dir = os.path.join(self.cache_dir, split)
         name = logger_name or os.path.basename(self.cache_dir)
 
         try:
-            return TokenizedDocumentCache.load(split_cache_dir, flatten_docs=True)
+            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
         except FileNotFoundError:
             pass
 
@@ -678,16 +671,20 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif monitors is False:
             monitors = []
 
-        return TokenizedDocumentCache.build_or_load(
+        bt = BatchTokenizer(
+            self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos, batch_size=self.tokenizer_batch_size
+        )
+
+        return build_or_load_cache(
             split_cache_dir,
             source,
-            self.the_tokenizer,
-            enforce_eos=self.enforce_eos,
-            flatten_docs=True,
-            rows_per_chunk=self.rows_per_chunk,
+            bt,
+            await_finished=False,
             monitors=monitors,
-            # TODO: it would be better if we could just prioritize validation higher (we typically want it after the first grad step)
-            await_finished=(split == "validation"),
+            cache_config={
+                "tokenizer": self.the_tokenizer.name_or_path,
+                "vocab_size": self.the_tokenizer.vocab_size,
+            },
         )
 
 
@@ -728,6 +725,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+    mixture_block_size: int = 2048
+    """ block size for the mixture dataset."""
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -741,40 +740,59 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
-    ) -> ShardableDataset[np.ndarray]:
+    ) -> AsyncDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+
         if key is None:
             key = jax.random.PRNGKey(0)
 
         mix_key, shuffle_key = jax.random.split(key)
 
-        mixture = MixtureDataset(
-            datasets=token_datasets, weights=self.train_weights, stop_strategy=self.stop_strategy, key=mix_key
-        )
+        # We shuffle the components and not the overall mixture because this lets us preserve
+        # the "stable batch" property of the mixture dataset.
+        def shuffle_ds(ds, key):
+            if self.shuffle is True:
+                ds = ds.shuffle(key)
+            elif isinstance(self.shuffle, EraConfig):
+                ds = ds.era_shuffle(self.shuffle.era_length, key=key)
 
-        if self.shuffle_buffer_size is not None:
-            return ShuffleDataset(mixture, shuffle_key, self.shuffle_buffer_size)
+            return ds
+
+        if self.shuffle:
+            out_token_datasets = {}
+            key_iter = key_iterator(shuffle_key)
+            for name, ds in token_datasets.items():
+                out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
+            token_datasets = out_token_datasets
+
+        mixture = MixtureDataset(
+            datasets=token_datasets,
+            weights=self.train_weights,
+            stop_strategy=self.stop_strategy,
+            key=mix_key,
+            block_size=2048,
+        )
 
         return mixture
 
     def training_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, TokenSeqDataset]:
         doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
         return token_datasets
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, ShardableDataset[np.ndarray]]:
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len, stride=None) for name, cache in doc_caches.items()}
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
         return token_datasets
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Dict[str, TokenizedDocumentCache]:
+    ) -> Dict[str, TreeCache[dict]]:
         # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
         # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the
         # LMDatasetConfig.build_or_load_cache method. We exclude the cache_dir field.
@@ -801,6 +819,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 logger.warning(f"Skipping {name} for split {split} because no source was provided")
             else:
                 caches[name] = cache
+
+        # in practice it works best if we block on validation caches
+        if split == "validation":
+            logger.info("Waiting for validation caches to finish building...")
+            for cache in caches.values():
+                cache.await_finished()
+
         return caches
 
     @property

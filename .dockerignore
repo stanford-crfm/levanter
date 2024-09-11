@@ -2,6 +2,7 @@
 
 scratch
 cache
+new-cache
 wandb
 checkpoints
 

@@ -40,7 +40,7 @@ from levanter.trainer import StepInfo
 from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
-from levanter.utils.py_utils import classproperty, dataclass_with_default_init, logical_cpu_memory_size
+from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
 
 silence_transformer_nag()
@@ -117,9 +117,8 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
     def from_hf_config(cls, hf_config: HfConfig):
         pass
 
-    @classproperty
     @abc.abstractmethod
-    def default_hf_checkpoint_converter(cls) -> "HFCheckpointConverter":
+    def hf_checkpoint_converter(cls) -> "HFCheckpointConverter":
         """The default HFCheckpointConverter to use for this config class. We recommend that you
         define this as a @cached_property on your config class."""
         pass
@@ -280,7 +279,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # TODO: hacky hacky
         for k, v in LmConfig.get_known_choices().items():
             if issubclass(v, HFCompatConfig):
-                if v.default_hf_checkpoint_converter.HfConfigClass.__name__ == config_class.__name__:
+                if v().hf_checkpoint_converter().HfConfigClass.__name__ == config_class.__name__:
                     LevConfigClass = v
                     break
         else:
@@ -498,8 +497,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def load_pretrained(
         self,
-        lm_model_cls: Union[Type[ModelWithHfSerializationMixin], LevConfig],
+        lm_model_cls: Type[ModelWithHfSerializationMixin],
         ref: Optional[Union[str, RepoRef]] = None,
+        config: Optional[HFCompatConfig] = None,
         axis_mapping: Optional[ResourceMapping] = None,
         resize_vocab_to_match_tokenizer: bool = True,
         dtype: Optional[jnp.dtype] = None,
@@ -508,18 +508,16 @@ class HFCheckpointConverter(Generic[LevConfig]):
         Loads a levanter model from a huggingface checkpoint.
 
         Args:
-            lm_model_cls: The model class to load or the config to use to load the model class
+            config: The config to use to load the model class
             ref: The reference to load from. If None, will use the reference_checkpoint
             axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
         from contextlib import ExitStack
 
         hf_config = self.hf_config_from_hf_checkpoint(ref)
-        if isinstance(lm_model_cls, type(self.default_config)):
-            config = lm_model_cls
-            lm_model_cls = config.model_type
-        else:
+        if config is None:
             config = self.config_from_hf_config(hf_config)
+        lm_model_cls = config.model_type
 
         # Vocab: first we have to resize the vocab as loaded from the checkpoint
         tokenizer_Vocab = self.Vocab
@@ -979,7 +977,7 @@ def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key
             else:
                 return None
 
-        return jax.tree_map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
+        return jax.tree.map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
 
     new_buffers = _init_buffers()
 
@@ -1052,7 +1050,7 @@ def _shard_hf_checkpoint(
     shards = {}
     for idx, shard in enumerate(sharded_state_dicts):
         # NOTE(dlwh): this is how it is in the HF code. it hurts me
-        shard_file = weights_name.replace(".bin", f"-{idx+1:05d}-of-{len(sharded_state_dicts):05d}.bin")
+        shard_file = weights_name.replace(".bin", f"-{idx + 1:05d}-of-{len(sharded_state_dicts):05d}.bin")
         shard_file = shard_file.replace(
             ".safetensors", f"-{idx + 1:05d}-of-{len(sharded_state_dicts):05d}.safetensors"
         )

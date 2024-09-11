@@ -108,30 +108,49 @@ zone: us-west4-a
 tpu_name: test-spin-up-32
 tpu_type: "v5litepod-16"
 vm_image: "tpu-ubuntu2204-base"
-preemptible: true
+capacity_type: "preemptible"
 autodelete: false
 subnetwork: "default"
 
 EOF
 ```
 
+If you want to customize the docker image that is created and uploaded to GCP Artifact Registry, you can add config `image_name: "YOUR-DOCKER-NAME"`.
+
+Note that you can also configure docker to push to GHCR by setting
+```
+docker_registry: ghcr
+github_user: <YOUR USERNAME>
+github_token: <YOUR TOKEN>
+```
+By default, the tpu instance won't be able to access the docker image, so you may need to make it public.
+
 Now run `launch.py`. This will package your current directory into a Docker image and run it on your workers. Everything after the `--` is run on each worker.
 
 ```bash
-python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ### Launch a GPT-2 Small in interactive mode
 
 To run in the foreground, use `--foreground` with the `launch.py` script. You should use tmux or something for long running jobs for this version. It's mostly for debugging.
 ```bash
-python infra/launch.py -- python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+```
+
+### Using an external directory or file
+
+In case that you want to reference some external directory/file outside of the levanter repo, you can do it by adding the external directory/file to the docker image so that it becomes accessible in TPU instances. You can specify the path you want to add as extra buildl context by `--extra_context` with the `launch.py` script. Then, you should be able to use the external files in arguments in `train_lm.py` etc.
+```bash
+python infra/launch.py --extra_context <external path> -- python src/levanter/main/train_lm.py --config_path <external path> --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ### Babysitting Script
 
-If you are using a preemptible TPU VM, you probably want to use the "babysitting" script that automatically re-creates
-the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours. You can run `launch.py` with the `--retries` and `--foreground` parameter to accomplish this. If `--retries` is greater than 1, `launch.py` will automatically attempt to re-create the VM and re-run the command if it fails. (`--foreground` is necessary to keep the script from returning immediately.)
+If you are using a preemptible TPU VM, you probably want to use the "babysitting" version of the script to keep an eye on
+the VM. This is because preemptible instances can be preempted and will always be killed every 24 hours.
+You can run `launch.py` with the `--retries` and `--foreground` parameter to accomplish this.
+If `--retries` is greater than 1, `launch.py` will automatically attempt to re-create the VM and re-run the command if it fails. (`--foreground` is necessary to keep the script from returning immediately.)
 
 ```bash
     python infra/launch.py --retries=100 --foreground --tpu_name=my_tpu -- python src/levanter/main/train_lm.py --config_path config/my_config.yaml \
@@ -168,6 +187,7 @@ Tokenizers and configuration files are loaded via `fsspec` which supports remote
 filesystems , so you can also copy your tokenizer or config file to GCS and use
 a `gs://` path to access it.
 
+
 ## Common Issues
 ### (CRFM) Permission denied on `/files`
 
@@ -199,3 +219,22 @@ gcloud compute tpus tpu-vm ssh $NAME --zone $ZONE --worker=all --command 'sudo r
 
 **and then you have to ctrl-c this after about 10 seconds**. Otherwise, gcloud will think the command failed and will
 try again, and get stuck in a loop forever. (You can ctrl-c it at any point after 10 seconds.)
+
+### Docker-related Issues
+
+If you get a `permission denied` error with your `docker.sock`,
+you should be able to fix it by running the following script in the launching machine and then restarting your shell:
+
+```shell
+sudo usermod -aG docker $USER
+```
+
+If you get an error like `denied: Unauthenticated request. Unauthenticated requests do not have permission "artifactregistry.repositories.uploadArtifacts"`,
+You should run the following authentication script:
+
+```shell
+# change based on your GCP zone
+gcloud auth configure-docker ${GCP_ZONE}.pkg.dev
+# for example:
+gcloud auth configure-docker us-central2-docker.pkg.dev
+```

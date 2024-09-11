@@ -1,229 +1,257 @@
-import abc
 import functools
 import logging
+import time
 from collections import defaultdict
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple, TypeVar, Union
+from typing import Iterable, Iterator, Optional, Tuple, TypeVar
 
 import jax
-import jax.numpy as jnp
-import jax.tree_util as jtu
+from jax import Array
+from jax import numpy as jnp
+from jax import tree_util as jtu
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh, PartitionSpec
-from jaxtyping import Array, PyTree
+from jaxtyping import PyTree
 
 import haliax as hax
-from haliax import NamedArray
+from haliax import is_named_array
+from haliax._src.util import index_where
 from haliax.partitioning import ResourceMapping
-from haliax.util import is_named_array
 
-from levanter.data import Dataset
-from levanter.data.dataset import ShardableDataset
-from levanter.mesh import local_devices_mapping, process_mesh_mapping
+from levanter.data.dataset import AsyncDataset
+from levanter.data.utils import batched
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterable
-from levanter.utils.py_utils import non_caching_cycle
+from levanter.utils.thread_utils import blocking_wait
 
 
 Ex = TypeVar("Ex")
 
+_TensorSliceIndex = tuple[slice, ...]
 logger = logging.getLogger(__name__)
 
-# TODO: write tests to verify this works when data spans multiple processes
 
-_TensorSliceIndex = Tuple[slice, ...]
-
-
-class BatchLoader(Iterable[Ex], abc.ABC):
-    Batch: hax.Axis
-    mesh: Mesh
-    axis_resources: Optional[ResourceMapping]
-
-    def __init__(self, max_capacity: Optional[int], axis_resources: Optional[ResourceMapping]):
-        """
-        :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
-        :param axis_resources:
-        """
-        self.max_capacity = max_capacity
-        self.axis_resources = axis_resources
-
-    def __iter__(self) -> Iterator[Ex]:
-        ax_resources = self.axis_resources
-        if ax_resources is None:
-            ax_resources = hax.partitioning.current_thread_local_mapping()
-
-        def produce_batches():
-            with hax.axis_mapping(ax_resources):
-                for batch in self._produce_batches():
-                    yield batch
-
-        if self.max_capacity is not None and self.max_capacity < 0:
-            yield from produce_batches()
-        else:
-            bg_iter = BackgroundIterable(produce_batches, max_capacity=self.max_capacity)
-            yield from bg_iter
-
-    @abc.abstractmethod
-    def _produce_batches(self) -> Iterator[Ex]:
-        raise NotImplementedError
-
-    @property
-    def batch_size(self) -> int:
-        return self.Batch.size
-
-    def _construct_global_array_for_tree(self, item_exemplar: PyTree, get_batch_items: Callable[[int, int], PyTree]):
-        # ok this is a bit messy: we want to create a batch of items from our dataset, only loading
-        # the relevant data for each process.
-        # In general an item is represented as a PyTree, whose leaves are (named or unnamed) arrays.
-        # To make a batch we just want to add a leading dimension to each leaf array by stacking.
-        # That is, we have (conceptually) a List[PyTree[Array]] and we want to produce a PyTree[List[Array]]
-        # The difference is that we want to do this in a way that only loads the relevant data for each process
-        # So it's more that we have a LocalBatch[PyTree[Array]] and we want to produce a PyTree[GlobalBatch[Array]]
-        # because more than one device can get the same data, we need to make sure we only load it once since we're
-        # streaming. This is the cache
-        stacked_local_batch: Dict[Tuple[int, int], List[Array | hax.NamedArray]] = {}
-
-        def get_local_batch(begin: int, end: int) -> List[Array]:
-            key = (begin, end)
-            if key in stacked_local_batch:
-                return stacked_local_batch[key]
-
-            individual_datums = get_batch_items(begin, end)
-
-            device_batch = _stack_tree(self.Batch.name, individual_datums)
-            batch_leaves = jtu.tree_leaves(device_batch)
-
-            stacked_local_batch[key] = batch_leaves
-
-            return batch_leaves
-
-        def get_local_data_for_leaf(indices: _TensorSliceIndex, leaf_index: int) -> Array:
-            batch_slice = indices[0]
-            begin, end, _ = batch_slice.indices(self.Batch.size)
-            local_batch = get_local_batch(begin, end)
-            leaf = local_batch[leaf_index]
-            other_indices = indices[1:]
-            if all(idx == slice(None) for idx in other_indices):
-                return leaf
-            else:
-                return leaf[(..., *indices[1:])]
-
-        def make_global_array_for_leaf(leaf_index, item_leaf_shape: Union[ShapeSpec, NamedShapeSpec]):
-            raw_array = jax.make_array_from_callback(
-                to_raw_shape(item_leaf_shape),
-                jax.sharding.NamedSharding(self.mesh, self._pspec_for(item_leaf_shape)),
-                lambda indices: get_local_data_for_leaf(indices, leaf_index),
-            )
-            if isinstance(item_leaf_shape, NamedShapeSpec):
-                return NamedArray(raw_array, item_leaf_shape.shape)
-            else:
-                return raw_array
-
-        item_leaves, item_shape = jtu.tree_flatten(item_exemplar, is_leaf=is_named_array)
-
-        gda_leaves = [
-            make_global_array_for_leaf(leaf_index, _batchified_shape(self.Batch, item_leaf))
-            for leaf_index, item_leaf in enumerate(item_leaves)
-        ]
-
-        gda_tree = jtu.tree_unflatten(item_shape, gda_leaves)
-
-        return gda_tree
-
-    def _pspec_for(self, shape_spec: Union[ShapeSpec, NamedShapeSpec]) -> PartitionSpec:
-        if isinstance(shape_spec, ShapeSpec):  # type: ignore
-            batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
-            return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
-        else:
-            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
-
-
-class ShardedBatchLoader(BatchLoader[Ex]):
-    """
-    ShardedBatchLoader wraps a "local dataset" (a dataset that is shardable and can be iterated over) to produce
-    distributed/sharded jax.Arrays representing batches of data. Each array that has a global shape
-    but only has the data for some of the chunks of the array (namely, the ones on the local devices).
-    Thus, each process loads the data for its devices.
-
-    **NOTE: ShardedBatchLoader loops forever since it's hard to do coordination.**
-
-    The details are a bit complex: We have a device mesh of shape (data, model). We want each row of the device mesh to
-    get batch_size//num_rows examples. Usually, a process will be responsible for one or more entire rows, meaning
-    that it wil load data that is distinct from every other process. However, if num_cols > num_devices_per_process,
-    then some processes will need to load the same data. We use the process_mesh_position to determine which data to
-    load, by determining which row(s) of the device mesh the process is responsible for.
-
-    :arg local_dataset: a dataset that is shardable and can be iterated over
-    :arg mesh: the device mesh
-    :arg Batch: the batch size
-    :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
-    """
-
+class DataLoader(Iterable[Ex]):
     def __init__(
         self,
-        local_dataset: ShardableDataset[Ex],
-        mesh: Mesh,
         Batch: hax.Axis,
-        axis_resources: Optional[ResourceMapping] = None,
-        max_capacity: Optional[int] = 64,
-        *,
-        override_process_data_pos: Optional[int] = None,  # for testing
-        override_process_data_groups: Optional[int] = None,  # for testing
+        data: AsyncDataset[Ex],
+        max_buffered_batches: Optional[int],
+        mesh: Mesh,
+        axis_resources: Optional[ResourceMapping],
+        # this is set heuristically for the typical tokenseqdataset we use. Should probably tune
+        prefetch_size: int = 32,
     ):
+        """
+
+        TODO: document this
+
+        Args:
+            Batch (hax.Axis): The batch axis
+            data (AsyncDataset[Ex]): The dataset to load from
+            max_buffered_batches (Optional[int]): The maximum number of batches to buffer. If None, the buffer is unbounded.
+             If <0, the buffer is disabled and single threaded operation is used.
+            axis_resources (Optional[ResourceMapping]): axis mapping
+            prefetch_size (int): The number of batches to prefetch at once
+            mesh (Mesh): The mesh to use
+
+        """
+        self.max_buffered_batches = max_buffered_batches
+        self.prefetch_size = prefetch_size
+        self.axis_resources = axis_resources
+        self.data_store = data
         self.mesh = mesh
         self.Batch = Batch
 
-        process_mesh_map = process_mesh_mapping(self.mesh)
-        local_devices_map = local_devices_mapping(self.mesh)
-        process_data_pos = override_process_data_pos or process_mesh_map[jax.process_index()]
-        num_data_process_groups = override_process_data_groups or max(process_mesh_map.values()) + 1
+        def _exemplar_shape():
+            return blocking_wait(self.data_store.getitem_async(0))
 
-        if not override_process_data_groups:
-            assert num_data_process_groups <= jax.process_count()
+        self._ex_leaves, self._ex_structure = jax.tree_flatten(_exemplar_shape(), is_leaf=is_named_array)
 
-        self.process_data_pos = process_data_pos
-        self.num_data_process_groups = num_data_process_groups
-        assert self.Batch.size % num_data_process_groups == 0
+        local_device_indices, local_indices = self._compute_local_device_indices()
 
-        self.process_mesh_map = process_mesh_map
-        self.local_devices_map = local_devices_map
-        self.per_device_batch_size = self.batch_size // self.mesh.devices.shape[0] // self.mesh.devices.shape[1]
+        self._local_device_indices: dict[jax.Device, range] = local_device_indices
+        # this is just the flat indices
+        self._local_indices: list[int] = local_indices
 
-        self.item_dataset = local_dataset.shard(process_data_pos, num_data_process_groups)
-        super().__init__(max_capacity, axis_resources)
-
-    def _produce_batches(self) -> Iterator[PyTree]:
-        one_item_generator = non_caching_cycle(self.item_dataset)
-        batched = _batched(one_item_generator, self.local_batch_size)
-
-        def batch_callback(global_begin, _):
-            # global_begin is uid for DP/FSDP
-            # DP_id * per_device_bs = global_begin
-            device_pos = global_begin // self.per_device_batch_size
-
-            begin = self.local_devices_map[device_pos] * self.per_device_batch_size
-            end = begin + self.per_device_batch_size
-
-            return local_batch[begin:end]
-
-        while True:
-            local_batch: List[PyTree] = next(batched)
-
-            batch = self._construct_global_array_for_tree(
-                item_exemplar=local_batch[0],
-                get_batch_items=batch_callback,
-            )
-
-            yield batch
+    def _compute_local_device_indices(self):
+        sharding: jax.sharding.Sharding = hax.partitioning.sharding_for_axis(
+            self.Batch.name, self.axis_resources, self.mesh
+        )
+        # this is a map from devices to the slice of the array that they contain (in the global array)
+        local_indices_map = sharding.addressable_devices_indices_map((self.batch_size,))
+        # we just want all the indices
+        local_device_indices: dict[jax.Device, range] = {
+            device1: range(*idx[0].indices(self.batch_size))
+            for device1, idx in local_indices_map.items()
+            if idx is not None
+        }
+        local_indices: list[int] = []
+        for device, indices in local_device_indices.items():
+            local_indices.extend(indices)
+        return local_device_indices, local_indices
 
     @property
-    def batch_size(self) -> int:
-        """Returns the 'global' batch size: the effective number of examples in a batch across all devices/hosts"""
+    def batch_size(self):
         return self.Batch.size
 
-    @property
-    def local_batch_size(self) -> int:
-        """Returns the 'local' batch size: the number of examples in a batch on this host"""
-        return self.batch_size // self.num_data_process_groups
+    def __iter__(self):
+        return self.iter_from_step(None)
+
+    def iter_from_step(self, start_from_batch: Optional[int] = None):
+        return DataLoaderIterator(self, start_from_batch=start_from_batch)
+
+
+class DataLoaderIterator(Iterator[Ex]):
+    def __init__(self, data_loader: DataLoader, start_from_batch: Optional[int] = None):
+        self.dl = data_loader
+        self._start_from_batch = start_from_batch
+        self.mapping = self.dl.axis_resources
+        if self.mapping is None:
+            self.mapping = hax.partitioning.current_thread_local_mapping()
+
+        # TODO: bring back non-prefetching version
+        buffered_batches = self.dl.max_buffered_batches
+        self._batches = iter(BackgroundIterable(self._produce_batches, max_capacity=buffered_batches))
+
+    def __next__(self):
+        time_start = time.time()
+        out = next(self._batches)
+        time_end = time.time()
+        if (time_end - time_start) > 0.5:
+            logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}")
+        return out
+
+    async def _produce_batches(self):
+        batch_number = self._start_from_batch or 0
+        total_ex_loaded = 0
+        done = False
+        while not done:
+            next_batch_numbers = []
+            for i in range(self.dl.prefetch_size):
+                if self.dl.data_store.is_finite():
+                    next_end = (batch_number + 1) * self.dl.batch_size
+                    available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
+                    if available_len < next_end:
+                        done = True
+                        break
+
+                next_batch_numbers.append(batch_number)
+                batch_number += 1
+
+            async for batch in self._retrieve_batches(next_batch_numbers):
+                yield batch
+
+            total_ex_loaded += self.dl.batch_size * len(next_batch_numbers)
+
+    async def _retrieve_batches(self, batch_numbers: list[int]):
+        with hax.axis_mapping(self.mapping), self.dl.mesh:
+            indices_for_this_batch_of_batches: list[int] = []
+            for bn in batch_numbers:
+                indices_this_batch = range(bn * self.dl.batch_size, (bn + 1) * self.dl.batch_size, 1)
+                indices_this_batch_this_process = [indices_this_batch[i] for i in self.dl._local_indices]
+                indices_for_this_batch_of_batches.extend(indices_this_batch_this_process)
+
+            time_start = time.time()
+            individual_datums = await self.dl.data_store.get_batch(indices_for_this_batch_of_batches)
+            time_end = time.time()
+            logger.debug(f"Time to get {len(batch_numbers)} batches: {time_end - time_start:.3f}")
+            time_start = time.time()
+            # reshape to be per batch
+            individual_datums = list(batched(individual_datums, len(self.dl._local_indices)))
+
+            # below we're gonna get the indices relative to this batch (i.e. 0 to batch_size)
+            index_to_datum = [
+                {index: datum for index, datum in zip(self.dl._local_indices, individual_data_batch)}
+                for individual_data_batch in individual_datums
+            ]
+
+            def get_local_batch(bn: int, begin: int, end: int) -> list:
+                # TODO: if we ever do "big data" (i.e. huge examples) we might want to be able to load part of an example
+                # which will require support from the datastore (i.e. tensorstore)
+                device_batch = _stack_tree(self.dl.Batch.name, [index_to_datum[bn][i] for i in range(begin, end)])
+                batch_leaves = hax.tree_util.tree_leaves(device_batch)
+                return batch_leaves
+
+            def get_local_data_for_leaf(bn, indices: _TensorSliceIndex, leaf_index: int) -> Array:
+                batch_slice = indices[0]
+                begin, end, stride = batch_slice.indices(self.dl.batch_size)
+                if stride != 1:
+                    raise ValueError("Stride must be 1")
+
+                leaf_data = (get_local_batch(bn, begin, end))[leaf_index]
+
+                if isinstance(leaf_data, hax.NamedArray):
+                    # select out the batch axis
+                    batch_index = index_where(lambda ax: ax.name == self.dl.Batch.name, leaf_data.axes)
+                    new_indices = list(indices)
+                    new_indices[batch_index] = slice(None)
+                    return leaf_data.array[tuple(new_indices)]
+
+                else:
+                    other_indices = indices[1:]
+                    if all(idx == slice(None) for idx in other_indices):
+                        return leaf_data
+                    else:
+                        # TODO: this doesn't work with named axes
+                        return leaf_data[(..., *other_indices)]
+
+            for batch_offset, bn in enumerate(batch_numbers):
+
+                def make_global_array_for_leaf(leaf_index, item_leaf_shape: ShapeSpec | NamedShapeSpec):
+                    def get_data(indices):
+                        return get_local_data_for_leaf(batch_offset, indices, leaf_index)
+
+                    raw_array = jax.make_array_from_callback(
+                        to_raw_shape(item_leaf_shape),
+                        jax.sharding.NamedSharding(self.dl.mesh, self._pspec_for(item_leaf_shape)),
+                        get_data,
+                    )
+                    if isinstance(item_leaf_shape, NamedShapeSpec):
+                        return hax.NamedArray(raw_array, item_leaf_shape.shape)
+                    else:
+                        return raw_array
+
+                gda_leaves = [
+                    make_global_array_for_leaf(leaf_index, _batchified_shape(self.dl.Batch, item_leaf))
+                    for leaf_index, item_leaf in enumerate(self.dl._ex_leaves)
+                ]
+
+                gda_tree = jax.tree.unflatten(self.dl._ex_structure, gda_leaves)
+                yield gda_tree
+
+    def _pspec_for(self, shape_spec: ShapeSpec | NamedShapeSpec) -> PartitionSpec:
+        if isinstance(shape_spec, ShapeSpec):  # type: ignore
+            batch_name = hax.partitioning.physical_axis_name(self.dl.Batch, self.dl.axis_resources)
+            return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
+        else:
+            return hax.partitioning.pspec_for_axis(shape_spec.shape, self.dl.axis_resources)  # type: ignore
+
+
+def _abstractify(x):
+    def _abstractify_array(x):
+        if isinstance(x, jax.numpy.ndarray):
+            return ShapeSpec(x.shape, x.dtype)
+        elif isinstance(x, hax.NamedArray):
+            return NamedShapeSpec(x.axes, x.dtype)
+
+        return x
+
+    return hax.tree_util.tree_map(_abstractify_array, x)
+
+
+def _batchified_shape(Batch, leaf: hax.NamedArray | Array) -> ShapeSpec | NamedShapeSpec:
+    if is_named_array(leaf):
+        return NamedShapeSpec((Batch,) + leaf.axes, leaf.dtype)
+    else:
+        return ShapeSpec((Batch.size,) + leaf.shape, leaf.dtype)
+
+
+def _pspec_for(self, shape_spec: ShapeSpec | NamedShapeSpec) -> PartitionSpec:
+    if isinstance(shape_spec, ShapeSpec):  # type: ignore
+        batch_name = hax.partitioning.physical_axis_name(self.Batch, self.axis_resources)
+        return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
+    else:
+        return hax.partitioning.pspec_for_axis(shape_spec.shape, self.axis_resources)  # type: ignore
 
 
 @functools.partial(jax.jit, static_argnums=(0,))
@@ -234,50 +262,7 @@ def _stack_tree(batch_name, individual_datums):
         else:
             return jnp.stack(leaves)
 
-    return jax.tree_map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
-
-
-class ReplicatedBatchLoader(BatchLoader[Ex]):
-    """A batch loader that creates batches without sharded data loading. All examples are loaded on all machines and then
-    sharded. This is useful if you have a small dataset and want to make a single pass over it.
-
-    Note: this class discards the final batch if it is smaller than the batch size.
-
-    :arg item_dataset: a dataset that is shardable and can be iterated over
-    :arg mesh: the device mesh
-    :arg Batch: the batch size
-    :arg axis_resources: the resources for the batch axis
-    :param max_capacity: if not None, the maximum number of batches to keep in memory at once. If <0 then load in the main thread
-    """
-
-    def __init__(
-        self,
-        item_dataset: Dataset[Ex],
-        mesh: Mesh,
-        Batch: hax.Axis,
-        axis_resources: Optional[ResourceMapping] = None,
-        max_capacity: Optional[int] = 64,
-    ):
-        assert item_dataset is not None
-        self.item_dataset = item_dataset
-        self.mesh = mesh
-        self.Batch = Batch
-
-        super().__init__(max_capacity, axis_resources)
-
-    def _produce_batches(self):
-        for batch in _batched(self.item_dataset, self.Batch.size):
-            sharded = self._construct_global_array_for_tree(
-                item_exemplar=batch[0], get_batch_items=lambda begin, end: batch[begin:end]
-            )
-            yield sharded
-
-
-def _batchified_shape(Batch, leaf: Union[NamedArray, Array]):
-    if isinstance(leaf, NamedArray):
-        return NamedShapeSpec((Batch,) + leaf.axes, leaf.dtype)
-    else:
-        return ShapeSpec((Batch.size,) + leaf.shape, leaf.dtype)
+    return jax.tree.map(_stack_leaves_unchecked, *individual_datums, is_leaf=is_named_array)
 
 
 def check_sharded_consistency(tree: PyTree, check_disjoint_indices_are_different: bool = False):
@@ -340,12 +325,3 @@ def check_sharded_consistency(tree: PyTree, check_disjoint_indices_are_different
 
     for leaf in jtu.tree_leaves(tree):
         check_array(leaf)
-
-
-def _batched(item_iter, size):
-    batch = []
-    for item in item_iter:
-        batch.append(item)
-        if len(batch) == size:
-            yield batch
-            batch = []

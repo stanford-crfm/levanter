@@ -17,7 +17,7 @@ The result of a batched function. This can be a RecordBatch, a list of dicts, or
 """
 
 
-class BatchProcessor(Generic[T_contra], ABC):
+class BatchProcessor(Generic[T_contra, U], ABC):
     """
     A BatchProcessor is the main interface for preprocessing data. It takes a batch of data and returns a batch of
     processed data. It can be used to tokenize data, convert it to a RecordBatch, or do any other kind of preprocessing.
@@ -25,12 +25,20 @@ class BatchProcessor(Generic[T_contra], ABC):
     """
 
     @abstractmethod
-    def __call__(self, batch: Sequence[T_contra]) -> BatchResult:
+    def __call__(self, batch: Sequence[T_contra]) -> Sequence[U] | U:  # U can be batched "structure of arrays" form
         """
         Process a batch of data. You should return either a RecordBatch, a sequence of dicts (one per output
         example), or a dict of sequences (one per output field).
 
         (We allow Mapping so that you can just return HF's BatchEncoding if you want.)
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def output_exemplar(self):
+        """
+        An exemplar of what this processor returns. This is used to determine the output schema of a dataset.
         """
         raise NotImplementedError
 
@@ -113,7 +121,7 @@ def _construct_composite_batch_processor(dataset):
     """
 
     def rec(dataset):
-        from levanter.data.sharded_dataset import _TransformedDataset
+        from levanter.data.sharded_datasource import _TransformedDataset
 
         if isinstance(dataset, _TransformedDataset):
             source, transforms, batch_transform = rec(dataset.source)
@@ -165,6 +173,10 @@ class _CompositeBatchProcessor(BatchProcessor):
     def resources(self):
         return self._resources
 
+    @property
+    def output_exemplar(self):
+        return self.transforms[-1].output_exemplar
+
     def __call__(self, batch):
         # batch is initially a list of elements, but after a BatchMapTransform
         # it can be a recordbatch, dict of lists, or list of dicts
@@ -196,7 +208,7 @@ class _CompositeBatchProcessor(BatchProcessor):
         return batch
 
 
-def dict_from_record_batch(b):
+def dict_from_record_batch(b) -> dict:
     # we follow the convention from hf batchencoding where homogeneous-lengthed arrays are turned into nd arrays
     # while heterogeneous lists are left as lists of arrays
 

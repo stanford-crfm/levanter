@@ -1,7 +1,8 @@
+import asyncio
 import queue
 import sys
 import threading
-from typing import Callable, Iterable, Iterator, Optional, TypeVar
+from typing import AsyncIterator, Callable, Iterable, Iterator, Optional, TypeVar, Union
 
 import tblib
 
@@ -18,27 +19,41 @@ class BackgroundIterable(Iterable[Ex]):
     like running XLA kernels...
     """
 
-    def __init__(self, producer_fn: Callable[[], Iterator[Ex]], max_capacity: Optional[int] = None):
+    def __init__(
+        self,
+        producer_fn: Callable[[], Union[Iterator[Ex], AsyncIterator[Ex]]],
+        max_capacity: Optional[int] = None,
+    ):
         self.max_capacity = max_capacity
-        self._stop_event = threading.Event()
         self._producer_fn = producer_fn
 
     def __iter__(self):
-        if self._stop_event.is_set():
-            raise RuntimeError("Cannot iterate over a stopped BackgroundIterable")
+        return BackgroundIterator(self._producer_fn, self.max_capacity)
 
-        q = queue.Queue(self.max_capacity)
-        thread = threading.Thread(target=self._fill_queue_with_batches, args=(q,))
-        thread.daemon = True
-        thread.start()
 
+class BackgroundIterator(Iterator[Ex]):
+    def __init__(self, producer_fn: Callable[[], Union[Iterator[Ex], AsyncIterator[Ex]]], max_capacity: Optional[int]):
+        self.max_capacity = max_capacity
+        self._producer_fn = producer_fn
+        self._stop_event = threading.Event()
+        self.q: queue.Queue = queue.Queue(self.max_capacity or 0)
+        self.thread = threading.Thread(target=self._fill_queue_with_batches)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
         while not self._stop_event.is_set():
-            batch = q.get()
+            batch = self.q.get()
             if batch is _SENTINEL:
-                break
+                raise StopIteration
             elif isinstance(batch, _ExceptionWrapper):
                 batch.reraise()
-            yield batch
+            return batch
+
+        raise StopIteration
 
     def __del__(self):
         self.stop()
@@ -46,13 +61,22 @@ class BackgroundIterable(Iterable[Ex]):
     def stop(self):
         self._stop_event.set()
 
-    def _fill_queue_with_batches(self, q):
+    def _fill_queue_with_batches(self):
         try:
-            for batch in self._producer_fn():
-                # we don't want to block forever because then we can't stop the thread
+            iterator = self._producer_fn()
+            if isinstance(iterator, Iterator):
+                self._produce_batches_sync(iterator)
+            else:
+                asyncio.run(self._produce_batches_async(iterator))
+        except Exception:
+            self.q.put(_ExceptionWrapper(sys.exc_info()))
+
+    def _produce_batches_sync(self, iterator):
+        try:
+            for batch in iterator:
                 while not self._stop_event.is_set():
                     try:
-                        q.put(batch, block=True, timeout=1)
+                        self.q.put(batch, block=True, timeout=1)
                         break
                     except queue.Full:
                         pass
@@ -62,13 +86,34 @@ class BackgroundIterable(Iterable[Ex]):
 
             while not self._stop_event.is_set():
                 try:
-                    q.put(_SENTINEL, block=True, timeout=1)
+                    self.q.put(_SENTINEL, block=True, timeout=1)
                     break
                 except queue.Full:
-                    # don't hold up the thread if we can't put the sentinel
                     pass
-        except Exception:  # flake8: noqa
-            q.put(_ExceptionWrapper(sys.exc_info()))
+        except Exception:
+            self.q.put(_ExceptionWrapper(sys.exc_info()))
+
+    async def _produce_batches_async(self, iterator):
+        try:
+            async for batch in iterator:
+                while not self._stop_event.is_set():
+                    try:
+                        self.q.put(batch, block=True, timeout=1)
+                        break
+                    except queue.Full:
+                        pass
+
+                if self._stop_event.is_set():
+                    break
+
+            while not self._stop_event.is_set():
+                try:
+                    self.q.put(_SENTINEL, block=True, timeout=1)
+                    break
+                except queue.Full:
+                    pass
+        except Exception:
+            self.q.put(_ExceptionWrapper(sys.exc_info()))
 
 
 class _Sentinel:

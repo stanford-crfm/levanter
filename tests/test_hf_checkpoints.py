@@ -21,7 +21,7 @@ from test_utils import skip_if_no_torch
 def test_save_backpack_model_with_code():
     import torch
 
-    converter = BackpackConfig.default_hf_checkpoint_converter
+    converter = BackpackConfig().hf_checkpoint_converter()
     tokenizer = converter.tokenizer
     cls = converter.HFAutoModelClass()
     config = converter.HfConfigClass(
@@ -59,7 +59,7 @@ def test_save_backpack_model_with_code():
         new_converter = converter.replaced(reference_checkpoint=tmpdir, trust_remote_code=True)
 
         assert new_converter.config_from_hf_config(config) == lev_config
-        loaded_model = new_converter.load_pretrained(BackpackLMHeadModel)
+        loaded_model = new_converter.load_pretrained(new_converter.default_config.model_type)
         loaded_model = inference_mode(loaded_model, True)
 
         assert loaded_model.config == lev_model.config
@@ -99,9 +99,8 @@ def test_conversion_to_jnp_bfloat16():
 
 
 def test_save_sharded_checkpoints():
-    converter = Gpt2Config.default_hf_checkpoint_converter
-
     nano_config = Gpt2Config(hidden_dim=64, num_heads=2, num_layers=2, resid_pdrop=0.0, use_flash_attention=False)
+    converter = nano_config.hf_checkpoint_converter()
 
     nano_model = Gpt2LMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
 
@@ -116,7 +115,9 @@ def test_save_sharded_checkpoints():
 
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
-        loaded_model = converter.load_pretrained(nano_model.config, ref=tmpdir, dtype=mp.param_dtype)
+        loaded_model = converter.load_pretrained(
+            Gpt2LMHeadModel, ref=tmpdir, config=nano_model.config, dtype=mp.param_dtype
+        )
 
         assert loaded_model.config == nano_model.config
         assert loaded_model.Vocab == nano_model.Vocab

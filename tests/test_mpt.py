@@ -24,7 +24,7 @@ def test_mpt_nano_compare(attn_impl):
     torch.manual_seed(0)
 
     # a bit hacky, using some internal-y APIs of transformers
-    converter = MptConfig.default_hf_checkpoint_converter
+    converter = MptConfig().hf_checkpoint_converter()
     cls = converter.HFAutoModelClass()
     config = converter.HfConfigClass(
         d_model=32,

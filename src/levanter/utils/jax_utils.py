@@ -41,7 +41,9 @@ def use_cpu_device():
 def local_cpu_mesh():
     """Temporarily sets the default device to CPU"""
     cpu = jax.local_devices(backend="cpu")[0]
-    mesh = jax.sharding.Mesh(np.array([cpu]).reshape(1, 1), ("data", "model"))
+    mesh = jax.sharding.Mesh(
+        np.array([cpu]).reshape(1, 1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    )
     with use_cpu_device(), mesh:
         yield mesh
 
@@ -266,7 +268,8 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
             gcd = np.gcd(shape_i, num_devices)
             num_devices //= gcd
             device_shape = (num_devices, gcd) + device_shape[1:]
-        sharding = PositionalSharding(devices).reshape(list(device_shape)).replicate(axis=0, keepdims=True)
+        sharding = PositionalSharding(devices).reshape(list(device_shape))
+        sharding = sharding.replicate(axis=0, keepdims=False)
         return sharding
     else:
         # get the existing mesh and find the FSDP axis

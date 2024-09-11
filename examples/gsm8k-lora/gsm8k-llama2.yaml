@@ -1,4 +1,5 @@
-model_name_or_path: "meta-llama/Llama-2-7b-hf"
+model:
+  type: llama
 data: gsm8k
 data_cache_dir: gsm8k_cache
 trainer:

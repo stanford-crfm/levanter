@@ -48,12 +48,12 @@ import levanter.tracker.wandb
 from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
-from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
+from levanter.data import AsyncDataset, DataLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
-from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
+from levanter.types import ComputeLossFunction, FilterSpec
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
@@ -144,7 +144,7 @@ class Trainer:
         self,
         config: "TrainerConfig",
         optimizer: GradientTransformation,
-        loss_fn: Optional[ComputeLossFunction] = None,
+        loss_fn: ComputeLossFunction,
         *,
         add_default_hooks: bool = True,
     ):
@@ -159,13 +159,7 @@ class Trainer:
         self.hooks = TrainerHooks()
         self.config = config
         self.optimizer = optimizer
-        self._raw_loss_function = loss_fn or ModuleComputeLoss()
-        if isinstance(config.tracker, Sequence):
-            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
-        else:
-            self.tracker = config.tracker.init(self.run_id)
-
-        self._raw_loss_function = loss_fn or ModuleComputeLoss()
+        self._raw_loss_function = loss_fn
         if isinstance(config.tracker, Sequence):
             self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
         else:
@@ -413,7 +407,7 @@ class Trainer:
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_step_info, every=1)
+        self.add_hook(callbacks.log_step_info(self.config.num_train_steps), every=1)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -439,7 +433,7 @@ class Trainer:
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
 
-        eval_loader = self.replicated_loader(eval_dataset, self.EvalBatch)
+        eval_loader = self.data_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
@@ -456,31 +450,24 @@ class Trainer:
                 every=self.config.steps_per_eval,
             )
 
-    def replicated_loader(self, dataset: Dataset[X], batch_axis: Axis) -> ReplicatedBatchLoader[X]:
-        """Creates a replicated batch loader for the given dataset. Generally you should use this
-        if you either be able to make a single pass over the dataset.
+    def data_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
+        """Creates a data loader for the given dataset and batch axis.
 
         Args:
-            dataset (Dataset): the dataset to load
+            dataset (AsyncDataset): the dataset to load
             batch_axis (Axis): the batch axis
 
         Returns:
-            ReplicatedBatchLoader: the batch loader
+            DataLoader: the data loader
         """
-        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
-
-    def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
-        """Creates a sharded batch loader for the given dataset. Generally you should use this
-        for training and you don't care about epoch boundaries.
-
-        Args:
-            dataset (Dataset): the dataset to load
-            batch_axis (Axis): the batch axis
-
-        Returns:
-            ShardedBatchLoader: the batch loader
-        """
-        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+        return DataLoader(
+            batch_axis,
+            dataset,
+            max_buffered_batches=128,
+            mesh=self.device_mesh,
+            axis_resources=self.compute_axis_mapping,
+            prefetch_size=32,
+        )
 
     @cached_property
     def _jit_train_step_fn(self):

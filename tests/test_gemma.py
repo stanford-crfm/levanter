@@ -155,8 +155,6 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, GemmaForCausalLM
 
-    converter = GemmaConfig.default_hf_checkpoint_converter
-
     config = GemmaConfig(
         seq_len=128,
         hidden_dim=16,
@@ -165,6 +163,8 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         gradient_checkpointing=False,
         scan_layers=scan_layers,
     )
+    converter = config.hf_checkpoint_converter()
+
     Vocab = hax.Axis("vocab", 1000)
     hf_config = config.to_hf_config(Vocab.size)
 
@@ -186,7 +186,7 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            GemmaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            converter.default_config.model_type, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
         def compute(input):

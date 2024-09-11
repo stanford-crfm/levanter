@@ -1,13 +1,13 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "levanter"
 version = "1.1"
 authors = [
-  { name="David Hall", email="dlwh@cs.stanford.edu" },
-  {name="Ivan Zhou", email="ivanz@stanford.edu"}
+    { name = "David Hall", email = "dlwh@cs.stanford.edu" },
+    { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
 ]
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
@@ -21,60 +21,40 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 dependencies = [
-    # we require that you install jax yourself, since the extras vary by system.
-    # jax = {version = ">=0.4.10,<0.5.0"}
-#    "haliax>=1.3,<2.0",
-#     Haliax changes in step with levanter, so we'll just use the git version except for releases.
-#    "haliax @ git+https://github.com/stanford-crfm/haliax.git@main",
-    "haliax>=1.4.dev301",
-    "equinox>=0.11.4",
+    "haliax>=1.4.dev307",
+    "equinox==0.11.5",
     "jaxtyping>=0.2.20",
     "tokenizers>=0.15.2",
     "transformers>=4.41.2",
     "optax>=0.1.9",
-    "wandb>=0.16.6,<0.18.0",
-    # We don't actually directly depend on scipy, but recent JAX had an issue
+    "wandb>=0.17.8",
     "scipy<=1.12.0",
     "draccus>=0.8.0",
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
     "datasets~=2.18",
-    "gcsfs>=2024.2,<2024.7",
+    "gcsfs>=2024.2,<2024.10",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
-    "fsspec[http]>=2024.2,<2024.7",
-    "tensorstore==0.1.56",
+    "fsspec[http]>=2024.2,<2024.10",
+    "tensorstore>=0.1.62",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]~=0.4.2",
     "matplotlib>=3.7.0",
     "tblib>=1.7.0,<4.0.0",
     "dataclasses-json~=0.6.4",
-    "ray[default]~=2.10",
-    "pydantic<3",  # temporary pin until Ray supports pydantic 2.0
+    "ray[default]>=2.34.0",
+    "pydantic<3",
     "rich~=13.0",
     "filelock~=3.13",
+    #    "ai2-olmo",
+    "async-lru~=2.0",
 ]
-
-[tool.hatch.build]
-include = ["config/*.yaml", "config/*/*.yaml", "*.py"]
-dev-mode-dirs = [".", "src"]
-
-[tool.hatch.build.sources]
-"src/levanter" = "levanter"
-"config" = "levanter/config"
-
-[tool.hatch.metadata]
-allow-direct-references = true
-
-[tool.hatch.build.targets.wheel]
-packages = ["levanter"]
-
 
 [project.urls]
 "Homepage" = "https://github.com/stanford-crfm/levanter"
 "Bug Tracker" = "https://github.com/stanford-crfm/levanter/issues"
-
 
 [tool.black]
 line-length = 119
@@ -92,7 +72,14 @@ ensure_newline_before_comments = true
 line_length = 119
 src_paths = ["src", "tests"]
 known_haliax = ["haliax"]
-sections=["FUTURE", "STDLIB", "THIRDPARTY", "HALIAX", "FIRSTPARTY", "LOCALFOLDER"]
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "THIRDPARTY",
+    "HALIAX",
+    "FIRSTPARTY",
+    "LOCALFOLDER",
+]
 
 [tool.mypy]
 python_version = "3.10"
@@ -102,6 +89,7 @@ mypy_path = ["src"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "entry: marks tests as entry point tests (deselect with '-m \"not entry\"')",
@@ -112,8 +100,12 @@ markers = [
 test = [
     "pytest",
     "flake8",
-    "pytest",
     "soundfile",
     "librosa",
-    "pytest-forked"
+    "pytest-forked",
+    "pytest-asyncio",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["levanter", "levanter.*"]
