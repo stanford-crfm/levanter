@@ -336,6 +336,8 @@ class Trainer:
             return state
 
         trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
+        if self.config.reset_optimizer_state:
+            saveable_train_state = dataclass.replace(saveable_train_state, optimizer=False)
         saveable_train_state = saveable_training_mask(trainer_state_shape, is_trainable)
 
         state = load_checkpoint_or_initialize(
@@ -583,6 +585,8 @@ class TrainerConfig:
 
     # whether or not to shutdown the tpu at exit. If a float, shutdown after that many seconds. True = 5 minutes
     shutdown_at_exit: Union[bool, float] = False
+
+    reset_optimizer_state: bool = False
 
     @property
     def TrainBatch(self):
