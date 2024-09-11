@@ -7,6 +7,7 @@ import sys
 import typing
 import warnings
 from dataclasses import dataclass
+import dataclasses
 from functools import cached_property
 from pathlib import Path
 from typing import (
@@ -336,7 +337,10 @@ class Trainer:
             return state
 
         trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
+        
         saveable_train_state = saveable_training_mask(trainer_state_shape, is_trainable)
+        if self.config.reset_optimizer_state:
+            saveable_train_state = dataclasses.replace(saveable_train_state, optimizer=False)
 
         state = load_checkpoint_or_initialize(
             init_state_and_model,
@@ -481,6 +485,7 @@ class Trainer:
     def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
+
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
         # Sophia needs to be able to access the loss function in the optimizer
@@ -582,6 +587,8 @@ class TrainerConfig:
 
     # whether or not to shutdown the tpu at exit. If a float, shutdown after that many seconds. True = 5 minutes
     shutdown_at_exit: Union[bool, float] = False
+
+    reset_optimizer_state: bool = False
 
     @property
     def TrainBatch(self):
