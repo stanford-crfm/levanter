@@ -29,10 +29,11 @@ trainer:
   mp: p=f32,c=bfloat16
   train_batch_size: 64
   num_train_steps: 750000  # 3,000,000,000,000 / 4,000,000 = 750,000
-  steps_per_eval: 1000
+  steps_per_eval: 10
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
+  per_device_eval_parallelism: 4
 optimizer:
   learning_rate: 4E-4
   weight_decay: 0.0
