@@ -109,9 +109,6 @@ class LlamaConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
-        print(f'\n hf_config: {hf_config}')
-        print(type(hf_config))
-        print(dir(hf_config))
 
         if 'olmo' in hf_config._name_or_path.lower():
             return LlamaConfig(
