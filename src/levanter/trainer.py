@@ -7,6 +7,7 @@ import sys
 import typing
 import warnings
 from dataclasses import dataclass
+import dataclasses
 from functools import cached_property
 from pathlib import Path
 from typing import (
@@ -337,7 +338,7 @@ class Trainer:
 
         trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
         if self.config.reset_optimizer_state:
-            saveable_train_state = dataclass.replace(saveable_train_state, optimizer=False)
+            saveable_train_state = dataclasses.replace(saveable_train_state, optimizer=False)
         saveable_train_state = saveable_training_mask(trainer_state_shape, is_trainable)
 
         state = load_checkpoint_or_initialize(
