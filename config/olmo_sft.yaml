@@ -7,7 +7,7 @@ data:
   cache_dir: "gs://marin-data/tokenized/tuluv2/"
   tokenizer: "allenai/OLMo-1B"
 model:  # 7B class model
-  type: llama
+  type: olmo
   # seq_len: 2048
   # hidden_dim: 4096
   # intermediate_dim: 11008
@@ -15,8 +15,8 @@ model:  # 7B class model
   # num_heads: 32
   # num_kv_heads: 32
   # use_flash_attention: True
-  use_bias: false
-  use_layer_norm_weight: false
+  # use_bias: false
+  # use_layer_norm_weight: false
 initialize_from_hf: "allenai/OLMo-7B-0724-hf"
 use_hf_model_config: true
   #flash_attention_block_size: 1024
@@ -34,12 +34,13 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  learning_rate: 4E-4
+  learning_rate: 2E-6
   weight_decay: 0.0
   min_lr_ratio: 0.1
-  warmup: 0.01
+  warmup: 0.03
 
 # OLMO SFT config below
+# effective bsz is 8 * 16 = 128
 # model_name_or_path: allenai/OLMo-7B-hf
 # model_revision: main
 # use_flash_attn: true

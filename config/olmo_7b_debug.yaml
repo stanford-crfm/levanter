@@ -20,7 +20,7 @@ trainer:
         until: 40000
   tracker:
     type: wandb
-    project: "trace-train"
+    project: "marin"
     tags: ["pile", "olmo", "web_comparison"]
   mp: p=f32,c=bfloat16
   model_axis_size: 1
