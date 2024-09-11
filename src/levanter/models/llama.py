@@ -113,7 +113,7 @@ class LlamaConfig(HFCompatConfig):
         print(type(hf_config))
         print(dir(hf_config))
 
-        if 'olmo' in hf_config._name_or_path:
+        if 'olmo' in hf_config._name_or_path.lower():
             return LlamaConfig(
                 seq_len=hf_config.max_position_embeddings,
                 hidden_dim=hf_config.hidden_size,
