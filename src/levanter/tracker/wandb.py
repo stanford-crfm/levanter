@@ -45,6 +45,8 @@ class WandbTracker(Tracker):
         else:
             self.run = run
 
+        self._last_warning_step = -500
+
     def log_hyperparameters(self, hparams: dict[str, Any]):
         self.run.config.update(hparams, allow_val_change=True)
 
@@ -53,9 +55,11 @@ class WandbTracker(Tracker):
             step = self.run.step
 
         if step < self.run.step:
-            logger.warning(
-                f"Step {step} is less than the current step {self.run.step}. Cowardly refusing to log metrics."
-            )
+            if step - self._last_warning_step > 500:
+                logger.warning(
+                    f"Step {step} is less than the current step {self.run.step}. Cowardly refusing to log metrics."
+                )
+                self._last_warning_step = step
             return
 
         step = int(step)
