@@ -1,6 +1,4 @@
-import dataclasses
 import functools
-import gc
 import logging
 import os
 from dataclasses import dataclass, field
@@ -130,42 +128,13 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
-        seek_dataloader = True
-        if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
-            state = load_checkpoint(state, config.initialize_from_checkpoint_path)
-            seek_dataloader = False
-
-        if int(state.step) == 0:
-            # TODO: I don't love that we init the model twice, but it's not a big deal i think?
-            if config.initialize_from_hf:
-                # initialize from an hf pretrained model
-                logger.info(
-                    "No training checkpoint found. Initializing model from HF checkpoint"
-                    f" '{converter.reference_checkpoint}'"
-                )
-                # this is a bit gross, but we want to free up the memory from the model we just built
-                state = dataclasses.replace(state, model=None)
-                gc.collect()
-                model = converter.load_pretrained(
-                    config.model.model_type,
-                    config=config.model if not config.use_hf_model_config else None,
-                    axis_mapping=parameter_axis_mapping,
-                    dtype=trainer.mp.compute_dtype,
-                )
-                model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
-                state = dataclasses.replace(state, model=model)
-            else:
-                logger.info("No checkpoint found. Starting from scratch.")
+        logger.info("No checkpoint found. Starting from scratch.")
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
-            max_eval_examples_per_ds = config.trainer.max_eval_batches
-            if max_eval_examples_per_ds is not None:
-                max_eval_examples_per_ds *= config.trainer.eval_batch_size
-
             causal_datasets = [
                 (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
                 for ds, tags in tagged_eval_datasets
