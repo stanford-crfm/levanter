@@ -217,8 +217,8 @@ class RobertaConfig(HFCompatConfig):
         )
 
     @property
-    def model_type(self) -> Type["RobertaModel"]:
-        return RobertaModel
+    def model_type(self) -> Type["RobertaForMaskedLM"]:
+        return RobertaForMaskedLM
     
     def flops_per_token(self, vocab_size: int):
         return lm_flops_per_token(
