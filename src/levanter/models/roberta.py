@@ -584,17 +584,17 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
             print("input_ids: None")
 
         if token_type_ids is not None:
-            print(f"input_ids: {token_type_ids.dtype}")
+            print(f"token_type_ids: {token_type_ids.dtype}")
         else:
             print("token_type_ids: None")
 
         if position_ids is not None:
-            print(f"input_ids: {position_ids.dtype}")
+            print(f"position_ids: {position_ids.dtype}")
         else:
             print("position_ids: None")
         
         if input_embeds is not None:
-            print(f"input_ids: {input_embeds.dtype}")
+            print(f"input_embeds: {input_embeds.dtype}")
         else:
             print("input_embeds: None")
 

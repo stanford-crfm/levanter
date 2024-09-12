@@ -21,7 +21,7 @@ from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_ca
 from levanter.data.text import MaskedLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.llama import LlamaConfig
-from levanter.models.lm_model import LmConfig, compute_next_token_loss
+from levanter.models.lm_model import LmConfig, MaskedLmExample, compute_next_token_loss
 from levanter.models.roberta import RobertaConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -83,7 +83,18 @@ def main(config: TrainMlmConfig):
 
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
-    loss_function = functools.partial(compute_next_token_loss)
+    # loss_function = functools.partial(compute_next_token_loss)
+
+    def loss_function(
+            model,
+            example: MaskedLmExample,
+            *,
+            key=None,
+            reduction: Optional[hax.ReductionFunction] = hax.mean,
+            reduction_axis: Optional[hax.AxisSelection] = None,
+    ):
+        return model.compute_loss(example, key=key, reduction=reduction, reduction_axis=reduction_axis)
+
 
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh

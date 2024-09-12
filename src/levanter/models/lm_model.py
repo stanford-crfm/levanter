@@ -169,3 +169,35 @@ def compute_next_token_loss(
     )
 
     return loss
+
+def compute_next_token_loss(
+    model: LmHeadModel,
+    example: LmExample,
+    *,
+    key=None,
+    reduction: Optional[hax.ReductionFunction] = hax.mean,
+    reduction_axis: Optional[hax.AxisSelection] = None,
+    logsumexp_weight: Optional[float] = None,
+    loss_dtype: Optional[Type[jnp.dtype]] = jnp.float32,
+) -> jnp.ndarray | NamedArray:
+    """
+    Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
+    across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
+    reduced, and the result is a named array with axes (*batch axes, sequence_length).
+    """
+    logits = model(example.tokens, example.attn_mask, key=key)
+    if loss_dtype is not None:
+        logits = logits.astype(loss_dtype)
+
+    loss = next_token_loss(
+        model.Pos,
+        model.Vocab,
+        logits,
+        example.tokens,
+        loss_mask=example.loss_mask,
+        reduction=reduction,
+        reduction_axis=reduction_axis,
+        logsumexp_weight=logsumexp_weight,
+    )
+
+    return loss
