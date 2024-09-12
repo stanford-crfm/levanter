@@ -2,9 +2,10 @@ import functools
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
 import jax.random as jrandom
+import numpy as np
 
 import haliax as hax
 from haliax import Axis
@@ -14,6 +15,8 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
+from levanter.data import AsyncDataset
+from levanter.data.dataset import T_co
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
@@ -54,34 +57,6 @@ class TrainLmConfig:
 
 
 def main(config: TrainLmConfig):
-    tokenizer = config.data.the_tokenizer
-
-    # this is some unpleasant code to allow us to initialize from a hf checkpoint. If this is your first read through,
-    # I recommend skipping it for now
-    if config.initialize_from_hf:
-        if config.trainer.initialize_from is not None:
-            raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
-
-        assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.hf_checkpoint_converter()
-        if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
-            logger.warning("The tokenizers appear to be different. You may want to check this.")
-
-        if isinstance(config.initialize_from_hf, str):
-            converter = converter.replaced(reference_checkpoint=config.initialize_from_hf, tokenizer=tokenizer)
-        else:
-            converter = converter.replaced(tokenizer=tokenizer)
-
-        if config.use_hf_model_config:
-            # TODO: log diff of old and new config
-            # NB: gross mutability
-            config.model = converter.config_from_hf_config(converter.default_hf_config)
-    elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.hf_checkpoint_converter()
-        converter = converter.replaced(tokenizer=tokenizer)
-    else:
-        converter = None
-
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -97,10 +72,6 @@ def main(config: TrainLmConfig):
         seed = config.trainer.seed
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
-        if config.data_seed is not None:
-            logger.info(f"Overriding data seed with {config.data_seed}")
-            data_key = jrandom.PRNGKey(config.data_seed)
-
         # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
         # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
         compute_axis_mapping = trainer.compute_axis_mapping
@@ -112,16 +83,39 @@ def main(config: TrainLmConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        # TODO: fix this
-        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
-        train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
-        )
+        class DummyArrayDataset(AsyncDataset[np.ndarray]):
+            def __init__(self, length, seqlen, vocab_size):
+                self.length = length
+                self.rng = np.random.default_rng(seed=0)
+                self.seqlen = seqlen
+                self.vocab_size = vocab_size
+
+            async def async_len(self) -> int:
+                return self.length
+
+            async def final_length_is_known(self) -> bool:
+                return True
+
+            def is_finite(self) -> bool:
+                return True
+
+            async def current_len(self) -> Optional[int]:
+                return self.length
+
+            async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+                return [self.rng.integers(0, self.vocab_size, size=(self.seqlen,), dtype=np.int32) for _ in indices]
+
+        # 40 batches is roughly the length in the real dataset
+        tagged_eval_datasets: list = [(DummyArrayDataset(EvalBatch.size * 40, Pos.size, 50257), ["dummy"])]
+        # train_dataset = CausalLmDataset(
+        #     config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+        # )
+        train_dataset = CausalLmDataset(DummyArrayDataset(100000000, Pos.size, 50257), Pos, KeyPos)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
-        vocab_size = len(tokenizer)
+        vocab_size = 50257
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
@@ -135,52 +129,19 @@ def main(config: TrainLmConfig):
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
-            causal_datasets = [
-                (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
-                for ds, tags in tagged_eval_datasets
-            ]
+            causal_datasets = [(CausalLmDataset(ds, Pos, KeyPos), tags) for ds, tags in tagged_eval_datasets]
 
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
                 causal_datasets,
                 trainer.device_mesh,
                 compute_axis_mapping,
-                max_eval_examples_per_ds,
                 mp=config.trainer.mp,
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
-        flops_per_token = config.model.flops_per_token(vocab_size)
-        flops_per_example = 3 * flops_per_token * Pos.size if flops_per_token is not None else None
-        trainer.add_hook(
-            callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
-        )
-        if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
-
-            trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
-                every=config.hf_save_steps,
-            )
-
-        # visualize log probs
-        @named_jit(
-            in_axis_resources=parameter_axis_mapping,
-            axis_resources=compute_axis_mapping,
-            out_axis_resources=compute_axis_mapping,
-        )
-        def compute_log_probs(model, example):
-            model = trainer.mp.cast_to_compute(model)
-            logprobs = model.compute_loss(example, key=None, reduction=None)
-            # roll forward to get the loss for each predicted token
-            logprobs = hax.roll(logprobs, 1, Pos)
-            return logprobs.rearrange((EvalBatch, Pos)).array
-
         train_loader = trainer.data_loader(train_dataset, Batch)
-        if seek_dataloader:
-            train_loader = train_loader.iter_from_step(state.step)
-        else:
-            train_loader = iter(train_loader)
+        train_loader = train_loader.iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

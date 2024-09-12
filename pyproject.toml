@@ -22,7 +22,10 @@ classifiers = [
 ]
 dependencies = [
     "haliax>=1.4.dev307",
-    "equinox @ git+https://github.com/patrick-kidger/equinox.git@2188e0170db4fcadf43160efbeeb3f77f47e5153",
+    # BAD
+#    "equinox @ git+https://github.com/patrick-kidger/equinox.git@2188e0170db4fcadf43160efbeeb3f77f47e5153",
+    # OK
+    "equinox @ git+https://github.com/patrick-kidger/equinox.git@68cc26a45e106964e683d5209a3ac6689eb1f534",
     "jaxtyping>=0.2.20",
     "tokenizers>=0.15.2",
     "transformers>=4.41.2",
