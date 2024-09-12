@@ -13,7 +13,7 @@ import haliax.nn as hnn
 from haliax.nn import cross_entropy_loss
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
-from haliax.nn.scan import BlockSeq
+from haliax.nn.scan import BlockSeq, Stacked
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.compat.torch_serialization import (
@@ -495,7 +495,7 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
 
     @staticmethod
     def init(config: RobertaConfig, output_hidden_states: bool = False, *, key) -> "RobertaEncoder":
-        S = BlockSeq
+        S = Stacked
 
         layer = S.init(config.Layers, RobertaLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
