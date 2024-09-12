@@ -485,7 +485,8 @@ class RobertaLayer(eqx.Module, StateDictSerializationMixin):
 
         # jax.debug.print("{layer_output}", layer_output=layer_output)
 
-        return (layer_output, layer_output)
+        # return (layer_output, layer_output)
+        return layer_output
 
 
 class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
@@ -495,7 +496,7 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
 
     @staticmethod
     def init(config: RobertaConfig, output_hidden_states: bool = False, *, key) -> "RobertaEncoder":
-        S = BlockFoldable
+        S = BlockSeq
 
         layer = S.init(config.Layers, RobertaLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
