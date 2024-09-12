@@ -828,7 +828,8 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
 
         prediction_scores = self.lm_head(outputs[0], key=k_lm)
 
-        return (prediction_scores,) + outputs[2:]
+        # return (prediction_scores,) + outputs[2:]
+        return prediction_scores
     
     def compute_loss(
             self,
@@ -838,7 +839,8 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
             reduction: Optional[hax.ReductionFunction] = hax.mean,
             reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> jnp.ndarray | NamedArray:
-        logits = self(example.tokens, example.attn_mask, key=key)[0]
+        # logits = self(example.tokens, example.attn_mask, key=key)[0]
+        logits = self(example.tokens, example.attn_mask, key=key)
         logits = logits.astype(jnp.float32)
         targets = example.targets
 
