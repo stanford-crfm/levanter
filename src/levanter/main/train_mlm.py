@@ -1,6 +1,7 @@
 # train_mlm.py
 
 import dataclasses
+import functools
 import gc
 import logging
 import os
@@ -20,7 +21,7 @@ from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_ca
 from levanter.data.text import MaskedLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.llama import LlamaConfig
-from levanter.models.lm_model import LmConfig
+from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.models.roberta import RobertaConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -82,12 +83,13 @@ def main(config: TrainMlmConfig):
 
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
+    loss_function = functools.partial(compute_next_token_loss, logsumexp_weight=config.z_loss_weight)
 
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer) as trainer, jax.disable_jit(True):
+    with Trainer(config.trainer, optimizer, loss_function) as trainer:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed

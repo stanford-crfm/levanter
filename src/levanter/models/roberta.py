@@ -10,6 +10,7 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.nn import cross_entropy_loss
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import BlockSeq
@@ -27,7 +28,7 @@ from levanter.compat.torch_serialization import (
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, simple_attention_with_dropout
 from levanter.models.gpt2 import ACT2FN
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmHeadModel, MaskedLmExample
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
 
@@ -809,6 +810,25 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
 
         return (prediction_scores,) + outputs[2:]
     
+    def compute_loss(
+            self,
+            example: MaskedLmExample,
+            *,
+            key=None,
+            reduction: Optional[hax.ReductionFunction] = hax.mean,
+            reduction_axis: Optional[hax.AxisSelection] = None,
+    ) -> jnp.ndarray | NamedArray:
+        logits = self(example.tokens, example.attn_mask, key=key)
+        logits = logits.astype(jnp.float32)
+        targets = example.targets
+
+        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
+        target_y = jax.debug.breakpoint(token=target_y)
+        loss = cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        )
+
+        return loss
     
 def _rotate_half(x: NamedArray) -> NamedArray:
     """Rotates half of the hidden dims of the input and concatenates them."""
