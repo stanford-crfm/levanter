@@ -579,24 +579,24 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
     @named_call
     def embed(self, input_ids=None, token_type_ids=None, position_ids=None, input_embeds=None, past_key_values_length=0, *, key = None):
         if input_ids is not None:
-            jax.debug.print("input_ids: {d}", d=input_ids.dtype)
+            print(f"input_ids: {input_ids.dtype}")
         else:
-            jax.debug.print("input_ids: None")
+            print("input_ids: None")
 
         if token_type_ids is not None:
-            jax.debug.print("token_type_ids: {d}", d=token_type_ids.dtype)
+            print(f"input_ids: {token_type_ids.dtype}")
         else:
-            jax.debug.print("token_type_ids: None")
+            print("token_type_ids: None")
 
         if position_ids is not None:
-            jax.debug.print("position_ids: {d}", d=position_ids.dtype)
+            print(f"input_ids: {position_ids.dtype}")
         else:
-            jax.debug.print("position_ids: None")
+            print("position_ids: None")
         
         if input_embeds is not None:
-            jax.debug.print("input_embeds: {d}", d=input_embeds.dtype)
+            print(f"input_ids: {input_embeds.dtype}")
         else:
-            jax.debug.print("input_embeds: None")
+            print("input_embeds: None")
 
         """
         Note: When inputting your own embeds into input_embeds, make sure that the embeds axis has the name "embed"
