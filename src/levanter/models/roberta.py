@@ -578,6 +578,11 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
 
     @named_call
     def embed(self, input_ids=None, token_type_ids=None, position_ids=None, input_embeds=None, past_key_values_length=0, *, key = None):
+        print(input_ids.dtype)
+        print(token_type_ids.dtype)
+        print(position_ids.dtype)
+        print(input_embeds.dtype)
+        
         """
         Note: When inputting your own embeds into input_embeds, make sure that the embeds axis has the name "embed"
         for compatibility with the position_id creation function. Make sures its length is not equal to 
