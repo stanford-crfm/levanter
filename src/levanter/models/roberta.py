@@ -495,7 +495,7 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
 
     @staticmethod
     def init(config: RobertaConfig, output_hidden_states: bool = False, *, key) -> "RobertaEncoder":
-        S = Stacked
+        S = BlockFoldable
 
         layer = S.init(config.Layers, RobertaLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
@@ -515,12 +515,15 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
         
         keys = maybe_rng_split(key, self.config.num_hidden_layers) if key is not None else None
 
-        x, intermediates = self.layer.scan(hidden_states, attention_mask, key=keys)
+        # x, intermediates = self.layer.scan(hidden_states, attention_mask, key=keys)
+        x = self.layer.fold(hidden_states, attention_mask, key=keys)
 
-        if not self.output_hidden_states:
-            return x, None
-        else:
-             return x, intermediates
+        return x, None
+
+        # if not self.output_hidden_states:
+        #     return x, None
+        # else:
+        #      return x, intermediates
     
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         out = super().from_state_dict(state_dict, prefix=prefix)
