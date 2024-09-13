@@ -164,7 +164,7 @@ def copy_extra_ctx(extra_ctx):
         mount_dst = Path(".mnt")
         _cp(extra_ctx, mount_dst)
         try:
-            yield mount_dst
+            yield extra_ctx
         finally:
             _rm(mount_dst)
     else:

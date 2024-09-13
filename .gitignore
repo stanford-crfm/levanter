@@ -152,3 +152,4 @@ ledger.json
 
 # local execution commands
 local_*.sh
+.aider*
