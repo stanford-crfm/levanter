@@ -109,14 +109,13 @@ def ensure_cache(new_cache_path):
 if __name__ == "__main__":
     import sys
 
-    if not len(sys.argv) == 3:
-        print("Usage: convert_to_new_cache.py old_cache_path new_cache_path")
+    if not len(sys.argv) == 2:
+        print("Usage: convert_to_new_cache.py new_cache_path")
         sys.exit(1)
 
     for split in ["validation", "train"]:
         print(f"Split: {split}", flush=True)
-        in_path = os.path.join(sys.argv[1], split)
-        out_path = os.path.join(sys.argv[2], split)
+        cache_path = os.path.join(sys.argv[1], split)
         # convert_to_new_cache(in_path, out_path)
         # with capture_time() as time_fn:
         #     bench_old_cache(in_path)
@@ -126,24 +125,24 @@ if __name__ == "__main__":
         exemplar = {"input_ids": np.zeros((SEQ_LEN,), dtype=np.int32)}
 
         with capture_time() as time_fn:
-            bench_new_cache_serial(exemplar, out_path)
+            bench_new_cache_serial(exemplar, cache_path)
         tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
         print(f"New Cache Serial: {time_fn()} ({tokens_per_second} tps)", flush=True)
 
         with capture_time() as time_fn:
-            asyncio.run(bench_new_cache_serial_tokenseq(exemplar, out_path))
+            asyncio.run(bench_new_cache_serial_tokenseq(exemplar, cache_path))
         tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
 
         print(f"New Cache Serial TokenSeq: {time_fn()} ({tokens_per_second} tps)", flush=True)
 
         with capture_time() as time_fn:
-            bench_new_cache_random(exemplar, out_path)
+            bench_new_cache_random(exemplar, cache_path)
         tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
 
         print(f"New Cache Random: {time_fn()} ({tokens_per_second} tps)", flush=True)
 
         with capture_time() as time_fn:
-            asyncio.run(bench_new_cache_permutation_random(exemplar, out_path))
+            asyncio.run(bench_new_cache_permutation_random(exemplar, cache_path))
         tokens_per_second = SEQ_LEN * BS * BATCHES / time_fn()
 
         print(f"New Cache Permutation: {time_fn()} ({tokens_per_second} tps)", flush=True)

@@ -1,4 +1,3 @@
-import dataclasses
 from typing import Optional, Sequence
 
 import jax.random
@@ -29,7 +28,11 @@ class PermutationDataset(AsyncDataset[T_co]):
         return self.dataset.is_finite()
 
     async def current_len(self) -> Optional[int]:
-        return await self.dataset.current_len()
+        if await self.final_length_is_known():
+            return await self.async_len()
+        # In general, we can't know the current length until we know the entire length
+        return None
+        # return await self.dataset.current_len()
 
     async def getitem_async(self, index: int) -> T_co:
         permutation = await self._get_permutation()
@@ -41,8 +44,11 @@ class PermutationDataset(AsyncDataset[T_co]):
 
     async def _get_permutation(self):
         if self._permutation is None:
-            self._permutation = Permutation(await self.dataset.async_len(), self.key)
+            self._permutation = Permutation(await self.async_len(), self.key)
         return self._permutation
+
+    async def wait_until_len_at_least(self, length: int) -> int:
+        return await self.async_len()
 
 
 class EraShufflingDataset(AsyncDataset[T_co]):
@@ -128,8 +134,3 @@ class EraShufflingDataset(AsyncDataset[T_co]):
         # wait until we hit the next era
         next_era_end = (length // self.era_length + 1) * self.era_length
         return await self.dataset.wait_until_len_at_least(next_era_end)
-
-
-@dataclasses.dataclass
-class EraConfig:
-    era_length: int
