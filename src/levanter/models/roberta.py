@@ -352,6 +352,8 @@ class RobertaSelfAttention(eqx.Module, StateDictSerializationMixin):
         
         outputs = hax.rearrange(context_layer, ("... heads position head_size -> ... position (embed_att: heads head_size)"), heads=self.Heads, head_size=self.HeadSize)
 
+        # jax.debug.breakpoint()
+
         return outputs
 
 class RobertaSelfOutput(eqx.Module, StateDictSerializationMixin):
@@ -483,7 +485,7 @@ class RobertaLayer(eqx.Module, StateDictSerializationMixin):
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output, key=k_o)
 
-        # jax.debug.print("{layer_output}", layer_output=layer_output)
+        # # jax.debug.print("{layer_output}", layer_output=layer_output)
 
         # return (layer_output, layer_output)
         return layer_output
@@ -572,35 +574,36 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
     def create_position_ids_from_input_ids(self, input_ids, past_key_values_length=0):
         mask = hax.not_equal(input_ids, self.padding_idx) * 1
         incremental_indices = (hax.cumsum(mask, axis=self.Pos).astype(mask) + past_key_values_length) * mask
-        return incremental_indices + self.padding_idx
+        incremental_indices -= mask.all(axis=self.Pos)
+        return incremental_indices
 
     def create_position_ids_from_inputs_embeds(self, input_axes, PosInput):
-        # position_ids = hax.arange(axis = PosInput, start = 0, dtype=jnp.int32)
-        position_ids = hax.arange(axis = PosInput, start = self.padding_idx + 1, dtype=jnp.int32)
+        position_ids = hax.arange(axis = PosInput, start = 0, dtype=jnp.int32)
+        # position_ids = hax.arange(axis = PosInput, start = self.padding_idx + 1, dtype=jnp.int32)
 
         return hax.broadcast_to(position_ids, input_axes)
 
     @named_call
     def embed(self, input_ids=None, token_type_ids=None, position_ids=None, input_embeds=None, past_key_values_length=0, *, key = None):
-        if input_ids is not None:
-            print(f"input_ids: {input_ids.dtype}")
-        else:
-            print("input_ids: None")
+        # if input_ids is not None:
+        #     print(f"input_ids: {input_ids.dtype}")
+        # else:
+        #     print("input_ids: None")
 
-        if token_type_ids is not None:
-            print(f"token_type_ids: {token_type_ids.dtype}")
-        else:
-            print("token_type_ids: None")
+        # if token_type_ids is not None:
+        #     print(f"token_type_ids: {token_type_ids.dtype}")
+        # else:
+        #     print("token_type_ids: None")
 
-        if position_ids is not None:
-            print(f"position_ids: {position_ids.dtype}")
-        else:
-            print("position_ids: None")
+        # if position_ids is not None:
+        #     print(f"position_ids: {position_ids.dtype}")
+        # else:
+        #     print("position_ids: None")
         
-        if input_embeds is not None:
-            print(f"input_embeds: {input_embeds.dtype}")
-        else:
-            print("input_embeds: None")
+        # if input_embeds is not None:
+        #     print(f"input_embeds: {input_embeds.dtype}")
+        # else:
+        #     print("input_embeds: None")
 
         """
         Note: When inputting your own embeds into input_embeds, make sure that the embeds axis has the name "embed"
@@ -637,6 +640,9 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
         
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings, key=key)
+
+        # jax.debug.breakpoint()
+
         return embeddings
 
 class RobertaPooler(eqx.Module, StateDictSerializationMixin):
@@ -727,8 +733,12 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         if attention_mask is None:
             attention_mask = hax.ones(input_axes)
         
+        # print(f"attention_mask: {attention_mask}")
+        
         # Attention mask from mask to actual numbers 0 -> -inf
         attention_mask = (attention_mask == 0) * jnp.finfo(jnp.bfloat16).min
+
+        # print(f"attention_mask_real: {attention_mask}")
         
         embedding_output = self.embeddings.embed(input_ids, token_type_ids, position_ids, input_embeds, key=k_emb)
 
@@ -737,6 +747,8 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         sequence_output = encoder_outputs[0]
 
         pooled_output = self.pooler(sequence_output, key=k_p) if self.pooler is not None else None
+
+        # jax.debug.breakpoint()
 
         return (sequence_output, pooled_output) + encoder_outputs[1:] if self.output_hidden_states else (sequence_output, pooled_output)
 
@@ -779,6 +791,7 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
     roberta: RobertaModel
     lm_head: RobertaLMHead
     Vocab: Axis
+    Pos: Axis
     output_hidden_states: bool
 
     @classmethod
@@ -791,7 +804,7 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         roberta = RobertaModel.init(Vocab, config, add_pooling_layer=False, output_hidden_states=output_hidden_states, key=key_rob)
         lm_head = RobertaLMHead.init(Vocab, config, key=key_head)
 
-        return RobertaForMaskedLM(roberta, lm_head, Vocab, output_hidden_states)
+        return RobertaForMaskedLM(roberta, lm_head, Vocab, config.Pos, output_hidden_states)
 
     def get_output_embeddings(self):
         return self.lm_head.decoder
@@ -821,6 +834,9 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
 
         k_rob, k_lm = maybe_rng_split(key, 2)
 
+        # print(f"input_ids: {input_ids}")
+        # print(f"attention_mask: {attention_mask}")        
+
         outputs = self.roberta(
             input_ids,
             attention_mask=attention_mask,
@@ -830,7 +846,13 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
             key=k_rob
         )
 
+        # print(f"outputs: {outputs}")
+
         prediction_scores = self.lm_head(outputs[0], key=k_lm)
+
+        # print(f"prediction_scores: {prediction_scores}")
+
+        # jax.debug.breakpoint()
 
         # return (prediction_scores,) + outputs[2:]
         return prediction_scores
@@ -845,14 +867,17 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
     ) -> jnp.ndarray | NamedArray:
         # logits = self(example.tokens, example.attn_mask, key=key)[0]
         logits = self(example.tokens, example.attn_mask, key=key)
+        # print(f"Logits: {logits}")
         logits = logits.astype(jnp.float32)
         targets = example.targets
 
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
-        target_y = jax.debug.breakpoint(token=target_y)
+        #target_y = jax.debug.breakpoint(token=target_y)
         loss = cross_entropy_loss(
             logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )
+
+        # print(f"loss: {loss}")
 
         return loss
     
