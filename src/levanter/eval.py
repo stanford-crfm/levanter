@@ -8,8 +8,8 @@ from typing import Callable, Mapping, Optional, Sequence, TypeVar
 import jax.numpy as jnp
 import jmp
 import numpy as np
-import tqdm
 from jax.sharding import Mesh
+from tqdm_loggable.auto import tqdm
 
 import haliax as hax
 from haliax.partitioning import ResourceMapping
@@ -300,7 +300,7 @@ class TaggedEvaluator:
         iterator = LoadingTimeTrackerIterator(self.loader)
         n = 0
 
-        for batch, tags in tqdm.tqdm(iterator, "eval"):
+        for batch, tags in tqdm(iterator, "eval"):
             state = self.accum_for_batch(m, state, batch, tags)
             n += 1
 
