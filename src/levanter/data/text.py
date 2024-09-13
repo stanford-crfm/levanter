@@ -600,7 +600,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
         if self.shuffle is True:
             ds = ds.shuffle(key)
-        elif isinstance(self.shuffle, int):
+        elif isinstance(self.shuffle, int) and self.shuffle > 0:
             ds = ds.era_shuffle(self.shuffle, key=key)
 
         return ds  # type: ignore
