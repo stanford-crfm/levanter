@@ -29,7 +29,6 @@ from haliax import Axis
 from levanter.data import AsyncDataset
 from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy
-from levanter.data.permutation import EraConfig
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag  # noqa
@@ -103,17 +102,19 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         token_arrays = await self._await_token_cache()
         # logger.info(f"Time to get token cache: {time.time() - time_in}")
+        print(f"waiting until len is at least {max(indices) + 1}")
         len = await self.wait_until_len_at_least(max(indices) + 1)
         if len is not None and len < max(indices) + 1:
             raise ValueError("Requested indices beyond the end of the dataset")
         offsets = np.array(indices) * self.seq_len
+        print(f"getting offsets {offsets}")
         with ts.Batch():
             out = []
             for offset in offsets:
                 out.append(token_arrays.data[offset : offset + self.seq_len].read())
 
         out = await asyncio.gather(*out)
-
+        print("done waiting")
         return out
 
     def get_batch_sync(self, indices: Sequence[int]) -> Sequence[T_co]:
@@ -549,9 +550,9 @@ class LMTaskConfig(abc.ABC):
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     ignore_token_id: Optional[int] = None
-    shuffle: bool | EraConfig = False
+    shuffle: bool | int = False
     """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
-    If you want to shuffle in eras, provide an EraConfig (which asks for an era_length)"""
+    If you want to shuffle in eras, set this to the era length"""
 
     @cached_property
     def the_tokenizer(self) -> PreTrainedTokenizerBase:
@@ -599,8 +600,8 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
         if self.shuffle is True:
             ds = ds.shuffle(key)
-        elif isinstance(self.shuffle, EraConfig):
-            ds = ds.era_shuffle(self.shuffle.era_length, key=key)
+        elif isinstance(self.shuffle, int):
+            ds = ds.era_shuffle(self.shuffle, key=key)
 
         return ds  # type: ignore
 
@@ -754,8 +755,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         def shuffle_ds(ds, key):
             if self.shuffle is True:
                 ds = ds.shuffle(key)
-            elif isinstance(self.shuffle, EraConfig):
-                ds = ds.era_shuffle(self.shuffle.era_length, key=key)
+            elif isinstance(self.shuffle, int):
+                ds = ds.era_shuffle(self.shuffle, key=key)
 
             return ds
 
