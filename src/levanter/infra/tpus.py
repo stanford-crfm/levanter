@@ -49,6 +49,7 @@ def list_tpus(zone):
                 "list",
                 f"--zone={zone}",
                 "--format=json(name.basename(), state)",
+                "--quiet",
             ]
         )
     )
@@ -68,6 +69,7 @@ def describe_tpu(tpu_name, zone):
                     tpu_name,
                     f"--zone={zone}",
                     "--format=json(name.basename(), state)",
+                    "--quiet",
                 ],
                 stderr=subprocess.DEVNULL,
             )
@@ -77,6 +79,8 @@ def describe_tpu(tpu_name, zone):
 
 
 def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count):
+    # ensure alpha is enabled
+    run_command("gcloud", "components", "install", "alpha", "--quiet")
     if version is None:
         version = "tpu-ubuntu2204-base"
     tpu_stat = describe_tpu(tpu_name, zone)
@@ -196,17 +200,31 @@ def run_command(*args, **kwargs):
 
 def add_ssh_key(ssh_key_filename):
     # format 3072 SHA256:... key-name (RSA)
-    key_hash = subprocess.check_output(["ssh-keygen", "-lf", ssh_key_filename]).decode("utf-8").split()[1]
-    existing_keys = subprocess.check_output(["ssh-add", "-l"]).decode("utf-8").split("\n")
-    for key in existing_keys:
-        if key_hash in key:
-            return
+    try:
+        key_hash = (
+            subprocess.check_output(["ssh-keygen", "-lf", ssh_key_filename], stderr=subprocess.STDOUT)
+            .decode("utf-8")
+            .split()[1]
+        )
+        existing_keys = (
+            subprocess.check_output(["ssh-add", "-l"], stderr=subprocess.STDOUT).decode("utf-8").split("\n")
+        )
+        for key in existing_keys:
+            if key_hash in key:
+                return
 
-    subprocess.check_call(["ssh-add", ssh_key_filename])
+            subprocess.check_call(["ssh-add", ssh_key_filename])
+    except subprocess.CalledProcessError:
+        raise
 
 
 def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
-    add_ssh_key(os.path.expanduser("~/.ssh/google_compute_engine"))
+    try:
+        add_ssh_key(os.path.expanduser("~/.ssh/google_compute_engine"))
+    except subprocess.CalledProcessError as e:
+        print("Failed to add ssh key. This may lead to problems.", e)
+        pass
+
     try:
         if node_count > 1:
             return _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=ignore_failure)
@@ -219,6 +237,7 @@ def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
             "tpu-vm",
             "ssh",
             tpu_name,
+            "--quiet",
             "--worker=all",
             f"--zone={zone}",
             "--command=%s" % " ".join(args),
@@ -243,6 +262,7 @@ def _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=False)
                 "ssh",
                 f"{tpu_name}-{i}",
                 "--worker=all",
+                "--quiet",
                 f"--zone={zone}",
                 "--command=%s" % " ".join(args),
             )

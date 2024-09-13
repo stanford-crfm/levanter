@@ -50,6 +50,7 @@ dependencies = [
     "filelock~=3.13",
     #    "ai2-olmo",
     "async-lru~=2.0",
+    "tqdm-loggable>=0.2"
 ]
 
 [project.urls]
