@@ -1,8 +1,7 @@
 data:
   tokenizer: "meta-llama/Llama-2-7b-hf"
   cache_dir: "gs://levanter-data/new-tokenized/pile_mix/"
-  shuffle:
-    era_length: 10000
+  shuffle: 10000
   configs:
     arxiv:
       train_urls:
