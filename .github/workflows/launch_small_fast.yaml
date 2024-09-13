@@ -5,7 +5,7 @@ on:
     workflows: ["Build and Push Docker TPU Images"]
     types:
       - completed
-    branches: [main]
+    branches: [main, "experiment/*"]
 #  pull_request:
   workflow_dispatch:
 
