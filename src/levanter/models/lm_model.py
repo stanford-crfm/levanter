@@ -22,6 +22,7 @@ class LmExample(eqx.Module):
     loss_mask: hax.NamedArray
     attn_mask: AttentionMask | NamedArray = AttentionMask.causal()
 
+
     @staticmethod
     def causal(
         tokens: hax.NamedArray, *, loss_mask: Optional[hax.NamedArray] = None, ignore_id: Optional[int] = None

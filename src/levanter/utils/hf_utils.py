@@ -1,4 +1,7 @@
 import os
+from typing import TypeAlias
+
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from levanter.logging import silence_transformer_nag
 from levanter.utils.py_utils import logical_cpu_core_count
@@ -7,6 +10,8 @@ from levanter.utils.py_utils import logical_cpu_core_count
 silence_transformer_nag()
 
 _HF_TOKENIZER_OFF_VALUES = {"off", "false", "f", "no", "n", "0"}
+
+HfTokenizer: TypeAlias  = PreTrainedTokenizerFast | PreTrainedTokenizer
 
 
 def num_cpus_used_by_tokenizer(tokenizer) -> int:
