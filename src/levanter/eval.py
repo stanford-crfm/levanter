@@ -244,6 +244,8 @@ class TaggedEvaluator:
     Evaluates multiple tagged datasets using a given evaluation function.
     Scores for each tag are aggregated and logged separately, as well as getting an overall score.
 
+    TaggedEvaluator computes both log-perplexity and bits-per-byte for each tag, if a tokenizer is provided.
+
     Tags are arranged hierarchically with "/" as separator, and we log both a micro and macro average loss
     for each tag.
 
@@ -303,16 +305,6 @@ class TaggedEvaluator:
                 this_tokens_per_tag = hax.einsum("-> tag", mask, tags)
                 this_loss_per_tag = hax.einsum("-> tag", mask, losses, tags)  # [Tag]
 
-                if self.bytes_per_token is not None:
-                    next_tokens = hax.roll(batch.tokens, -1, m.Pos)
-                    bytes_per_pos = self.bytes_per_token.take("vocab", next_tokens)  # [Batch, Pos]
-                    bytes_per_tag = hax.einsum("-> tag", bytes_per_pos, mask, tags)  # [Tag]
-                    # log loss -> bits is log2(e) * loss
-                    bits_per_tag = this_loss_per_tag * jnp.log2(jnp.e)
-                    # this max is to avoid 0 bytes, which happens with special tokens
-                    bpb_per_tag = bits_per_tag / hax.maximum(bytes_per_tag, 1)
-                    bpb = this_loss / hax.maximum(hax.sum(bytes_per_pos), 1) * jnp.log2(jnp.e)
-
                 mean = state.loss_per_token.add(this_loss / this_tokens, this_tokens)
                 # careful: this_tokens_per_tag can be 0 if there are no tokens for that tag
                 safe_mean = hax.where(this_tokens_per_tag, this_loss_per_tag / this_tokens_per_tag, 0.0)
@@ -321,6 +313,16 @@ class TaggedEvaluator:
                 state = dataclasses.replace(state, loss_per_token=mean, loss_per_tag=mean_per_tag)
 
                 if self.bytes_per_token is not None:
+                    next_tokens = hax.roll(batch.tokens, -1, m.Pos)
+                    bytes_per_pos = self.bytes_per_token.take("vocab", next_tokens)  # [Batch, Pos]
+                    bytes_per_pos = hax.einsum("... -> ...", bytes_per_pos, mask)  # [Batch, Pos]
+                    bytes_per_tag = hax.einsum("-> tag", bytes_per_pos, tags)  # [Tag]
+                    # log loss -> bits is log2(e) * loss
+                    bits_per_tag = this_loss_per_tag * jnp.log2(jnp.e)
+                    # this max is to avoid 0 bytes, which happens with special tokens
+                    bpb_per_tag = bits_per_tag / hax.maximum(bytes_per_tag, 1)
+                    bpb = this_loss / hax.maximum(hax.sum(bytes_per_pos), 1) * jnp.log2(jnp.e)
+
                     bpb_mean = state.bpb.add(bpb, this_tokens)
                     bpb_per_tag_mean = state.bpb_per_tag.add(bpb_per_tag, this_tokens_per_tag)
                     state = dataclasses.replace(state, bpb=bpb_mean, bpb_per_tag=bpb_per_tag_mean)
