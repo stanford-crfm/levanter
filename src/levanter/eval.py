@@ -20,7 +20,7 @@ from levanter.data import AsyncDataset, DataLoader
 from levanter.logging import LoadingTimeTrackerIterator
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import StepInfo
-from levanter.utils.hf_utils import HfTokenizer
+from levanter.utils.hf_utils import HfTokenizer, byte_length_of_token
 from levanter.utils.stat_utils import Arrayish, RunningMean
 from levanter.utils.tree_utils import inference_mode
 
@@ -414,15 +414,9 @@ class TaggedEvaluator:
             # calculate the number of bytes in each token
             Vocab = hax.Axis("vocab", len(tokenizer.get_vocab()))
             bytes = np.ndarray((Vocab.size,), dtype=np.int32)
-            tok = tokenizer
 
             for i in range(Vocab.size):
-                if i in tok.all_special_ids:
-                    # NB: special tokens don't have bytes, but they contribute to perplexity/bits
-                    bytes[i] = 0
-                    continue
-                token_str = tok.convert_tokens_to_string([tok.convert_ids_to_tokens(i)])
-                bytes[i] = len(token_str.encode("utf-8"))
+                bytes[i] = byte_length_of_token(tokenizer, i)
 
             return hax.named(jnp.array(bytes), Vocab)
 
