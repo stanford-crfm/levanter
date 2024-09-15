@@ -45,7 +45,6 @@ class EvalResult:
     tag_micro_bpb: Optional[dict[str, float]] = None
 
 
-
 # This class doesn't try to be async or work with incomplete datasets, because it's eval
 
 
@@ -288,9 +287,7 @@ class TaggedEvaluator:
         self.hierarchy = hierarchy
 
         @hax.named_jit(out_axis_resources=axis_mapping)
-        def accum_for_batch(
-            m: LmHeadModel, state: _EvalRunningMeans, batch: LmExample, tags: hax.NamedArray
-        ):
+        def accum_for_batch(m: LmHeadModel, state: _EvalRunningMeans, batch: LmExample, tags: hax.NamedArray):
             m = inference_mode(m, True)
 
             if self.mp is not None:
@@ -315,13 +312,12 @@ class TaggedEvaluator:
                 if self.bytes_per_token is not None:
                     next_tokens = hax.roll(batch.tokens, -1, m.Pos)
                     bytes_per_pos = self.bytes_per_token.take("vocab", next_tokens)  # [Batch, Pos]
-                    bytes_per_pos = hax.einsum("... -> ...", bytes_per_pos, mask)  # [Batch, Pos]
+                    bytes_per_pos = bytes_per_pos * mask  # [Batch, Pos]
                     bytes_per_tag = hax.einsum("-> tag", bytes_per_pos, tags)  # [Tag]
+                    total_bytes = hax.sum(bytes_per_tag)
                     # log loss -> bits is log2(e) * loss
-                    bits_per_tag = this_loss_per_tag * jnp.log2(jnp.e)
-                    # this max is to avoid 0 bytes, which happens with special tokens
-                    bpb_per_tag = bits_per_tag / hax.maximum(bytes_per_tag, 1)
-                    bpb = this_loss / hax.maximum(hax.sum(bytes_per_pos), 1) * jnp.log2(jnp.e)
+                    bpb_per_tag = this_loss_per_tag / hax.maximum(bytes_per_tag, 1) * jnp.log2(jnp.e)
+                    bpb = this_loss / hax.maximum(total_bytes, 1) * jnp.log2(jnp.e)
 
                     bpb_mean = state.bpb.add(bpb, this_tokens)
                     bpb_per_tag_mean = state.bpb_per_tag.add(bpb_per_tag, this_tokens_per_tag)
@@ -400,8 +396,15 @@ class TaggedEvaluator:
                 # tag_macro_bpb[tag] = None
 
         return EvalResult(
-            micro_avg_loss, macro_avg_loss, tag_macro_loss, tag_micro_loss, iterator.total_time,
-            micro_bpb, macro_avg_bpb, tag_macro_bpb, tag_micro_bpb
+            micro_avg_loss,
+            macro_avg_loss,
+            tag_macro_loss,
+            tag_micro_loss,
+            iterator.total_time,
+            micro_bpb,
+            macro_avg_bpb,
+            tag_macro_bpb,
+            tag_micro_bpb,
         )
 
     def _calculate_bytes_per_token_type(self, tokenizer: HfTokenizer) -> Optional[hax.NamedArray]:
@@ -424,8 +427,6 @@ class TaggedEvaluator:
             return hax.named(jnp.array(bytes), Vocab)
 
 
-
-
 class _EvalRunningMeans(eqx.Module):
     loss_per_token: RunningMean
     loss_per_tag: RunningMean
@@ -437,5 +438,3 @@ class _EvalRunningMeans(eqx.Module):
         z = RunningMean.zeros_like(total)
         per_tag = RunningMean.zeros_like(per_tag)
         return _EvalRunningMeans(z, per_tag, z, per_tag)
-
-
