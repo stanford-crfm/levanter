@@ -44,12 +44,12 @@ class AsyncIteratorWrapper(Iterator):
 
     def _run_async_task(self, coro):
         if not self.loop.is_running() or not self.thread.is_alive():
-            raise StopIteration  # Loop is not running or thread has been joined
+            raise StopIteration
         try:
             future = asyncio.run_coroutine_threadsafe(coro, self.loop)
             return future.result()
         except (RuntimeError, asyncio.CancelledError):
-            raise StopIteration  # Either the loop was closed or the coroutine was cancelled
+            raise StopIteration
 
     def __iter__(self):
         return self
@@ -63,12 +63,12 @@ class AsyncIteratorWrapper(Iterator):
             self._exhausted = True  # Mark the iterator as exhausted
             if self.loop.is_running():
                 self.loop.call_soon_threadsafe(self.loop.stop)
-            self.thread.join()  # Ensure the thread is safely joined
+            self.thread.join()
             raise StopIteration
 
     def close(self):
         """Close the event loop and thread gracefully."""
         if self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join()  # Join the thread to ensure the loop is fully stopped
-        self.loop.close()  # Explicitly close the loop to avoid dangling tasks
+        self.thread.join()
+        self.loop.close()
