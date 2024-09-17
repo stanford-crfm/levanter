@@ -308,7 +308,7 @@ class TaggedEvaluator:
                 safe_mean = hax.where(this_tokens_per_tag, this_loss_per_tag / this_tokens_per_tag, 0.0)
                 mean_per_tag = state.loss_per_tag.add(safe_mean, this_tokens_per_tag)
 
-                state = dataclasses.replace(state, loss_per_token=mean, loss_per_tag=mean_per_tag)
+                state = dataclasses.replace(state, token_avg_loss=mean, loss_per_tag=mean_per_tag)
 
                 if self.bytes_per_token is not None:
                     next_tokens = hax.roll(batch.tokens, -1, m.Pos)  # [Batch, Pos], rolled by 1 for next token task
