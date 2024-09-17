@@ -299,10 +299,11 @@ class TaggedEvaluator:
                 this_tokens = hax.sum(mask)
                 this_loss = hax.einsum("->", losses, mask)  # to scalar
 
+                # all the *_per_tag variables are [Tag]
                 this_tokens_per_tag = hax.einsum("-> tag", mask, tags)
                 this_loss_per_tag = hax.einsum("-> tag", mask, losses, tags)  # [Tag]
 
-                mean = state.loss_per_token.add(this_loss / this_tokens, this_tokens)
+                mean = state.token_avg_loss.add(this_loss / this_tokens, this_tokens)
                 # careful: this_tokens_per_tag can be 0 if there are no tokens for that tag
                 safe_mean = hax.where(this_tokens_per_tag, this_loss_per_tag / this_tokens_per_tag, 0.0)
                 mean_per_tag = state.loss_per_tag.add(safe_mean, this_tokens_per_tag)
@@ -310,11 +311,12 @@ class TaggedEvaluator:
                 state = dataclasses.replace(state, loss_per_token=mean, loss_per_tag=mean_per_tag)
 
                 if self.bytes_per_token is not None:
-                    next_tokens = hax.roll(batch.tokens, -1, m.Pos)
+                    next_tokens = hax.roll(batch.tokens, -1, m.Pos)  # [Batch, Pos], rolled by 1 for next token task
                     bytes_per_pos = self.bytes_per_token.take("vocab", next_tokens)  # [Batch, Pos]
                     bytes_per_pos = bytes_per_pos * mask  # [Batch, Pos]
                     bytes_per_tag = hax.einsum("-> tag", bytes_per_pos, tags)  # [Tag]
                     total_bytes = hax.sum(bytes_per_tag)
+
                     # log loss -> bits is log2(e) * loss
                     bpb_per_tag = this_loss_per_tag / hax.maximum(bytes_per_tag, 1) * jnp.log2(jnp.e)
                     bpb = this_loss / hax.maximum(total_bytes, 1) * jnp.log2(jnp.e)
@@ -342,7 +344,7 @@ class TaggedEvaluator:
             state = self.accum_for_batch(m, state, batch, tags)
             n += 1
 
-        micro_avg_loss = state.loss_per_token.mean.item()
+        micro_avg_loss = state.token_avg_loss.mean.item()
         tag_avg_loss = state.loss_per_tag.mean
 
         # TODO: why do i have to jit this
@@ -354,13 +356,12 @@ class TaggedEvaluator:
             macro_avg_bpb = hax.named_jit(lambda x: hax.mean(x).array)(tag_avg_bpb).item()
         else:
             micro_bpb = None
-            tag_avg_bpb = None
             macro_avg_bpb = None
 
-        tag_macro_loss = {}
-        tag_micro_loss = {}
-        tag_macro_bpb = {}
-        tag_micro_bpb = {}
+        tag_macro_loss: dict[str, float] = {}
+        tag_micro_loss: dict[str, float] = {}
+        tag_macro_bpb: dict[str, float] = {}
+        tag_micro_bpb: dict[str, float] = {}
 
         mean_loss_per_tag_cpu = np.array(state.loss_per_tag.mean.array)
         total_tokens_per_tag_cpu = np.array(state.loss_per_tag.mean.array)
@@ -388,12 +389,11 @@ class TaggedEvaluator:
                 tag_micro_bpb[parent] = np.average(mean_bits_per_tag_cpu, weights=total_bytes_per_tag_cpu * mask)
 
         for tag, index in self.dataset.tag_to_index.items():
-            tag_micro_loss[tag] = mean_loss_per_tag_cpu[index]
+            tag_micro_loss[tag] = float(mean_loss_per_tag_cpu[index])
             # no macro loss for the leaf tags
 
             if self.bytes_per_token is not None:
-                tag_micro_bpb[tag] = mean_bits_per_tag_cpu[index]
-                # tag_macro_bpb[tag] = None
+                tag_micro_bpb[tag] = float(mean_bits_per_tag_cpu[index])
 
         return EvalResult(
             micro_avg_loss,
@@ -422,10 +422,10 @@ class TaggedEvaluator:
 
 
 class _EvalRunningMeans(eqx.Module):
-    loss_per_token: RunningMean
-    loss_per_tag: RunningMean
-    bpb: RunningMean
-    bpb_per_tag: RunningMean
+    token_avg_loss: RunningMean  # average loss averaged over all tokens
+    loss_per_tag: RunningMean  # average loss per tag
+    bpb: RunningMean  # bits per byte averaged over all tokens
+    bpb_per_tag: RunningMean  # bits per byte per tag
 
     @staticmethod
     def zeros_like(total: Arrayish, per_tag: Arrayish) -> "_EvalRunningMeans":
