@@ -1,5 +1,5 @@
 data: 
-  !include data/dolma_olmo_paloma_shuf.yaml
+  !include data/dolma_olmo_paloma.yaml
 model:
   type: olmo
 initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step476000-tokens1995B"

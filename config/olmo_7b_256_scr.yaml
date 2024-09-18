@@ -1,5 +1,5 @@
 data: 
-  !include data/dolma_olmo_paloma_shuf.yaml
+  !include data/dolma_olmo_paloma.yaml
 model:
   type: olmo
   hidden_dim: 4096
@@ -38,6 +38,7 @@ trainer:
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
+  seed: 0
 
 optimizer:
 # lr from olmo (they decay up to 21 billion tokens from 3E-4)
