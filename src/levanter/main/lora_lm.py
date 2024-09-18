@@ -101,7 +101,7 @@ def main(config: LoraLmConfig):
         model = loraize_hf_model(model)
 
         lora_param_filter = lora_trainable_params_filter(model)
-
+        # change this take in reference model
         state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         all_param_count = parameter_count(state.model)
