@@ -98,8 +98,8 @@ class OlmoConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["OlmoConfig"]:  # type: ignore
+    #@cached_classproperty
+    def hf_checkpoint_converter(cls) -> HFCheckpointConverter["OlmoConfig"]:  # type: ignore
         return HFCheckpointConverter(
             cls,  # type: ignore
             "allenai/OLMo-7B-hf",
