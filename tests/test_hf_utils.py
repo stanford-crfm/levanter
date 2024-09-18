@@ -26,6 +26,7 @@ def test_load_tokenizer_in_memory_fs():
     assert len(tokenizer) == 5027
 
 
+@skip_if_hf_model_not_accessible("meta-llama/Llama-2-7b-hf")
 def test_byte_length_of_token():
     tok = load_tokenizer("meta-llama/Llama-2-7b-hf")
     ids = tok("this is hello a test", add_special_tokens=False)["input_ids"]
