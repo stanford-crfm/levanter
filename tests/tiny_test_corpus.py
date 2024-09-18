@@ -69,7 +69,7 @@ def construct_small_data_cache(
         validation_urls=[f"file://{path}/validation/docs.jsonl"],
         cache_dir=f"{path}/cache",
         vocab_size=vocab_size,
-        tokenizer="passthrough",
+        tokenizer="gpt2",
     )
 
     return config, caches

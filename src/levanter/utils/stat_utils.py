@@ -7,7 +7,7 @@ import numpy as np
 import haliax as hax
 
 
-Arrayish: typing.TypeAlias = hax.NamedArray | np.ndarray | jnp.ndarray | float
+Arrayish: typing.TypeAlias = hax.NamedArray | np.ndarray | jnp.ndarray
 
 
 class RunningMean(eqx.Module):
