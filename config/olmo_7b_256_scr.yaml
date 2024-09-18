@@ -17,8 +17,6 @@ trainer:
     auto_start_cluster: false
   checkpointer:
     keep:
-      - every: 1
-        until: 10
       - every: 25
         until: 100
       - every: 50
@@ -43,10 +41,10 @@ trainer:
 
 optimizer:
 # lr from olmo (they decay up to 21 billion tokens from 3E-4)
-  learning_rate: 0.0
+  learning_rate: 3E-4
   weight_decay: 0.1
   min_lr_ratio: 0.1
 
 hf_save_steps: 10000
-hf_save_path: "gs://levanter-checkpoints/olmo_trace_hf/"  # TODO
+hf_save_path: "gs://levanter-checkpoints/olmo_trace_fixedinit_shufdata/"  # TODO
 data_seed: 0
