@@ -1,0 +1,101 @@
+# cf: https://github.com/ray-project/ray/blob/master/python/ray/autoscaler/gcp/example-full.yaml
+# cf: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
+# Unique Identifier for the Head Node + Workers
+cluster_name: levanter-cluster
+
+# Maximum Workers (excluding Head Node)
+max_workers: 1024
+
+# List of Available Node Types
+available_node_types:
+  # Head Node =>> On-Demand, sets Min/Max Workers = 0 (Prevent Scheduling Tasks on Head Node)
+  head_default:
+    min_workers: 0
+    max_workers: 0
+    resources: {"CPU": 32}
+
+    # GCP-Specific Configuration; by default, Ray will configure unspecified fields (e.g., subnets, ssh-keys)
+    #   => Ref: https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
+    node_config:
+      machineType: n2-standard-8
+
+      # Create a Persistent Disk w/ 200 GBs
+      disks:
+        - boot: true
+          autoDelete: true
+          type: PERSISTENT
+          initializeParams:
+            diskSizeGb: 200
+
+            # Set Source Image =>> Ubuntu 22.04 Base VM
+            sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts
+#            sourceImage: projects/deeplearning-platform-release/global/images/family/common-cpu
+
+  # Worker Nodes =>>
+  tpu_slice_v4_64:
+    min_workers: 4
+    max_workers: 1024
+    resources: {"CPU": 120, "TPU": 4, "TPU-v4-64-head-XXX": 1}
+
+    # GCP-Specific Configuration; setup for TPU V4-8 VMs (in `us-central2-b`)
+    node_config:
+      acceleratorType: v4-64
+      runtimeVersion: tpu-ubuntu2204-base
+
+      # [IMPORTANT] Configure all TPU Workers to be Preemptible!
+      schedulingConfig:
+        preemptible: true
+
+# Configure GCP
+provider:
+  type: gcp
+  region: us-central2
+  availability_zone: us-central2-b
+  project_id: hai-gcp-models
+
+docker:
+#    image: "us-central2-docker.pkg.dev/hai-gcp-models/marin/marin_cluster:latest"
+    image: "ghcr.io/stanford-crfm/levanter-cluster:latest"
+#    image: rayproject/ray:nightly.240914.bb15a3-py311-cpu
+    container_name: "ray_docker"
+    pull_before_run: true
+    worker_run_options:
+        - --privileged
+        - --ulimit memlock=-1:-1  #
+        - --shm-size=32gb
+#        - -v "~/.config/gcloud:/root/.config/gcloud"
+        - -v "/tmp:/tmp"
+        # this lets the worker run docker commands and have them run as sibling containers
+        - -v "/var/run/docker.sock:/var/run/docker.sock"
+
+initialization_commands:
+  # install pip and python3
+#  - sudo apt-get update && sudo apt-get install -y python3-pip python-is-python3
+#  - sudo pip install ray[gcp]==2.34.0
+  - yes | gcloud auth configure-docker us-central2-docker.pkg.dev
+  - which docker || (curl -fsSL https://get.docker.com -o get-docker.sh; sudo sh get-docker.sh; sudo usermod -aG docker $USER; sudo systemctl restart docker -f)
+  # always run this because ray doesn't run with sudo
+  - sudo usermod -aG docker $USER
+  # we want to launch docker in docker, which means we need to loosen the permissions on the docker socket
+  # this is a security risk, but I'm out of ideas
+  - sudo chmod 666 /var/run/docker.sock
+
+#head_setup_commands:
+#  # set the GCP project because it's not injected by default
+##  - gcloud components install alpha --quiet
+##  - gcloud config set project hai-gcp-models
+##  - gcloud config set compute/region us-central2
+##  - gcloud config set compute/zone us-central2-b
+#  - mkdir $HOME/.cache/huggingface -p
+  - gcloud secrets versions access latest --secret=HF_TOKEN > $HOME/.cache/huggingface/token || true
+
+worker_setup_commands:
+#  - gcloud components install alpha --quiet
+#  - gcloud config set project hai-gcp-models
+#  - gcloud config set compute/region us-central2
+#  - gcloud config set compute/zone us-central2-b
+#  - mkdir $HOME/.cache/huggingface -p
+  - gcloud secrets versions access latest --secret=HF_TOKEN > $HOME/.cache/huggingface/token || true
+
+# Set Head Node == `ray_head_default`
+head_node_type: head_default

@@ -59,12 +59,12 @@ def get_git_commit():
     return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
 
 
-def make_docker_run_command(image_id, command, *, foreground, env):
+def make_docker_run_command(image_id, command, *, foreground, env, name="levanter"):
     docker_command = [
         "docker",
         "run",
         "-t" if foreground else "-d",
-        "--name=levanter",
+        f"--name={name}",
         "--privileged",
         "--shm-size=32gb",
         "--net=host",
@@ -78,7 +78,7 @@ def make_docker_run_command(image_id, command, *, foreground, env):
     for k, v in env.items():
         docker_command.extend(["-e", k + f"='{str(v)}'"])
 
-    docker_command.extend([image_id, " ".join(command)])
+    docker_command.extend([image_id, *command])
     return docker_command
 
 
