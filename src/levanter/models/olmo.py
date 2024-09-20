@@ -431,8 +431,11 @@ class OlmoEmbedding(StateDictSerializationMixin, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: OlmoConfig, *, key) -> "OlmoEmbedding":
+        print(f"key is {key}")
         k_wte = jrandom.split(key, 1)
-
+        print(f"k_wte is {k_wte}")
+        k_wte = jrandom.split(key, 1)[0]
+        print(f"k_wte is now {k_wte}")
         token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
         return OlmoEmbedding(Vocab, config, token_embeddings)
 
