@@ -1,13 +1,19 @@
 import concurrent.futures
 import getpass
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 from typing import Optional
 
+import requests  # type: ignore
+
 from levanter.infra.cli_helpers import make_docker_run_command
+
+
+logger = logging.getLogger(__name__)
 
 
 def setup_vm_docker(tpu_name, zone, node_count):
@@ -55,7 +61,7 @@ def list_tpus(zone):
     )
 
 
-def describe_tpu(tpu_name, zone):
+def describe_tpu_queued_resource(tpu_name, zone):
     try:
         return json.loads(
             subprocess.check_output(
@@ -78,12 +84,35 @@ def describe_tpu(tpu_name, zone):
         return None
 
 
-def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count):
+def describe_tpu_vm(tpu_name, zone):
+    try:
+        return json.loads(
+            subprocess.check_output(
+                [
+                    "gcloud",
+                    "alpha",
+                    "compute",
+                    "tpus",
+                    "tpu-vm",
+                    "describe",
+                    tpu_name,
+                    f"--zone={zone}",
+                    "--format=json(name.basename(), state)",
+                    "--quiet",
+                ],
+                stderr=subprocess.DEVNULL,
+            )
+        )
+    except subprocess.CalledProcessError:
+        return None
+
+
+def start_tpu_vm_queued_resources(tpu_name, *, tpu_type, capacity_type, version, zone, node_count):
     # ensure alpha is enabled
     run_command("gcloud", "components", "install", "alpha", "--quiet")
     if version is None:
         version = "tpu-ubuntu2204-base"
-    tpu_stat = describe_tpu(tpu_name, zone)
+    tpu_stat = describe_tpu_queued_resource(tpu_name, zone)
     if tpu_stat is not None:
         if tpu_stat["state"]["state"] in ["FAILED", "SUSPENDED"]:
             print("TPU suspended,  deleting...", file=sys.stderr)
@@ -144,7 +173,7 @@ def start_tpu_vm(tpu_name, *, tpu_type, capacity_type, version, zone, node_count
         time.sleep(60)
         waited += 1
 
-        tpu_stat = describe_tpu(tpu_name, zone)
+        tpu_stat = describe_tpu_queued_resource(tpu_name, zone)
         assert tpu_stat is not None, f"{tpu_name} creation failed."
 
         match tpu_stat["state"]["state"]:
@@ -170,7 +199,7 @@ def launch_job(
     foreground: bool,
     version: Optional[str] = None,
 ):
-    start_tpu_vm(
+    start_tpu_vm_queued_resources(
         tpu_name=tpu_name,
         tpu_type=tpu_type,
         capacity_type=capacity_type,
@@ -277,3 +306,49 @@ def _tpu_ssh_multislice(tpu_name, zone, node_count, *args, ignore_failure=False)
                     print("Ignoring failure:", e)
                 else:
                     raise
+
+
+GCE_TPU_ACCELERATOR_ENDPOINT = "http://metadata.google.internal/computeMetadata/v1/instance/attributes/"
+GCE_TPU_HEADERS = {"Metadata-Flavor": "Google"}
+
+
+def get_current_tpu_metadata(key: str) -> Optional[str]:
+    # cribbed from Ray.
+    """Poll and get TPU metadata. This only works on a **TPU VM**."""
+    try:
+        accelerator_type_request = requests.get(
+            os.path.join(GCE_TPU_ACCELERATOR_ENDPOINT, key),
+            headers=GCE_TPU_HEADERS,
+        )
+        if accelerator_type_request.status_code == 200 and accelerator_type_request.text:
+            return accelerator_type_request.text
+        else:
+            logging.debug(
+                "Unable to poll TPU GCE Metadata. Got "
+                f"status code: {accelerator_type_request.status_code} and "
+                f"content: {accelerator_type_request.text}"
+            )
+    except requests.RequestException as e:
+        logging.debug("Unable to poll the TPU GCE Metadata: %s", e)
+    return None
+
+
+def get_current_tpu_is_preempted() -> bool:
+    """curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/preempted"""
+    try:
+        preempted_request = requests.get(
+            "http://metadata.google.internal/computeMetadata/v1/instance/preempted",
+            headers=GCE_TPU_HEADERS,
+        )
+        if preempted_request.status_code == 200:
+            return preempted_request.text == "TRUE"
+        else:
+            logging.warning(
+                "Unable to poll TPU preempted status. Got "
+                f"status code: {preempted_request.status_code} and "
+                f"content: {preempted_request.text}"
+            )
+            return False
+    except requests.RequestException as e:
+        logging.debug("Unable to poll TPU preempted status: %s", e)
+        raise e

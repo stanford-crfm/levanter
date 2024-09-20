@@ -76,7 +76,7 @@ def make_docker_run_command(image_id, command, *, foreground, env, name="levante
     ]
 
     for k, v in env.items():
-        docker_command.extend(["-e", k + f"='{str(v)}'"])
+        docker_command.extend(["-e", k + f"={str(v)}"])
 
     docker_command.extend([image_id, *command])
     return docker_command
