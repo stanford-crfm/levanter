@@ -77,6 +77,7 @@ class OlmoConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
+    rope_theta: float = 10000.0
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
