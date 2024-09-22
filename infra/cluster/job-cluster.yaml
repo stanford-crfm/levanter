@@ -25,23 +25,22 @@ available_node_types:
     # GCP-Specific Configuration; by default, Ray will configure unspecified fields (e.g., subnets, ssh-keys)
     #   => Ref: https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
     node_config:
-      machineType: n2-standard-8
+      machineType: n2-standard-2
 
-      # Create a Persistent Disk w/ 200 GBs
+      # Create a Persistent Disk w/ 100 GBs
       disks:
         - boot: true
           autoDelete: true
           type: PERSISTENT
           initializeParams:
-            diskSizeGb: 200
+            diskSizeGb: 100
 
             # Set Source Image =>> Ubuntu 22.04 Base VM
             sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts
-#            sourceImage: projects/deeplearning-platform-release/global/images/family/common-cpu
 
   # Worker Nodes =>>
   tpu_slice_v4_32:
-    min_workers: 1
+    min_workers: 0
     max_workers: 1024
     resources: { "CPU": 120, "TPU": 1 }
 
