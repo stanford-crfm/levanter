@@ -3,6 +3,7 @@
 
 import argparse
 import getpass
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -133,43 +134,77 @@ def main():
         f.write(yaml.encode("utf-8"))
         f.flush()
 
-        def wait_until_status(job_id, status_to_wait_for, timeout_seconds=5):
-            start = time.time()
-            while time.time() - start <= timeout_seconds:
-                status = client.get_job_status(job_id)
-                print(f"status: {status}")
-                if status in status_to_wait_for:
-                    break
-                time.sleep(1)
+        f_name = os.path.relpath(f.name)
+        print(f"Submitting job with config path {f_name}")
+
+        client = JobSubmissionClient(args.address)
+
+        job_id = _make_unique_job_id(client, run_id)
+
+        job_id = client.submit_job(
+            entrypoint=f"python src/levanter/infra/ray_tpu.py --config_path {f_name}",
+            runtime_env={"working_dir": "./"},
+            job_id=job_id,
+        )
+
+        print(
+            f"""
+-------------------------------------------------------
+Job '{job_id}' submitted successfully
+-------------------------------------------------------
+
+Next steps
+  Query the logs of the job:
+    ray job logs {job_id}
+  Query the status of the job:
+    ray job status {job_id}
+  Request the job to be stopped:
+    ray job stop {job_id}
+"""
+        )
+
+    if args.foreground:
 
         async def tail_job(job_id):
-            async for line in client.tail_job_logs(job_id):
+            async for line in client.tail_job_logs(job_id):  # type: ignore
                 print(line, end="")
 
                 status = client.get_job_status(job_id)
                 if status in {JobStatus.FAILED, JobStatus.SUCCEEDED, JobStatus.STOPPED}:
                     break
 
-        client = JobSubmissionClient(args.address)
-        import os
-
-        f_name = os.path.relpath(f.name)
-        print(f"Submitting job with config path {f_name}")
-        job_id = client.submit_job(
-            # Entrypoint shell command to execute
-            entrypoint=f"python src/levanter/infra/ray_tpu.py --config_path {f_name}",
-            runtime_env={"working_dir": "./"},
+        print("Tailing job logs")
+        wait_until_status(
+            client, job_id, {JobStatus.RUNNING, JobStatus.FAILED, JobStatus.SUCCEEDED, JobStatus.STOPPED}
         )
+        # tail_job(job_id)
+        import asyncio
 
-        print(f"Submitted job with id {job_id}")
+        asyncio.run(tail_job(job_id))
 
-        if args.foreground:
-            print("Tailing job logs")
-            wait_until_status(job_id, {JobStatus.RUNNING, JobStatus.FAILED, JobStatus.SUCCEEDED, JobStatus.STOPPED})
-            # tail_job(job_id)
-            import asyncio
 
-            asyncio.run(tail_job(job_id))
+def wait_until_status(client, job_id, status_to_wait_for, timeout_seconds=5):
+    start = time.time()
+    while time.time() - start <= timeout_seconds:
+        status = client.get_job_status(job_id)
+        print(f"status: {status}")
+        if status in status_to_wait_for:
+            break
+        time.sleep(1)
+
+
+# try to make the job id be the same as the run id, but if it already exists, just make it unique
+def _make_unique_job_id(client, run_id):
+    job_id = run_id
+    try:
+        while client.get_job_status(job_id) is not None:
+            job_id = f"{run_id}-{time.time_ns()}"
+    except Exception as e:  # noqa
+        if "does not exist" in str(e):
+            pass
+        else:
+            raise
+    return job_id
 
 
 if __name__ == "__main__":
