@@ -52,8 +52,7 @@ RUN mkdir -p /usr/local/gcloud \
 # Adding the package path to local
 ENV PATH=$PATH:/usr/local/gcloud/google-cloud-sdk/bin
 
-
-# doesn't work as well if we run as root
+# GCP doesn't like it when root ssh's into a machine
 RUN useradd -m -s /bin/bash levanter
 RUN echo "levanter ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 RUN usermod -aG docker levanter
@@ -61,6 +60,14 @@ RUN mkdir -p $HOME && touch $HOME/.bashrc && chown -R levanter $HOME
 RUN echo "export PATH=$PATH" >> $HOME/.bashrc
 RUN adduser levanter docker
 
+RUN chown -R levanter /opt/levanter
+
 USER levanter
+
+# HACK until https://github.com/ray-project/ray/issues/47769 is resolved
+RUN pip install 'ray[default,gcp]==2.34.0'
+RUN git clone https://github.com/dlwh/ray.git ~/ray --branch tpu_docker_2.34 --depth 1
+RUN cp ~/ray/python/ray/autoscaler/_private/gcp/tpu_command_runner.py /opt/levanter/.venv/lib/python3.10/site-packages/ray/autoscaler/_private/gcp/tpu_command_runner.py
+
 
 WORKDIR /opt/levanter

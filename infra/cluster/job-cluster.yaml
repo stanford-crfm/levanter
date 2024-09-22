@@ -41,9 +41,9 @@ available_node_types:
 
   # Worker Nodes =>>
   tpu_slice_v4_32:
-    min_workers: 0
+    min_workers: 1
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 4 }
+    resources: { "CPU": 120, "TPU": 1 }
 
     node_config:
       acceleratorType: v4-32
@@ -56,7 +56,7 @@ available_node_types:
   tpu_slice_v4_64:
     min_workers: 0
     max_workers: 1024
-    resources: {"CPU": 120, "TPU": 4}
+    resources: {"CPU": 120, "TPU": 1}
 
     node_config:
       acceleratorType: v4-64
@@ -70,7 +70,7 @@ available_node_types:
   tpu_slice_v4_128:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 4 }
+    resources: { "CPU": 120, "TPU": 1 }
 
     node_config:
       acceleratorType: v4-128
@@ -83,7 +83,7 @@ available_node_types:
   tpu_slice_v4_256:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 4 }
+    resources: { "CPU": 120, "TPU": 1 }
 
     node_config:
       acceleratorType: v4-256
@@ -96,7 +96,7 @@ available_node_types:
   tpu_slice_v4_512:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 4 }
+    resources: { "CPU": 120, "TPU": 1 }
 
     node_config:
       acceleratorType: v4-512
@@ -114,12 +114,14 @@ docker:
         - --privileged
         - --ulimit memlock=-1:-1  #
         - --shm-size=32gb
+        - -e TPU_WORKER_ID
         - -v "/tmp:/tmp"
         # this lets the worker run docker commands and have them run as sibling containers
         - -v "/var/run/docker.sock:/var/run/docker.sock"
 
 initialization_commands:
   - yes | gcloud auth configure-docker us-central2-docker.pkg.dev
+  - "export TPU_WORKER_ID=$(curl -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/agent-worker-number) || true"
   - which docker || (curl -fsSL https://get.docker.com -o get-docker.sh; sudo sh get-docker.sh; sudo usermod -aG docker $USER; sudo systemctl restart docker -f)
   # always run this because ray doesn't run with sudo
   - sudo usermod -aG docker $USER
