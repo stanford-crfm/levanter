@@ -22,9 +22,10 @@ Since much of our compute is preemptible, we have to account for the fact that T
 Levanter is designed to be robust to this, but we still have to actually restart the job when it happens.
 We refer to this as "babysitting" the job. We have two options for "babysitting" training jobs.
 
-1. `launch_on_ray.py` is a new, experimental script that uses Ray to manage the job. This script is still in development,
-but it seems to basically work.
-2. `launch.py` has a `--retries` flag that will automatically restart the job if it fails.  To use this, launch.py must be running in foreground mode and must maintain a connection to the TPU VM instance.
+1. `launch_on_ray.py` is a new, experimental script that uses Ray to manage the job and restart it if it fails.
+   This script is still in development, but it seems to basically work.
+2. `launch.py` has a `--retries` flag that will automatically restart the job if it fails.  To use this,
+ `launch.py` must be running in foreground mode and must maintain a connection to the TPU VM instance.
 
 ## Installation
 
@@ -231,6 +232,7 @@ ray dashboard infra/cluster/job-cluster.yaml
 Then, **in a separate terminal**, you can submit a job to the cluster. To replicate the previous example, you can run:
 
 ```bash
+export RAY_ADDRESS=http://localhost:8265  # tell ray where the cluster is
 python infra/launch_on_ray.py --tpu_type v4-32 --foreground --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 

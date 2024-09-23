@@ -1,3 +1,11 @@
+# Configures a Ray Cluster with TPU Slices of various sizes
+# If you're at Stanford CRFM, you probably don't need to change this file
+# If you're not at Stanford CRFM, you should change this file to match your GCP project
+# Specifically:
+# - Change `project_id` to your GCP project
+# - Change the `availability_zone` to match where you have TPUs available
+# - Change the `region` to match where you have TPUs available
+# - Change to the TPU quota you have available
 # cf: https://github.com/ray-project/ray/blob/master/python/ray/autoscaler/gcp/example-full.yaml
 # cf: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
 # Unique Identifier for the Head Node + Workers

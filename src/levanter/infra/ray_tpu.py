@@ -8,6 +8,7 @@ from typing import Sequence
 import draccus
 import ray
 from ray.exceptions import NodeDiedError, RayError, RaySystemError, RayTaskError, WorkerCrashedError
+from ray.remote_function import RemoteFunction
 
 from levanter.infra.cli_helpers import make_docker_run_command
 
@@ -54,7 +55,7 @@ class TpuRunError(_TpuRunResult):
     error: Exception
 
 
-def run_on_pod(remote_fn, tpu_type):
+def run_on_pod(remote_fn: RemoteFunction, tpu_type: str):
     """
     Run a remote function on a TPU pod.
 
