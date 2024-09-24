@@ -89,7 +89,11 @@ def main():
     tag = int(time.time())
 
     with docker.copy_extra_ctx(extra_context) as extra_context:
-        build_args = {"EXTRA_CTX": extra_context} if extra_context else None
+        build_args = {"EXTRA_CTX": extra_context} if extra_context else {}
+        base_image, base_tag = docker.split_image_and_tag(args.docker_base_image)
+        build_args["IMAGE"] = base_image
+        build_args["TAG"] = base_tag
+
         local_id = docker.build_docker(
             docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag, build_args=build_args
         )
@@ -110,6 +114,8 @@ def main():
     else:
         raise ValueError(f"Unknown docker registry: {registry}")
 
+    failure = None
+
     for i in range(retries + 1):
         try:
             launch_job(
@@ -128,24 +134,39 @@ def main():
             print(f"Error running command {e.cmd}")
             if i < retries - 1:
                 print("Retrying... %d/%d" % (i + 1, retries))
+            else:
+                print("Retries exhausted. Raising error.")
+                print(f"Error running command {e.cmd}")
+                print(f"Output: {e.output}")
+                failure = e
         else:
             print("Job finished with no error.")
             break
 
-    if autodelete:
-        print("Autodelete is set to True. Tearing down machine...")
-        levanter.infra.tpus.run_command(
-            "gcloud",
-            "alpha",
-            "compute",
-            "tpus",
-            "queued-resources",
-            "delete",
-            tpu_name,
-            "--quiet",
-            f"--zone={zone}",
-            "--force",
-        )
+    try:
+        if autodelete:
+            print("Autodelete is set to True. Tearing down machine...")
+            levanter.infra.tpus.run_command(
+                "gcloud",
+                "alpha",
+                "compute",
+                "tpus",
+                "queued-resources",
+                "delete",
+                tpu_name,
+                "--quiet",
+                f"--zone={zone}",
+                "--force",
+            )
+    except Exception as e:
+        print(f"Error tearing down TPU {tpu_name}: {e}")
+        if failure:
+            raise failure
+        else:
+            raise e
+
+    if failure:
+        raise failure
 
 
 if __name__ == "__main__":

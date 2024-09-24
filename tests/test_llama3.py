@@ -35,7 +35,13 @@ def get_config(vocab_size=1000):
             "num_key_value_heads": 8,
             "pretraining_tp": 1,
             "rms_norm_eps": 0.00001,
-            "rope_scaling": null,
+            "rope_scaling": {
+                "factor": 8.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3"
+              },
             "rope_theta": 500000,
             "tie_word_embeddings": false,
             "torch_dtype": "bfloat16",
@@ -110,3 +116,31 @@ def test_llama_roundtrip():
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
         np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
+
+
+@skip_if_no_torch
+def test_llama3_rotary_embedding():
+    import torch
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
+
+    llama_config = get_config()
+    key = random.PRNGKey(0)
+    device = "cpu"
+
+    lev_config = LlamaConfig.from_hf_config(llama_config)
+    HeadSize = lev_config.HeadSize
+    Pos = lev_config.Pos
+    seq_len = Pos.size
+
+    x = random.normal(key, (1, seq_len))
+    x_torch = torch.from_numpy(np.array(x))
+
+    levanter_emb = lev_config.rope.build(HeadSize, Pos)
+    levanter_output = (levanter_emb.cos, levanter_emb.sin)
+
+    hf_rope = HFLlamaRotaryEmbedding(max_position_embeddings=seq_len, device=device, config=llama_config)
+    hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1))
+
+    for jax_out, torch_out in zip(levanter_output, hf_output):
+        torch_out = torch_out.numpy()
+        assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"

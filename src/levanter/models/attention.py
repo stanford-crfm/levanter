@@ -836,6 +836,10 @@ def _tpu_splash_attention(
         check_rep=False,
     )
     def wrap_flash_attention(q, k, v):
+        # NB: inside the function, q, k, and v are partitioned, so in general the lengths of dims are not the same
+        Sq = q.shape[2]
+        Sk = k.shape[2]
+        Hq = q.shape[1]
         block_sizes = splash_attention_kernel.BlockSizes(
             block_q=min(block_size, Sq),
             block_kv_compute=min(block_size, Sk),
@@ -848,20 +852,22 @@ def _tpu_splash_attention(
         )
 
         if mask is None:
-            kernel_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+            base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
         elif isinstance(mask, AttentionMask):
             if mask.is_causal:
-                masks = [splash_attention_mask.CausalMask(shape=(Sq, Sq)) for i in range(Hq)]
-                kernel_mask = splash_attention_mask.MultiHeadMask(masks=masks)
+                base_mask = splash_attention_mask.CausalMask(shape=(Sq, Sk))
             else:
-                kernel_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+                base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
 
+            # This is going to be a pain to support
             if mask.explicit_mask is not None:
                 raise NotImplementedError("Explicit masks are not yet supported for splash attention")
         elif isinstance(mask, NamedArray):
             raise NotImplementedError("NamedArray masks are not yet supported for splash attention")
         else:
             raise ValueError(f"Unknown mask type: {mask}")
+
+        kernel_mask = splash_attention_mask.MultiHeadMask(masks=[base_mask for _ in range(Hq)])
 
         # copied from MaxText
         splash_kernel = splash_attention_kernel.make_splash_mha(
@@ -879,22 +885,23 @@ def _tpu_splash_attention(
     # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
     # we can reshape it to match our expected output
     attn_output = _unflatten_bshd(attn_output, q_class, v_class)
-    reference_out_shape = eqx.filter_eval_shape(
-        simple_attention_with_dropout,
-        QPos,
-        KPos,
-        Key,
-        query,
-        key,
-        value,
-        mask,
-        bias,
-        inference,
-        dropout,
-        attention_dtype,
-        precision,
-        prng=prng,
-    )
+    with haliax.axis_mapping({}):
+        reference_out_shape = eqx.filter_eval_shape(
+            simple_attention_with_dropout,
+            QPos,
+            KPos,
+            Key,
+            query,
+            key,
+            value,
+            mask,
+            bias,
+            inference,
+            dropout,
+            attention_dtype,
+            precision,
+            prng=prng,
+        )
     attn_output = attn_output.rearrange(reference_out_shape.axes).astype(reference_out_shape.dtype)
 
     attn_output = haliax.shard(attn_output)

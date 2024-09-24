@@ -175,6 +175,7 @@ def main(config: TrainLmConfig):
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
                 causal_datasets,
+                tokenizer,
                 trainer.device_mesh,
                 compute_axis_mapping,
                 max_eval_examples_per_ds,

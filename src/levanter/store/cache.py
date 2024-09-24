@@ -54,7 +54,8 @@ DEFAULT_LOG_LEVEL = pylogging.INFO
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # TODO: should probably do this in terms of bytes
-MIN_ITEMS_TO_WRITE = 8192
+# this is kinda silly, but the bigger the better.
+MIN_ITEMS_TO_WRITE = 32 * 1024
 MAX_TIME_BETWEEN_WRITES = 100.0
 
 
@@ -363,7 +364,6 @@ class _OrderedCacheWriter:
     def _dequeue_ready_batches(self):
         for shard, batch in self._batch_queue.drain():
             logger.debug(f"Writing batch for {shard}")
-            batch = _canonicalize_batch(batch)
             self._total_queue_length -= len(batch)
             self._ordered_but_unwritten_items.extend(batch)
             self._batches_in_next_write_by_shard[shard] = self._batches_in_next_write_by_shard.get(shard, 0) + len(
@@ -626,7 +626,10 @@ def _serialize_json_and_commit(path, obj):
     fs: AbstractFileSystem = fsspec.core.url_to_fs(path)[0]
     fs.mkdirs(os.path.dirname(path), exist_ok=True)
     if fs.exists(path):
-        fs.copy(path, f"{path}.bak")
+        try:
+            fs.copy(path, f"{path}.bak")
+        except Exception as e:
+            logger.warning(f"Failed to copy {path} to {path}.bak: {e}", exc_info=True)
     fs.rename(f"{path}.tmp", path)
 
 
@@ -883,6 +886,7 @@ class TreeCache(AsyncDataset[T_co]):
         self.logger = pylogging.getLogger(f"TreeCache.{name}")
         self._store_future: threading_Future[TreeStore] = threading_Future()
         self._stop = False
+        # assert _broker is None
 
         if self._broker is not None:
             self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
@@ -1078,11 +1082,15 @@ class TreeCache(AsyncDataset[T_co]):
         return start, step, stop
 
     def await_finished(self, timeout: Optional[float] = None):
+        if self._broker is None:
+            return
         x = ray.get(self.finished_sentinel(), timeout=timeout)
         self._attempt_to_load_store()
         return x
 
     async def finished(self):
+        if self._broker is None:
+            return
         x = await self.finished_sentinel()
         # TODO: make an async version of this
         self._attempt_to_load_store()
