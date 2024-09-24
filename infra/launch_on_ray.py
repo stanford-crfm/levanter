@@ -78,7 +78,11 @@ def main():
     tag = int(time.time())
 
     with docker.copy_extra_ctx(extra_context) as extra_context:
-        build_args = {"EXTRA_CTX": extra_context} if extra_context else None
+        build_args = {"EXTRA_CTX": extra_context} if extra_context else {}
+        base_image, base_tag = docker.split_image_and_tag(args.docker_base_image)
+        build_args["IMAGE"] = base_image
+        build_args["TAG"] = base_tag
+
         local_id = docker.build_docker(
             docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag, build_args=build_args
         )

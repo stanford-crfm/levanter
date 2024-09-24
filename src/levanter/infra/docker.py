@@ -227,3 +227,12 @@ def push_to_gcp(local_id, project_id, region, repository) -> str:
     _run(["docker", "push", full_image_name])
 
     return f"{artifact_repo}/{local_id}"
+
+
+def split_image_and_tag(docker_base_image):
+    if ":" in docker_base_image:
+        base_image, base_tag = docker_base_image.rsplit(":", 1)
+    else:
+        base_image = docker_base_image
+        base_tag = "latest"
+    return base_image, base_tag
