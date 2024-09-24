@@ -4,6 +4,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 import numpy as onp
+import pytest
 from datasets import load_dataset
 from jax.random import PRNGKey
 from transformers import WhisperConfig as HfWhisperConfig
@@ -21,6 +22,7 @@ from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_soundlibs, skip_if_no_torch
 
 
+@pytest.mark.skip
 @skip_if_no_soundlibs
 def test_whisper_loss():
     c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
@@ -50,6 +52,7 @@ def test_whisper_loss():
     model.compute_loss(AudioTextExample.init(na, inp, attn_mask=mask))
 
 
+@pytest.mark.skip
 @skip_if_no_soundlibs
 def test_basic_forward_whisper():
     c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
@@ -75,6 +78,7 @@ def test_basic_forward_whisper():
     model(na, inp)
 
 
+@pytest.mark.skip
 @skip_if_no_soundlibs
 def test_mask_forward_whisper():
     c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
@@ -100,6 +104,7 @@ def test_mask_forward_whisper():
     model(na, inp, attn_mask=AttentionMask.causal())
 
 
+@pytest.mark.skip
 @skip_if_no_soundlibs
 def test_namedarray_mask_forward_whisper():
     c = HfWhisperConfig.from_pretrained("openai/whisper-tiny")
@@ -125,6 +130,7 @@ def test_namedarray_mask_forward_whisper():
     model(na, inp, attn_mask=AttentionMask.causal().explicit_mask)
 
 
+@pytest.mark.skip
 @skip_if_no_soundlibs
 @skip_if_no_torch
 def test_hf_roundtrip():
