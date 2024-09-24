@@ -74,5 +74,5 @@ scheduler container.
 Above we discussed dealing with the TPU lockfile. The only real remaining issues are:
 
 * you have to use `--privileged` to use TPUs.
-* There's a bug in Ray's Docker support that [causes the `TPU-XXX-head` resource to be assigned to all workers](https://github.com/ray-project/ray/pull/47777), not just
+* There's a bug in Ray's Docker support that [causes the `TPU-<TPU_TYPE>-head` resource to be assigned to all workers](https://github.com/ray-project/ray/pull/47777), not just
 the leader. We have a patch.
