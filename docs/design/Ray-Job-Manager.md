@@ -58,7 +58,7 @@ process will be accessing the TPU at a time, so we just remove the lockfile when
 ## Ray+TPU+Docker
 
 So above we have the core idea of how to use Ray with TPUs. However, there are a few additional complications when
-we want our jobs to be running separate docker containers. Some of this is just dealing with Ray+Docker, but some of it
+we want our jobs to be running in separate docker containers. Some of this is just dealing with Ray+Docker, but some of it
 is Ray+TPU+Docker specific.
 
 ### Ray+Docker
