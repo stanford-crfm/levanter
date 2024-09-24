@@ -364,7 +364,6 @@ class _OrderedCacheWriter:
     def _dequeue_ready_batches(self):
         for shard, batch in self._batch_queue.drain():
             logger.debug(f"Writing batch for {shard}")
-            batch = _canonicalize_batch(batch)
             self._total_queue_length -= len(batch)
             self._ordered_but_unwritten_items.extend(batch)
             self._batches_in_next_write_by_shard[shard] = self._batches_in_next_write_by_shard.get(shard, 0) + len(
