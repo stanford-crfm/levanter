@@ -276,7 +276,12 @@ def auto_ray_cluster(
             else:
                 logger.warning(f"Failed to initialize ray with address {address}. Retrying...")
                 continue
-    atexit.register(lambda: ray.shutdown())
+
+    def do_shutdown():
+        logger.info("Shutting down ray...")
+        ray.shutdown()
+
+    atexit.register(do_shutdown)
     _already_initialized = True
 
 

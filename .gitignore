@@ -150,6 +150,9 @@ ledger.json
 /checkpoints
 *.jaxpr
 
-# local execution commands
 local_*.sh
+
+# aider
 .aider*
+
+.benchmarks
