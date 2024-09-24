@@ -74,7 +74,7 @@ def run_on_pod(remote_fn: RemoteFunction, tpu_type: str):
         try:
             try:
                 out = ray.get([remote_fn.remote() for _ in range(num_hosts)])
-                logger.info("tpu job finished")
+                logger.info("TPU job finished")
                 return TpuSuccess(info, out)
             except RayError as e:
                 return _handle_ray_error(info, e)
