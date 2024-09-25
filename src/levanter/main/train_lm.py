@@ -209,10 +209,10 @@ def main(config: TrainLmConfig):
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         train_loader = trainer.data_loader(train_dataset, Batch)
-        if seek_dataloader:
-            train_loader = train_loader.iter_from_step(state.step)
-        else:
-            train_loader = iter(train_loader)
+        # if seek_dataloader:
+        #     train_loader = train_loader.iter_from_step(state.step)
+        # else:
+        #     train_loader = iter(train_loader)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)
