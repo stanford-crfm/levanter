@@ -364,7 +364,6 @@ class _OrderedCacheWriter:
             futures_to_await.append(self._parent._updated_ledger.remote(self._ledger))
 
             if self._ledger.is_finished:
-                self._finish()
                 f = self._parent._finalize.remote()
                 futures_to_await.append(f)
 
@@ -383,6 +382,8 @@ class _OrderedCacheWriter:
             except TimeoutError:
                 pass
             self._attempt_to_write_batches()
+            if self._ledger.is_finished:
+                break
 
     def _dequeue_ready_batches(self):
         for shard, batch in self._batch_queue.drain():
