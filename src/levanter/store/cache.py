@@ -967,16 +967,16 @@ class TreeCache(AsyncDataset[T_co]):
 
         return await self.store.get_batch(indices)
 
-    async def _wait_for_len(self, needed_len):
+    async def _wait_for_len(self, needed_len: int):
         if self._broker is not None:
             while needed_len > await self.current_len():
-                new_ledger = await self._broker.updated_ledger.remote()
+                new_ledger: CacheLedger = await self._broker.updated_ledger.remote()
 
                 if needed_len <= new_ledger.total_num_rows:
                     break
 
                 if new_ledger.is_finished:
-                    if needed_len >= new_ledger.rows_finished:
+                    if needed_len >= new_ledger.total_num_rows:
                         raise IndexError(
                             f"Index {needed_len} out of bounds for cache of size {new_ledger.total_num_rows}"
                         )
@@ -994,7 +994,9 @@ class TreeCache(AsyncDataset[T_co]):
                 if cur_time > t_max:
                     raise TimeoutError(f"Timed out waiting for cache to reach {needed_len}")
                 try:
-                    new_ledger = ray.get(self._broker.updated_ledger.remote(), timeout=max(t_max - cur_time, 10))
+                    new_ledger: CacheLedger = ray.get(
+                        self._broker.updated_ledger.remote(), timeout=max(t_max - cur_time, 10)
+                    )
                 except TimeoutError:
                     continue
 
@@ -1002,7 +1004,7 @@ class TreeCache(AsyncDataset[T_co]):
                     break
 
                 if new_ledger.is_finished:
-                    if needed_len >= new_ledger.rows_finished:
+                    if needed_len >= new_ledger.total_num_rows:
                         raise IndexError(
                             f"Index {needed_len} out of bounds for cache of size {new_ledger.total_num_rows}"
                         )
