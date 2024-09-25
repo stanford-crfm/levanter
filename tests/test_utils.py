@@ -11,7 +11,7 @@ from chex import assert_trees_all_close
 from equinox import nn as nn
 from equinox import static_field
 from jax._src.random import PRNGKey
-from transformers import BatchEncoding
+from transformers import AutoConfig, BatchEncoding
 
 import haliax as hax
 
@@ -171,9 +171,7 @@ def skip_if_checkpoint_not_accessible(path: str):
 def skip_if_hf_model_not_accessible(model_id: str):
     def try_load_hf(model_id):
         try:
-            from transformers import AutoModel
-
-            AutoModel.from_pretrained(model_id)
+            AutoConfig.from_pretrained(model_id)
         except Exception:
             return False
         else:

@@ -252,7 +252,7 @@ def auto_ray_cluster(
                             logger.info(f"Successfully started ray head on port {ray_port}.")
 
                         # install an atexit handler to kill the head when we exit
-                        atexit.register(lambda: os.system("ray stop -g 10 --force"))
+                        atexit.register(lambda: os.system("ray stop -g 10 --force &> /dev/null"))
                     elif start_workers:
                         logger.info(
                             f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
@@ -276,7 +276,12 @@ def auto_ray_cluster(
             else:
                 logger.warning(f"Failed to initialize ray with address {address}. Retrying...")
                 continue
-    atexit.register(lambda: ray.shutdown())
+
+    def do_shutdown():
+        logger.info("Shutting down ray...")
+        ray.shutdown()
+
+    atexit.register(do_shutdown)
     _already_initialized = True
 
 

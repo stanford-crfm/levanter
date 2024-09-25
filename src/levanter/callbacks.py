@@ -8,11 +8,13 @@ import tempfile
 import threading
 import time
 import warnings
+from datetime import timedelta
 from typing import Callable, Optional
 
 import humanfriendly
 import jax
-from tqdm import tqdm
+from tqdm_loggable import tqdm_logging
+from tqdm_loggable.auto import tqdm
 
 import levanter.tracker
 from levanter.data import DataLoader
@@ -39,7 +41,9 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
     else:
         desc = "eval"
 
+    _tqdm_logging_one_time_setup()
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
+
     iter_ = iter(pbar)
     while True:
         time_in = time.time()
@@ -186,6 +190,8 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
         kwargs["desc"] = desc
     if "iterable" not in kwargs:
         kwargs["iterable"] = iterable
+
+    _tqdm_logging_one_time_setup()
     pbar = tqdm(**kwargs)
 
     def update_pbar(step: StepInfo):
@@ -359,3 +365,14 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
         wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
 
     return compute_and_viz_log_probs
+
+
+_did_tqdm_logging_one_time_setup = False
+
+
+def _tqdm_logging_one_time_setup():
+    global _did_tqdm_logging_one_time_setup
+    if _did_tqdm_logging_one_time_setup:
+        return
+    _did_tqdm_logging_one_time_setup = True
+    tqdm_logging.tqdm_logging.set_log_rate(timedelta(seconds=60))
