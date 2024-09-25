@@ -1,12 +1,44 @@
+data:
+  train_urls:
+    - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-000.jsonl.gz"
+    - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-001.jsonl.gz"
+    - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-002.jsonl.gz"
+  validation_urls:
+    
+  cache_dir: "gs://marin-data/tokenized/tuluv2/"
+  tokenizer: "allenai/OLMo-1B"
 model:  # 7B class model
   type: llama
-  seq_len: 2048
-  hidden_dim: 4096
-  intermediate_dim: 11008
-  num_layers: 32
-  num_heads: 32
-  num_kv_heads: 32
-  use_flash_attention: True
-  use_bias: false
-  use_layer_norm_weight: false
-  flash_attention_block_size: 1024
+  seq_len: 8192
+  # hidden_dim: 4096
+  # intermediate_dim: 11008
+  # num_layers: 32
+  # num_heads: 32
+  # num_kv_heads: 32
+  # use_flash_attention: True
+  # use_bias: false
+  # use_layer_norm_weight: false
+initialize_from_hf: "allenai/OLMo-1.7-7B-hf@step476000-tokens1995B"
+use_hf_model_config: true
+  #flash_attention_block_size: 1024
+trainer:
+  tracker:
+    type: wandb
+    project: "marin"
+    tags: ["dolma", "olmo", "llama"]
+
+  mp: p=f32,c=bfloat16
+  train_batch_size: 64
+  num_train_steps: 750000  # 3,000,000,000,000 / 4,000,000 = 750,000
+  steps_per_eval: 10
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+  per_device_eval_parallelism: 4
+optimizer:
+  learning_rate: 2E-5
+  weight_decay: 0.0
+  min_lr_ratio: 0.1
+  warmup: 0.03
+
+# OLMO SFT config below
