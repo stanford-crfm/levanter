@@ -128,7 +128,7 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
+        state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key), max_epochs=3)
 
         seek_dataloader = True
         if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:

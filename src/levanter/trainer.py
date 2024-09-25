@@ -371,7 +371,7 @@ class Trainer:
 
         return StepInfo(new_state, loss, step_time())
 
-    def training_steps(self, state: S, train_loader,  num_epochs: Optional[int] = 1, run_hooks: bool = True) -> typing.Iterator[StepInfo[S]]:
+    def training_steps(self, state: S, train_loader, run_hooks: bool = True) -> typing.Iterator[StepInfo[S]]:
         """
         Generator that yields training steps and runs hooks.
 
@@ -379,50 +379,46 @@ class Trainer:
             state (S): The initial state.
             train_loader: The DataLoader for training data.
             run_hooks (bool): Whether to run hooks.
-            num_epochs (int, optional): The number of epochs to train. If None, train until num_train_steps is reached.
         """
-        current_epoch = 0
+        while (int(state.step) < self.num_train_steps and 
+            (state.max_epochs is None or int(state.epoch) < state.max_epochs)):
+            logger.info(f"Starting epoch {int(state.epoch) + 1}")
+            levanter.tracker.log_metrics({"training/epoch": int(state.epoch) + 1}, step=int(state.step))
 
-        while int(state.step) < self.num_train_steps and (num_epochs is None or current_epoch < num_epochs):
-            current_epoch += 1
-            print(f"Starting epoch {current_epoch}")
-
-            # Reset the DataLoader iterator at the start of each epoch
-            iter_data = iter(train_loader)
-
-            while True:
-                try:
-                    with capture_time() as loading_time:
-                        example = next(iter_data)
-                except StopIteration:
-                    # End of DataLoader iterator, proceed to next epoch
-                    break
-
-                info = self.train_step(state, example)
-                state = info.state
+            for example in train_loader:
+                with capture_time() as loading_time:
+                    try:
+                        info = self.train_step(state, example)
+                        state = info.state
+                    except Exception as e:
+                        logger.error(f"Error during training step: {e}")
+                        raise
 
                 if run_hooks:
                     with capture_time() as hook_time:
                         self.run_hooks(info)
+                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=int(state.step))
 
-                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=info.step)
-
-                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=info.step)
+                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=int(state.step))
 
                 yield info
 
-                # Optional: Check if the total training steps have been reached
                 if int(state.step) >= self.num_train_steps:
-                    return  # Exit the generator if training steps limit is reached
+                    return
+
+            # Update epoch in state
+            state = dataclasses.replace(state, epoch=state.epoch + 1)
+
+        logger.info(f"Training completed after {int(state.epoch)} epochs and {int(state.step)} steps")
 
             
 
 
-    def train(self, state: S, train_loader: Iterable[X], num_epochs: Optional[int] = 1,  run_hooks: bool = True) -> StepInfo[S]:
+    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[S]:
         """
-        Performs training until the number of steps is reached.
+        Performs training until the number of steps is reached or max epochs is reached.
         """
-        for info in self.training_steps(state, train_loader, num_epochs, run_hooks=run_hooks):
+        for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
             pass
 
         if run_hooks:
@@ -588,6 +584,7 @@ class TrainerConfig:
 
     # Config related to duration
     num_train_steps: int = 400_000  # number of training steps
+    max_epochs: Optional[int] = None  # max number of epochs to train. None means no limit
     steps_per_eval: int = 1_000  # how often to evaluate
     max_eval_batches: Optional[int] = None  # max number of batches to evaluate on. None means all batches
 
