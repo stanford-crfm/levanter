@@ -280,6 +280,7 @@ class Trainer:
         model_init: Optional[Callable[[], M]] = None,
         *,
         is_trainable: PyTree[FilterSpec] = True,
+        max_epochs: Optional[int] = None,
     ) -> TrainerState[M]:
         """
         Either loads a checkpoint or initializes a fresh trainer state. This is the recommended way to initialize
@@ -332,7 +333,7 @@ class Trainer:
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
             state = TrainerState.init(
-                self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp, fp8=self.fp8
+                self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp, fp8=self.fp8, max_epochs=max_epochs
             )
             return state
 
