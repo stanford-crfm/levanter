@@ -113,7 +113,7 @@ class ShardedDataSource(Generic[T_co]):
         return _MappedShardedDataSource(self, fn)
 
     def map_batches(
-        self, fn: Callable[[list[T_co]], BatchResult], batch_size, *, num_cpus=1, num_gpus=0, **resources
+        self, fn: Callable[[list[T_co]], BatchResult], batch_size, *, num_cpus=1, num_gpus=0, output_exemplar=None, **resources
     ) -> "ShardedDataSource[dict]":
         """
         **Lazily** map a function over batches of data. This is useful for doing things like batching data for a model,
@@ -131,7 +131,7 @@ class ShardedDataSource(Generic[T_co]):
         Returns:
             A new ShardedDataset.
         """
-        return _BatchMappedShardedDataSource(self, fn, batch_size, num_cpus=num_cpus, num_gpus=num_gpus, **resources)
+        return _BatchMappedShardedDataSource(self, fn, batch_size, num_cpus=num_cpus, num_gpus=num_gpus, output_exemplar=output_exemplar, **resources)
 
 
 def datasource_from_hf(id: str, *, split, **kwargs) -> ShardedDataSource[dict]:
@@ -478,10 +478,11 @@ class _BatchMappedShardedDataSource(ShardedDataSource[T], _TransformedDataset):
         batch_size,
         num_cpus=1,
         num_gpus=0,
+        output_exemplar=None,
         **resources,
     ):
         self.source = source
-        self._transform = _BatchMapTransform(fn, batch_size, num_cpus, num_gpus, resources)
+        self._transform = _BatchMapTransform(fn, batch_size, num_cpus, num_gpus, resources, output_exemplar=output_exemplar)
 
     @property
     def shard_names(self) -> Sequence[str]:
