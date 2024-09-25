@@ -1,8 +1,8 @@
 data:
   train_urls:
-    - "gs://marin-us-central2/documents/marin_instructv1/tulu_v2_mix/text/tulu-v2-sft-mixture-000.jsonl.gz"
-    - "gs://marin-us-central2/documents/marin_instructv1/tulu_v2_mix/text/tulu-v2-sft-mixture-001.jsonl.gz"
-    - "gs://marin-us-central2/documents/marin_instructv1/tulu_v2_mix/text/tulu-v2-sft-mixture-002.jsonl.gz"
+    - "gs://marin-us-central2/documents/instruct/tulu_v2_mix/text/tulu-v2-sft-mixture-000.jsonl.gz"
+    - "gs://marin-us-central2/documents/instruct/tulu_v2_mix/text/tulu-v2-sft-mixture-001.jsonl.gz"
+    - "gs://marin-us-central2/documents/instruct/tulu_v2_mix/text/tulu-v2-sft-mixture-002.jsonl.gz"
   cache_dir: "gs://marin-data/tokenized/tuluv2-train/"
   tokenizer: "allenai/OLMo-1B"
 model:  # 7B class model for Olmo
