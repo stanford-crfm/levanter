@@ -108,6 +108,9 @@ pip install -U wheel
 #retry pip install -U "jax[tpu]==0.4.5" libtpu-nightly==0.1.dev20230216 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 retry pip install -U "jax[tpu]==0.4.31" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
+# make sure olmo is installed 
+pip install ai2-olmo
+
 # clone levanter
 git clone $REPO levanter
 echo $VENV > levanter/infra/venv_path.txt
