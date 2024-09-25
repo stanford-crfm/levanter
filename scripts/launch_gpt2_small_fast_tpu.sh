@@ -4,4 +4,3 @@ python infra/launch.py --foreground --tpu_name levanter-itest-32 --zone us-centr
     python -m levanter.main.train_lm \
     --config_path config/gpt2_small_fast_supervised.yaml \
     --trainer.checkpointer.base_path gs://levanter-checkpoints/gpt-itest/ --trainer.checkpointer.save_interval 30m $*
- 
