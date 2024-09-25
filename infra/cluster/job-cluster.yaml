@@ -47,6 +47,19 @@ available_node_types:
             sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts
 
   # Worker Nodes =>>
+  tpu_slice_v4_8:
+    min_workers: 0
+    max_workers: 1024
+    resources: { "CPU": 120, "TPU": 1 }
+
+    node_config:
+      acceleratorType: v4-8
+      runtimeVersion: tpu-ubuntu2204-base
+
+      # [IMPORTANT] Configure all TPU Workers to be Preemptible!
+      schedulingConfig:
+        preemptible: true
+
   tpu_slice_v4_32:
     min_workers: 0
     max_workers: 1024

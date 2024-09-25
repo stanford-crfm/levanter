@@ -2,14 +2,19 @@ import dataclasses
 import logging
 import os
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
-from typing import Sequence
+from pathlib import Path
+from typing import Optional, Sequence
 
 import draccus
 import ray
+from ray.dashboard.modules.job.sdk import JobSubmissionClient
 from ray.exceptions import NodeDiedError, RayError, RaySystemError, RayTaskError, WorkerCrashedError
 from ray.remote_function import RemoteFunction
 
+from levanter.infra import cli_helpers
 from levanter.infra.cli_helpers import make_docker_run_command
 
 
@@ -210,8 +215,11 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
         return TpuRunError(tpu_info, e)
 
 
+
+
+
 @dataclass
-class RunOnPodConfig:
+class RunDockerOnPodConfig:
     image_id: str
     command: list[str] | str
     tpu_type: str
@@ -219,10 +227,53 @@ class RunOnPodConfig:
     name: str = "levanter"
     retries: int = 10
 
+def submit_tpu_job_on_ray(config: RunDockerOnPodConfig, ray_address: str, run_id: Optional[str] = None):
+    if run_id is None:
+        run_id = cli_helpers.default_run_id()
+
+    levanter_root = Path(__file__).parent.parent.parent.parent
+
+    with tempfile.NamedTemporaryFile(suffix=".yaml", prefix=f"launch-{run_id}-", dir=levanter_root) as f:
+        yaml = draccus.dump(config)
+        f.write(yaml.encode("utf-8"))
+        f.flush()
+
+        f_name = os.path.relpath(f.name)
+        print(f"Submitting job with config path {f_name}")
+
+        print(f"Ray address: {ray_address}")
+        client = JobSubmissionClient(ray_address)
+
+        job_id = _make_unique_job_id(client, run_id)
+
+        job_id = client.submit_job(
+            entrypoint=f"python src/levanter/infra/ray_tpu.py --config_path {f_name}",
+            runtime_env={"working_dir": str(levanter_root), "env_vars": {"PYTHONPATH": "src:."}},
+            job_id=job_id,
+        )
+
+        return job_id
+
+
+# try to make the job id be the same as the run id, but if it already exists, just make it unique
+def _make_unique_job_id(client, run_id):
+    job_id = run_id
+    try:
+        while client.get_job_status(job_id) is not None:
+            job_id = f"{run_id}-{time.time_ns()}"
+    except Exception as e:  # noqa
+        if "does not exist" in str(e):
+            pass
+        else:
+            raise
+    return job_id
+
 
 @draccus.wrap()
-def main(args: RunOnPodConfig):
+def main(args: RunDockerOnPodConfig):
     """
+    *This command is designed to run on a Ray cluster, not on your local machine. You probably want submit_tpu_job_on_ray.*
+
     Run a command on a TPU pod. This is a wrapper around `run_docker_on_pod` that takes a config object as a CLI.
 
     We use this via infra/launch_on_ray.py to run docker containers on TPUs.

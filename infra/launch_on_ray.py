@@ -14,6 +14,7 @@ from ray.dashboard.modules.job.sdk import JobSubmissionClient
 
 import levanter.infra.cli_helpers as cli
 import levanter.infra.docker as docker
+from levanter.infra import ray_tpu
 
 
 def main():
@@ -22,7 +23,7 @@ def main():
 
     cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/stanford-crfm/levanter-base:latest")
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
-    cli.add_arg(parser, config, ["--address"], default="http://127.0.0.1:8265")
+    cli.add_arg(parser, config, ["--address"], default=None)
     cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
     cli.add_capacity_type_args(parser, config)
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
@@ -112,19 +113,11 @@ def main():
     env["RUN_ID"] = run_id
     env["WANDB_DOCKER"] = full_image_id
 
-    # run_docker_on_pod(
-    #     full_image_id,
-    #     command=command,
-    #     tpu_type=tpu_type,
-    #     env=env,
-    #     retries=retries,
-    # )
-
     # Submit the job to the Ray cluster. We have to use the JobSubmissionClient to do this and stringify the arguments
     # we want:
-    from levanter.infra.ray_tpu import RunOnPodConfig
+    from levanter.infra.ray_tpu import RunDockerOnPodConfig
 
-    config = RunOnPodConfig(
+    config = RunDockerOnPodConfig(
         image_id=full_image_id,
         command=command,
         tpu_type=tpu_type,
@@ -133,25 +126,15 @@ def main():
         retries=retries,
     )
 
-    with tempfile.NamedTemporaryFile(suffix=".yaml", prefix=f"launch-{run_id}-", dir=".") as f:
-        yaml = draccus.dump(config)
-        f.write(yaml.encode("utf-8"))
-        f.flush()
+    address = args.address or os.getenv("RAY_ADDRESS")
 
-        f_name = os.path.relpath(f.name)
-        print(f"Submitting job with config path {f_name}")
+    job_id = ray_tpu.submit_tpu_job_on_ray(
+        config,
+        ray_address=address,
+        run_id=run_id,
+    )
 
-        client = JobSubmissionClient(args.address)
-
-        job_id = _make_unique_job_id(client, run_id)
-
-        job_id = client.submit_job(
-            entrypoint=f"python src/levanter/infra/ray_tpu.py --config_path {f_name}",
-            runtime_env={"working_dir": "./"},
-            job_id=job_id,
-        )
-
-        print(
+    print(
             f"""
 -------------------------------------------------------
 Job '{job_id}' submitted successfully
@@ -168,6 +151,7 @@ Next steps
         )
 
     if args.foreground:
+        client = JobSubmissionClient(address)
 
         async def tail_job(job_id):
             async for line in client.tail_job_logs(job_id):  # type: ignore
@@ -181,9 +165,7 @@ Next steps
         wait_until_status(
             client, job_id, {JobStatus.RUNNING, JobStatus.FAILED, JobStatus.SUCCEEDED, JobStatus.STOPPED}
         )
-        # tail_job(job_id)
         import asyncio
-
         asyncio.run(tail_job(job_id))
 
 
@@ -196,19 +178,7 @@ def wait_until_status(client, job_id, status_to_wait_for, timeout_seconds=5):
             break
         time.sleep(1)
 
-
-# try to make the job id be the same as the run id, but if it already exists, just make it unique
-def _make_unique_job_id(client, run_id):
-    job_id = run_id
-    try:
-        while client.get_job_status(job_id) is not None:
-            job_id = f"{run_id}-{time.time_ns()}"
-    except Exception as e:  # noqa
-        if "does not exist" in str(e):
-            pass
-        else:
-            raise
-    return job_id
+    return status
 
 
 if __name__ == "__main__":
