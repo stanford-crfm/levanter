@@ -3,9 +3,7 @@ data:
     - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-000.jsonl.gz"
     - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-001.jsonl.gz"
     - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-002.jsonl.gz"
-  validation_urls:
-    
-  cache_dir: "gs://marin-data/tokenized/tuluv2/"
+  cache_dir: "gs://marin-data/tokenized/tuluv2-train/"
   tokenizer: "allenai/OLMo-1B"
 model:  # 7B class model for Olmo
   type: llama
