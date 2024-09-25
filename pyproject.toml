@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "levanter"
-version = "1.1"
+version = "1.2"
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
     { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
