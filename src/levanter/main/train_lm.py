@@ -215,7 +215,7 @@ def main(config: TrainLmConfig):
             train_loader = iter(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, train_loader)
+        trainer.train(state, train_loader, num_epochs=3)
         # checkpointer.on_step(last_step, force=True)
 
 
