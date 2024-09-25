@@ -272,6 +272,11 @@ class _OrderedCacheWriter:
             # double check that we're not finished by committing the ledger
             self._attempt_to_write_batches()
 
+            if not self._ledger.is_finished:
+                self._actual_writer_thread = threading.Thread(target=self._write_loop, daemon=True)
+                self._stop_loop = threading.Event()
+                self._actual_writer_thread.start()
+
     def batch_finished(self, shard_name: str, shard_batch_idx: int, batch_result_box):
         with log_failures_to(self._parent):
             if self._failed:
@@ -286,7 +291,6 @@ class _OrderedCacheWriter:
             # we need to keep track of the order of the batches so that we can write them out in order
             self._total_queue_length += len(batch_result)
             self._batch_queue.append_to_group(shard_name, shard_batch_idx, batch_result)
-            self._attempt_to_write_batches()
             next_missing_item = self._batch_queue.next_missing_item_index()
 
             overwhelmed = self.is_overwhelmed()
@@ -303,6 +307,7 @@ class _OrderedCacheWriter:
     def shard_failed(self, shard_name: str, batch_id: int, exc_info: ExceptionInfo):
         with log_failures_to(self._parent):
             self._failed = True
+            self._stop_loop.set()
             logger.error(f"Shard {shard_name} failed at batch {batch_id}", exc_info=exc_info.restore())
             self._parent.shard_failed.remote(shard_name, exc_info)
 
@@ -314,7 +319,10 @@ class _OrderedCacheWriter:
             logger.debug(
                 f"Attempting to write batches because {shard_name} finished reading with {expected_num_rows} batches."
             )
-            self._attempt_to_write_batches()
+            self.flush()
+
+    def flush(self):
+        self._attempt_to_write_batches()
 
     def get_shard_status(self, shard_name: str):
         with log_failures_to(self._parent):
@@ -327,7 +335,7 @@ class _OrderedCacheWriter:
 
     def _attempt_to_write_batches(self):
         if self._ledger.is_finished:
-            raise RuntimeError("Trying to write batches after cache is finished")
+            return
 
         if self._failed:
             logger.warning("Not writing batches because of failure.")
@@ -360,6 +368,22 @@ class _OrderedCacheWriter:
                 futures_to_await.append(f)
 
         ray.wait(futures_to_await + futures_to_await_shards)
+
+    def _finish(self):
+        self._stop_loop.set()
+        self._actual_writer_thread.join()
+
+    def _write_loop(self):
+        while True:
+            try:
+                self._stop_loop.wait(1)
+                if self._stop_loop.is_set():
+                    break
+            except TimeoutError:
+                pass
+            self._attempt_to_write_batches()
+            if self._ledger.is_finished:
+                break
 
     def _dequeue_ready_batches(self):
         for shard, batch in self._batch_queue.drain():
@@ -421,6 +445,9 @@ class _OrderedCacheWriter:
     def is_overwhelmed(self) -> bool:
         max_queue_size = self._min_items_to_write * 3
         return self._total_queue_length > max_queue_size
+
+    def __del__(self):
+        self._finish()
 
 
 def _to_list_of_dicts(batch: dict) -> List[dict]:
@@ -940,16 +967,16 @@ class TreeCache(AsyncDataset[T_co]):
 
         return await self.store.get_batch(indices)
 
-    async def _wait_for_len(self, needed_len):
+    async def _wait_for_len(self, needed_len: int):
         if self._broker is not None:
             while needed_len > await self.current_len():
-                new_ledger = await self._broker.updated_ledger.remote()
+                new_ledger: CacheLedger = await self._broker.updated_ledger.remote()
 
                 if needed_len <= new_ledger.total_num_rows:
                     break
 
                 if new_ledger.is_finished:
-                    if needed_len >= new_ledger.rows_finished:
+                    if needed_len >= new_ledger.total_num_rows:
                         raise IndexError(
                             f"Index {needed_len} out of bounds for cache of size {new_ledger.total_num_rows}"
                         )
@@ -967,7 +994,9 @@ class TreeCache(AsyncDataset[T_co]):
                 if cur_time > t_max:
                     raise TimeoutError(f"Timed out waiting for cache to reach {needed_len}")
                 try:
-                    new_ledger = ray.get(self._broker.updated_ledger.remote(), timeout=max(t_max - cur_time, 10))
+                    new_ledger: CacheLedger = ray.get(
+                        self._broker.updated_ledger.remote(), timeout=max(t_max - cur_time, 10)
+                    )
                 except TimeoutError:
                     continue
 
@@ -975,7 +1004,7 @@ class TreeCache(AsyncDataset[T_co]):
                     break
 
                 if new_ledger.is_finished:
-                    if needed_len >= new_ledger.rows_finished:
+                    if needed_len >= new_ledger.total_num_rows:
                         raise IndexError(
                             f"Index {needed_len} out of bounds for cache of size {new_ledger.total_num_rows}"
                         )
