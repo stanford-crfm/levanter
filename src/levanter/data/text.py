@@ -583,6 +583,98 @@ class LMTaskConfig(abc.ABC):
 
         return [(eval_sets[name], tags[name]) for name in eval_sets]
 
+@dataclass
+class LMSupervisedDatasetConfig(LMDatasetSourceConfig):
+    """This class represents a dataset source with URLs or hf name/id."""
+
+    cache_dir: str = "cache/"
+
+    tags: Optional[List[str]] = None
+    """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
+    name: Optional[str] = None  # name for hf dataset
+
+    validation_urls: List[str] = ()  # type:ignore
+
+    def token_seq_dataset(
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TokenSeqDataset]:
+        cache = self.build_or_load_cache(split, monitors=monitors)
+        if cache is None:
+            return None
+        return TokenSeqDataset(cache, seq_len)
+
+    def validation_set(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TokenSeqDataset]:
+        return self.token_seq_dataset("validation", seq_len, monitors)
+
+    def validation_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+        validation_set = self.validation_set(seq_len, monitors)
+        if validation_set is not None:
+            return {"": validation_set}
+        else:
+            return {}
+
+    # Add tagged eval set with split for auxiliary and validation dataset
+
+def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
+    import levanter.data
+    dataset = levanter.data.datasource_from_jsonl(config.validation_urls)
+
+    def preprocess(batch):
+        sources = [example["input"] for example in batch]
+        targets = [f"{example['output']}{tokenizer.eos_token}" for example in batch]
+        # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
+        examples = [s + t for s, t in zip(sources, targets)]
+        sources_tokenized = tokenizer(sources, padding=False, truncation=True)
+        examples_tokenized = tokenizer(examples, padding=False, truncation=True)
+
+        source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
+        return {
+            "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
+            "sources_len": np.array(source_lens, dtype=np.int32),
+        }
+
+    output_exemplar = {
+        "input_ids": np.zeros((0,), dtype=np.int32),
+        "sources_len": np.zeros((), dtype=np.int32)
+    }
+
+    dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
+    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore
+
+    def _prepare_example(ex: dict) -> LmExample:
+        """
+        Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
+
+        It goes through the following steps:
+
+        1. Pad the batch to the maximum length.
+        2. Mask out the input and prompt if requested.
+        3. Create an LmExample with the input_ids as the input and the next token as the target.
+        """
+        # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+        tokenizer.pad_token = tokenizer.eos_token
+        ex = tokenizer.pad({k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length")
+        ex = {k: v[0] for k, v in ex.items()}
+        input_ids = hax.named(ex["input_ids"], "position")
+        # mask out padding and anything before the start of the target
+        Pos = input_ids.resolve_axis("position")
+        # if config.mask_inputs:
+        #     loss_mask = hax.arange(Pos) >= ex["sources_len"]
+
+        #     # don't predict the padding
+        #     targets = hax.roll(input_ids, -1, Pos)
+        #     loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+        # else:
+        loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
+        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
+        return lm_ex
+
+    return dataset.map(_prepare_example)
 
 @dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
