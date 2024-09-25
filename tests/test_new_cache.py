@@ -216,6 +216,7 @@ async def test_batch_finished():
             batch_result = [np.array([1, 2, 3])]
 
             await writer.batch_finished.remote(shard_idx, shard_batch_idx, batch_result)
+            await writer.flush.remote()
             shard_status = await writer.get_shard_status.remote("shard1")
             assert shard_status.num_rows_committed == 1
         finally:
@@ -307,6 +308,8 @@ async def test_attempt_to_write_batches():
             await writer.batch_finished.remote("shard1", 0, shard1_batch)
             await writer.batch_finished.remote("shard2", 0, shard2_batch)
 
+            await writer.flush.remote()
+
             ledger = await writer.get_ledger.remote()
             assert ledger.is_finished is False
             assert ledger.total_num_rows == 2  # Assuming each batch has 1 row for simplicity
@@ -336,6 +339,7 @@ async def test_finalize_cache():
             await writer.shard_finished_reading.remote("shard1", 1)
             await writer.shard_finished_reading.remote("shard2", 1)
             await writer.batch_finished.remote("shard2", 0, shard2_batch)
+            await writer.flush.remote()
 
             ledger = await writer.get_ledger.remote()
             assert ledger.is_finished is False
@@ -390,6 +394,7 @@ async def test_out_of_order_batches_same_shard():
 
             await writer.batch_finished.remote("shard1", 1, shard1_batch1)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
+            await writer.flush.remote()
 
             store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 2
@@ -419,6 +424,7 @@ async def test_out_of_order_batches_different_shards():
             await writer.batch_finished.remote("shard1", 1, shard1_batch1)
             await writer.batch_finished.remote("shard2", 0, shard2_batch0)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
+            await writer.flush.remote()
 
             store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 3
@@ -451,6 +457,7 @@ async def test_batches_different_orders_all_shards():
             await writer.batch_finished.remote("shard3", 0, shard3_batch0)
             await writer.batch_finished.remote("shard1", 1, shard1_batch1)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
+            await writer.flush.remote()
 
             store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 4
@@ -486,6 +493,7 @@ async def test_intermixed_batches_same_and_different_shards():
             await writer.batch_finished.remote("shard1", 1, shard1_batch1)
             await writer.batch_finished.remote("shard2", 1, shard2_batch1)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
+            await writer.flush.remote()
 
             store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 5
@@ -512,6 +520,7 @@ async def test_duplicate_batches_same_shard():
             shard1_batch0 = [np.array([1, 2, 3])]
 
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
+            await writer.flush.remote()
             with pytest.raises(RayTaskError):
                 await writer.batch_finished.remote("shard1", 0, shard1_batch0)  # Duplicate
         finally:
@@ -544,6 +553,7 @@ async def test_mixed_order_batches_multiple_shards():
             await writer.batch_finished.remote("shard2", 1, shard2_batch1)
             await writer.batch_finished.remote("shard1", 0, shard1_batch0)
             await writer.batch_finished.remote("shard3", 1, shard3_batch1)
+            await writer.flush.remote()
 
             store = TreeStore.open(exemplar, cache_dir, mode="r")
             assert len(store) == 6
@@ -892,10 +902,12 @@ async def test_backpressure_mechanism():
         await writer.batch_finished.remote("shard1", 1, shard3_batch)
         await writer.batch_finished.remote("shard1", 2, shard3_batch)
         await writer.batch_finished.remote("shard1", 3, shard3_batch)
+        await writer.flush.remote()
 
         # Check if backpressure is signaled
         is_overwhelmed = await writer.is_overwhelmed.remote()
         assert is_overwhelmed is True
+        await writer.flush.remote()
 
         for i in range(4):
             if (await parent.desired_next_item.remote()) == 0:
@@ -910,6 +922,12 @@ async def test_backpressure_mechanism():
         # Reduce the queue size to relieve backpressure
         # Check if backpressure is relieved
         is_overwhelmed = await writer.is_overwhelmed.remote()
+        count = 0
+        while is_overwhelmed and count < 10:
+            await writer.flush.remote()
+            await asyncio.sleep(0.4)
+            is_overwhelmed = await writer.is_overwhelmed.remote()
+            count += 1
         assert is_overwhelmed is False
 
         for i in range(4):
