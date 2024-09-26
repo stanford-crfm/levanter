@@ -249,7 +249,7 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
 
 def _forkify_remote_fn(remote_fn: RemoteFunction | Callable):
     """
-    This is a bit of a hacky way to force a remote function to run in its own process.
+    This is a bit of a hacky way to force a remote function to run in its own process, using multiprocessing.
 
     There are a few issues we're trying to cover:
 
@@ -285,6 +285,10 @@ def _forkify_remote_fn(remote_fn: RemoteFunction | Callable):
 
 
 def _separate_process_fn(underlying_function, args, kwargs):
+    """
+    Helper function for _forkify_remote_fn. This runs the function in a separate process.
+    """
+
     def target_fn(queue, args, kwargs):
         try:
             # Call the original function

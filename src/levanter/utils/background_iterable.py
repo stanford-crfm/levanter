@@ -82,7 +82,8 @@ class BackgroundIterator(Iterator[Ex]):
 
     def stop(self, wait: bool = True):
         self._stop_event.set()
-        if self.thread is not None and wait:
+        # I'm getting an error that the thread is threading.current_thread(), which seems impossible
+        if self.thread is not None and wait and self.thread != threading.current_thread():
             self.thread.join()
 
     def _fill_queue_with_batches(self):
