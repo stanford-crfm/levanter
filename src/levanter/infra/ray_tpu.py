@@ -78,12 +78,17 @@ def run_on_pod(remote_fn: RemoteFunction, tpu_type: str):
 
         info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
         try:
+            futures = [remote_fn.remote() for _ in range(num_hosts)]
             try:
-                print("zzz")
-                out = ray.get([remote_fn.remote() for _ in range(num_hosts)])
+                out = ray.get(futures)
                 logger.info("TPU job finished?!?")
                 return TpuSuccess(info, out)
             except RayError as e:
+                for f in futures:
+                    try:
+                        ray.cancel(f)
+                    except Exception:
+                        logger.exception("Failed to kill job after primary failure")
                 return _handle_ray_error(info, e)
         finally:
             # remove the tpu lockfile on each host

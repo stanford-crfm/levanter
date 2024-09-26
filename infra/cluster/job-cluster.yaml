@@ -50,7 +50,7 @@ available_node_types:
   tpu_slice_v4_8:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 1 }
+    resources: { "CPU": 120, "TPU": 4 }
 
     node_config:
       acceleratorType: v4-8
@@ -63,7 +63,7 @@ available_node_types:
   tpu_slice_v4_32:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 1 }
+    resources: { "CPU": 120, "TPU": 4 }
 
     node_config:
       acceleratorType: v4-32
@@ -76,7 +76,7 @@ available_node_types:
   tpu_slice_v4_64:
     min_workers: 0
     max_workers: 1024
-    resources: {"CPU": 120, "TPU": 1}
+    resources: {"CPU": 120, "TPU": 4}
 
     node_config:
       acceleratorType: v4-64
@@ -90,7 +90,7 @@ available_node_types:
   tpu_slice_v4_128:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 1 }
+    resources: { "CPU": 120, "TPU": 4 }
 
     node_config:
       acceleratorType: v4-128
@@ -103,7 +103,7 @@ available_node_types:
   tpu_slice_v4_256:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 1 }
+    resources: { "CPU": 120, "TPU": 4 }
 
     node_config:
       acceleratorType: v4-256
@@ -116,7 +116,7 @@ available_node_types:
   tpu_slice_v4_512:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 1 }
+    resources: { "CPU": 120, "TPU": 4 }
 
     node_config:
       acceleratorType: v4-512
