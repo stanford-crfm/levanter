@@ -5,7 +5,6 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, Sequence
 
 import draccus
@@ -14,7 +13,6 @@ from ray.dashboard.modules.job.sdk import JobSubmissionClient
 from ray.exceptions import NodeDiedError, RayError, RaySystemError, RayTaskError, WorkerCrashedError
 from ray.remote_function import RemoteFunction
 
-from levanter.infra import cli_helpers
 from levanter.infra.cli_helpers import make_docker_run_command
 
 
@@ -108,47 +106,56 @@ def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_re
     """
     num_failures = 0
     num_preemptions = 0
+    attempt = 0
+    problem: Exception | None = None
 
     while num_failures < max_retries_failure and num_preemptions < max_retries_preemption:
+        logger.info(f"Running on TPU {tpu_type}. Attempt {attempt}")
+        attempt += 1
+        problem = None
         try:
             out = ray.get(run_on_pod(remote_fn, tpu_type))
-            if isinstance(out, TpuSuccess):
-                result = out.result
-                logger.info("Success")
-                return result
-            elif isinstance(out, TpuPreempted):
-                e = out.error
-                num_preemptions += 1
-                print(f"Preempted {num_preemptions} times. {e}")
-                logger.warning(f"Preempted {num_preemptions} times. {e}", exc_info=e)
-            elif isinstance(out, TpuFailed):
-                num_preemptions += 1
-                logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
-            elif isinstance(out, TpuRunError):
-                e = out.error
-                num_failures += 1
-                logger.warning(f"Failed {num_failures} times")
-                logger.exception(e)
-            else:
-                raise RuntimeError(f"Unexpected result: {out}")
         except ray.exceptions.RayTaskError as e:
+            problem = e
             if "preempted" in str(e):
                 num_preemptions += 1
                 logger.warning(f"Preempted {num_preemptions} times, {e}")
             else:
                 num_failures += 1
                 logger.warning(f"Failed {num_failures} times")
+            continue
         except Exception as e:
+            problem = e
             num_failures += 1
-            logger.warning(f"Failed {num_failures} times")
-            logger.exception(e)
             if num_failures >= max_retries_failure:
+                logger.exception("Failed too many times", exc_info=e)
                 raise e
+            else:
+                logger.warning(f"Failed {num_failures} times", exc_info=e)
+                continue
 
-        if num_preemptions >= max_retries_preemption:
-            raise RuntimeError("Preempted too many times")
-        elif num_failures >= max_retries_failure:
-            raise RuntimeError("Failed too many times")
+        if isinstance(out, TpuSuccess):
+            result = out.result
+            logger.info("Success")
+            return result
+        elif isinstance(out, TpuPreempted):
+            problem = out.error
+            num_preemptions += 1
+            logger.warning(f"Preempted {num_preemptions} times. {problem}", exc_info=problem)
+        elif isinstance(out, TpuFailed):
+            num_preemptions += 1
+            logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
+        elif isinstance(out, TpuRunError):
+            problem = out.error
+            num_failures += 1
+            logger.warning(f"Failed {num_failures} times", exc_info=problem)
+        else:
+            raise RuntimeError(f"Unexpected result: {out}")
+
+    if num_preemptions >= max_retries_preemption:
+        raise RuntimeError("Preempted too many times") from problem
+    elif num_failures >= max_retries_failure:
+        raise RuntimeError("Failed too many times") from problem
 
 
 def _run_command(*args, **kwargs):
@@ -175,6 +182,7 @@ def run_docker_on_pod(image_id: str, command: Sequence[str], *, tpu_type: str, e
 
 def _kill_old_container(name):
     try:
+        logger.info(f"Killing old container {name}")
         _run_command("sudo", "docker", "rm", "-f", name)
     except subprocess.CalledProcessError:
         pass
@@ -215,9 +223,6 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
         return TpuRunError(tpu_info, e)
 
 
-
-
-
 @dataclass
 class RunDockerOnPodConfig:
     image_id: str
@@ -227,29 +232,31 @@ class RunDockerOnPodConfig:
     name: str = "levanter"
     retries: int = 10
 
+
 def submit_tpu_job_on_ray(config: RunDockerOnPodConfig, ray_address: str, run_id: Optional[str] = None):
-    if run_id is None:
-        run_id = cli_helpers.default_run_id()
+    """
+    Submit a job to run on a TPU pod on a Ray cluster. This programmatically submits a job to the Ray cluster.
+    This should be run on your local machine, not on the Ray cluster itself.
 
-    levanter_root = Path(__file__).parent.parent.parent.parent
+    If run_id is not provided, a default run ID will be generated.
+    """
 
-    with tempfile.NamedTemporaryFile(suffix=".yaml", prefix=f"launch-{run_id}-", dir=levanter_root) as f:
+    with tempfile.NamedTemporaryFile(suffix=".yaml", prefix=f"launch-{run_id}-", dir=".") as f:
         yaml = draccus.dump(config)
         f.write(yaml.encode("utf-8"))
         f.flush()
 
         f_name = os.path.relpath(f.name)
-        print(f"Submitting job with config path {f_name}")
+        logger.info(f"Submitting job with config path {f_name}")
 
-        print(f"Ray address: {ray_address}")
         client = JobSubmissionClient(ray_address)
 
-        job_id = _make_unique_job_id(client, run_id)
+        job_id = _make_unique_job_id(client, run_id) if run_id is not None else None
 
         job_id = client.submit_job(
-            entrypoint=f"python src/levanter/infra/ray_tpu.py --config_path {f_name}",
-            runtime_env={"working_dir": str(levanter_root), "env_vars": {"PYTHONPATH": "src:."}},
-            job_id=job_id,
+            entrypoint=f"python -m levanter.infra.ray_tpu --config_path {f_name}",
+            runtime_env={"working_dir": ".", "env_vars": {"PYTHONPATH": "src:."}},
+            submission_id=job_id,
         )
 
         return job_id
@@ -278,7 +285,6 @@ def main(args: RunDockerOnPodConfig):
 
     We use this via infra/launch_on_ray.py to run docker containers on TPUs.
     """
-    ray.init()
 
     import shlex
 
