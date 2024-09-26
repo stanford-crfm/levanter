@@ -1,11 +1,13 @@
 import dataclasses
+import functools
 import logging
+import multiprocessing
 import os
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import draccus
 import ray
@@ -15,6 +17,7 @@ from ray.exceptions import NodeDiedError, RayError, RaySystemError, RayTaskError
 from ray.remote_function import RemoteFunction
 
 from levanter.infra.cli_helpers import make_docker_run_command
+from levanter.utils.ray_utils import ser_exc_info
 
 
 # CF https://gist.github.com/allenwang28/e3400b9e9212b50aa1cda55ebeccea60
@@ -59,48 +62,59 @@ class TpuRunError(_TpuRunResult):
     error: Exception
 
 
-def run_on_pod(remote_fn: RemoteFunction, tpu_type: str):
+def run_on_pod(remote_fn: RemoteFunction | Callable, tpu_type: str) -> ray.ObjectRef:
     """
     Run a remote function on a TPU pod.
 
     Args:
         remote_fn: A remote function that takes no arguments
         tpu_type: The type of TPU to run on, e.g. "v4-32"
+
+    Returns:
+        A Ray ObjectRef that represents the result of the function
     """
 
     @ray.remote(resources={f"TPU-{tpu_type}-head": 1})
     def do_run(remote_fn) -> _TpuRunResult:
-        tpu_name = ray.util.accelerators.tpu.get_current_pod_name()  # -> my-tpu
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()  # -> 4
-        num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()  # -> 8
-        remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": num_tpus_per_host})
-        print(f"Running on TPU {tpu_name} with {num_hosts} hosts and {num_tpus_per_host} TPUs per host")
+        remote_fn, tpu_name = _redecorate_remote_fn_for_tpu(remote_fn, num_hosts)
 
         info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
+        futures = [remote_fn.remote() for _ in range(num_hosts)]
         try:
-            futures = [remote_fn.remote() for _ in range(num_hosts)]
-            try:
-                out = ray.get(futures)
-                logger.info("TPU job finished?!?")
-                return TpuSuccess(info, out)
-            except RayError as e:
-                for f in futures:
-                    try:
-                        ray.cancel(f)
-                    except Exception:
-                        logger.exception("Failed to kill job after primary failure")
-                return _handle_ray_error(info, e)
-        finally:
-            # remove the tpu lockfile on each host
-            logger.debug("Removing lockfiles")
-            _rm_lockfile = ray.remote(resources={tpu_name: 1, "TPU": 1})(_hacky_remove_tpu_lockfile)
-            try:
-                ray.get([_rm_lockfile.remote() for _ in range(num_hosts)])
-            except Exception:
-                logger.exception("Failed to remove lockfile")
-                # swallow the exception
+            out = ray.get(futures)
+            logger.info("TPU job finished")
+            return TpuSuccess(info, out)
+        except RayError as e:
+            for f in futures:
+                try:
+                    ray.cancel(f)
+                except Exception:
+                    logger.exception("Failed to kill job after primary failure")
+            return _handle_ray_error(info, e)
 
     return do_run.remote(remote_fn)
+
+
+def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts):
+    """
+    Redecorate a remote function to run on a TPU pod.
+
+    Specifically, this function:
+
+    * Adds the TPU resources to the function
+    * forces the function to run in its own process to remove the TPU lockfile (and shutdown jax distributed)
+
+    """
+    remote_fn = _forkify_remote_fn(remote_fn)
+    if not isinstance(remote_fn, RemoteFunction):
+        remote_fn = ray.remote(remote_fn)
+
+    tpu_name = ray.util.accelerators.tpu.get_current_pod_name()  # -> my-tpu
+    num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()  # -> 8
+    remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": num_tpus_per_host})
+    logger.info(f"Running on TPU {tpu_name} with {num_hosts} hosts and {num_tpus_per_host} TPUs per host")
+    return remote_fn, tpu_name
 
 
 def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_retries_failure=10):
@@ -112,6 +126,10 @@ def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_re
         tpu_type: The type of TPU to run on, e.g. "v4-32"
         max_retries_preemption: The maximum number of times to retry if the job is preempted
         max_retries_failure: The maximum number of times to retry if the job fails
+
+    Returns:
+        The result of the function (not an ObjectRef)
+
     """
     num_failures = 0
     num_preemptions = 0
@@ -204,11 +222,9 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
     """
     # treat node failures as preemptions
     if isinstance(e, NodeDiedError):
-        print("Node died")
         logger.exception("Node died", exc_info=e)
         return TpuPreempted(tpu_info, e)
     elif isinstance(e, WorkerCrashedError):
-        print("Worker crashed")
         logger.exception("Worker crashed", exc_info=e)
         return TpuPreempted(tpu_info, e)
     elif isinstance(e, RaySystemError):
@@ -220,7 +236,6 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
         from levanter.infra.tpus import get_current_tpu_is_preempted
 
         if get_current_tpu_is_preempted():
-            print("Preempted")
             logger.exception("Preempted", exc_info=e)
             return TpuPreempted(tpu_info, e)
 
@@ -230,6 +245,90 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
     else:
         logger.exception("Unknown error", exc_info=e)
         return TpuRunError(tpu_info, e)
+
+
+def _forkify_remote_fn(remote_fn: RemoteFunction | Callable):
+    """
+    This is a bit of a hacky way to force a remote function to run in its own process.
+
+    There are a few issues we're trying to cover:
+
+    * libtpu only allows one process to access the TPU at a time, and it uses a lockfile to enforce this.
+    * Ray runs tasks in a long-running daemon, so the lockfile persists across tasks.
+    * jax.distributed likes to only be called once per process, even if you call shutdown
+
+    """
+    if isinstance(remote_fn, RemoteFunction):
+        fn = remote_fn._function
+
+        @functools.wraps(fn)
+        def wrapped_fn(*args, **kwargs):
+            return _separate_process_fn(fn, args, kwargs)
+
+        # We need these arguments to be able to reconstruct the remote function
+        # def __init__(
+        #         self,
+        #         language,
+        #         function,
+        #         function_descriptor,
+        #         task_options,
+        # ):
+        remote_fn = RemoteFunction(
+            language=remote_fn._language,
+            function=wrapped_fn,
+            function_descriptor=remote_fn._function_descriptor,
+            task_options=remote_fn._default_options,
+        )
+        return remote_fn
+    else:
+        return functools.partial(_separate_process_fn, remote_fn)
+
+
+def _separate_process_fn(underlying_function, args, kwargs):
+    def target_fn(queue, args, kwargs):
+        try:
+            # Call the original function
+            result = underlying_function(*args, **kwargs)
+            queue.put((True, result))  # Success, put the result
+        except Exception as e:
+            # Capture and return the full traceback in case of an exception
+            info = ser_exc_info(e)
+            queue.put((False, info))
+
+    queue = multiprocessing.Queue()
+    process = multiprocessing.Process(target=target_fn, args=(queue, args, kwargs))
+    process.start()
+    process.join()
+
+    # Retrieve the result or error from the queue
+    success, value = queue.get()
+
+    if success:
+        return value
+    else:
+        value.reraise()
+
+
+def _hacky_remove_tpu_lockfile():
+    """
+    This is a hack to remove the lockfile that TPU pods create on the host filesystem.
+
+    libtpu only allows one process to access the TPU at a time, and it uses a lockfile to enforce this.
+    Ordinarily a lockfile would be removed when the process exits, but in the case of Ray, the process is
+    a long-running daemon that doesn't typically exit until the node is shut down. This means that the lockfile
+    persists across Ray tasks. This doesn't apply to our docker-based workloads, but it does apply to other
+    tasks that use JAX directly.
+    """
+    try:
+        os.unlink("/tmp/libtpu_lockfile")
+    except FileNotFoundError:
+        pass
+    except PermissionError:
+        logger.warning("Failed to remove lockfile")
+        try:
+            os.system("sudo rm /tmp/libtpu_lockfile")
+        except Exception:  # noqa
+            pass
 
 
 @dataclass
@@ -309,28 +408,6 @@ def main(args: RunDockerOnPodConfig):
         env=args.env,
         name=args.name,
     )
-
-
-def _hacky_remove_tpu_lockfile():
-    """
-    This is a hack to remove the lockfile that TPU pods create on the host filesystem.
-
-    libtpu only allows one process to access the TPU at a time, and it uses a lockfile to enforce this.
-    Ordinarily a lockfile would be removed when the process exits, but in the case of Ray, the process is
-    a long-running daemon that doesn't typically exit until the node is shut down. This means that the lockfile
-    persists across Ray tasks. This doesn't apply to our docker-based workloads, but it does apply to other
-    tasks that use JAX directly.
-    """
-    try:
-        os.unlink("/tmp/libtpu_lockfile")
-    except FileNotFoundError:
-        pass
-    except PermissionError:
-        logger.warning("Failed to remove lockfile")
-        try:
-            os.system("sudo rm /tmp/libtpu_lockfile")
-        except Exception:  # noqa
-            pass
 
 
 def _massage_env(env):
