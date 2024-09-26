@@ -74,12 +74,14 @@ def run_on_pod(remote_fn: RemoteFunction, tpu_type: str):
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()  # -> 4
         num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()  # -> 8
         remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": num_tpus_per_host})
+        print(f"Running on TPU {tpu_name} with {num_hosts} hosts and {num_tpus_per_host} TPUs per host")
 
         info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
         try:
             try:
+                print("zzz")
                 out = ray.get([remote_fn.remote() for _ in range(num_hosts)])
-                logger.info("TPU job finished")
+                logger.info("TPU job finished?!?")
                 return TpuSuccess(info, out)
             except RayError as e:
                 return _handle_ray_error(info, e)
