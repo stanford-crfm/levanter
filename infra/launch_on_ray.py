@@ -4,11 +4,9 @@
 import argparse
 import getpass
 import os
-import tempfile
 import time
 from pathlib import Path
 
-import draccus
 from ray.dashboard.modules.job.common import JobStatus
 from ray.dashboard.modules.job.sdk import JobSubmissionClient
 
@@ -135,7 +133,7 @@ def main():
     )
 
     print(
-            f"""
+        f"""
 -------------------------------------------------------
 Job '{job_id}' submitted successfully
 -------------------------------------------------------
@@ -148,7 +146,7 @@ Next steps
   Request the job to be stopped:
     ray job stop {job_id}
 """
-        )
+    )
 
     if args.foreground:
         client = JobSubmissionClient(address)
@@ -166,6 +164,7 @@ Next steps
             client, job_id, {JobStatus.RUNNING, JobStatus.FAILED, JobStatus.SUCCEEDED, JobStatus.STOPPED}
         )
         import asyncio
+
         asyncio.run(tail_job(job_id))
 
 
