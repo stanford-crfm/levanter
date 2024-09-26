@@ -1,16 +1,23 @@
 import dataclasses
+import functools
 import logging
+import multiprocessing
 import os
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 
 import draccus
 import ray
+from ray._private.accelerators import TPUAcceleratorManager
+from ray.dashboard.modules.job.sdk import JobSubmissionClient
 from ray.exceptions import NodeDiedError, RayError, RaySystemError, RayTaskError, WorkerCrashedError
 from ray.remote_function import RemoteFunction
 
 from levanter.infra.cli_helpers import make_docker_run_command
+from levanter.utils.ray_utils import ser_exc_info
 
 
 # CF https://gist.github.com/allenwang28/e3400b9e9212b50aa1cda55ebeccea60
@@ -55,40 +62,59 @@ class TpuRunError(_TpuRunResult):
     error: Exception
 
 
-def run_on_pod(remote_fn: RemoteFunction, tpu_type: str):
+def run_on_pod(remote_fn: RemoteFunction | Callable, tpu_type: str) -> ray.ObjectRef:
     """
     Run a remote function on a TPU pod.
 
     Args:
         remote_fn: A remote function that takes no arguments
         tpu_type: The type of TPU to run on, e.g. "v4-32"
+
+    Returns:
+        A Ray ObjectRef that represents the result of the function
     """
 
     @ray.remote(resources={f"TPU-{tpu_type}-head": 1})
     def do_run(remote_fn) -> _TpuRunResult:
-        tpu_name = ray.util.accelerators.tpu.get_current_pod_name()  # -> my-tpu
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()  # -> 4
-        remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": 1})
+        remote_fn, tpu_name = _redecorate_remote_fn_for_tpu(remote_fn, num_hosts)
 
         info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
+        futures = [remote_fn.remote() for _ in range(num_hosts)]
         try:
-            try:
-                out = ray.get([remote_fn.remote() for _ in range(num_hosts)])
-                logger.info("TPU job finished")
-                return TpuSuccess(info, out)
-            except RayError as e:
-                return _handle_ray_error(info, e)
-        finally:
-            # remove the tpu lockfile on each host
-            logger.debug("Removing lockfiles")
-            _rm_lockfile = ray.remote(resources={tpu_name: 1, "TPU": 1})(_hacky_remove_tpu_lockfile)
-            try:
-                ray.get([_rm_lockfile.remote() for _ in range(num_hosts)])
-            except Exception:
-                logger.exception("Failed to remove lockfile")
-                # swallow the exception
+            out = ray.get(futures)
+            logger.info("TPU job finished")
+            return TpuSuccess(info, out)
+        except RayError as e:
+            for f in futures:
+                try:
+                    ray.cancel(f)
+                except Exception:
+                    logger.exception("Failed to kill job after primary failure")
+            return _handle_ray_error(info, e)
 
     return do_run.remote(remote_fn)
+
+
+def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts):
+    """
+    Redecorate a remote function to run on a TPU pod.
+
+    Specifically, this function:
+
+    * Adds the TPU resources to the function
+    * forces the function to run in its own process to remove the TPU lockfile (and shutdown jax distributed)
+
+    """
+    remote_fn = _forkify_remote_fn(remote_fn)
+    if not isinstance(remote_fn, RemoteFunction):
+        remote_fn = ray.remote(remote_fn)
+
+    tpu_name = ray.util.accelerators.tpu.get_current_pod_name()  # -> my-tpu
+    num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()  # -> 8
+    remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": num_tpus_per_host})
+    logger.info(f"Running on TPU {tpu_name} with {num_hosts} hosts and {num_tpus_per_host} TPUs per host")
+    return remote_fn, tpu_name
 
 
 def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_retries_failure=10):
@@ -100,50 +126,63 @@ def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_re
         tpu_type: The type of TPU to run on, e.g. "v4-32"
         max_retries_preemption: The maximum number of times to retry if the job is preempted
         max_retries_failure: The maximum number of times to retry if the job fails
+
+    Returns:
+        The result of the function (not an ObjectRef)
+
     """
     num_failures = 0
     num_preemptions = 0
+    attempt = 0
+    problem: Exception | None = None
 
     while num_failures < max_retries_failure and num_preemptions < max_retries_preemption:
+        logger.info(f"Running on TPU {tpu_type}. Attempt {attempt}")
+        attempt += 1
+        problem = None
         try:
             out = ray.get(run_on_pod(remote_fn, tpu_type))
-            if isinstance(out, TpuSuccess):
-                result = out.result
-                logger.info("Success")
-                return result
-            elif isinstance(out, TpuPreempted):
-                e = out.error
-                num_preemptions += 1
-                print(f"Preempted {num_preemptions} times. {e}")
-                logger.warning(f"Preempted {num_preemptions} times. {e}", exc_info=e)
-            elif isinstance(out, TpuFailed):
-                num_preemptions += 1
-                logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
-            elif isinstance(out, TpuRunError):
-                e = out.error
-                num_failures += 1
-                logger.warning(f"Failed {num_failures} times")
-                logger.exception(e)
-            else:
-                raise RuntimeError(f"Unexpected result: {out}")
         except ray.exceptions.RayTaskError as e:
+            problem = e
             if "preempted" in str(e):
                 num_preemptions += 1
                 logger.warning(f"Preempted {num_preemptions} times, {e}")
             else:
                 num_failures += 1
                 logger.warning(f"Failed {num_failures} times")
+            continue
         except Exception as e:
+            problem = e
             num_failures += 1
-            logger.warning(f"Failed {num_failures} times")
-            logger.exception(e)
             if num_failures >= max_retries_failure:
+                logger.exception("Failed too many times", exc_info=e)
                 raise e
+            else:
+                logger.warning(f"Failed {num_failures} times", exc_info=e)
+                continue
 
-        if num_preemptions >= max_retries_preemption:
-            raise RuntimeError("Preempted too many times")
-        elif num_failures >= max_retries_failure:
-            raise RuntimeError("Failed too many times")
+        if isinstance(out, TpuSuccess):
+            result = out.result
+            logger.info("Success")
+            return result
+        elif isinstance(out, TpuPreempted):
+            problem = out.error
+            num_preemptions += 1
+            logger.warning(f"Preempted {num_preemptions} times. {problem}", exc_info=problem)
+        elif isinstance(out, TpuFailed):
+            num_preemptions += 1
+            logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
+        elif isinstance(out, TpuRunError):
+            problem = out.error
+            num_failures += 1
+            logger.warning(f"Failed {num_failures} times", exc_info=problem)
+        else:
+            raise RuntimeError(f"Unexpected result: {out}")
+
+    if num_preemptions >= max_retries_preemption:
+        raise RuntimeError("Preempted too many times") from problem
+    elif num_failures >= max_retries_failure:
+        raise RuntimeError("Failed too many times") from problem
 
 
 def _run_command(*args, **kwargs):
@@ -170,6 +209,7 @@ def run_docker_on_pod(image_id: str, command: Sequence[str], *, tpu_type: str, e
 
 def _kill_old_container(name):
     try:
+        logger.info(f"Killing old container {name}")
         _run_command("sudo", "docker", "rm", "-f", name)
     except subprocess.CalledProcessError:
         pass
@@ -182,11 +222,9 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
     """
     # treat node failures as preemptions
     if isinstance(e, NodeDiedError):
-        print("Node died")
         logger.exception("Node died", exc_info=e)
         return TpuPreempted(tpu_info, e)
     elif isinstance(e, WorkerCrashedError):
-        print("Worker crashed")
         logger.exception("Worker crashed", exc_info=e)
         return TpuPreempted(tpu_info, e)
     elif isinstance(e, RaySystemError):
@@ -198,7 +236,6 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
         from levanter.infra.tpus import get_current_tpu_is_preempted
 
         if get_current_tpu_is_preempted():
-            print("Preempted")
             logger.exception("Preempted", exc_info=e)
             return TpuPreempted(tpu_info, e)
 
@@ -210,39 +247,70 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
         return TpuRunError(tpu_info, e)
 
 
-@dataclass
-class RunOnPodConfig:
-    image_id: str
-    command: list[str] | str
-    tpu_type: str
-    env: dict = dataclasses.field(default_factory=dict)
-    name: str = "levanter"
-    retries: int = 10
-
-
-@draccus.wrap()
-def main(args: RunOnPodConfig):
+def _forkify_remote_fn(remote_fn: RemoteFunction | Callable):
     """
-    Run a command on a TPU pod. This is a wrapper around `run_docker_on_pod` that takes a config object as a CLI.
+    This is a bit of a hacky way to force a remote function to run in its own process, using multiprocessing.
 
-    We use this via infra/launch_on_ray.py to run docker containers on TPUs.
+    There are a few issues we're trying to cover:
+
+    * libtpu only allows one process to access the TPU at a time, and it uses a lockfile to enforce this.
+    * Ray runs tasks in a long-running daemon, so the lockfile persists across tasks.
+    * jax.distributed likes to only be called once per process, even if you call shutdown
+
     """
-    ray.init()
+    if isinstance(remote_fn, RemoteFunction):
+        fn = remote_fn._function
 
-    import shlex
+        @functools.wraps(fn)
+        def wrapped_fn(*args, **kwargs):
+            return _separate_process_fn(fn, args, kwargs)
 
-    if isinstance(args.command, str):
-        command = shlex.split(args.command)
+        # We need these arguments to be able to reconstruct the remote function
+        # def __init__(
+        #         self,
+        #         language,
+        #         function,
+        #         function_descriptor,
+        #         task_options,
+        # ):
+        remote_fn = RemoteFunction(
+            language=remote_fn._language,
+            function=wrapped_fn,
+            function_descriptor=remote_fn._function_descriptor,
+            task_options=remote_fn._default_options,
+        )
+        return remote_fn
     else:
-        command = args.command
+        return functools.partial(_separate_process_fn, remote_fn)
 
-    run_docker_on_pod(
-        args.image_id,
-        command,
-        tpu_type=args.tpu_type,
-        env=args.env,
-        name=args.name,
-    )
+
+def _separate_process_fn(underlying_function, args, kwargs):
+    """
+    Helper function for _forkify_remote_fn. This runs the function in a separate process.
+    """
+
+    def target_fn(queue, args, kwargs):
+        try:
+            # Call the original function
+            result = underlying_function(*args, **kwargs)
+            queue.put((True, result))  # Success, put the result
+        except Exception as e:
+            # Capture and return the full traceback in case of an exception
+            info = ser_exc_info(e)
+            queue.put((False, info))
+
+    queue = multiprocessing.Queue()
+    process = multiprocessing.Process(target=target_fn, args=(queue, args, kwargs))
+    process.start()
+    process.join()
+
+    # Retrieve the result or error from the queue
+    success, value = queue.get()
+
+    if success:
+        return value
+    else:
+        value.reraise()
 
 
 def _hacky_remove_tpu_lockfile():
@@ -265,6 +333,85 @@ def _hacky_remove_tpu_lockfile():
             os.system("sudo rm /tmp/libtpu_lockfile")
         except Exception:  # noqa
             pass
+
+
+@dataclass
+class RunDockerOnPodConfig:
+    image_id: str
+    command: list[str] | str
+    tpu_type: str
+    env: dict = dataclasses.field(default_factory=dict)
+    name: str = "levanter"
+    retries: int = 10
+
+
+def submit_tpu_job_on_ray(config: RunDockerOnPodConfig, ray_address: str, run_id: Optional[str] = None):
+    """
+    Submit a job to run on a TPU pod on a Ray cluster. This programmatically submits a job to the Ray cluster.
+    This should be run on your local machine, not on the Ray cluster itself.
+
+    If run_id is not provided, a default run ID will be generated.
+    """
+
+    with tempfile.NamedTemporaryFile(suffix=".yaml", prefix=f"launch-{run_id}-", dir=".") as f:
+        yaml = draccus.dump(config)
+        f.write(yaml.encode("utf-8"))
+        f.flush()
+
+        f_name = os.path.relpath(f.name)
+        logger.info(f"Submitting job with config path {f_name}")
+
+        client = JobSubmissionClient(ray_address)
+
+        job_id = _make_unique_job_id(client, run_id) if run_id is not None else None
+
+        job_id = client.submit_job(
+            entrypoint=f"python -m levanter.infra.ray_tpu --config_path {f_name}",
+            runtime_env={"working_dir": ".", "env_vars": {"PYTHONPATH": "src:."}},
+            submission_id=job_id,
+        )
+
+        return job_id
+
+
+# try to make the job id be the same as the run id, but if it already exists, just make it unique
+def _make_unique_job_id(client, run_id):
+    job_id = run_id
+    try:
+        while client.get_job_status(job_id) is not None:
+            job_id = f"{run_id}-{time.time_ns()}"
+    except Exception as e:  # noqa
+        if "does not exist" in str(e):
+            pass
+        else:
+            raise
+    return job_id
+
+
+@draccus.wrap()
+def main(args: RunDockerOnPodConfig):
+    """
+    *This command is designed to run on a Ray cluster, not on your local machine. You probably want submit_tpu_job_on_ray.*
+
+    Run a command on a TPU pod. This is a wrapper around `run_docker_on_pod` that takes a config object as a CLI.
+
+    We use this via infra/launch_on_ray.py to run docker containers on TPUs.
+    """
+
+    import shlex
+
+    if isinstance(args.command, str):
+        command = shlex.split(args.command)
+    else:
+        command = args.command
+
+    run_docker_on_pod(
+        args.image_id,
+        command,
+        tpu_type=args.tpu_type,
+        env=args.env,
+        name=args.name,
+    )
 
 
 def _massage_env(env):
