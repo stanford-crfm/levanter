@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 
 import draccus
 import ray
+from ray._private.accelerators import TPUAcceleratorManager
 from ray.dashboard.modules.job.sdk import JobSubmissionClient
 from ray.exceptions import NodeDiedError, RayError, RaySystemError, RayTaskError, WorkerCrashedError
 from ray.remote_function import RemoteFunction
@@ -71,7 +72,8 @@ def run_on_pod(remote_fn: RemoteFunction, tpu_type: str):
     def do_run(remote_fn) -> _TpuRunResult:
         tpu_name = ray.util.accelerators.tpu.get_current_pod_name()  # -> my-tpu
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()  # -> 4
-        remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": 1})
+        num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()  # -> 8
+        remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": num_tpus_per_host})
 
         info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
         try:
