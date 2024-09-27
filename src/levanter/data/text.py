@@ -389,6 +389,7 @@ class BatchTokenizer(BatchProcessor[str, dict]):
     def batch_size(self) -> int:
         return self._batch_size
 
+
 def fsspec_expand_glob(url):
     expanded_urls = braceexpand.braceexpand(url)
     for expanded_url in expanded_urls:
@@ -403,6 +404,7 @@ def fsspec_expand_glob(url):
                 yield from [f"{protocol}://{path}" for path in globbed]
         else:
             yield expanded_url
+
 
 def concatenate_and_group_texts(
     encoding: BatchEncoding,
@@ -585,6 +587,7 @@ class LMTaskConfig(abc.ABC):
 
         return [(eval_sets[name], tags[name]) for name in eval_sets]
 
+
 @dataclass
 class LMSupervisedDatasetConfig(LMDatasetSourceConfig):
     """This class represents a dataset source with URLs or hf name/id."""
@@ -597,29 +600,30 @@ class LMSupervisedDatasetConfig(LMDatasetSourceConfig):
 
     validation_urls: List[str] = ()  # type:ignore
 
-    def token_seq_dataset(
-        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        cache = self.build_or_load_cache(split, monitors=monitors)
-        if cache is None:
-            return None
-        return TokenSeqDataset(cache, seq_len)
+    # def token_seq_dataset(
+    #     self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    # ) -> Optional[TokenSeqDataset]:
+    #     cache = self.build_or_load_cache(split, monitors=monitors)
+    #     if cache is None:
+    #         return None
+    #     return TokenSeqDataset(cache, seq_len)
 
-    def validation_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        return self.token_seq_dataset("validation", seq_len, monitors)
+    # def validation_set(
+    #     self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    # ) -> Optional[TokenSeqDataset]:
+    #     return self.token_seq_dataset("validation", seq_len, monitors)
 
-    def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
-        validation_set = self.validation_set(seq_len, monitors)
-        if validation_set is not None:
-            return {"": validation_set}
-        else:
-            return {}
+    # def validation_sets(
+    #     self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    # ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+    #     validation_set = self.validation_set(seq_len, monitors)
+    #     if validation_set is not None:
+    #         return {"": validation_set}
+    #     else:
+    #         return {}
 
     # Add tagged eval set with split for auxiliary and validation dataset
+
 
 def preprocess_supervised_example(batch, tokenizer: PreTrainedTokenizerBase):
     sources = [example["input"] for example in batch]
@@ -636,6 +640,7 @@ def preprocess_supervised_example(batch, tokenizer: PreTrainedTokenizerBase):
         "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
         "sources_len": np.array(source_lens, dtype=np.int32),
     }
+
 
 def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) -> LmExample:
     """
@@ -663,15 +668,14 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
         lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
         return lm_ex
 
+
 def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
     import levanter.data
+
     validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
     dataset = levanter.data.datasource_from_jsonl(validation_urls)
 
-    output_exemplar = {
-        "input_ids": np.zeros((0,), dtype=np.int32),
-        "sources_len": np.zeros((), dtype=np.int32)
-    }
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((), dtype=np.int32)}
 
     dataset = dataset.map_batches(lambda ex: preprocess_supervised_example(ex, tokenizer), batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
     dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore
@@ -679,6 +683,7 @@ def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrain
         tokenizer.pad_token = tokenizer.eos_token
 
     return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+
 
 @dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
