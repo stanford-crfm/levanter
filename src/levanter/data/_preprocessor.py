@@ -81,7 +81,7 @@ class _BatchMapTransform(_DatasetTransform):
     resources: dict
     output_exemplar: Any
 
-    def __init__(self, fn, batch_size, num_cpus, num_gpus, resources, output_exemplar = None):
+    def __init__(self, fn, batch_size, num_cpus, num_gpus, resources, output_exemplar=None):
         self.fn = fn
         self.batch_size = batch_size
         self.num_cpus = num_cpus
