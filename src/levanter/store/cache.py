@@ -653,7 +653,10 @@ def _serialize_json_and_commit(path, obj):
     fs: AbstractFileSystem = fsspec.core.url_to_fs(path)[0]
     fs.mkdirs(os.path.dirname(path), exist_ok=True)
     if fs.exists(path):
-        fs.copy(path, f"{path}.bak")
+        try:
+            fs.copy(path, f"{path}.bak")
+        except Exception as e:
+            logger.warning(f"Failed to copy {path} to {path}.bak: {e}", exc_info=True)
     fs.rename(f"{path}.tmp", path)
 
 

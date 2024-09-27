@@ -1,0 +1,65 @@
+data:
+  train_urls:
+    - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-000.jsonl.gz"
+    - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-001.jsonl.gz"
+  validation_urls:
+    - "gs://marin-us-central2/documents/marin_instructv1/v1_olmo_mix/text/tulu-v2-sft-mixture-002.jsonl.gz"
+  cache_dir: "gs://marin-data/tokenized/tuluv2/"
+  tokenizer: "allenai/OLMo-1B"
+model:  # 7B class model
+  type: olmo
+  # seq_len: 2048
+  # hidden_dim: 4096
+  # intermediate_dim: 11008
+  # num_layers: 32
+  # num_heads: 32
+  # num_kv_heads: 32
+  # use_flash_attention: True
+  # use_bias: false
+  # use_layer_norm_weight: false
+initialize_from_hf: "allenai/OLMo-7B-0724-hf"
+use_hf_model_config: true
+  #flash_attention_block_size: 1024
+trainer:
+  tracker:
+    type: wandb
+    project: "marin"
+    tags: ["dolma", "olmo", "llama"]
+
+  mp: p=f32,c=bfloat16
+  train_batch_size: 64
+  num_train_steps: 750000  # 3,000,000,000,000 / 4,000,000 = 750,000
+  steps_per_eval: 1000
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+optimizer:
+  learning_rate: 2E-6
+  weight_decay: 0.0
+  min_lr_ratio: 0.1
+  warmup: 0.03
+
+# OLMO SFT config below
+# effective bsz is 8 * 16 = 128
+# model_name_or_path: allenai/OLMo-7B-hf
+# model_revision: main
+# use_flash_attn: true
+# tokenizer_name: allenai/OLMo-7B-hf
+# use_slow_tokenizer: false # olmo models only use fast tokenizers
+# dataset_name: allenai/tulu-v2-sft-mixture-olmo-2048
+# max_seq_length: 2048
+# preprocessing_num_workers: 128
+# per_device_train_batch_size: 1 # note, this is set up for 8 GPUs
+# gradient_accumulation_steps: 16
+# learning_rate: 2.0e-06
+# lr_scheduler_type: linear
+# warmup_ratio: 0.03
+# weight_decay: 0.0
+# num_train_epochs: 3
+# output_dir: output/olmo_instruct/
+# with_tracking: true
+# report_to:
+#   - wandb
+# logging_steps: 1
+# checkpointing_steps: epoch
+# add_bos: true

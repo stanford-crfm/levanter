@@ -29,18 +29,20 @@ from levanter.models.attention import AttentionBackend, AttentionMask, dot_produ
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.types import BlockFoldable
-from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.py_utils import cached_classproperty
+
+from levanter.models.llama import LlamaAttention
 
 
 silence_transformer_nag()
-from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
+from transformers import OlmoConfig as HfOlmoConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
-@LmConfig.register_subclass("llama")
+@LmConfig.register_subclass("olmo")
 @dataclass(frozen=True)
-class LlamaConfig(HFCompatConfig):
-    """Config for LlamaModel
+class OlmoConfig(HFCompatConfig):
+    """Config for OlmoModel (same as LLama with non-parametric LayerNorms)
 
     Args:
         seq_len (int, optional): maximum length of the input sequence. Defaults to 2048.
@@ -52,7 +54,6 @@ class LlamaConfig(HFCompatConfig):
             Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA.
             Note that num_heads must be divisible by this number. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
-        rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
     seq_len: int = 2048
@@ -67,7 +68,7 @@ class LlamaConfig(HFCompatConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: Optional[bool] = True
+    use_flash_attention: bool = True
     attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
@@ -76,12 +77,7 @@ class LlamaConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
-    use_layer_norm_weight: bool = True
-    rope_scaling: Optional[dict] = None
     rope_theta: float = 10000.0
-
-    reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
-    tokenizer: Optional[str] = None
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -94,22 +90,28 @@ class LlamaConfig(HFCompatConfig):
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
     def __post_init__(self):
+        # Inside your training loop or wherever you want to print the worker information
+        if self.num_heads is None or self.num_kv_heads is None:
+            self.__setattr__('num_heads', 32)
+            self.__setattr__('num_kv_heads', 32)
+        
         assert (
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
+    #@cached_classproperty
+    def hf_checkpoint_converter(cls) -> HFCheckpointConverter["OlmoConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            self.__class__,
-            reference_checkpoint=self.reference_checkpoint,
+            cls,  # type: ignore
+            "allenai/OLMo-7B-hf",
             trust_remote_code=True,
-            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
-            HfConfigClass=HfLlamaConfig,
+            tokenizer="allenai/OLMo-7B-hf",
+            HfConfigClass=HfOlmoConfig,
         )
 
     @classmethod
-    def from_hf_config(cls, hf_config: HfConfig):
-        return LlamaConfig(
+    def from_hf_config(cls, hf_config):
+        return OlmoConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
             intermediate_dim=hf_config.intermediate_size,
@@ -118,25 +120,21 @@ class LlamaConfig(HFCompatConfig):
             num_kv_heads=hf_config.num_key_value_heads,
             activation_function=hf_config.hidden_act,
             initializer_range=hf_config.initializer_range,
-            layer_norm_epsilon=hf_config.rms_norm_eps,
-            rope_scaling=hf_config.rope_scaling,
-            rope_theta=hf_config.rope_theta,
         )
-
-    def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
-        """Convert to HuggingFace's LlamaConfig
+    def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfOlmoConfig:
+        """Convert to HuggingFace's OlmoConfig
 
         Args:
             vocab_size (int, optional): Vocabulary size of the tokenizer. Defaults to 32000.
             config_overrides (dict, optional): Overrides for the config. Defaults to None.
 
         Returns:
-            HfLlamaConfig: HuggingFace's LlamaConfig
+            HfOlmoConfig: HuggingFace's OlmoConfig
         """
         if config_overrides is None:
             config_overrides = {}
 
-        return HfLlamaConfig(
+        return HfOlmoConfig(
             max_position_embeddings=self.seq_len,
             hidden_size=self.hidden_dim,
             intermediate_size=self.intermediate_dim,
@@ -145,38 +143,18 @@ class LlamaConfig(HFCompatConfig):
             num_key_value_heads=self.num_kv_heads,
             hidden_act=self.activation_function,
             initializer_range=self.initializer_range,
-            rms_norm_eps=self.layer_norm_epsilon,
-            rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
-            rope_theta=self.rope_theta,
             **config_overrides,
         )
 
     @property
-    def model_type(self) -> Type["LlamaLMHeadModel"]:
-        return LlamaLMHeadModel
-
-    def mk_LayerNorm(self, axis: Axis) -> "LlamaRMSNorm":
-        return LlamaRMSNorm.init(
-            axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
-        )
-
-    def flops_per_token(self, vocab_size: int):
-        return lm_flops_per_token(
-            hidden_dim=self.hidden_dim,
-            intermediate_dim=self.intermediate_dim,
-            num_layers=self.num_layers,
-            num_kv_heads=self.num_kv_heads,
-            num_heads=self.num_heads,
-            seq_len=self.seq_len,
-            vocab_size=vocab_size,
-            glu=True,
-        )
+    def model_type(cls) -> Type["OlmoLMHeadModel"]:
+        return OlmoLMHeadModel
 
 
-class LlamaMlp(eqx.Module, StateDictSerializationMixin):
+class OlmoMLP(eqx.Module, StateDictSerializationMixin):
     """Multi-layer Perceptron
-    In comparison with GPT2, LlamaMlp adds an up-proj that multiplies with activated gate_proj,
+    In comparison with GPT2, OlmoMLP adds an up-proj that multiplies with activated gate_proj,
     before down-proj.
     """
 
@@ -188,15 +166,15 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
     @staticmethod
     def init(
         Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
-    ) -> "LlamaMlp":
+    ) -> "OlmoMLP":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
-        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias, out_first=True)
-        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias, out_first=True)
+        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
+        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias)
+        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
-        return LlamaMlp(gate_proj, up_proj, down_proj, act)
+        return OlmoMLP(gate_proj, up_proj, down_proj, act)
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
@@ -208,7 +186,7 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         return outputs
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
+        # unflatten the linear layers of HF state_dict to match the shape of OlmoMLP
         d = {}
         d.update(
             unflatten_linear_layers(
@@ -246,173 +224,137 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         return state_dict
 
 
-class LlamaAttention(StateDictSerializationMixin, eqx.Module):
-    config: LlamaConfig = eqx.static_field()
-    q_proj: hnn.Linear  # projection from Embed to query
-    k_proj: hnn.Linear  # projection from Embed to key
-    v_proj: hnn.Linear  # projection from Embed to value
-    o_proj: hnn.Linear  # projection from Heads to output
+# class OlmoAttention(StateDictSerializationMixin, eqx.Module):
+#     config: OlmoConfig = eqx.static_field()
+#     q_proj: hnn.Linear  # projection from Embed to query
+#     k_proj: hnn.Linear  # projection from Embed to key
+#     v_proj: hnn.Linear  # projection from Embed to value
+#     o_proj: hnn.Linear  # projection from Heads to output
 
-    @staticmethod
-    def init(config: LlamaConfig, *, key) -> "LlamaAttention":
-        use_bias = config.use_bias
-        Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
+#     @staticmethod
+#     def init(config: OlmoConfig, *, key) -> "OlmoAttention":
+#         use_bias = config.use_bias
+#         Embed = config.Embed
+#         QHeadsPerGroup = hax.Axis("q_heads_per_group", 32 // 32)
 
-        k_q, k_k, k_v, k_o = jrandom.split(key, 4)
-        q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias, out_first=True
-        )
-        k_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
-        )
-        v_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
-        )
-        o_proj = hnn.Linear.init(
-            In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True
-        )
-        return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
+#         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
+#         q_proj = hnn.Linear.init(
+#             In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias
+#         )
+#         k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias)
+#         v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias)
+#         o_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias)
+#         return OlmoAttention(config, q_proj, k_proj, v_proj, o_proj)
 
-    def _rope_scale_factor(self) -> float:
-        # hasattr for gemma and I'm feeling lazy
-        if hasattr(self.config, "rope_scaling") and self.config.rope_scaling is not None:
-            assert self.config.rope_scaling["type"] == "linear"
-            return self.config.rope_scaling["factor"]
-        return 1.0
+#     @named_call
+#     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+#         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
-    @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
-        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
+#         # reorder heads and position for better training throughput
+#         q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
+#         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
+#         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        # reorder heads and position for better training throughput
-        q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
-        v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
+#         cos, sin = olmo_rotary_pos_emb(self.config.HeadSize, x.resolve_axis("position"))
+#         q, k = _apply_rotary_pos_emb(q, k, cos, sin)
 
-        cos, sin = llama_rotary_pos_emb(
-            self.config.HeadSize,
-            x.resolve_axis("position"),
-            scale=self._rope_scale_factor(),
-            theta=self.config.rope_theta,
-        )
-        q, k = _apply_rotary_pos_emb(q, k, cos, sin)
+#         k = k.rename({"position": "key_position"})
+#         v = v.rename({"position": "key_position"})
 
-        k = k.rename({"position": "key_position"})
-        v = v.rename({"position": "key_position"})
+#         c = self.config
+#         attn_output = dot_product_attention(
+#             "position",
+#             "key_position",
+#             "head_size",
+#             q,
+#             k,
+#             v,
+#             mask,
+#             attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
+#             use_flash=c.use_flash_attention,
+#             flash_block_size=c.flash_attention_block_size,
+#         )
 
-        c = self.config
-        attn_output = dot_product_attention(
-            "position",
-            "key_position",
-            "head_size",
-            q,
-            k,
-            v,
-            mask,
-            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            use_flash=c.use_flash_attention,
-            attn_backend=self.config.attn_backend,
-            flash_block_size=c.flash_attention_block_size,
-        )
+#         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+#         attn_output = attn_output.astype(x.dtype)
+#         
+#         attn_output = self.o_proj(attn_output, key=key_o)
+#         return attn_output
 
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
-        attn_output = attn_output.astype(x.dtype)
+#     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+#         # unflatten the linear layers of HF state_dict to match the shape of OlmoAttention
+#         d = {}
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
+#         d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
 
-        attn_output = self.o_proj(attn_output, key=key_o)
-        return attn_output
+#         return super().from_state_dict(d, prefix)
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
+#     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+#         # flatten the linear layers of OlmoAttention to match the shape of HF state_dict
+#         my_dict: StateDict = {}
+#         super().update_state_dict(my_dict, prefix)
 
-        return super().from_state_dict(d, prefix)
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
+#         my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # flatten the linear layers of LlamaAttention to match the shape of HF state_dict
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
-
-        state_dict.update(my_dict)
-        return state_dict
+#         state_dict.update(my_dict)
+#         return state_dict
 
 
-class LlamaRMSNorm(eqx.Module):
-    """
-    Similar to LayerNorm, but uses the RMS of the input along the specified axis (or axes) instead of variance.
+class NonParametricLayerNorm(hnn.LayerNorm):
+    """Non-parametric LayerNorm without bias or gain.
+    This version normalizes the input by subtracting the mean and dividing by the standard deviation.
     """
 
-    axis: AxisSpec = eqx.static_field()
-    weight: Optional[NamedArray]
-    bias: Optional[NamedArray]
-
-    eps: float = eqx.static_field(default=1e-5)
-    dtype: Optional[jnp.dtype] = eqx.static_field(default=jnp.float32)
-
     @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True, dtype=jnp.float32):
-        if use_weight:
-            weight = hax.ones(axis)
-        else:
-            weight = None
-        if use_bias:
-            bias = hax.zeros(axis)
-        else:
-            bias = None
+    def init(axis: AxisSpec, eps: float = 1e-5):
+        # No weight or bias
+        weight = None
+        bias = None
 
-        return LlamaRMSNorm(axis, weight, bias, eps, dtype)
+        return NonParametricLayerNorm(axis, weight, bias, eps)
 
     def __call__(self, x: NamedArray) -> NamedArray:
-        # This gives a different result than jnp.var(), which is
-        # defined as the average of the squared deviations from the mean
-        in_dtype = x.dtype
-        x = x.astype(self.dtype)
-        var = hax.mean(hax.square(x), axis=self.axis)
+        # Calculate mean and variance
+        mean = hax.mean(x, axis=self.axis)
+        var = hax.var(x, axis=self.axis)
+        
+        # Calculate inverse standard deviation
         inv = hax.rsqrt(var + self.eps)
-        out = x * inv
-        out = out.astype(in_dtype)
-
-        if self.weight is not None:
-            out = self.weight * out
-        if self.bias is not None:
-            out = out + self.bias
-
-        # second cast in case params are in float32
-        return out.astype(in_dtype)
+        
+        # Normalize the input
+        out = (x - mean) * inv
+        
+        return out
 
 
-class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
-    config: LlamaConfig = eqx.static_field()
+class OlmoDecoderLayer(StateDictSerializationMixin, eqx.Module):
+    config: OlmoConfig = eqx.static_field()
     self_attn: LlamaAttention
-    mlp: LlamaMlp
-    input_layernorm: LlamaRMSNorm
-    post_attention_layernorm: LlamaRMSNorm
+    mlp: OlmoMLP
+    input_layernorm: NonParametricLayerNorm
+    post_attention_layernorm: NonParametricLayerNorm
 
     @staticmethod
-    def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
+    def init(config: OlmoConfig, *, key) -> "OlmoDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
         attn = LlamaAttention.init(config, key=k_attn)
-        mlp = LlamaMlp.init(
+        mlp = OlmoMLP.init(
             config.Embed,
             config.Mlp,
             config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_1 = config.mk_LayerNorm(config.Embed)
-        ln_2 = config.mk_LayerNorm(config.Embed)
+        ln_1 = NonParametricLayerNorm.init(config.Embed)
+        ln_2 = NonParametricLayerNorm.init(config.Embed)
 
-        return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
+        return OlmoDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
@@ -431,26 +373,26 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return output
 
 
-class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
-    config: LlamaConfig = eqx.static_field()
-    layers: BlockFoldable[LlamaDecoderLayer]
-    norm: LlamaRMSNorm
+class OlmoTransformer(StateDictSerializationMixin, eqx.Module):
+    config: OlmoConfig = eqx.static_field()
+    layers: BlockFoldable[OlmoDecoderLayer]
+    norm: NonParametricLayerNorm
 
     @staticmethod
-    def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
+    def init(config: OlmoConfig, *, key) -> "OlmoTransformer":
         S = Stacked
         if not config.scan_layers:
             from haliax.nn.scan import BlockSeq
 
             S = BlockSeq
 
-        layers = S.init(config.Layers, LlamaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
+        layers = S.init(config.Layers, OlmoDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = config.mk_LayerNorm(config.Embed)
+        ln_f = NonParametricLayerNorm.init(config.Embed)
 
-        return LlamaTransformer(config, layers, ln_f)
+        return OlmoTransformer(config, layers, ln_f)
 
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
@@ -474,45 +416,46 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
         if isinstance(self.layers, Stacked):
             stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
             state_dict.update(stacked_dict)
-        else:
-            state_dict.update(my_state_dict)
 
         return state_dict
 
 
-class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
+class OlmoEmbedding(StateDictSerializationMixin, eqx.Module):
     """Similar to GPT2 Embedding, except that:
     - Llama doesn't have position embedding in the Embedding layer.
     - Llama doesn't use dropout.
     """
 
     Vocab: Axis = eqx.static_field()
-    token_embeddings: hnn.Embedding
+    config: OlmoConfig = eqx.static_field()
+    token_embeddings: NamedArray
 
     @staticmethod
-    def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        return LlamaEmbedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key))
+    def init(Vocab: Axis, config: OlmoConfig, *, key) -> "OlmoEmbedding":
+        k_wte = jrandom.split(key, 1)[0]
+        token_embeddings = hax.random.normal(k_wte, (Vocab, config.Embed))
+        return OlmoEmbedding(Vocab, config, token_embeddings)
 
     @named_call
     def embed(self, input_ids, *args):
-        input_embeds = self.token_embeddings(input_ids)
+        input_embeds = self.token_embeddings.take("vocab", input_ids)
         x = input_embeds
         return x
 
     def unembed(self, x: NamedArray):
-        return self.token_embeddings.unembed(x)
+        return hax.dot("embed", x, self.token_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "model.embed_tokens"}
+        return {"token_embeddings": "model.embed_tokens.weight"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
-        new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
+        new_weights = hax.tree_util.resize_axis(self.token_embeddings, self.Vocab, new_size, key=key)
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
-class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializationMixin):
-    transformer: LlamaTransformer
-    embeddings: LlamaEmbedding
+class OlmoLMHeadModel(eqx.Module, LmHeadModel[OlmoConfig], StateDictSerializationMixin):
+    transformer: OlmoTransformer
+    embeddings: OlmoEmbedding
     lm_head: hnn.Linear
 
     @property
@@ -528,12 +471,12 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         return self.embeddings.Vocab
 
     @classmethod
-    def init(cls, Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaLMHeadModel":
+    def init(cls, Vocab: Axis, config: OlmoConfig, *, key) -> "OlmoLMHeadModel":
         k_t, k_emb = jrandom.split(key, 2)
-        transformer = LlamaTransformer.init(config, key=k_t)
-        embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
+        transformer = OlmoTransformer.init(config, key=k_t)
+        embeddings = OlmoEmbedding.init(Vocab, config, key=k_emb)
         lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
-        return LlamaLMHeadModel(transformer, embeddings, lm_head)
+        return OlmoLMHeadModel(transformer, embeddings, lm_head)
 
     def __call__(
         self,
@@ -556,7 +499,7 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         lm_logits = self.lm_head(x, key=k_head)
         return lm_logits
 
-    def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
+    def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[OlmoConfig]":
         new_Vocab = self.Vocab.resize(new_size)
         k1, k2 = maybe_rng_split(key, 2)
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
@@ -569,7 +512,7 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         return {"transformer": "model", "embeddings": None}
 
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
+        # unflatten the linear layers of HF state_dict to match the shape of OlmoLMHeadModelMlp
         d = state_dict.copy()
         d.update(
             unflatten_linear_layers(
@@ -611,14 +554,12 @@ def _apply_rotary_pos_emb(
     return q_embed, k_embed
 
 
-def llama_rotary_pos_emb(
-    HeadSize: Axis, Pos: Axis, theta: float = 10000, scale: float = 1.0
-) -> Tuple[NamedArray, NamedArray]:
+def olmo_rotary_pos_emb(HeadSize: Axis, Pos: Axis, base: int = 10000) -> Tuple[NamedArray, NamedArray]:
     with jax.ensure_compile_time_eval():
         HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
-        inv_freq: NamedArray = 1.0 / (theta ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
+        inv_freq: NamedArray = 1.0 / (base ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
 
-        position_ids: NamedArray = hax.arange(Pos) / scale
+        position_ids: NamedArray = hax.arange(Pos)
 
         freqs = position_ids * inv_freq.broadcast_axis(Pos)
         # This is different from the paper but aligns with HF implementation:

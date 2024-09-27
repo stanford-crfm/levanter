@@ -13,6 +13,7 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config
+from levanter.models.olmo import OlmoConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.jax_utils import is_inexact_arrayish, use_cpu_device
 
@@ -26,10 +27,10 @@ class ConvertLmConfig:
     output_dir: str
     upload_to_hf: Optional[RepoRef] = None  # if specified, attempt to upload this checkpoint to the hf hub
 
-    model: LmConfig = Gpt2Config()
+    model: LmConfig = OlmoConfig()
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
-    tokenizer: str = "gpt2"
-    override_vocab_size: Optional[int] = None  # if specified, override the vocab size in the config
+    tokenizer: str = "allenai/OLMo-1.7-7B-hf"
+    override_vocab_size: Optional[int] = 50304  # if specified, override the vocab size in the config
 
     config_overrides: Optional[dict] = None  # if specified, override the config with these values
 

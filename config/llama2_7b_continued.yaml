@@ -1,24 +1,31 @@
 data:
-  id: EleutherAI/pile
-  tokenizer: meta-llama/Llama-2-7b-hf
+  id: JeanKaddour/minipile
+  cache_dir: "gs://levanter-data/tokenized/llama2_minipile/"
+  tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
   type: llama
 initialize_from_hf: true
 use_hf_model_config: true
+
 trainer:
+  seed: 42
   tracker:
     type: wandb
-    project: "levanter"
+    project: "trace-train"
     tags: ["pile", "llama2"]
 
   mp: p=f32,c=bfloat16
 
   model_axis_size: 1
-  per_device_eval_parallelism: 4
-
-  train_batch_size: 1024
+  per_device_eval_parallelism: -1
+  max_eval_batches: 2
+  train_batch_size: 256
   num_train_steps: 10000
-  steps_per_eval: 500
+  steps_per_eval: 10
 optimizer:
-  learning_rate: 1.2e-4
-  weight_decay: 0.0
+  learning_rate: 1.2E-5
+  weight_decay: 0.1
+  min_lr_ratio: 0.1
+
+hf_save_steps: 10000
+hf_save_path: "gs://levanter-checkpoints/llama2_trace_hf/"  # TODO
