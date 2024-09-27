@@ -1,5 +1,11 @@
 # Levanter
 
+
+# command to run
+
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/olmo_7b_256_scr.yaml --trainer.checkpointer.base_path gs://levanter-checkpoints/olmo_trace_fixedinit_shufdata/
+
+python infra/launch.py --foreground -- python src/levanter/main/train_lm.py --config_path config/olmo_7b_256_scr.yaml --trainer.checkpointer.base_path gs://levanter-checkpoints/olmo_trace_fixedinit_shufdata/
 <a href="https://github.com/stanford-crfm/levanter/actions?query=branch%3Amain++">
     <img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/stanford-crfm/levanter/run_tests.yaml?branch=main">
 </a>
