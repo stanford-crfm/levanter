@@ -14,8 +14,8 @@ data:
   cache_dir: "gs://levanter-data/tokenized/data_mix"
 supervised_data:
   validation_urls:
-    - "gs://marin-us-central2/benchmarks/mmlu/mmlu-abstract_algebra-dev-evaluation.jsonl.gz"
-  cache_dir: "gs://marin-us-central2/benchmarks/tokenized/mmlu/"
+    - "gs://marin-us-central2/benchmarks/mmlu/mmlu-*-dev-evaluation.jsonl.gz"
+  cache_dir: "gs://marin-us-central2/benchmarks/tokenized-gpt2/mmlu/"
 model:
   type: gpt2
   hidden_dim: 768
