@@ -1,5 +1,8 @@
 # Levanter
 
+
+# docker command
+python infra/launch.py --foreground -- python src/levanter/main/train_lm.py --config_path config/olmo_7b_sft.yaml
 <a href="https://github.com/stanford-crfm/levanter/actions?query=branch%3Amain++">
     <img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/stanford-crfm/levanter/run_tests.yaml?branch=main">
 </a>

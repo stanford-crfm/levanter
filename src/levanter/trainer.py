@@ -59,6 +59,7 @@ from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
 
+from levanter.logging import LoadingTimeTrackerIterator
 
 logger = pylogging.getLogger(__name__)
 
@@ -381,21 +382,27 @@ class Trainer:
             train_loader: The DataLoader for training data.
             run_hooks (bool): Whether to run hooks.
         """
+        
         while True:
             logger.info(f"Starting epoch {int(state.epoch) + 1}")
             levanter.tracker.log_metrics({"training/epoch": int(state.epoch) + 1}, step=int(state.step))
 
             # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
             iter_data = train_loader.iter_from_step(state.step_within_epoch)
+            iter_data = LoadingTimeTrackerIterator(iter_data)
+            
 
             for example in iter_data:
                 with capture_time() as loading_time:
                     try:
-                        info = self.train_step(state, example)
-                        state = info.state
-                    except Exception as e:
-                        logger.error(f"Error during training step: {e}")
+                        example = next(iter_data)
+                    except StopIteration:
+                        logger.error(f"Reached stop iteration, reseting epoch")
+                        # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
+                        iter_data = train_loader.iter_from_step(state.step_within_epoch)
                         raise
+                info = self.train_step(state, example)
+                state = info.state
 
                 if run_hooks:
                     with capture_time() as hook_time:
