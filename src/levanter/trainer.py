@@ -392,33 +392,33 @@ class Trainer:
             iter_data = LoadingTimeTrackerIterator(iter_data)
             
 
-            for example in iter_data:
-                with capture_time() as loading_time:
-                    try:
-                        example = next(iter_data)
-                    except StopIteration:
-                        logger.error(f"Reached stop iteration, reseting epoch")
-                        # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
-                        iter_data = train_loader.iter_from_step(state.step_within_epoch)
-                        raise
-                info = self.train_step(state, example)
-                state = info.state
+            with capture_time() as loading_time:
+                try:
+                    example = next(iter_data)
+                except StopIteration:
+                    logger.error(f"Reached stop iteration, reseting epoch")
+                    # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
+                    iter_data = train_loader.iter_from_step(state.step_within_epoch)
+                    iter_data = LoadingTimeTrackerIterator(iter_data)
+                    raise
+            info = self.train_step(state, example)
+            state = info.state
 
-                if run_hooks:
-                    with capture_time() as hook_time:
-                        self.run_hooks(info)
-                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=int(state.step))
+            if run_hooks:
+                with capture_time() as hook_time:
+                    self.run_hooks(info)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=int(state.step))
 
-                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=int(state.step))
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=int(state.step))
 
-                yield info
+            yield info
 
-                if int(state.step) >= self.num_train_steps:
-                    logger.info(f"Training completed after {int(state.epoch)} epochs and {int(state.step)} steps")
-                    return
+            if int(state.step) >= self.num_train_steps:
+                logger.info(f"Training completed after {int(state.epoch)} epochs and {int(state.step)} steps")
+                return
 
-                # Update step_within_epoch
-                state = dataclasses.replace(state, step_within_epoch=state.step_within_epoch + 1)
+            # Update step_within_epoch
+            state = dataclasses.replace(state, step_within_epoch=state.step_within_epoch + 1)
 
             # Update epoch and reset step_within_epoch
             state = dataclasses.replace(state, epoch=state.epoch + 1, step_within_epoch=0)
