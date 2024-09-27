@@ -623,7 +623,7 @@ class LMSupervisedDatasetConfig(LMDatasetSourceConfig):
 
 def preprocess_supervised_example(batch, tokenizer: PreTrainedTokenizerBase):
     sources = [example["input"] for example in batch]
-    
+
     targets = [f"{example['output']}" for example in batch]
     # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
     examples = [s + t for s, t in zip(sources, targets)]
@@ -655,7 +655,7 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
         # mask out padding and anything before the start of the target
         Pos = input_ids.resolve_axis("position")
         loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
-        
+
         # don't predict the padding
         targets = hax.roll(input_ids, -1, Pos)
         loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
