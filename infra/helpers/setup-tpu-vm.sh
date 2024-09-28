@@ -8,7 +8,7 @@ if [ "$DEBUG" == "1" ]; then
 fi
 
 REPO="https://github.com/stanford-crfm/levanter.git"
-BRANCH=main
+BRANCH=iclr2025_levanter
 
 if [ "$GIT_BRANCH" != "" ]; then
   BRANCH="$GIT_BRANCH"
