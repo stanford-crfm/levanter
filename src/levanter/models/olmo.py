@@ -102,7 +102,7 @@ class OlmoConfig(HFCompatConfig):
     
     def hf_checkpoint_converter(self) -> HFCheckpointConverter["OlmoConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            cls,  # type: ignore
+            self.__class__,  # type: ignore
             "allenai/OLMo-7B-hf",
             trust_remote_code=True,
             tokenizer="allenai/OLMo-7B-hf",
