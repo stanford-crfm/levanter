@@ -17,7 +17,7 @@ import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import Dataset
 from levanter.data.sharded_dataset import JsonDataset, JsonlDataset, WrappedHFDataset
-from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils import fsspec_utils
@@ -176,7 +176,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
         }
 
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
-    dataset = dataset.build_cache(config.data_cache_dir, await_finished=True)
+    dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)
 
     dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)
 
@@ -227,14 +227,14 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         # how we shard parameters across devices
         parameter_axis_mapping = trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
+            model_config.model_type, model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
         )
 
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)

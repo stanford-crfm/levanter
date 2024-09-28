@@ -419,7 +419,7 @@ EOF
 ```
 
 ```bash
-python infra/launch.py --tpu_name=my_tpu -- python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
+python infra/launch.py --tpu_name=my_tpu -- python src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
 
 ## Monitoring

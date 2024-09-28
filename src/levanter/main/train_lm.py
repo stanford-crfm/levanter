@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import gc
 import logging
 import os
@@ -13,10 +14,11 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
+from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig
+from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -41,6 +43,7 @@ class TrainLmConfig:
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
+    z_loss_weight: float = 0.0
 
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
@@ -48,6 +51,8 @@ class TrainLmConfig:
 
     update_hessian_steps: int = 10
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
+    initialize_from_checkpoint_path: Optional[str] = None
+    # if provided, will initialize from this checkpoint, used for llama style data mixture
 
 
 def main(config: TrainLmConfig):
@@ -60,7 +65,7 @@ def main(config: TrainLmConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
@@ -74,7 +79,7 @@ def main(config: TrainLmConfig):
             # NB: gross mutability
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(tokenizer=tokenizer)
     else:
         converter = None
@@ -82,11 +87,13 @@ def main(config: TrainLmConfig):
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
+    loss_function = functools.partial(compute_next_token_loss, logsumexp_weight=config.z_loss_weight)
+
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_function) as trainer:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -123,6 +130,11 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
+        seek_dataloader = True
+        if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
+            state = load_checkpoint(state, config.initialize_from_checkpoint_path)
+            seek_dataloader = False
+
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
@@ -135,7 +147,10 @@ def main(config: TrainLmConfig):
                 state = dataclasses.replace(state, model=None)
                 gc.collect()
                 model = converter.load_pretrained(
-                    config.model, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+                    config.model.model_type,
+                    config.model,
+                    axis_mapping=parameter_axis_mapping,
+                    dtype=trainer.mp.compute_dtype,
                 )
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
@@ -156,11 +171,20 @@ def main(config: TrainLmConfig):
                 max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
             cb = levanter.eval.cb_tagged_lm_evaluate(
-                EvalBatch, causal_datasets, trainer.device_mesh, compute_axis_mapping, max_eval_examples_per_ds
+                EvalBatch,
+                causal_datasets,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                mp=config.trainer.mp,
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
-        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
+        flops_per_token = config.model.flops_per_token(vocab_size)
+        flops_per_example = 3 * flops_per_token * Pos.size if flops_per_token is not None else None
+        trainer.add_hook(
+            callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
+        )
         if config.hf_save_path is not None:
             full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
 
@@ -192,7 +216,7 @@ def main(config: TrainLmConfig):
         # data loader. may need to seek to the right place if we're resuming
         train_loader = iter(trainer.replicated_loader(train_dataset, Batch))
 
-        if int(state.step) > 0:
+        if int(state.step) > 0 and seek_dataloader:
             # step is after the batch, so we need to seek to step
             # TODO: implement iter_data.seek(resume_step +1)
             import tqdm

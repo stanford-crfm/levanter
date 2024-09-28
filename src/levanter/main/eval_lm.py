@@ -19,7 +19,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import ReplicatedBatchLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
@@ -76,7 +76,7 @@ def main(config: EvalLmConfig):
         def compute_loss(model: LmHeadModel, example: LmExample):
             model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
-            return model.compute_loss(example, key=None)
+            return compute_next_token_loss(model, example, key=None)
 
         total = config.trainer.max_eval_batches
 
@@ -100,10 +100,10 @@ def main(config: EvalLmConfig):
             model_config = config.model
             if not hasattr(model_config, "hf_checkpoint_converter"):
                 raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
-            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter
+            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             model_from_hf_checkpoint = converter.load_pretrained(
-                model_config.model_type, config.hf_checkpoint, dtype=mp.compute_dtype
+                model_config.model_type, model_config, config.hf_checkpoint, dtype=mp.compute_dtype
             )
             loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 

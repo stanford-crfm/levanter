@@ -2,7 +2,7 @@
 import copy
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import equinox as eqx
@@ -14,8 +14,8 @@ import transformers
 import haliax as hax
 
 import levanter
-from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import Dataset
+from levanter.data.dataset import ShuffleDataset
 from levanter.data.sharded_dataset import WrappedHFDataset
 from levanter.lora import (
     LoraConfig,
@@ -24,7 +24,8 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
-from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.models.llama import LlamaConfig
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
@@ -40,9 +41,12 @@ class TrainArgs:
     optimizer: OptimizerConfig
     trainer: TrainerConfig
     lora: LoraConfig = LoraConfig()
+    model: LmConfig = field(default_factory=LlamaConfig)
 
     max_tune_length: int = 2048  # maximum length of the input to the model during tuning
+
     data: str = "gsm8k"  # name of the dataset to use
+    data_seed: Optional[int] = None
     data_cache_dir: str = "cache/"  # Path to cache the tokenized data. can be gcs
 
     input_key: str = "question"  # key in the dataset for the input
@@ -119,7 +123,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
         }
 
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))  # type: ignore
-    dataset = dataset.build_cache(config.data_cache_dir, await_finished=True)  # type: ignore
+    dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)  # type: ignore
 
     dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)  # type: ignore
 
@@ -131,8 +135,7 @@ def train(config: TrainArgs):
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
-    converter = HFCheckpointConverter.from_hf(config.model_name_or_path, trust_remote_code=config.trust_remote_code)
-    model_config = converter.default_config
+    converter = config.model.hf_checkpoint_converter()
 
     tokenizer = copy.deepcopy(converter.tokenizer)
     # if we don't have a pad token, just use the first token in the vocab, which is usually <unk>
@@ -142,20 +145,27 @@ def train(config: TrainArgs):
     tokenizer.model_max_length = config.max_tune_length
 
     # Randomness in JAX is tightly controlled. We pass around a key that is used to generate random numbers.
-    training_key, lora_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 2)
+    training_key, data_key, lora_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 3)
+
+    if config.data_seed is not None:
+        data_key = jrandom.PRNGKey(config.data_seed)
 
     train_dataset = mk_dataset(config, tokenizer)
+    train_dataset = ShuffleDataset(train_dataset, data_key, buffer_size=1000 * 1000)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+            config.model.model_type,
+            converter.default_config,
+            axis_mapping=parameter_axis_mapping,
+            dtype=trainer.mp.compute_dtype,
         )
 
         # Major difference from Alpaca: we loraize the model.
@@ -184,7 +194,7 @@ def train(config: TrainArgs):
 
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3f}")
 
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large

@@ -22,8 +22,7 @@ from .utils import batched
 
 
 if TYPE_CHECKING:
-    from levanter.data.shard_cache import MetricsMonitor
-
+    from .metrics_monitor import MetricsMonitor
 
 T = TypeVar("T")
 T_contra = TypeVar("T_contra", contravariant=True)
@@ -63,7 +62,7 @@ class ShardedDataset(Dataset[T_co]):
             for doc in self.open_shard(shard_name):
                 yield doc
 
-    def build_cache(
+    def build_or_load_cache(
         self,
         path: str,
         *,
@@ -87,14 +86,14 @@ class ShardedDataset(Dataset[T_co]):
         Returns:
             A new dataset that is backed by the cache.
         """
-        from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, DictCacheDataset, build_cache
+        from levanter.data.shard_cache import DEFAULT_ROWS_PER_CHUNK, DictCacheDataset, build_or_load_cache
 
         if rows_per_chunk is None:
             rows_per_chunk = DEFAULT_ROWS_PER_CHUNK
 
         source, processor = _construct_composite_batch_processor(self)
 
-        cache = build_cache(
+        cache = build_or_load_cache(
             path,
             source,
             processor,
@@ -207,7 +206,10 @@ class TextUrlDataset(ShardedDataset[str]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[str]:
         url = self._shard_name_to_url_mapping[shard_name]
         i = 0
-        with fsspec.open(url, "r", compression="infer") as f:
+        compression = "infer"
+        if url.endswith(".zstd"):  # hacky way to detect zstd
+            compression = "zstd"
+        with fsspec.open(url, "r", compression=compression) as f:
             format = _sniff_format_for_dataset(url)
             match format:
                 case ".jsonl":

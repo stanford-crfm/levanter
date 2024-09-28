@@ -122,7 +122,7 @@ async def save_array_to_tensorstore(x, spec):
 
 async def load_array_from_tensorstore(spec):
     t: TensorStore = await tensorstore.open(tensorstore.Spec(spec), context=array_ser.TS_CONTEXT)
-    return await t.read("C")
+    return await t.read()
 
 
 async def _deserialize_one_leaf(like, spec, axis_mapping, mesh):

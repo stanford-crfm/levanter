@@ -4,6 +4,7 @@ import warnings
 from typing import Callable, Optional, Sequence, TypeVar
 
 import jax.numpy as jnp
+import jmp
 import numpy as np
 import tqdm
 from jax.sharding import Mesh
@@ -14,7 +15,7 @@ from haliax.partitioning import ResourceMapping
 import levanter.tracker
 from levanter.data import Dataset, ReplicatedBatchLoader
 from levanter.logging import LoadingTimeTrackerIterator
-from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import StepInfo
 from levanter.utils.stat_utils import RunningMean
 from levanter.utils.tree_utils import inference_mode
@@ -90,6 +91,7 @@ def cb_tagged_lm_evaluate(
     axis_mapping: ResourceMapping = None,
     max_examples_per_dataset: Optional[int] = None,
     prefix: str = "eval",
+    mp: jmp.Policy = None,
 ) -> Callable[[StepInfo], EvalResult]:
     """
     Evaluates multiple tagged datasets using a given evaluation function.
@@ -110,7 +112,9 @@ def cb_tagged_lm_evaluate(
         axis_mapping: The axis mapping to use for evaluation
     """
 
-    evaluator = TaggedEvaluator(EvalBatch, tagged_eval_sets, device_mesh, axis_mapping, max_examples_per_dataset)
+    evaluator = TaggedEvaluator(
+        EvalBatch, tagged_eval_sets, device_mesh, axis_mapping, max_examples_per_dataset, mp=mp
+    )
 
     def eval_callback(step: StepInfo):
         with levanter.tracker.capture_time() as time_fn:
@@ -162,13 +166,20 @@ class TaggedEvaluator:
     """
 
     def __init__(
-        self, EvalBatch: hax.Axis, tagged_eval_sets, device_mesh=None, axis_mapping=None, max_examples_per_dataset=None
+        self,
+        EvalBatch: hax.Axis,
+        tagged_eval_sets,
+        device_mesh=None,
+        axis_mapping=None,
+        max_examples_per_dataset=None,
+        mp: Optional[jmp.Policy] = None,
     ):
         self.EvalBatch = EvalBatch
         self.dataset = DomainTaggedDataset(tagged_eval_sets, max_examples_per_dataset)
         self.loader = ReplicatedBatchLoader(
             self.dataset, mesh=device_mesh, axis_resources=axis_mapping, Batch=EvalBatch
         )
+        self.mp = mp
 
         # tags are arranged hierarchically with "/" as separator. We want to log the average loss for each tag.
         hierarchy: dict[str, list[int]] = {}
@@ -188,11 +199,14 @@ class TaggedEvaluator:
             m: LmHeadModel, state: tuple[RunningMean, RunningMean], batch: LmExample, tags: hax.NamedArray
         ):
             m = inference_mode(m, True)
+
+            if self.mp is not None:
+                m = self.mp.cast_to_compute(m)
             with hax.axis_mapping(axis_mapping):
                 total_mean, mean_per_tag = state
-                losses = m.compute_loss(batch, reduction=None, reduction_axis=())
+                losses = compute_next_token_loss(m, batch, reduction=None, reduction_axis=())
                 mask = batch.loss_mask  # [Batch, Token]
-                this_tokens = hax.einsum("->", mask)
+                this_tokens = hax.sum(mask)
                 this_loss = hax.einsum("->", losses, mask)  # to scalar
 
                 this_tokens_per_tag = hax.einsum("-> tag", mask, tags)

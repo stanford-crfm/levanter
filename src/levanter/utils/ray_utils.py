@@ -1,4 +1,6 @@
+import contextlib
 import dataclasses
+import logging
 import sys
 from dataclasses import dataclass
 from typing import Optional
@@ -71,3 +73,21 @@ def ser_exc_info(exception=None) -> ExceptionInfo:
 
 def current_actor_handle() -> ray.actor.ActorHandle:
     return ray.runtime_context.get_runtime_context().current_actor
+
+
+class SnitchRecipient:
+    logger: logging.Logger
+
+    def _child_failed(self, child: ray.actor.ActorHandle, exception: ExceptionInfo):
+        info = exception.restore()
+        self.logger.error(f"Child {child} failed with exception {info[1]}", exc_info=info)
+        exception.reraise()
+
+
+@contextlib.contextmanager
+def log_failures_to(parent):
+    # parent is actorref of SnitchRecipient
+    try:
+        yield
+    except Exception as e:
+        parent._child_failed.remote(current_actor_handle(), ser_exc_info(e))
