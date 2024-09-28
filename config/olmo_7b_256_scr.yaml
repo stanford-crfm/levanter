@@ -1,5 +1,5 @@
 data: 
-  !include data/dolma_olmo_paloma_shuf.yaml
+  !include data/dolma_olmo_paloma.yaml
 model:
   type: olmo
   hidden_dim: 4096
