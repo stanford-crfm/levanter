@@ -1,4 +1,4 @@
-cache_dir: "gs://marin-us-central2/tokenized/OLMo-1B/dolma-old-cache/v1.7"
+cache_dir: "gs://marin-us-central2/tokenized/OLMo-1B/retry_dolma/"
 tokenizer: "allenai/OLMo-1B"  # requires `pip install ai2-olmo`
 # tokenizer: "meta-llama/Llama-2-7b-hf"
 stop_strategy: restart
