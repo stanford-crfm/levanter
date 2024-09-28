@@ -166,10 +166,10 @@ class WandbConfig(TrackerConfig):
                 metadata_to_share, is_source=jax.process_index() == 0
             )
 
-            if jax.process_index() != 0:
-                assert r.mode == "disabled"
-                for k, v in metadata_to_share.items():
-                    setattr(r, k, v)
+            # if jax.process_index() != 0:
+            #     assert r.mode == "disabled"
+            #     for k, v in metadata_to_share.items():
+            #         setattr(r, k, v)
 
             logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
 
