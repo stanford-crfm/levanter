@@ -28,7 +28,7 @@ def test_initialization_and_basic_functionality():
             yield ray.put(i)
 
     actor = PrefetchIteratorActor.remote(simple_producer)
-    results = ray.get([actor.get.remote() for _ in range(10)])
+    results = ray.get([actor.get_next.remote() for _ in range(10)])
     assert results == list(range(10))
 
 
@@ -43,7 +43,7 @@ def test_queue_size_limit():
     assert ray.get(actor.queue_size.remote()) == 10
 
     # get a few items to make some space
-    ray.get([actor.get.remote() for _ in range(5)])
+    ray.get([actor.get_next.remote() for _ in range(5)])
     _sleep_until(lambda: ray.get(actor.queue_size.remote()) == 10, message="Queue size did not reach 10")
     assert ray.get(actor.queue_size.remote()) == 10
 
@@ -69,7 +69,7 @@ def test_exception_handling():
     results = []
     try:
         for _ in range(10):
-            results.append(ray.get(actor.get.remote()))
+            results.append(ray.get(actor.get_next.remote()))
     except ValueError as e:
         assert "Test exception" in str(e)  # Ray puts a lot of crap in the exception message
     assert results == list(range(5))
@@ -82,7 +82,7 @@ def test_empty_producer():
 
     actor = PrefetchIteratorActor.remote(empty_producer)
     with pytest.raises(StopIteration):
-        ray.get(actor.get.remote())
+        ray.get(actor.get_next.remote())
 
 
 def test_multiple_consumers():
@@ -91,8 +91,8 @@ def test_multiple_consumers():
             yield ray.put(i)
 
     actor = PrefetchIteratorActor.remote(simple_producer)
-    results = ray.get([actor.get.remote() for _ in range(10)])
-    results += ray.get([actor.get.remote() for _ in range(10)])
+    results = ray.get([actor.get_next.remote() for _ in range(10)])
+    results += ray.get([actor.get_next.remote() for _ in range(10)])
     assert results == list(range(20))
 
 
@@ -105,7 +105,7 @@ def test_producer_completion():
     results = []
     try:
         while True:
-            results.append(ray.get(actor.get.remote()))
+            results.append(ray.get(actor.get_next.remote()))
     except StopIteration:
         pass
     assert results == list(range(10))

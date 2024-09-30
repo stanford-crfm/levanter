@@ -1,6 +1,7 @@
 import asyncio
 import concurrent
 import dataclasses
+import functools
 import heapq
 import logging as pylogging
 import os
@@ -13,6 +14,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Sequence, TypeVar, Union
 
 import fsspec.core
+from ray.remote_function import RemoteFunction
+
+from levanter.store._prefetch_actor import PrefetchIteratorActor
 import pyarrow as pa
 import ray
 from dataclasses_json import dataclass_json
@@ -37,6 +41,7 @@ from ..utils.ray_utils import (
     SnitchRecipient,
     current_actor_handle,
     log_failures_to,
+    map_ref,
     ser_exc_info,
 )
 from .tree_store import TreeStore
@@ -66,7 +71,7 @@ def build_or_load_cache(
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     cache_config: Optional[Dict[str, Any]] = None,
-    items_per_write: int = MIN_ITEMS_TO_WRITE,
+    force_flush: bool = False,
 ) -> "TreeCache[U]":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
@@ -93,8 +98,7 @@ def build_or_load_cache(
 
         cache_config: A dictionary of configuration options for the cache. This is passed to the cache writer.
 
-        items_per_write: The number of items to write to the cache at a time. This is a performance tuning parameter,
-            and you probably don't need to change it. We mostly use it for testing.
+        force_flush: for testing, forces the cache to flush after every batch. This is useful for testing.
 
     Returns:
        (TreeCache) A TreeCache object that can be used to read the cache.
@@ -106,7 +110,7 @@ def build_or_load_cache(
         shard_source=input_shards,
         processor=processor,
         cache_config=cache_config,
-        items_per_write=items_per_write,
+        force_flush=force_flush,
     )
 
     if cache.is_finished:
@@ -145,7 +149,197 @@ class CacheLedger:
 class ShardStatus:
     shard_name: str
     num_rows_committed: int
-    is_finished: bool
+    is_finished: bool  # todo, need to add this to the ledger
+
+
+
+def _interleave_shards(shard_names: Sequence[str],
+    readers: Sequence[ActorHandle],  # PrefetchIteratorActor
+    first_shard_index: int):
+    """
+    Interleaves the results of multiple iterators. To support resume,
+    we need to be able to start from not the "first" iterator.
+    """
+    raise NotImplementedError("This is not implemented yetXXX")
+    if len(shard_names) != len(readers):
+        raise ValueError("shard_names and readers must have the same length")
+
+    if len(shard_names) == 0:
+        raise ValueError("No shards to interleave")
+        logger.info("No shards to interleave")
+        return
+
+    iterators = list(readers)
+    finished = set()
+    i = first_shard_index
+    while len(finished) < len(shard_names):
+        raise NotImplementedError("This is not implemented yetXXX")
+        while i < len(iterators):
+            shard_name = shard_names[i]
+            it = iterators[i]
+            if shard_name not in finished:
+                try:
+                    # TODO: push shard_name into the actual iterator
+                    yield map_ref(lambda x: (shard_name, x), it.get_next())
+                except StopIteration:
+                    logger.info(f"Finished shard {shard_name}")
+                    finished.add(shard_name)
+
+            i += 1
+            if i == len(iterators):
+                i = 0
+
+    logger.info("Finished all shards")
+
+
+def _make_interleave_for_shards(
+    source: ShardedDataSource,
+    statuses: Sequence[ShardStatus],
+    batch_size: int):
+    """
+    Given a list of ShardStatus objects and sources, creates an interleave
+    """
+    unfinished_shards: list[ShardStatus] = []
+    shards_with_progress: dict[str, int] = {}
+
+    for status in statuses:
+        if not status.is_finished:
+            unfinished_shards.append(status)
+        if status.num_rows_committed > 0:
+            shards_with_progress[status.shard_name] = status.num_rows_committed
+
+    if not unfinished_shards:
+        logger.info("All shards finished. Nothing to do.")
+        return
+    elif shards_with_progress:
+        formatted = ", ".join(f"{k}: {v}" for k, v in shards_with_progress.items())
+        logger.info(f"Resuming from shards with progress: {formatted}")
+
+    logger.warning(f"Starting cache build with {len(unfinished_shards)} shards")
+    print("Unfinished shards", unfinished_shards)
+
+    raise NotImplementedError("This is not implemented yet")
+
+    generator_fns = [lambda: _shard_reader_generator(source, status.shard_name, status.num_rows_committed, batch_size)
+                        for status in unfinished_shards]
+
+    readers = [PrefetchIteratorActor.remote(generator_fn, max_queue_size=32) for generator_fn in generator_fns]
+
+    # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
+    min_unfinished = min(range(len(unfinished_shards)), key=lambda x: unfinished_shards[x].num_rows_committed)
+
+    yield from _interleave_shards([status.shard_name for status in unfinished_shards], readers, min_unfinished)
+
+
+def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
+    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
+    def process_task(desc, batch: List[T]):
+        # pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
+        logger.debug(f"Processing batch {desc}")
+        try:
+            result = processor(batch)
+            logger.debug(f"Finished processing batch {desc}")
+            return result
+        except Exception as e:
+            logger.exception(f"Error while processing batch {desc}")
+            raise e
+        finally:
+            pass
+
+    return process_task
+
+
+def _process_batches(
+    processor: BatchProcessor,
+    batch_iter: ActorHandle  # PrefetchIteratorActor[(str, batch)]
+    ):
+    """
+    Processes batches of data from a PrefetchIteratorActor.
+    This is a generator that yields refs representing the processed batches.
+    """
+
+    process_fn = _mk_process_task(processor)
+
+
+    while True:
+        try:
+            shard_name, batch = ray.get(batch_iter.get_next.remote())
+            yield map_ref(lambda x: (shard_name, x), process_fn.remote(shard_name, batch))
+            raise NotImplementedError("This is not implemented yet")
+        except StopIteration:
+            break
+
+
+@ray.remote(num_cpus=1)
+def _core_writer_task(
+    parent,
+    cache_dir,
+    processor,
+    batch_iter: ActorHandle,  # PrefetchIteratorActor[(str, batch)]
+    cache_config: Optional[Dict[str, Any]],
+    force_flush: bool,
+):
+    logger.setLevel(DEFAULT_LOG_LEVEL)
+    logger.info("Starting writer task")
+    with log_failures_to(parent):
+        sharded_cache_writer = ShardedCacheWriter(cache_dir, processor.output_exemplar, cache_config=cache_config)
+        last_update_time = time.time()
+
+        i = 0
+
+        while True:
+            try:
+                shard, batch = ray.get(batch_iter.get_next.remote())
+                logger.info(f"Writing batch {i} for {shard}")
+                sharded_cache_writer.write_batch(shard, batch)
+                if force_flush:
+                    sharded_cache_writer.flush()
+                i += 1
+            except StopIteration:
+                break
+
+            if sharded_cache_writer.last_write_time - last_update_time > 10.0:
+                logger.info(f"Updating ledger")
+                parent._notify_updated_ledger.remote(sharded_cache_writer.ledger)
+                last_update_time = sharded_cache_writer.last_write_time
+
+        logger.warning(f"Finished writing {i} batches")
+        sharded_cache_writer.finish()
+        parent._notify_updated_ledger.remote(sharded_cache_writer.ledger)
+        return sharded_cache_writer.ledger
+
+
+def _preprocess_task_chain(
+    parent,
+    cache_dir: str,
+    name: str,
+    source: ShardedDataSource,
+    processor: BatchProcessor,
+    cache_config: Optional[Dict[str, Any]],
+    force_flush: bool = False,
+):
+    """
+    This is the main task that processes the data and writes it to the cache.
+
+    It chains together:
+    * 1 generator per shard
+    * interleaving of the generators
+    * processing of the batches
+    * writing of the batches to the cache
+
+    It handles resumes on the reading side
+    """
+    with log_failures_to(parent):
+        initial_ledger = _load_or_initialize_ledger(os.path.join(cache_dir, LEDGER_FILE_NAME))
+        statuses = [ShardStatus(shard_name, num_rows, False) for shard_name, num_rows in initial_ledger.shard_rows.items()]
+        batch_size = processor.batch_size
+
+        interleave = PrefetchIteratorActor.remote(lambda: _make_interleave_for_shards(source, statuses, batch_size), max_queue_size=64)
+        process = PrefetchIteratorActor.remote(lambda: _process_batches(processor, interleave), max_queue_size=64)
+        writer_task = _core_writer_task.remote(parent, cache_dir, processor, process, cache_config, force_flush=force_flush)
+
+    return writer_task
+
 
 
 class SerialCacheWriter(AbstractContextManager):
@@ -204,174 +398,62 @@ class SerialCacheWriter(AbstractContextManager):
         self._tree_store.extend(batch)
 
 
-def _load_or_initialize_ledger(path):
-    try:
-        with fsspec.open(path, "r") as file:
-            return CacheLedger.from_json(file.read())
-    except FileNotFoundError:
-        return CacheLedger(0, {})
-
-
-@ray.remote(num_cpus=0.5)  # type: ignore
-class _OrderedCacheWriter:
+class ShardedCacheWriter:
     """
-    This cache writer receives examples from some number of shards (generally out of order) and writes them to the store
-    in a defined round-robin order. It also keeps track of the metadata for each shard.
+    Similar to SerialCacheWriter, but tracks shard metadata.
 
-    Once a shard finishes sending batches, it notifies this writer, which then updates the metadata and writes it to disk.
+    Similar to _OrderedCacheWriter, it also supports resuming, and it
+    groups together batches before writing (at some interval) in order to improve performance.
+    It does its actual writes in a background thread.
     """
 
     def __init__(
         self,
-        parent,
-        name,
-        exemplar,
-        batch_size,
         cache_dir: str,
-        shards: Sequence[str],
-        min_items_to_write=MIN_ITEMS_TO_WRITE,
+        exemplar: T,
+        cache_config: Optional[Dict[str, Any]] = None,
     ):
-        pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
-        with log_failures_to(parent):
-            self._parent = parent
-            self.cache_dir = cache_dir
-            self.shards = shards
-            self.batch_size = batch_size
-            self._min_items_to_write = min_items_to_write
-            self._failed = False
-            self._logger = pylogging.getLogger(name)
+        self.cache_dir = cache_dir
+        self.cache_config = cache_config
+        self._exemplar = exemplar
 
-            # these are batches that we've received but haven't ordered them for writing yet
-            self._batch_queue = GroupRoundRobinBuffer(shards)  # type: ignore
-            self._total_queue_length = 0
-            self._was_overwhelmed = False  # whether the queue has gotten too big
-            # writes are very slow (~2s) so we want to batch them up
-            self._ordered_but_unwritten_items: list = []
-            self._batches_in_next_write_by_shard: dict[str, int] = {shard: 0 for shard in shards}
-            # we also want to write every so often
+        self._ledger = _load_or_initialize_ledger(os.path.join(cache_dir, LEDGER_FILE_NAME))
+
+        self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")  # type: ignore
+        self._tree_store.trim_to_size(self._ledger.total_num_rows)
+
+        # set up the writer thread
+        if not self._ledger.is_finished:
+            self._stop_loop = threading.Event()
+            self._actual_writer_thread = threading.Thread(target=self._write_loop, daemon=True)
+
             self._last_write_time = time.time()
+            self._items_ready_to_write: list = []
 
-            self._ledger = _load_or_initialize_ledger(os.path.join(cache_dir, LEDGER_FILE_NAME))
-            self._expected_num_rows: dict[str, Optional[int]] = {shard: None for shard in shards}
+            self._actual_writer_thread.start()
 
-            self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")
-            # careful: trim the store to the total number of rows in the cache that we've committed to
-            self._tree_store.trim_to_size(self._ledger.total_num_rows)
-            # we also have to tell the queue how many rows for each shard we've already written
-            for shard, num_rows in self._ledger.shard_rows.items():
-                if num_rows > 0:
-                    self._logger.info(f"Already written {num_rows} rows for shard {shard}")
-
-                # careful: this is in terms of batch size
-                # Have to round up to the nearest batch size
-                self._batch_queue.fast_forward(shard, div_round_up(num_rows, self.batch_size))
-                if shard in self._ledger.finished_shards:
-                    self._expected_num_rows[shard] = num_rows
-                    self._batch_queue.group_total_known(shard, div_round_up(num_rows, self.batch_size))
-
-            # double check that we're not finished by committing the ledger
-            self._attempt_to_write_batches()
-
-            if not self._ledger.is_finished:
-                self._actual_writer_thread = threading.Thread(target=self._write_loop, daemon=True)
-                self._stop_loop = threading.Event()
-                self._actual_writer_thread.start()
-
-    def batch_finished(self, shard_name: str, shard_batch_idx: int, batch_result_box):
-        with log_failures_to(self._parent):
-            if self._failed:
-                self._logger.warning("Received batch after failure. Ignoring.")
-                return
-
-            if isinstance(batch_result_box, RefBox):
-                batch_result = ray.get(batch_result_box.ref)
-            else:
-                batch_result = batch_result_box
-
-            # we need to keep track of the order of the batches so that we can write them out in order
-            self._total_queue_length += len(batch_result)
-            self._batch_queue.append_to_group(shard_name, shard_batch_idx, batch_result)
-            next_missing_item = self._batch_queue.next_missing_item_index()
-
-            overwhelmed = self.is_overwhelmed()
-            if overwhelmed:
-                if not self._was_overwhelmed:
-                    self._logger.warning(f"Writer queue is getting long ({self._total_queue_length}).")
-                self._parent.signal_backpressure.remote(next_missing_item)
-            elif self._was_overwhelmed:
-                self._logger.info(f"Writer queue is no longer overwhelmed ({self._total_queue_length}).")
-                self._parent.signal_backpressure.remote(None)
-
-            self._was_overwhelmed = overwhelmed
-
-    def shard_failed(self, shard_name: str, batch_id: int, exc_info: ExceptionInfo):
-        with log_failures_to(self._parent):
-            self._failed = True
-            self._stop_loop.set()
-            logger.error(f"Shard {shard_name} failed at batch {batch_id}", exc_info=exc_info.restore())
-            self._parent.shard_failed.remote(shard_name, exc_info)
-
-    def shard_finished_reading(self, shard_name: str, expected_num_rows: int):
-        with log_failures_to(self._parent):
-            # careful: this is in terms of batch size
-            self._batch_queue.group_total_known(shard_name, div_round_up(expected_num_rows, self.batch_size))
-            self._expected_num_rows[shard_name] = expected_num_rows
-            logger.debug(
-                f"Attempting to write batches because {shard_name} finished reading with {expected_num_rows} batches."
-            )
-            self.flush()
-
-    def flush(self):
-        self._attempt_to_write_batches()
-
-    def get_shard_status(self, shard_name: str):
-        with log_failures_to(self._parent):
-            rows = self._ledger.shard_rows.get(shard_name, 0)
-            is_finished = shard_name in self._ledger.finished_shards
-            return ShardStatus(shard_name, rows, is_finished)
-
-    def get_ledger(self):
+    @property
+    def ledger(self):
         return self._ledger
 
-    def _attempt_to_write_batches(self):
-        if self._ledger.is_finished:
-            return
+    @property
+    def is_finished(self):
+        return self._ledger.is_finished
 
-        if self._failed:
-            logger.warning("Not writing batches because of failure.")
-            return
+    @property
+    def last_write_time(self):
+        return self._last_write_time
 
-        self._dequeue_ready_batches()
-        updated_shards = self._write_available_batches()
+    def write_batch(self, shard_name: str, batch: BatchResult):
+        if self.is_finished:
+            raise RuntimeError("Cannot write to a finished cache")
 
-        logger.debug(f"Updated shards: {updated_shards}")
+        if isinstance(batch, pa.RecordBatch):
+            raise NotImplementedError("Only non-RecordBatch batches are supported for now")
 
-        need_to_commit = len(updated_shards) > 0
-        total_rows = self._ledger.total_num_rows + sum(updated_shards.values())
+        batch = _canonicalize_batch(batch)  # type: ignore
 
-        for shard, num_rows in updated_shards.items():
-            self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
-
-        futures_to_await_shards, need_to_commit_for_shards = self._check_for_finished_shards()
-
-        need_to_commit = need_to_commit or need_to_commit_for_shards
-
-        futures_to_await = []
-        if need_to_commit:
-            self._ledger.total_num_rows = total_rows
-            _serialize_json_and_commit(os.path.join(self.cache_dir, LEDGER_FILE_NAME), self._ledger)
-
-            futures_to_await.append(self._parent._updated_ledger.remote(self._ledger))
-
-            if self._ledger.is_finished:
-                f = self._parent._finalize.remote()
-                futures_to_await.append(f)
-
-        ray.wait(futures_to_await + futures_to_await_shards)
-
-    def _finish(self):
-        self._stop_loop.set()
-        self._actual_writer_thread.join()
+        self._items_ready_to_write.append((shard_name, batch))
 
     def _write_loop(self):
         while True:
@@ -385,69 +467,66 @@ class _OrderedCacheWriter:
             if self._ledger.is_finished:
                 break
 
-    def _dequeue_ready_batches(self):
-        for shard, batch in self._batch_queue.drain():
-            logger.debug(f"Writing batch for {shard}")
-            self._total_queue_length -= len(batch)
-            self._ordered_but_unwritten_items.extend(batch)
-            self._batches_in_next_write_by_shard[shard] = self._batches_in_next_write_by_shard.get(shard, 0) + len(
-                batch
-            )
+    def flush(self):
+        self._attempt_to_write_batches()
+
+    def finish(self):
+        self._stop_loop.set()
+        self._actual_writer_thread.join()
+        self.flush()
+
+        # if successful, write the ledger
+        self._ledger.is_finished = True
+        _serialize_json_and_commit(os.path.join(self.cache_dir, LEDGER_FILE_NAME), self._ledger)
+
+        return self._tree_store
+
+    def _attempt_to_write_batches(self):
+        if self._ledger.is_finished:
+            return
+
+        if len(self._items_ready_to_write) == 0:
+            return
+
+        logger.warning(f"Writing {len(self._items_ready_to_write)} batches")
+
+        updated_shards = self._write_available_batches()
+
+        logger.debug(f"Updated shards: {updated_shards}")
+
+        did_write = len(updated_shards) > 0
+
+        if did_write:
+            for shard, num_rows in updated_shards.items():
+                self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
+
+            self._last_write_time = time.time()
+            total_rows = self._ledger.total_num_rows + sum(updated_shards.values())
+            self._ledger.total_num_rows = total_rows
+            _serialize_json_and_commit(os.path.join(self.cache_dir, LEDGER_FILE_NAME), self._ledger)
 
     def _write_available_batches(self):
-        if len(self._ordered_but_unwritten_items) == 0:
+        if len(self._items_ready_to_write) == 0:
             return {}
 
-        any_shard_finished_reading = any(num_rows is not None for num_rows in self._expected_num_rows.values())
+        to_write = []
+        written_by_shard = {}
+        for shard, batch in self._items_ready_to_write:
+            to_write.extend(batch)
+            written_by_shard[shard] = written_by_shard.get(shard, 0) + len(batch)
 
-        if (
-            len(self._ordered_but_unwritten_items) >= self._min_items_to_write
-            or (time.time() - self._last_write_time > MAX_TIME_BETWEEN_WRITES)
-            or any_shard_finished_reading
-        ):
-            time_in = time.time()
-            self._tree_store.extend(self._ordered_but_unwritten_items)
-            time_out = time.time()
-            logger.debug(f"Wrote {len(self._ordered_but_unwritten_items)} rows in {time_out - time_in:.2f} seconds")
-            self._ordered_but_unwritten_items = []
+        self._tree_store.extend(to_write)
+        self._items_ready_to_write = []
+        return written_by_shard
 
-            written_by_shard = self._batches_in_next_write_by_shard
-            self._batches_in_next_write_by_shard = {}
-            self._last_write_time = time.time()
-            return written_by_shard
-        else:
-            return {}
 
-    def _check_for_finished_shards(self):
-        futures_to_await_shards = []
-        need_to_commit_for_shards = False
-        for shard, expected_rows in self._expected_num_rows.items():
-            if expected_rows is None:
-                continue
 
-            current_rows = self._ledger.shard_rows.get(shard, 0)
-            if current_rows == expected_rows:
-                if shard not in self._ledger.finished_shards:
-                    logger.info(f"Shard {shard} finished.")
-                    self._ledger.finished_shards.append(shard)
-                    futures_to_await_shards.append(self._parent.shard_finished.remote(shard))
-                    need_to_commit_for_shards = True
-            elif current_rows > expected_rows:
-                raise ValueError(f"Shard {shard} has more rows than expected: {current_rows} > {expected_rows}")
-
-        if len(self._ledger.finished_shards) == len(self.shards) and set(self._ledger.finished_shards) == set(
-            self.shards
-        ):
-            self._ledger.is_finished = True
-            need_to_commit_for_shards = True
-        return futures_to_await_shards, need_to_commit_for_shards
-
-    def is_overwhelmed(self) -> bool:
-        max_queue_size = self._min_items_to_write * 3
-        return self._total_queue_length > max_queue_size
-
-    def __del__(self):
-        self._finish()
+def _load_or_initialize_ledger(path):
+    try:
+        with fsspec.open(path, "r") as file:
+            return CacheLedger.from_json(file.read())
+    except FileNotFoundError:
+        return CacheLedger(0, {})
 
 
 def _to_list_of_dicts(batch: dict) -> List[dict]:
@@ -490,6 +569,7 @@ def _canonicalize_batch(batch: Union[dict, List[dict]]) -> List[dict]:
 def _shard_reader_generator(shard_source: ShardedDataSource[T], shard_name: str, start_row: int, batch_size: int):
     shard_iter = shard_source.open_shard_at_row(shard_name, start_row)
     batch = []
+    raise NotImplementedError("This is not implemented yet")
     for row in shard_iter:
         batch.append(row)
 
@@ -683,117 +763,37 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         cache_config: Dict[str, Any],
-        min_items_to_write: int,
+        force_flush: bool,
     ):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
         self.source = source
         self._cache_dir = cache_dir
-        # self._metrics = InProgressCacheMetrics()
-        self._updated_ledger_condition = asyncio.Condition()
-        self._ledger = CacheLedger(0, {})
-        self.shards_in_progress: set[str] = set()
-        exemplar = processor.output_exemplar
-
-        self._finished_promise: asyncio.Future[None] = asyncio.Future()
-        # used to subscribe to metrics updates
         self._cache_config = cache_config
-        path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
-        name = f"broker::{path_for_name}"
-        self.logger = pylogging.getLogger(f"{name}")
-        self._cache_writer: Optional[ActorHandle] = _OrderedCacheWriter.remote(  # type: ignore
-            current_actor_handle(),
-            f"writer::{path_for_name}",
-            exemplar,
-            processor.batch_size,
-            cache_dir,
-            source.shard_names,
-            min_items_to_write,
-        )
+        self._updated_ledger_condition = asyncio.Condition()
+        # used to subscribe to metrics updates
+        self._finished_promise: asyncio.Future[None] = asyncio.Future()
 
-        try:
-            cache_ledger = _load_cache_ledger(self._cache_dir)
-            self._ledger = cache_ledger
-        except FileNotFoundError:
-            pass
+        self._ledger = _load_or_initialize_ledger(os.path.join(cache_dir, LEDGER_FILE_NAME))
 
         if self._ledger.is_finished:
             self._finished_promise.set_result(None)
-        self._start_workers(cache_dir, name, processor, source)
 
-    def _start_workers(self, cache_dir, name, processor, source):
-        if len(source.shard_names) == 0:
-            self.logger.warning("No shards to index?!?")
-            self._finalize()
-        else:
-            self.logger.debug(f"Starting cache build for {source.shard_names}")
-            self.logger.info(f"Starting cache build for {len(source.shard_names)} shards")
+        path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
+        name = f"broker::{path_for_name}"
+        self.logger = pylogging.getLogger(f"{name}")
 
-            self_ref = current_actor_handle()
+        if self._ledger.is_finished:
+            self.logger.info("Cache already finished. Nothing to do.")
+            return
+        self._cache_writer = _preprocess_task_chain(current_actor_handle(), cache_dir, name, source, processor, cache_config, force_flush)
 
-            self._shard_writers = []
-            self._shard_readers = []
-            self._processor_actors = []
-
-            for shard_name in source.shard_names:
-                self.shards_in_progress.add(shard_name)
-
-            num_shards = len(source.shard_names)
-            num_worker_groups = len(ray.nodes())
-            num_shard_groups = max(min(num_worker_groups, num_shards), 1)
-
-            # if we have a bunch of caches to build with one shard, we don't want them all
-            # assigned to the same node, so we use an offset based on the hash of the name (for stability)
-            # in an attempt to spread them out
-            group_offset = int(hash(name) % num_worker_groups)
-
-            shard_groups: list[list[str]] = [[] for _ in range(num_shard_groups)]
-            for i, shard_name in enumerate(source.shard_names):
-                shard_groups[i % num_shard_groups].append(shard_name)
-
-            def priority_fn(shard_idx, batch_idx):
-                return batch_idx * num_shards + shard_idx
-
-            for group_id, shard_group in enumerate(shard_groups):
-                # TODO: would probably be better if we didn't create one of these per shard group
-                processor_actor = _BatchProcessorQueue.remote(processor)  # type: ignore
-                self._processor_actors.append(processor_actor)
-
-                assert self._cache_writer is not None
-
-                work_item = ShardGroupToBeProcessed(
-                    name=name,
-                    builder_ref=self_ref,
-                    writer=self._cache_writer,
-                    shard_source=source,
-                    shard_names=shard_group,
-                    priority_fn=priority_fn,
-                    processor_actor=processor_actor,
-                    batch_size=processor.batch_size,
-                    group_id=group_id,
-                )
-
-                # we want global names so that different tasks can coordinate priorities
-                worker_to_assign = (group_id + group_offset) % num_worker_groups
-                priority_actor_name = f"priority_processor.{worker_to_assign}"
-
-                reader_actor = WorkQueueDispatcherActor.options(  # type: ignore
-                    name=priority_actor_name, get_if_exists=True
-                ).remote()
-
-                reader_actor.assign_work.remote(work_item)
-                self._shard_readers.append(reader_actor)
-
-    def shard_finished(self, shard_name: str):
-        """Callback method for when a shard worker has finished."""
-        self.shards_in_progress.remove(shard_name)
-
-    def shard_failed(self, shard_name: str, error: ExceptionInfo):
-        """Callback method for when a shard worker has failed."""
-        self._writer_exception(shard_name, error)
-
-    def _updated_ledger(self, ledger: CacheLedger):
+    def _notify_updated_ledger(self, ledger: CacheLedger):
         self._ledger = ledger
+        # assert not self._ledger.is_finished
+        if self._ledger.is_finished:
+            self._finalize()
+
         self._do_notify()
 
     def other_failed(self, error: ExceptionInfo):
@@ -850,27 +850,10 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self._ledger.is_finished = True
         self._finished_promise.set_result(None)
 
-        # notify metrics subscribers
-        self._do_notify()
         self._cache_writer = None
 
-    def signal_backpressure(self, next_item_desired: Optional[int]):
-        # get the priority of the item we want
-        if next_item_desired is not None:
-            self.logger.debug(f"Signaling backpressure for {next_item_desired}")
-            # our priority function above is basically (batch_index, shard_index). We just ask we don't get more
-            # than one round of batches ahead
-            max_priority = (next_item_desired + 1) * len(self.source.shard_names)
 
-            for reader in self._shard_readers:
-                reader.set_max_dispatch_priority.remote(max_priority)
-        else:
-            self.logger.debug("Signaling no backpressure")
-            for reader in self._shard_readers:
-                reader.set_max_dispatch_priority.remote(None)
-
-
-def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None, items_per_write=MIN_ITEMS_TO_WRITE):
+def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None, force_flush=False):
     name = f"lev_cache_manager::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
@@ -881,7 +864,7 @@ def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None, it
         source=input_shards,
         processor=processor,
         cache_config=cache_config,
-        min_items_to_write=items_per_write,
+        force_flush=force_flush,
     )
 
 
@@ -1028,7 +1011,7 @@ class TreeCache(AsyncDataset[T_co]):
         shard_source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         cache_config: Optional[Dict[str, Any]] = None,
-        items_per_write: int = MIN_ITEMS_TO_WRITE,
+        force_flush: bool = False,
     ) -> "TreeCache[U]":
         try:
             return TreeCache.load(cache_dir, processor.output_exemplar)
@@ -1038,7 +1021,7 @@ class TreeCache(AsyncDataset[T_co]):
                 input_shards=shard_source,
                 processor=processor,
                 cache_config=cache_config,
-                items_per_write=items_per_write,
+                force_flush=force_flush,
             )
             return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
 

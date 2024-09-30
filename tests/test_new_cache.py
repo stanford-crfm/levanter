@@ -1,5 +1,7 @@
 import asyncio
+import copy
 import logging
+import os
 import tempfile
 from typing import Iterator, Sequence
 from unittest.mock import MagicMock
@@ -12,11 +14,10 @@ from ray.exceptions import RayTaskError
 from levanter.data import BatchProcessor, ShardedDataSource, batched
 from levanter.data.sharded_datasource import TextUrlDataSource
 from levanter.store.cache import (
-    SerialCacheWriter,
-    TreeStore,
+    LEDGER_FILE_NAME, SerialCacheWriter,
+    ShardedCacheWriter, TreeStore,
     _get_builder_actor,
-    _OrderedCacheWriter,
-    build_or_load_cache,
+    _serialize_json_and_commit, build_or_load_cache,
 )
 from levanter.utils.py_utils import logical_cpu_core_count
 from levanter.utils.ray_utils import ExceptionInfo, SnitchRecipient, ser_exc_info
@@ -181,7 +182,7 @@ class PretendParent(SnitchRecipient):
     def get_finished_shards(self):
         return self._finished_shards
 
-    def _updated_ledger(self, ledger):
+    def _notify_updated_ledger(self, ledger):
         if ledger.is_finished:
             self._finished = True
 
@@ -200,376 +201,8 @@ class PretendParent(SnitchRecipient):
         return self._desired_next_item
 
 
-@pytest.mark.asyncio
-async def test_batch_finished():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=1
-        )
-
-        try:
-            shard_idx = "shard1"
-            shard_batch_idx = 0
-            batch_result = [np.array([1, 2, 3])]
-
-            await writer.batch_finished.remote(shard_idx, shard_batch_idx, batch_result)
-            await writer.flush.remote()
-            shard_status = await writer.get_shard_status.remote("shard1")
-            assert shard_status.num_rows_committed == 1
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_shard_finished_reading():
-    parent = PretendParent.remote()
-    exemplar = MagicMock()
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
-
-        try:
-            shard_name = "shard1"
-            expected_batches = 5
-
-            await writer.shard_finished_reading.remote(shard_name, expected_batches)
-            shard_status = await writer.get_shard_status.remote(shard_name)
-            assert shard_status.is_finished is False
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_get_shard_status():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
-
-        try:
-            shard_name = "shard1"
-            shard_status = await writer.get_shard_status.remote(shard_name)
-
-            assert shard_status.shard_name == shard_name
-            assert shard_status.num_rows_committed == 0
-            assert not shard_status.is_finished
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_shard_failed():
-    parent = PretendParent.remote()
-    exemplar = MagicMock()
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
-
-        try:
-            shard_name = "shard1"
-            batch_id = 0
-            try:
-                raise Exception("Test Exception")
-            except:  # noqa
-                exc_info = ser_exc_info()
-
-            await writer.shard_failed.remote(shard_name, batch_id, exc_info)
-            exception_received = await parent.wait_for_failure.remote()
-            assert str(exception_received.ex) == str(exc_info.ex)
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-DEFAULT_BATCH_SIZE = 128
-
-
-@pytest.mark.asyncio
-async def test_attempt_to_write_batches():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=2
-        )
-
-        try:
-            shard1_batch = [np.asarray([1, 2, 3])]
-            shard2_batch = [np.asarray([4, 5, 6, 7])]
-
-            await writer.batch_finished.remote("shard1", 0, shard1_batch)
-            await writer.batch_finished.remote("shard2", 0, shard2_batch)
-
-            await writer.flush.remote()
-
-            ledger = await writer.get_ledger.remote()
-            assert ledger.is_finished is False
-            assert ledger.total_num_rows == 2  # Assuming each batch has 1 row for simplicity
-
-            store = TreeStore.open(exemplar, cache_dir, mode="r")
-            assert len(store) == 2
-            np.testing.assert_array_equal(store[0], shard1_batch[0])
-            np.testing.assert_array_equal(store[1], shard2_batch[0])
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_finalize_cache():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
-
-        try:
-            shard1_batch = [np.array([1, 2, 3])]
-            shard2_batch = [np.array([4, 5, 6, 7])]
-
-            await writer.batch_finished.remote("shard1", 0, shard1_batch)
-            await writer.shard_finished_reading.remote("shard1", 1)
-            await writer.shard_finished_reading.remote("shard2", 1)
-            await writer.batch_finished.remote("shard2", 0, shard2_batch)
-            await writer.flush.remote()
-
-            ledger = await writer.get_ledger.remote()
-            assert ledger.is_finished is False
-            assert ledger.total_num_rows == 2  # Assuming each batch has 1 row for simplicity
-
-            await writer.shard_finished_reading.remote("shard3", 0)
-            finished_shards = await parent.get_finished_shards.remote()
-            assert len(finished_shards) == 3
-
-            ledger = await writer.get_ledger.remote()
-            assert ledger.is_finished is True
-            assert ledger.total_num_rows == 2
-            assert await parent.is_finished.remote() is True
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_error_handling():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
-
-        try:
-            with pytest.raises(TypeError):
-                await writer.batch_finished.remote("shard1", 0, None)
-
-            exception_received = await parent.wait_for_failure.remote()
-            assert exception_received is not None
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_out_of_order_batches_same_shard():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=2
-        )
-
-        try:
-            # Sending batch 1 before batch 0 for shard1
-            shard1_batch0 = [np.array([1, 2, 3])]
-            shard1_batch1 = [np.array([4, 5, 6])]
-
-            await writer.batch_finished.remote("shard1", 1, shard1_batch1)
-            await writer.batch_finished.remote("shard1", 0, shard1_batch0)
-            await writer.flush.remote()
-
-            store = TreeStore.open(exemplar, cache_dir, mode="r")
-            assert len(store) == 2
-            np.testing.assert_array_equal(store[0], shard1_batch0[0])
-            np.testing.assert_array_equal(store[1], shard1_batch1[0])
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_out_of_order_batches_different_shards():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=3
-        )
-
-        try:
-            # Sending batches out of order across different shards
-            shard1_batch0 = [np.array([1, 2, 3])]
-            shard2_batch0 = [np.array([4, 5, 6])]
-            shard1_batch1 = [np.array([7, 8, 9])]
-
-            await writer.batch_finished.remote("shard1", 1, shard1_batch1)
-            await writer.batch_finished.remote("shard2", 0, shard2_batch0)
-            await writer.batch_finished.remote("shard1", 0, shard1_batch0)
-            await writer.flush.remote()
-
-            store = TreeStore.open(exemplar, cache_dir, mode="r")
-            assert len(store) == 3
-            np.testing.assert_array_equal(store[0], shard1_batch0[0])
-            np.testing.assert_array_equal(store[1], shard2_batch0[0])
-            np.testing.assert_array_equal(store[2], shard1_batch1[0])
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_batches_different_orders_all_shards():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=2
-        )
-
-        try:
-            # Sending batches in different orders across all shards
-            shard1_batch0 = [np.array([1, 2, 3])]
-            shard1_batch1 = [np.array([4, 5, 6])]
-            shard2_batch0 = [np.array([7, 8, 9])]
-            shard3_batch0 = [np.array([10, 11, 12])]
-
-            await writer.batch_finished.remote("shard2", 0, shard2_batch0)
-            await writer.batch_finished.remote("shard3", 0, shard3_batch0)
-            await writer.batch_finished.remote("shard1", 1, shard1_batch1)
-            await writer.batch_finished.remote("shard1", 0, shard1_batch0)
-            await writer.flush.remote()
-
-            store = TreeStore.open(exemplar, cache_dir, mode="r")
-            assert len(store) == 4
-            np.testing.assert_array_equal(store[0], shard1_batch0[0])
-            np.testing.assert_array_equal(store[1], shard2_batch0[0])
-            np.testing.assert_array_equal(store[2], shard3_batch0[0])
-            np.testing.assert_array_equal(store[3], shard1_batch1[0])
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_intermixed_batches_same_and_different_shards():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=1
-        )
-
-        try:
-            # Sending intermixed batches from the same and different shards
-            shard1_batch0 = [np.array([1, 2, 3])]
-            shard2_batch0 = [np.array([4, 5, 6])]
-            shard1_batch1 = [np.array([7, 8, 9])]
-            shard3_batch0 = [np.array([10, 11, 12])]
-            shard2_batch1 = [np.array([13, 14, 15])]
-
-            await writer.batch_finished.remote("shard2", 0, shard2_batch0)
-            await writer.batch_finished.remote("shard3", 0, shard3_batch0)
-            await writer.batch_finished.remote("shard1", 1, shard1_batch1)
-            await writer.batch_finished.remote("shard2", 1, shard2_batch1)
-            await writer.batch_finished.remote("shard1", 0, shard1_batch0)
-            await writer.flush.remote()
-
-            store = TreeStore.open(exemplar, cache_dir, mode="r")
-            assert len(store) == 5
-            np.testing.assert_array_equal(store[0], shard1_batch0[0])
-            np.testing.assert_array_equal(store[1], shard2_batch0[0])
-            np.testing.assert_array_equal(store[2], shard3_batch0[0])
-            np.testing.assert_array_equal(store[3], shard1_batch1[0])
-            np.testing.assert_array_equal(store[4], shard2_batch1[0])
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_duplicate_batches_same_shard():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1"]
-        writer = _OrderedCacheWriter.remote(parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards)
-
-        try:
-            # Sending duplicate batches for the same shard
-            shard1_batch0 = [np.array([1, 2, 3])]
-
-            await writer.batch_finished.remote("shard1", 0, shard1_batch0)
-            await writer.flush.remote()
-            with pytest.raises(RayTaskError):
-                await writer.batch_finished.remote("shard1", 0, shard1_batch0)  # Duplicate
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
-@pytest.mark.asyncio
-async def test_mixed_order_batches_multiple_shards():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=1
-        )
-
-        try:
-            # Sending batches in mixed order for multiple shards
-            shard1_batch0 = [np.array([1, 2, 3])]
-            shard2_batch0 = [np.array([4, 5, 6])]
-            shard1_batch1 = [np.array([7, 8, 9])]
-            shard2_batch1 = [np.array([10, 11, 12])]
-            shard3_batch0 = [np.array([13, 14, 15])]
-            shard3_batch1 = [np.array([16, 17, 18])]
-
-            await writer.batch_finished.remote("shard3", 0, shard3_batch0)
-            await writer.batch_finished.remote("shard1", 1, shard1_batch1)
-            await writer.batch_finished.remote("shard2", 0, shard2_batch0)
-            await writer.batch_finished.remote("shard2", 1, shard2_batch1)
-            await writer.batch_finished.remote("shard1", 0, shard1_batch0)
-            await writer.batch_finished.remote("shard3", 1, shard3_batch1)
-            await writer.flush.remote()
-
-            store = TreeStore.open(exemplar, cache_dir, mode="r")
-            assert len(store) == 6
-            np.testing.assert_array_equal(store[0], shard1_batch0[0])
-            np.testing.assert_array_equal(store[1], shard2_batch0[0])
-            np.testing.assert_array_equal(store[2], shard3_batch0[0])
-            np.testing.assert_array_equal(store[3], shard1_batch1[0])
-            np.testing.assert_array_equal(store[4], shard2_batch1[0])
-            np.testing.assert_array_equal(store[5], shard3_batch1[0])
-        finally:
-            ray.kill(parent)
-            ray.kill(writer)
-
-
 @pytest.mark.ray
-def test_full_end_to_end_cache_simple():
+def test_full_end_to_end_cache():
     td = tempfile.TemporaryDirectory()
     with td as tmpdir:
         ray_ds = build_or_load_cache(
@@ -743,15 +376,17 @@ async def test_can_get_elems_before_finished():
 
         def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[list[int]]:
             for i in range(10):
+                print(f"yielding {i}")
                 yield [i] * 10
             ray.get(blocker_to_wait_on_test.block.remote())
             for i in range(10, 20):
+                print(f"yielding {i} post")
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = build_or_load_cache(
-            tmpdir, SlowShardSource(), TestProcessor(5), await_finished=False, items_per_write=5
-        )
+            tmpdir, SlowShardSource(), TestProcessor(5), await_finished=False, force_flush=True
+        )  # we need force_flush to ensure the cache is written to disk
 
         # read the first 10 elements
         # ensure the first 10 elements are [{"test": np.array([i] * 10)} for i in range(10)]
@@ -880,60 +515,84 @@ def test_shard_cache_fails_gracefully_with_unknown_file_type():
         del cache
 
 
-@pytest.mark.ray
-@pytest.mark.asyncio
-async def test_backpressure_mechanism():
-    parent = PretendParent.remote()
-    exemplar = np.array([1, 2, 3])
-    with tempfile.TemporaryDirectory() as cache_dir:
-        shards = ["shard1", "shard2", "shard3"]
-        writer = _OrderedCacheWriter.remote(
-            parent, "test", exemplar, DEFAULT_BATCH_SIZE, cache_dir, shards, min_items_to_write=1
-        )
+def test_sharded_cache_writer():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = SimpleShardSource(num_shards=4)
+        processor = SimpleProcessor()
 
-        # Simulate batches being processed
-        shard1_batch = [np.array([1, 2, 3])]
-        shard2_batch = [np.array([4, 5, 6])]
-        shard3_batch = [np.array([7, 8, 9])]
+        exemplar = {"data": np.array([0], dtype=np.int64)}
 
-        # await writer.batch_finished.remote("shard1", 0, shard1_batch)
-        await writer.batch_finished.remote("shard2", 0, shard2_batch)
-        await writer.batch_finished.remote("shard3", 0, shard3_batch)
-        await writer.batch_finished.remote("shard1", 1, shard3_batch)
-        await writer.batch_finished.remote("shard1", 2, shard3_batch)
-        await writer.batch_finished.remote("shard1", 3, shard3_batch)
-        await writer.flush.remote()
+        writer = ShardedCacheWriter(tmpdir, exemplar)
+        for shard_name in source.shard_names:
+            for ex in batched(source.open_shard(shard_name), processor.batch_size):
+                writer.write_batch(shard_name, processor(ex))
 
-        # Check if backpressure is signaled
-        is_overwhelmed = await writer.is_overwhelmed.remote()
-        assert is_overwhelmed is True
-        await writer.flush.remote()
+        store = writer.finish()
 
-        for i in range(4):
-            if (await parent.desired_next_item.remote()) == 0:
-                break
+        data_path = store.path
 
-            await asyncio.sleep(0.1 * (i + 1) * (i + 1))
-        else:
-            assert False, "Backpressure wasn't sent"
+        del store
 
-        await writer.batch_finished.remote("shard1", 0, shard1_batch)
+        builder = TreeStore.open(exemplar, data_path, mode="r")
 
-        # Reduce the queue size to relieve backpressure
-        # Check if backpressure is relieved
-        is_overwhelmed = await writer.is_overwhelmed.remote()
-        count = 0
-        while is_overwhelmed and count < 10:
-            await writer.flush.remote()
-            await asyncio.sleep(0.4)
-            is_overwhelmed = await writer.is_overwhelmed.remote()
-            count += 1
-        assert is_overwhelmed is False
+        assert len(builder) == 40
 
-        for i in range(4):
-            if (await parent.desired_next_item.remote()) is None:
-                break
+        for i, x in enumerate(builder):
+            np.testing.assert_array_equal(x["data"], np.asarray([i % 10 + i // 10 * 10] * 10))
 
-            await asyncio.sleep(0.1 * (i + 1) * (i + 1))
-        else:
-            assert False, "Backpressure wasn't relieved"
+        # check totals for the ledger
+        ledger = writer.ledger
+        assert ledger.total_num_rows == 40
+        assert ledger.is_finished
+
+        for shard_name in source.shard_names:
+            assert ledger.shard_rows[shard_name] == 10
+
+
+
+def test_sharded_cache_writer_trims_on_resume():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = SimpleShardSource(num_shards=4)
+        processor = SimpleProcessor()
+
+        exemplar = {"data": np.array([0], dtype=np.int64)}
+
+        writer = ShardedCacheWriter(tmpdir, exemplar)
+        for shard_name in source.shard_names:
+            for ex in batched(source.open_shard(shard_name), processor.batch_size):
+                writer.write_batch(shard_name, processor(ex))
+
+        store = writer.finish()
+
+        raw_data = store[:]
+
+        # now deliberately truncate the ledger a bit
+        ledger = copy.deepcopy(writer.ledger)
+        assert ledger.total_num_rows == 40
+        assert ledger.is_finished
+        ledger.total_num_rows = 24
+        ledger.shard_rows["shard_0"] = 8
+        ledger.shard_rows["shard_1"] = 8
+        ledger.shard_rows["shard_2"] = 8
+        ledger.shard_rows["shard_3"] = 0
+        ledger.is_finished = False
+
+        _serialize_json_and_commit(os.path.join(tmpdir, LEDGER_FILE_NAME), ledger)
+
+        writer = ShardedCacheWriter(tmpdir, exemplar)
+
+        # ensure it got truncated
+        assert writer.ledger.total_num_rows == 24
+        assert writer.ledger.is_finished is False
+        assert writer.ledger.shard_rows["shard_0"] == 8
+        assert writer.ledger.shard_rows["shard_1"] == 8
+        assert writer.ledger.shard_rows["shard_2"] == 8
+        assert writer.ledger.shard_rows["shard_3"] == 0
+
+        new_store = writer._tree_store
+        new_data = new_store[:]
+
+        assert len(new_data) == 24
+
+
+

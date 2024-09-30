@@ -45,6 +45,16 @@ class RayResources:
         return RayResources(num_cpus=resources.get("CPU", 0), num_gpus=resources.get("GPU", 0), resources=resources)
 
 
+def map_ref(f, ref: ray.ObjectRef, num_cpus=0):
+    """
+    Designed for lightweight functions that don't need to be remote, e.g. for adding a key to a result T -> tuple[str, T]
+    """
+    if hasattr(f, "remote"):
+        return f.remote(ref)
+    else:
+        return ray.remote(f, num_cpus=num_cpus).remote(ref)
+
+
 @dataclass
 class RefBox:
     """Ray doesn't dereference ObjectRefs if they're nested in another object. So we use this to take advantage of that.
@@ -78,7 +88,7 @@ def current_actor_handle() -> ray.actor.ActorHandle:
 class SnitchRecipient:
     logger: logging.Logger
 
-    def _child_failed(self, child: ray.actor.ActorHandle, exception: ExceptionInfo):
+    def _child_failed(self, child: ray.actor.ActorHandle | str | None, exception: ExceptionInfo):
         info = exception.restore()
         self.logger.error(f"Child {child} failed with exception {info[1]}", exc_info=info)
         exception.reraise()
@@ -90,6 +100,11 @@ def log_failures_to(parent, suppress=False):
     try:
         yield
     except Exception as e:
-        parent._child_failed.remote(current_actor_handle(), ser_exc_info(e))
+        try:
+            handle = current_actor_handle()
+        except RuntimeError:
+            handle = ray.runtime_context.get_runtime_context().get_task_id()
+
+        parent._child_failed.remote(handle, ser_exc_info(e))
         if not suppress:
             raise e

@@ -27,10 +27,8 @@ class BatchProcessor(Generic[T_contra, U], ABC):
     @abstractmethod
     def __call__(self, batch: Sequence[T_contra]) -> Sequence[U] | U:  # U can be batched "structure of arrays" form
         """
-        Process a batch of data. You should return either a RecordBatch, a sequence of dicts (one per output
+        Process a batch of data. You should return a sequence of dicts (one per output
         example), or a dict of sequences (one per output field).
-
-        (We allow Mapping so that you can just return HF's BatchEncoding if you want.)
         """
         raise NotImplementedError
 

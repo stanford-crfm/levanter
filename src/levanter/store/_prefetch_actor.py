@@ -23,6 +23,7 @@ _SENTINEL = _Sentinel()
 @ray.remote
 class PrefetchIteratorActor:
     def __init__(self, producer: Callable[[], Iterator[ray.ObjectRef]], max_queue_size: int = 100):
+        assert producer() is not None, "Producer must not return None"
         self.producer = producer
         self.max_queue_size = max_queue_size
         self.queue: queue.Queue[ray.ObjectRef | _Sentinel | _PrefetchException] = queue.Queue(maxsize=max_queue_size)
@@ -45,13 +46,14 @@ class PrefetchIteratorActor:
                     except StopIteration:
                         break
 
-                    try:
-                        self.queue.put(next_item, timeout=1)
-                        next_item = _SENTINEL
-                    except queue.Full:
-                        pass
+                try:
+                    self.queue.put(next_item, timeout=1)
+                    next_item = _SENTINEL
+                except queue.Full:
+                    pass
         except Exception as e:
             self.queue.put(_PrefetchException(ser_exc_info(e)))
+            raise
 
         while not self._stop_event.is_set():
             try:
@@ -60,7 +62,7 @@ class PrefetchIteratorActor:
             except queue.Full:
                 pass
 
-    def get(self):
+    def get_next(self):
         """
         Get the next item from the producer. If the producer raises an exception, it will be reraised here.
 
