@@ -383,15 +383,22 @@ class Trainer:
             run_hooks (bool): Whether to run hooks.
         """
         
+        # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
+        iter_data = train_loader.iter_from_step(state.step_within_epoch)
+        iter_data = LoadingTimeTrackerIterator(iter_data)
+
         while True:
+            if state.max_epochs is not None and int(state.epoch) >= state.max_epochs:
+                logger.info(f"Reached maximum number of epochs: {state.max_epochs}")
+                return
+            
+            if int(state.step) >= self.num_train_steps:
+                logger.info(f"Training completed after {int(state.epoch)} epochs and {int(state.step)} steps")
+                return
+            
             logger.info(f"Starting epoch {int(state.epoch) + 1}")
             levanter.tracker.log_metrics({"training/epoch": int(state.epoch) + 1}, step=int(state.step))
-
-            # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
-            iter_data = train_loader.iter_from_step(state.step_within_epoch)
-            iter_data = LoadingTimeTrackerIterator(iter_data)
             
-
             with capture_time() as loading_time:
                 try:
                     example = next(iter_data)
@@ -400,6 +407,8 @@ class Trainer:
                     # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
                     iter_data = train_loader.iter_from_step(state.step_within_epoch)
                     iter_data = LoadingTimeTrackerIterator(iter_data)
+                    # Update epoch and reset step_within_epoch
+                    state = dataclasses.replace(state, epoch=state.epoch + 1, step_within_epoch=0)
                     raise
             info = self.train_step(state, example)
             state = info.state
@@ -411,21 +420,10 @@ class Trainer:
 
             levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=int(state.step))
 
-            yield info
-
-            if int(state.step) >= self.num_train_steps:
-                logger.info(f"Training completed after {int(state.epoch)} epochs and {int(state.step)} steps")
-                return
-
             # Update step_within_epoch
             state = dataclasses.replace(state, step_within_epoch=state.step_within_epoch + 1)
 
-            # Update epoch and reset step_within_epoch
-            state = dataclasses.replace(state, epoch=state.epoch + 1, step_within_epoch=0)
-
-            if state.max_epochs is not None and int(state.epoch) >= state.max_epochs:
-                logger.info(f"Reached maximum number of epochs: {state.max_epochs}")
-                return
+            yield info            
 
             
 
