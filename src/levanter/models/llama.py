@@ -110,6 +110,8 @@ class LlamaConfig(HFCompatConfig):
     def from_hf_config(cls, hf_config: HfConfig):
         rope_theta = hf_config.rope_theta
         rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
+        print("\n hf config is \n", hf_config)
+        print(f"\n dir of hf config is {dir(hf_config)} \n")
         return LlamaConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
