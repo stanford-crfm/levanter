@@ -7,7 +7,7 @@ data:
   tokenizer: "allenai/OLMo-1B"
 model:  # 7B class model for Olmo
   type: llama
-  seq_len: 8192
+  seq_len: 2048
   hidden_dim: 4096
   intermediate_dim: 11008
   num_layers: 32
@@ -31,6 +31,12 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
   per_device_eval_parallelism: 4
+
+   checkpointer:
+      keep:
+        - every: 100
+          until: 10000
+    
 optimizer:
   learning_rate: 2E-5
   weight_decay: 0.0
