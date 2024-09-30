@@ -23,6 +23,10 @@ trainer:
     type: wandb
     project: "marin"
     tags: ["dolma", "olmo", "llama"]
+  checkpointer:
+    keep:
+      - every: 100
+        until: 10000
 
   mp: p=f32,c=bfloat16
   train_batch_size: 64
@@ -32,11 +36,6 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
   per_device_eval_parallelism: 4
-
-   checkpointer:
-      keep:
-        - every: 100
-          until: 10000
     
 optimizer:
   learning_rate: 2E-5
