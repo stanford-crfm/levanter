@@ -403,13 +403,13 @@ class Trainer:
                 try:
                     example = next(iter_data)
                 except StopIteration:
-                    logger.error(f"Reached stop iteration, reseting epoch")
-                    # Reset the DataLoader iterator at the start of each epoch, using step_within_epoch
+                    logger.info(f"Reached end of epoch {int(state.epoch) + 1}, starting next epoch")
+                    # Reset the DataLoader iterator for the next epoch
+                    state = dataclasses.replace(state, epoch=state.epoch + 1, step_within_epoch=0)
                     iter_data = train_loader.iter_from_step(state.step_within_epoch)
                     iter_data = LoadingTimeTrackerIterator(iter_data)
-                    # Update epoch and reset step_within_epoch
-                    state = dataclasses.replace(state, epoch=state.epoch + 1, step_within_epoch=0)
-                    raise
+                    continue  # Skip to the next iteration of the while loop
+
             info = self.train_step(state, example)
             state = info.state
 
@@ -423,7 +423,7 @@ class Trainer:
             # Update step_within_epoch
             state = dataclasses.replace(state, step_within_epoch=state.step_within_epoch + 1)
 
-            yield info            
+            yield info
 
             
 
