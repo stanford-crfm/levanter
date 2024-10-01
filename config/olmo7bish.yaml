@@ -1,0 +1,112 @@
+data_seed: null
+fcm_prob: 0.0
+hf_save_path: null
+hf_save_steps: 10000
+hf_upload: null
+initialize_from_hf: false
+model:
+  activation_function: silu
+  attn_backend: null
+  flash_attention_block_size: null
+  gradient_checkpointing: true
+  gradient_checkpointing_block_size: 5
+  hidden_dim: 4096
+  initializer_range: 0.02
+  intermediate_dim: 11008
+  layer_norm_epsilon: 1.0e-05
+  num_heads: 32
+  num_kv_heads: 32
+  num_layers: 32
+  reference_checkpoint: meta-llama/Llama-2-7b-hf
+  rope_scaling: null
+  scan_layers: true
+  seq_len: 4096
+  tokenizer: null
+  type: llama
+  upcast_attn: false
+  use_bias: false
+  use_flash_attention: true
+  use_layer_norm_weight: false
+optimizer:
+  beta1: 0.9
+  beta2: 0.95
+  cooldown: 0.0
+  default_weight_decay_mask: null
+  epsilon: 1.0e-08
+  learning_rate: 0.0003
+  lr_schedule: cosine
+  max_grad_norm: 1.0
+  min_lr_ratio: 0.1
+  stable: 0.0
+  type: adam
+  warmup: 2500.0
+  warmup_ratio: null
+  weight_decay: 0.1
+  weight_decay_modules: null
+trainer:
+  axis_resources: {}
+  batch_axis: batch
+  checkpointer:
+    base_path: gs://levanter-checkpoints/marin/olmoish7b_v4_1024_0627
+    keep:
+    - every: 10000
+    save_interval: 15m
+  distributed:
+    coordinator_address: null
+    local_device_ids: null
+    num_processes: null
+    process_id: null
+  fp8: null
+  fsdp_axis: embed
+  id: null
+  initialize_from: null
+  jax_config:
+    jax_softmax_custom_jvp: true
+    jax_threefry_partitionable: true
+  load_checkpoint: null
+  load_checkpoint_path: null
+  log_dir: logs
+  max_eval_batches: null
+  model_axis_size: 1
+  mp: compute=bfloat16,params=float32,output=bfloat16
+  num_train_steps: 715256
+  parameter_axis_resources: {}
+  per_device_eval_parallelism: 2
+  per_device_parallelism: 2
+  profiler: false
+  profiler_num_steps: 100
+  profiler_perfetto_link: false
+  profiler_start_step: 5
+  ray:
+    address: null
+    auto_start_cluster: true
+    start_workers: true
+  replica_dcn_axis_size: 1
+  replica_ici_axis_size: 1
+  require_accelerator: true
+  run_base_dir: runs
+  seed: 0
+  shutdown_at_exit: false
+  steps_per_eval: 1000
+  tensor_parallel_axes:
+  - mlp
+  - heads
+  tracker:
+    entity: null
+    group: null
+    id: null
+    mode: null
+    name: null
+    project: marin
+    resume: allow
+    save_code: true
+    save_xla_dumps: false
+    tags:
+    - dolma
+    - olmo
+    - llama
+    type: wandb
+  train_batch_size: 1024
+  wandb: null
+update_hessian_steps: 10
+use_hf_model_config: false
