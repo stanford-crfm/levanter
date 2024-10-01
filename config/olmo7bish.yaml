@@ -18,7 +18,6 @@ model:
   num_kv_heads: 32
   num_layers: 32
   reference_checkpoint: meta-llama/Llama-2-7b-hf
-  rope_scaling: null
   scan_layers: true
   seq_len: 4096
   tokenizer: null
