@@ -3,7 +3,7 @@ import copy
 import logging
 import os
 import tempfile
-from typing import Iterator, Sequence
+from typing import Any, Dict, Iterator, Sequence
 
 import numpy as np
 import pytest
@@ -31,6 +31,10 @@ class TestProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
     def __call__(self, batch: Sequence[Sequence[int]]) -> Sequence[dict[str, np.ndarray]]:
         # return pa.RecordBatch.from_arrays([pa.array(batch)], ["test"])
         return [{"test": np.asarray(x)} for x in batch]
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
     @property
     def output_exemplar(self):
@@ -101,6 +105,10 @@ class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
     @property
     def output_exemplar(self) -> dict[str, np.ndarray]:
         return {"data": np.array([0], dtype=np.int64)}
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
 
 class SimpleShardSource(ShardedDataSource[list[int]]):
@@ -208,12 +216,12 @@ def test_full_end_to_end_cache():
     with td as tmpdir:
         ray_ds = build_or_load_cache(
             tmpdir,
-            SimpleShardSource(num_shards=4),
+            SimpleShardSource(num_shards=2),
             TestProcessor(8),
             await_finished=True,
         )
 
-        expected = process_interleave(TestProcessor(8), SimpleShardSource(num_shards=4))
+        expected = process_interleave(TestProcessor(8), SimpleShardSource(num_shards=2))
 
         all_data = ray_ds[:]
 
@@ -226,21 +234,9 @@ def test_cache_remembers_its_cached():
     with directory as tmpdir:
         ds1 = build_or_load_cache(tmpdir, SimpleShardSource(), TestProcessor())
 
-        class ThrowingProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
+        class ThrowingProcessor(SimpleProcessor):
             def __call__(self, batch: Sequence[Sequence[int]]):
                 raise RuntimeError("This should not be called")
-
-            @property
-            def output_exemplar(self) -> dict[str, np.ndarray]:
-                return {"test": np.array([0], dtype=np.int64)}
-
-            @property
-            def batch_size(self) -> int:
-                return 8
-
-            @property
-            def num_cpus(self) -> int:
-                return 1
 
         # testing this doesn't throw
         ds2 = build_or_load_cache(tmpdir, SimpleShardSource(), ThrowingProcessor(), await_finished=True)
@@ -421,21 +417,9 @@ async def test_can_get_elems_before_finished():
 # @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
-    class ThrowingProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
+    class ThrowingProcessor(SimpleProcessor):
         def __call__(self, batch: Sequence[Sequence[int]]):
             raise RuntimeError("exc")
-
-        @property
-        def output_exemplar(self) -> dict:
-            return {"test": np.array([0], dtype=np.int64)}
-
-        @property
-        def batch_size(self) -> int:
-            return 8
-
-        @property
-        def num_cpus(self) -> int:
-            return 1
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with pytest.raises(RuntimeError):

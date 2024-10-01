@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
 import braceexpand
 import datasets
@@ -288,6 +288,18 @@ class BatchTokenizer(BatchProcessor[str, dict]):
 
             batch.append(d)
         return batch, needs_merge
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "tokenizer": self.tokenizer.name_or_path,
+            "vocab_size": len(self.tokenizer),
+            "return_attention_mask": self.return_attention_mask,
+            "padding": self.padding,
+            "max_length": self.max_length,
+            "append_bos": self._need_to_add_bos,
+            "append_eos": self._need_to_add_eos,
+        }
 
     @property
     def output_exemplar(self) -> dict:
@@ -633,10 +645,8 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         name = logger_name or os.path.basename(self.cache_dir)
 
         try:
-            # TODO: check config again
-            return TreeCache.load(
-                split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)}, cache_config=None
-            )
+            # TODO: pass in options
+            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
         except FileNotFoundError:
             pass
 
@@ -665,10 +675,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             bt,
             await_finished=split == "validation",
             monitors=monitors,
-            cache_config={
-                "tokenizer": self.the_tokenizer.name_or_path,
-                "vocab_size": self.the_tokenizer.vocab_size,
-            },
         )
 
 

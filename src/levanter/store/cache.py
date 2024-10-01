@@ -1,8 +1,10 @@
 import asyncio
 import concurrent
+import copy
 import dataclasses
 import logging as pylogging
 import os
+import pprint
 import threading
 import time
 from asyncio import InvalidStateError
@@ -11,6 +13,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, TypeVar, Union
 
+import deepdiff
 import fsspec.core
 import pyarrow as pa
 import ray
@@ -26,7 +29,14 @@ from levanter.utils.py_utils import Stopwatch
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_datasource import ShardedDataSource
-from ..utils.ray_utils import ExceptionInfo, RefBox, SnitchRecipient, current_actor_handle, log_failures_to
+from ..utils.ray_utils import (
+    ExceptionInfo,
+    RefBox,
+    SnitchRecipient,
+    current_actor_handle,
+    log_failures_to,
+    ser_exc_info,
+)
 from .tree_store import TreeStore
 
 
@@ -47,13 +57,32 @@ MIN_ITEMS_TO_WRITE = 32 * 1024
 MAX_TIME_BETWEEN_WRITES = 100.0
 
 
+@dataclass_json
+@dataclass(frozen=True)
+class CacheOptions:
+    """
+    Configuration for a cache. This is used to configure a few parts of the cache creation process and to
+    store metadata that can be checked to ensure that the cache being loaded was created with the expected
+    configuration. It combined with the [[BatchProcessor]] metadata to form the [[CacheMetadata]].
+
+    It is intended that caching it deterministic conditional on the input data, processor, and these options.
+    """
+
+    num_shard_groups: int = 32
+    shard_order_randomization_key: Optional[int] = 0
+
+    @staticmethod
+    def default():
+        return CacheOptions()
+
+
 def build_or_load_cache(
     cache_dir: str,
     input_shards: ShardedDataSource[T],
     processor: BatchProcessor[T, U],
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
-    cache_config: Optional[Dict[str, Any]] = None,
+    options: CacheOptions = CacheOptions.default(),
     force_flush: bool = False,
 ) -> "TreeCache[U]":
     """
@@ -79,7 +108,7 @@ def build_or_load_cache(
         monitors: a list of MetricsMonitors to attach to the cache. These will be called periodically with
             metrics about the cache build process. If None, will add a LoggerMetricsMonitor.
 
-        cache_config: A dictionary of configuration options for the cache. This is passed to the cache writer.
+        options: Configuration for the cache. This is used to configure a few parts of the cache creation process
 
         force_flush: for testing, forces the cache to flush after every batch. This is useful for testing.
 
@@ -92,7 +121,7 @@ def build_or_load_cache(
         cache_dir=cache_dir,
         shard_source=input_shards,
         processor=processor,
-        cache_config=cache_config,
+        options=options,
         force_flush=force_flush,
     )
 
@@ -245,10 +274,10 @@ class TreeCache(AsyncDataset[T_co]):
                 raise IndexError(f"Index {needed_len} out of bounds for cache of size {len(self.store)}")
 
     @staticmethod
-    def load(cache_dir: str, exemplar: T, cache_config: dict[str, Any] | None) -> "TreeCache":
+    def load(cache_dir: str, exemplar: T, options: Optional["CacheMetadata"] = None) -> "TreeCache":
         """Loads a cache from disk or an object store. Raises FileNotFoundError if the cache doesn't exist"""
         logger.info(f"Loading cache from {cache_dir}")
-        ledger = CacheLedger.load(cache_dir, cache_config)
+        ledger = CacheLedger.load(cache_dir, options)
         if not ledger.is_finished:
             raise FileNotFoundError(f"Cache at {cache_dir} is not finished. Use build_or_load to build it.")
         return TreeCache(cache_dir, exemplar, ledger, None)
@@ -258,17 +287,20 @@ class TreeCache(AsyncDataset[T_co]):
         cache_dir: str,
         shard_source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
-        cache_config: dict[str, Any] | None = None,
+        options: Optional["CacheOptions"] = None,
         force_flush: bool = False,
     ) -> "TreeCache[U]":
+        if options is None:
+            options = CacheOptions.default()
+        metadata = CacheMetadata(options=options, preprocessor_metadata=processor.metadata)
         try:
-            return TreeCache.load(cache_dir, processor.output_exemplar, cache_config)
+            return TreeCache.load(cache_dir, processor.output_exemplar, metadata)
         except FileNotFoundError:
             broker = _get_builder_actor(
                 cache_dir=cache_dir,
-                input_shards=shard_source,
+                shard_source=shard_source,
                 processor=processor,
-                cache_config=cache_config,
+                options=options,
                 force_flush=force_flush,
             )
             return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
@@ -422,10 +454,13 @@ class CacheLedger:
     is_finished: bool = False
     finished_shards: List[str] = dataclasses.field(default_factory=list)
     field_counts: Dict[str, int] = dataclasses.field(default_factory=dict)
-    metadata: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    metadata: "CacheMetadata" = dataclasses.field(default_factory=lambda: CacheMetadata(CacheOptions(), {}))
 
     @staticmethod
-    def load_or_initialize(source: ShardedDataSource, cache_dir: str, metadata: dict | None = None) -> "CacheLedger":
+    def load_or_initialize(
+        cache_dir: str, source: ShardedDataSource, processor: BatchProcessor, config: "CacheOptions"
+    ):
+        metadata = CacheMetadata(options=config, preprocessor_metadata=processor.metadata)
         try:
             return CacheLedger.load(cache_dir, metadata)
         except FileNotFoundError:
@@ -433,18 +468,22 @@ class CacheLedger:
                 total_num_rows=0,
                 shard_rows={shard: 0 for shard in source.shard_names},
                 is_finished=False,
-                metadata=metadata or {},
+                metadata=metadata,
             )
 
     @staticmethod
-    def load(cache_dir: str, metadata: dict | None) -> "CacheLedger":
+    def load(cache_dir: str, metadata: Optional["CacheMetadata"] = None) -> "CacheLedger":
         ledger_path = os.path.join(cache_dir, LEDGER_FILE_NAME)
         try:
             logger.debug(f"Attempting to load cache ledger from {ledger_path}")
             with fsspec.open(ledger_path) as file:
                 cache_ledger = CacheLedger.from_json(file.read())  # type: ignore
             if metadata:
-                cache_ledger.compare_metadata(metadata)
+                diff = cache_ledger.metadata.compare_to(metadata)
+                if not diff:
+                    logger.debug("Metadata matches")
+                else:
+                    logger.warning(f"Metadata mismatch: {pprint.pformat(diff, indent=2)}")
             return cache_ledger
         except FileNotFoundError:
             raise FileNotFoundError(f"Cache ledger not found at {ledger_path}")
@@ -453,25 +492,25 @@ class CacheLedger:
         path = os.path.join(cache_dir, LEDGER_FILE_NAME)
         return _serialize_json_and_commit(path, self)  # type: ignore
 
-    def _compare_metadata(self, cache_dir, metadata):
-        differences: dict[str, tuple[Any, Any]] = {}
-        for key, value in metadata.items():
-            if self.metadata.get(key) != value:
-                differences[key] = (self.metadata.get(key), value)
-        # check for keys in our metadata that aren't in the new metadata
-        for key in self.metadata.keys():
-            if key not in metadata:
-                differences[key] = (self.metadata[key], None)
 
-        if differences:
+@dataclass_json
+@dataclass(frozen=True)
+class CacheMetadata:
+    options: CacheOptions
+    preprocessor_metadata: Optional[dict[str, Any]]
 
-            def format_difference(k, v):
-                return f"{k}: {v[0]} -> {v[1]}"
+    def compare_to(self, other: "CacheMetadata") -> deepdiff.DeepDiff:
+        """
+        Compare this metadata to another set of metadata. This is used to check if the cache being loaded
+        was created with the expected configuration.
 
-            formatted_diffs = "\n    ".join(format_difference(k, v) for k, v in differences.items())
-            logger.warning(
-                f"Metadata differences between loaded ledger at {cache_dir} and expectation:\n    {formatted_diffs}"
-            )
+        if other.preprocessor_metadata is None, we ignore it for the purposes of comparison.
+        """
+        if other.preprocessor_metadata is None:
+            sorta_self = dataclasses.replace(self, preprocessor_metadata=None)
+        else:
+            sorta_self = self
+        return deepdiff.DeepDiff(sorta_self, other)
 
 
 @dataclass
@@ -487,7 +526,7 @@ class SerialCacheWriter(AbstractContextManager):
     Mostly for scripts and debugging.
 
     Examples:
-        >>> with SerialCacheWriter(cache_dir, exemplar) as writer:
+        >>> with SerialCacheWriter(cache_dir,exemplar) as writer:
         ...     for batch in process_batches():
         ...         writer.write_batch(batch)
     """
@@ -496,10 +535,10 @@ class SerialCacheWriter(AbstractContextManager):
         self,
         cache_dir: str,
         exemplar: T,
-        cache_config: Optional[Dict[str, Any]] = None,
+        metadata: Optional["CacheMetadata"],
     ):
         self.cache_dir = cache_dir
-        self.cache_config = cache_config
+        self.metadata = metadata
         self._exemplar = exemplar
         self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="w")  # type: ignore
         self._is_closed = False
@@ -516,7 +555,7 @@ class SerialCacheWriter(AbstractContextManager):
             shard_rows={"": len(self._tree_store)},
             finished_shards=[""],
             field_counts={},
-            metadata=self.cache_config,
+            metadata=self.metadata or CacheMetadata(),
         )
 
         if exc_type is None:
@@ -527,7 +566,7 @@ class SerialCacheWriter(AbstractContextManager):
     def result(self) -> "TreeCache":
         if not self._is_closed:
             raise RuntimeError("Cannot get result until TreeCacheWriter is closed")
-        return TreeCache.load(self.cache_dir, self._exemplar, self.cache_config)
+        return TreeCache.load(self.cache_dir, self._exemplar, self.metadata)
 
     def write_batch(self, batch: BatchResult):
         if isinstance(batch, pa.RecordBatch):
@@ -549,18 +588,15 @@ class ShardedCacheWriter:
 
     def __init__(
         self,
-        source: ShardedDataSource[T],
         cache_dir: str,
+        initial_ledger: CacheLedger,
         exemplar: T,
-        cache_config: Optional[Dict[str, Any]] = None,
         on_write: Optional[Callable[[CacheLedger], None]] = None,
     ):
         self.cache_dir = cache_dir
-        self.cache_config = cache_config
-        self._exemplar = exemplar
         self._on_write = on_write
 
-        self._ledger = CacheLedger.load_or_initialize(source, os.path.join(cache_dir, LEDGER_FILE_NAME), cache_config)
+        self._ledger = copy.deepcopy(initial_ledger)
 
         self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")  # type: ignore
         self._tree_store.trim_to_size(self._ledger.total_num_rows)
@@ -703,35 +739,41 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         name: str,
         source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
-        cache_config: Dict[str, Any],
+        options: CacheOptions,
         force_flush: bool,
     ):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
-        self.source = source
-        self._cache_dir = cache_dir
-        self._cache_config = cache_config
-        self._updated_ledger_condition = asyncio.Condition()
-        # used to subscribe to metrics updates
         self._finished_promise: asyncio.Future[None] = asyncio.Future()
+        try:
+            self.source = source
+            self._cache_dir = cache_dir
+            self._options = options
+            self._updated_ledger_condition = asyncio.Condition()  # used to subscribe to metrics updates
 
-        self._ledger = CacheLedger.load_or_initialize(source, cache_dir, cache_config)
+            self._ledger = CacheLedger.load_or_initialize(cache_dir, source, processor, options)
 
-        if self._ledger.is_finished:
-            self._finished_promise.set_result(None)
+            if self._ledger.is_finished:
+                self._finished_promise.set_result(None)
 
-        path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
-        name = f"broker::{path_for_name}"
-        self.logger = pylogging.getLogger(f"{name}")
+            path_for_name = os.path.join(*self._cache_dir.split("/")[-2:])
+            name = f"broker::{path_for_name}"
+            self.logger = pylogging.getLogger(f"{name}")
 
-        if self._ledger.is_finished:
-            self.logger.info("Cache already finished. Nothing to do.")
-            return
-        self._cache_writer = _preprocess_task_chain(
-            current_actor_handle(), cache_dir, name, source, processor, cache_config, force_flush
-        )
+            if self._ledger.is_finished:
+                self.logger.info("Cache already finished. Nothing to do.")
+                return
+            self._cache_writer = _preprocess_task_chain(
+                current_actor_handle(), cache_dir, name, self._ledger, source, processor, force_flush
+            )
+        except Exception:
+            # Ray behaves poorly if the constructor of an actor fails, so we catch and log here
+            # this also propagates to the finished promise, so we can handle it there
+            self._writer_exception(None, ser_exc_info())
 
     def current_ledger(self):
+        if self._finished_promise.done() and self._finished_promise.exception() is not None:
+            raise self._finished_promise.exception()
         return self._ledger
 
     def other_failed(self, error: ExceptionInfo):
@@ -743,7 +785,12 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self._writer_exception(None, exception)
 
     def is_finished(self):
+        if self.failed():
+            return False
         return self._ledger.is_finished
+
+    def failed(self):
+        return self._finished_promise.done() and self._finished_promise.exception() is not None
 
     async def finished_sentinel(self):
         await self._finished_promise
@@ -800,7 +847,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         asyncio.create_task(_do_notify_async())
 
 
-def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None, force_flush=False):
+def _get_builder_actor(cache_dir, shard_source, processor, options=CacheOptions.default(), force_flush=False):
     name = f"lev_cache_manager::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
@@ -808,9 +855,9 @@ def _get_builder_actor(cache_dir, input_shards, processor, cache_config=None, fo
     return _TreeStoreCacheBuilder.options(name=name, get_if_exists=True).remote(  # type: ignore
         name=name_for_display,
         cache_dir=cache_dir,
-        source=input_shards,
+        source=shard_source,
         processor=processor,
-        cache_config=cache_config,
+        options=options,
         force_flush=force_flush,
     )
 
@@ -819,9 +866,9 @@ def _preprocess_task_chain(
     parent,
     cache_dir: str,
     name: str,
+    initial_ledger: CacheLedger,
     source: ShardedDataSource,
     processor: BatchProcessor,
-    cache_config: Optional[Dict[str, Any]],
     force_flush: bool = False,
 ):
     """
@@ -836,27 +883,26 @@ def _preprocess_task_chain(
     It handles resumes on the reading side
     """
     with log_failures_to(parent):
-        initial_ledger = CacheLedger.load_or_initialize(source, cache_dir, cache_config)
-        statuses = [
-            _ShardStatus(shard_name, initial_ledger.shard_rows.get(shard_name, 0), False)
-            for shard_name in source.shard_names
-        ]
 
-        writer_task = _core_writer_task.remote(
-            parent, cache_dir, source, statuses, processor, cache_config, force_flush
-        )
+        writer_task = _core_writer_task.remote(parent, cache_dir, initial_ledger, source, processor, force_flush)
 
     return writer_task
+
+
+def _make_shard_statuses(initial_ledger, source):
+    return [
+        _ShardStatus(name, initial_ledger.shard_rows.get(name, 0), name in initial_ledger.finished_shards)
+        for name in source.shard_names
+    ]
 
 
 @ray.remote(num_cpus=1)
 def _core_writer_task(
     parent,
     cache_dir,
+    initial_ledger: CacheLedger,
     source: ShardedDataSource,
-    initial_statuses: Sequence[_ShardStatus],
     processor,
-    cache_config: Optional[Dict[str, Any]],
     force_flush: bool,
 ):
     logger.setLevel(DEFAULT_LOG_LEVEL)
@@ -868,11 +914,10 @@ def _core_writer_task(
 
     with log_failures_to(parent):
         sharded_cache_writer = ShardedCacheWriter(
-            source, cache_dir, processor.output_exemplar, cache_config=cache_config, on_write=on_write
+            cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
-        interleave = RayPrefetchQueue(lambda: _make_interleave_for_shards(source, initial_statuses, processor), 1024)
-        del initial_statuses
+        interleave = RayPrefetchQueue(lambda: _make_interleave_for_shards(source, initial_ledger, processor), 1024)
 
         total_time = Stopwatch()
         loading_time = Stopwatch()
@@ -953,9 +998,7 @@ def _interleave_shards(
     logger.info(f"Finished all shards, got {total} batches")
 
 
-def _make_interleave_for_shards(
-    source: ShardedDataSource, statuses: Sequence[_ShardStatus], processor: BatchProcessor
-):
+def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger, processor: BatchProcessor):
     """
     Given a list of ShardStatus objects and sources, creates an interleaving generator
     that reads from shards and tokenizes them in parallel.
@@ -965,6 +1008,7 @@ def _make_interleave_for_shards(
     and starts interleaving from the next shard (i.e. the one with the fewest rows that isn't finished).
     """
     logger.setLevel(DEFAULT_LOG_LEVEL)
+    statuses = _make_shard_statuses(initial_ledger, source)
 
     unfinished_shards: list[_ShardStatus] = []
     shards_with_progress: dict[str, int] = {}

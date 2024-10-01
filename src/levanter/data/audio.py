@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -122,6 +122,13 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
             )
 
         return out  # type: ignore
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "tokenizer": self.bt.metadata,
+            "processor": self.feature_extractor.to_dict(),
+        }
 
     @property
     def output_exemplar(self):
@@ -339,7 +346,8 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         """
 
         try:
-            cache = TreeCache.load(cache_dir, AudioTextDict_exemplar)
+            # TODO: populate cache config
+            cache = TreeCache.load(cache_dir, AudioTextDict_exemplar, options=None)
             return ProcessedAudioCache(cache)
         except FileNotFoundError:
             raise FileNotFoundError(f"{cache_dir} is not a complete cache")

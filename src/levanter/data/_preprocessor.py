@@ -57,7 +57,14 @@ class BatchProcessor(Generic[T_contra, U], ABC):
 
     @property
     def batch_size(self) -> int:
+        """TODO: push this into CacheConfig"""
         return 128
+
+    @property
+    @abstractmethod
+    def metadata(self) -> Dict[str, Any]:
+        """Any metadata that changes the behavior of this processor."""
+        raise NotImplementedError
 
 
 class _DatasetTransform(ABC):
@@ -204,6 +211,10 @@ class _CompositeBatchProcessor(BatchProcessor):
             batch = list(batch)
 
         return batch
+
+    @property
+    def metadata(self):
+        return {}
 
 
 def dict_from_record_batch(b) -> dict:
