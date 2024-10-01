@@ -125,19 +125,23 @@ class DataLoaderIterator(Iterator[Ex]):
         batch_number = self._start_from_batch or 0
         total_ex_loaded = 0
         done = False
+        print(f"\n batch_number: {batch_number}")
         while not done:
             next_batch_numbers = []
             for i in range(32):
                 if self.dl.data_store.is_finite():
+                    print(f"\n dataset is finite")
                     next_end = (batch_number + 1) * self.dl.batch_size
                     available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
                     if available_len < next_end:
                         done = True
                         break
-
+                print(f"\n batch_number: {batch_number}")
                 next_batch_numbers.append(batch_number)
+                print(f"\n next_batch_numbers: {next_batch_numbers}")
                 batch_number += 1
 
+            print(f"\n next_batch_numbers: {next_batch_numbers}")
             async for batch in self._retrieve_batches(next_batch_numbers):
                 yield batch
 
