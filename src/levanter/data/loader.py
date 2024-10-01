@@ -127,7 +127,7 @@ class DataLoaderIterator(Iterator[Ex]):
         done = False
         while not done:
             next_batch_numbers = []
-            for i in range(self.dl.prefetch_size):
+            for i in range(32):
                 if self.dl.data_store.is_finite():
                     next_end = (batch_number + 1) * self.dl.batch_size
                     available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
