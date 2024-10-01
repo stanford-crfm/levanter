@@ -146,11 +146,14 @@ class DataLoaderIterator(Iterator[Ex]):
     async def _retrieve_batches(self, batch_numbers: list[int]):
         with hax.axis_mapping(self.mapping), self.dl.mesh:
             indices_for_this_batch_of_batches: list[int] = []
+            print(f"\n batch_numbers: {batch_numbers}")
             for bn in batch_numbers:
                 indices_this_batch = range(bn * self.dl.batch_size, (bn + 1) * self.dl.batch_size, 1)
                 indices_this_batch_this_process = [indices_this_batch[i] for i in self.dl._local_indices]
+                print(f"indices_this_batch_this_process: {indices_this_batch_this_process}")
                 indices_for_this_batch_of_batches.extend(indices_this_batch_this_process)
 
+            print(f"\n indices_for_this_batch_of_batches: {indices_for_this_batch_of_batches}")
             time_start = time.time()
             individual_datums = await self.dl.data_store.get_batch(indices_for_this_batch_of_batches)
             time_end = time.time()
