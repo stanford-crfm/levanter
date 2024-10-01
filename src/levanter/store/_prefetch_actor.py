@@ -33,7 +33,13 @@ class RayPrefetchQueue(Generic[T]):
     def queue_size(self):
         return self.queue.qsize()
 
-    def get_next(self):
+    def __next__(self):
+        return self.get_next()
+
+    def __iter__(self):
+        return self
+
+    def get_next(self) -> T:
         """
         Get the next item from the producer. If the producer raises an exception, it will be reraised here.
 

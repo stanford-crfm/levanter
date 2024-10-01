@@ -80,15 +80,12 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
         self._cached_len: Optional[int] = None
 
     async def async_len(self) -> int:
-        print("Awaiting doc cache finished")
         await self.doc_cache.finished()
-        print("Awaiting token cache")
         token_arrays = await self._await_token_cache()
         return token_arrays.data_size // self.seq_len
 
     async def _await_token_cache(self) -> JaggedArrayStore:
         if self._store is None:
-            print("Awaiting doc cache")
             self._store = await self.doc_cache.store_async()
         return self._store.tree["input_ids"]
 
@@ -636,7 +633,10 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         name = logger_name or os.path.basename(self.cache_dir)
 
         try:
-            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
+            # TODO: check config again
+            return TreeCache.load(
+                split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)}, cache_config=None
+            )
         except FileNotFoundError:
             pass
 
@@ -806,11 +806,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         # in practice it works best if we block on validation caches
         if split == "validation":
-            logger.info("Waiting for validation caches to finish building...")
             for cache in caches.values():
                 cache.await_finished()
 
-            print("Validation caches finished building")
         else:
             logger.info(f"Not waiting for {split} caches to finish building")
 

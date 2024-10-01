@@ -526,7 +526,7 @@ def test_sharded_cache_writer():
 
         exemplar = {"data": np.array([0], dtype=np.int64)}
 
-        writer = ShardedCacheWriter(tmpdir, exemplar)
+        writer = ShardedCacheWriter(source, tmpdir, exemplar)
         for shard_name in source.shard_names:
             for ex in batched(source.open_shard(shard_name), processor.batch_size):
                 writer.write_batch(shard_name, processor(ex))
@@ -560,7 +560,7 @@ def test_sharded_cache_writer_trims_on_resume():
 
         exemplar = {"data": np.array([0], dtype=np.int64)}
 
-        writer = ShardedCacheWriter(tmpdir, exemplar)
+        writer = ShardedCacheWriter(source, tmpdir, exemplar)
         for shard_name in source.shard_names:
             for ex in batched(source.open_shard(shard_name), processor.batch_size):
                 writer.write_batch(shard_name, processor(ex))
@@ -580,7 +580,7 @@ def test_sharded_cache_writer_trims_on_resume():
 
         _serialize_json_and_commit(os.path.join(tmpdir, LEDGER_FILE_NAME), ledger)
 
-        writer = ShardedCacheWriter(tmpdir, exemplar)
+        writer = ShardedCacheWriter(source, tmpdir, exemplar)
 
         # ensure it got truncated
         assert writer.ledger.total_num_rows == 24
