@@ -131,6 +131,7 @@ def main(config: TrainLmConfig):
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key), max_epochs=3)
 
         seek_dataloader = True
+        assert config.model.use_bias is False, "We don't support bias yet"
         if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
             state = load_checkpoint(state, config.initialize_from_checkpoint_path)
             seek_dataloader = False
