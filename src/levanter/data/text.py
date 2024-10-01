@@ -80,12 +80,15 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
         self._cached_len: Optional[int] = None
 
     async def async_len(self) -> int:
+        print("Awaiting doc cache finished")
         await self.doc_cache.finished()
+        print("Awaiting token cache")
         token_arrays = await self._await_token_cache()
         return token_arrays.data_size // self.seq_len
 
     async def _await_token_cache(self) -> JaggedArrayStore:
         if self._store is None:
+            print("Awaiting doc cache")
             self._store = await self.doc_cache.store_async()
         return self._store.tree["input_ids"]
 
@@ -112,23 +115,6 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
                 out.append(token_arrays.data[offset : offset + self.seq_len].read())
 
         out = await asyncio.gather(*out)
-        return out
-
-    def get_batch_sync(self, indices: Sequence[int]) -> Sequence[T_co]:
-        token_arrays = self.doc_cache.store.tree["input_ids"]
-        # logger.info(f"Time to get token cache: {time.time() - time_in}")
-        # len = await self.wait_until_len_at_least(max(indices) + 1)
-        # if len is not None and len < max(indices) + 1:
-        # raise ValueError("Requested indices beyond the end of the dataset")
-        offsets = np.array(indices) * self.seq_len
-        with ts.Batch():
-            out = []
-            for offset in offsets:
-                out.append(token_arrays.data[offset : offset + self.seq_len].read())
-        # logger.info(f"Time to read token cache: {time.time() - time_in}")
-
-        out = [x.result() for x in out]
-        # logger.info(f"Time to wait for token cache: {time.time() - time_in}")
         return out
 
     async def wait_until_len_at_least(self, length: int) -> int:
@@ -677,7 +663,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             split_cache_dir,
             source,
             bt,
-            await_finished=False,
+            await_finished=split == "validation",
             monitors=monitors,
             cache_config={
                 "tokenizer": self.the_tokenizer.name_or_path,
@@ -823,6 +809,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             logger.info("Waiting for validation caches to finish building...")
             for cache in caches.values():
                 cache.await_finished()
+
+            print("Validation caches finished building")
+        else:
+            logger.info(f"Not waiting for {split} caches to finish building")
 
         return caches
 

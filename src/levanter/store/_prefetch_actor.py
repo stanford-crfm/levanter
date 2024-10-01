@@ -1,11 +1,13 @@
-import queue
-import threading
 from dataclasses import dataclass
-from typing import Callable, Iterator
+from typing import Callable, Generic, Iterator, TypeVar
 
 import ray
+from ray.util.queue import Queue
 
 from levanter.utils.ray_utils import ExceptionInfo, ser_exc_info
+
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -20,47 +22,16 @@ class _Sentinel:
 _SENTINEL = _Sentinel()
 
 
-@ray.remote
-class PrefetchIteratorActor:
-    def __init__(self, producer: Callable[[], Iterator[ray.ObjectRef]], max_queue_size: int = 100):
-        assert producer() is not None, "Producer must not return None"
-        self.producer = producer
+class RayPrefetchQueue(Generic[T]):
+    def __init__(self, producer: Callable[[], Iterator[T]], max_queue_size: int = 100):
         self.max_queue_size = max_queue_size
-        self.queue: queue.Queue[ray.ObjectRef | _Sentinel | _PrefetchException] = queue.Queue(maxsize=max_queue_size)
-        self._stop_event = threading.Event()
-        self._condition = threading.Condition()
-        self._producer_thread = threading.Thread(target=self._run_producer)
-        self._producer_thread.start()
+        self.queue: Queue = Queue(maxsize=max_queue_size)  # [T | _Sentinel | _PrefetchException]
+        self.producer = _run_producer.remote(self.queue, producer)
+        self._stopped = False
+        self._finished = False
 
     def queue_size(self):
         return self.queue.qsize()
-
-    def _run_producer(self):
-        try:
-            producer = self.producer()
-            next_item = _SENTINEL
-            while not self._stop_event.is_set():
-                if next_item is _SENTINEL:
-                    try:
-                        next_item = next(producer)
-                    except StopIteration:
-                        break
-
-                try:
-                    self.queue.put(next_item, timeout=1)
-                    next_item = _SENTINEL
-                except queue.Full:
-                    pass
-        except Exception as e:
-            self.queue.put(_PrefetchException(ser_exc_info(e)))
-            raise
-
-        while not self._stop_event.is_set():
-            try:
-                self.queue.put(_SENTINEL, timeout=1)
-                break
-            except queue.Full:
-                pass
 
     def get_next(self):
         """
@@ -68,16 +39,36 @@ class PrefetchIteratorActor:
 
         If the producer is done, this will raise StopIteration.
         """
+        if self._finished:
+            raise StopIteration
         item = self.queue.get()
         if isinstance(item, _PrefetchException):
             item.info.reraise()
-        if item is _SENTINEL:
+        if isinstance(item, _Sentinel):
+            self._finished = True
             raise StopIteration
-        return ray.get(item)
+        return item
 
     def stop(self):
-        self._stop_event.set()
-        self._producer_thread.join()
+        ray.cancel(self.producer)
+        self.queue.shutdown()
+        self._stopped = True
 
     def is_stopped(self):
-        return self._stop_event.is_set() and not self._producer_thread.is_alive()
+        return self._stopped
+
+
+@ray.remote
+def _run_producer(queue: Queue, producer_fn: Callable[[], Iterator[T]]):
+    try:
+        producer = producer_fn()
+        del producer_fn
+
+        while True:
+            next_item = next(producer)
+            queue.put(next_item)
+    except StopIteration:
+        queue.put(_SENTINEL)
+    except Exception as e:
+        queue.put(_PrefetchException(ser_exc_info(e)))
+        raise

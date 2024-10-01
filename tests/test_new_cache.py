@@ -4,23 +4,24 @@ import logging
 import os
 import tempfile
 from typing import Iterator, Sequence
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import ray
-from ray.exceptions import RayTaskError
 
 from levanter.data import BatchProcessor, ShardedDataSource, batched
 from levanter.data.sharded_datasource import TextUrlDataSource
 from levanter.store.cache import (
-    LEDGER_FILE_NAME, SerialCacheWriter,
-    ShardedCacheWriter, TreeStore,
+    LEDGER_FILE_NAME,
+    SerialCacheWriter,
+    ShardedCacheWriter,
+    TreeStore,
     _get_builder_actor,
-    _serialize_json_and_commit, build_or_load_cache,
+    _serialize_json_and_commit,
+    build_or_load_cache,
 )
 from levanter.utils.py_utils import logical_cpu_core_count
-from levanter.utils.ray_utils import ExceptionInfo, SnitchRecipient, ser_exc_info
+from levanter.utils.ray_utils import ExceptionInfo, SnitchRecipient
 
 
 class TestProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
@@ -207,16 +208,16 @@ def test_full_end_to_end_cache():
     with td as tmpdir:
         ray_ds = build_or_load_cache(
             tmpdir,
-            SimpleShardSource(num_shards=1),
-            TestProcessor(),
+            SimpleShardSource(num_shards=4),
+            TestProcessor(8),
             await_finished=True,
         )
 
-        simple_processed = simple_process(TestProcessor(), SimpleShardSource())
+        expected = process_interleave(TestProcessor(8), SimpleShardSource(num_shards=4))
 
         all_data = ray_ds[:]
 
-        check_datasets_equal(all_data, simple_processed)
+        check_datasets_equal(all_data, expected)
 
 
 @pytest.mark.ray
@@ -248,6 +249,9 @@ def test_cache_remembers_its_cached():
 
 
 def check_datasets_equal(ds1, ds2):
+    ds1 = list(ds1)
+    ds2 = list(ds2)
+    assert len(ds1) == len(ds2)
     for r1, r2 in zip(ds1, ds2):
         assert r1.keys() == r2.keys()
         for key in r1.keys():
@@ -259,7 +263,7 @@ class _CustomException(Exception):
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataSource[list[int]]):
         def __init__(self, crash_point: int):
@@ -332,23 +336,25 @@ def test_chunk_ordering_is_correct_with_slow_shards():
             return ["shard_0", "shard_1"]
 
         def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[list[int]]:
+            assert shard_name in self.shard_names
             max_count = 40 if shard_name == "shard_1" else 20
             shard_id = int(shard_name.split("_")[1])
             for i in range(0, max_count):
                 yield [i * 10 + shard_id] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        processor = TestProcessor(16)
         cache = build_or_load_cache(
             tmpdir,
             SlowShardSource(),
-            TestProcessor(1),
+            processor,
             await_finished=False,
         )
 
         # now block until the cache is done
-        cache.await_finished(timeout=10)
+        cache.await_finished(timeout=30)
 
-        expected = process_interleave(TestProcessor(1), SlowShardSource())
+        expected = process_interleave(processor, SlowShardSource())
 
         check_datasets_equal(list(cache[:]), expected)
 
@@ -376,11 +382,9 @@ async def test_can_get_elems_before_finished():
 
         def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[list[int]]:
             for i in range(10):
-                print(f"yielding {i}")
                 yield [i] * 10
             ray.get(blocker_to_wait_on_test.block.remote())
             for i in range(10, 20):
-                print(f"yielding {i} post")
                 yield [i] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -414,7 +418,7 @@ async def test_can_get_elems_before_finished():
         cache.await_finished(timeout=10)
 
 
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
     class ThrowingProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
@@ -439,7 +443,7 @@ def test_shard_cache_crashes_if_processor_throws():
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
     with tempfile.TemporaryDirectory() as tmpdir:
         with open(f"{tmpdir}/data.txt", "w") as f:
@@ -460,7 +464,7 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 @pytest.mark.asyncio
 async def test_shard_cache_fails_gracefully_with_unknown_file_type_async():
@@ -488,7 +492,7 @@ async def test_shard_cache_fails_gracefully_with_unknown_file_type_async():
         del cache
 
 
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -549,7 +553,6 @@ def test_sharded_cache_writer():
             assert ledger.shard_rows[shard_name] == 10
 
 
-
 def test_sharded_cache_writer_trims_on_resume():
     with tempfile.TemporaryDirectory() as tmpdir:
         source = SimpleShardSource(num_shards=4)
@@ -562,9 +565,7 @@ def test_sharded_cache_writer_trims_on_resume():
             for ex in batched(source.open_shard(shard_name), processor.batch_size):
                 writer.write_batch(shard_name, processor(ex))
 
-        store = writer.finish()
-
-        raw_data = store[:]
+        # store = writer.finish()
 
         # now deliberately truncate the ledger a bit
         ledger = copy.deepcopy(writer.ledger)
@@ -593,6 +594,3 @@ def test_sharded_cache_writer_trims_on_resume():
         new_data = new_store[:]
 
         assert len(new_data) == 24
-
-
-

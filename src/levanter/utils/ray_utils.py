@@ -45,22 +45,15 @@ class RayResources:
         return RayResources(num_cpus=resources.get("CPU", 0), num_gpus=resources.get("GPU", 0), resources=resources)
 
 
-def map_ref(f, ref: ray.ObjectRef, num_cpus=0):
-    """
-    Designed for lightweight functions that don't need to be remote, e.g. for adding a key to a result T -> tuple[str, T]
-    """
-    if hasattr(f, "remote"):
-        return f.remote(ref)
-    else:
-        return ray.remote(f, num_cpus=num_cpus).remote(ref)
-
-
 @dataclass
 class RefBox:
     """Ray doesn't dereference ObjectRefs if they're nested in another object. So we use this to take advantage of that.
     https://docs.ray.io/en/latest/ray-core/objects.html#passing-object-arguments"""
 
     ref: ray.ObjectRef
+
+    def get(self):
+        return ray.get(self.ref)
 
 
 class DoneSentinel:
