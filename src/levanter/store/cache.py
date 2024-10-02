@@ -911,6 +911,8 @@ def _core_writer_task(
     logger.setLevel(DEFAULT_LOG_LEVEL)
     logger.info("Starting writer task")
 
+    name = str(os.path.join(*cache_dir.split("/")[-2:]))
+
     def on_write(ledger):
         # todo: send serial numbers to ensure we don't process old data
         ray.get(parent._notify_updated_ledger.remote(ledger))
@@ -921,7 +923,7 @@ def _core_writer_task(
         )
 
         interleave: RayPrefetchQueue[_Message] = RayPrefetchQueue(
-            lambda: _make_interleave(source, initial_ledger, processor), 4096
+            lambda: _make_interleave(name, source, initial_ledger, processor), 4096
         )
 
         total_time = Stopwatch()
@@ -1073,7 +1075,7 @@ class _ShardGroup:
         return total_committed, all_finished
 
 
-def _make_interleave(source: ShardedDataSource, initial_ledger: CacheLedger, processor: BatchProcessor):
+def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: CacheLedger, processor: BatchProcessor):
     """
     Given a list of ShardStatus objects and sources, creates an interleaving generator
     that reads from shards and tokenizes them in parallel.
@@ -1093,7 +1095,7 @@ def _make_interleave(source: ShardedDataSource, initial_ledger: CacheLedger, pro
         logger.info("All shards finished. Nothing to do.")
         return
 
-    group_names, groups = _randomize_and_group_shards(options, statuses)
+    group_names, groups = _randomize_and_group_shards(name, options, statuses)
 
     logger.warning(f"Starting cache build with {len(statuses)} shards, in {len(groups)} groups")
 
@@ -1142,7 +1144,7 @@ def _check_current_shard_progress(statuses):
     return unfinished_shards
 
 
-def _randomize_and_group_shards(options, statuses):
+def _randomize_and_group_shards(name, options, statuses):
     if options.shard_order_randomization_key is not None:
         seed = options.shard_order_randomization_key
         logger.info(f"Randomizing shard order with seed {seed}")
@@ -1152,11 +1154,11 @@ def _randomize_and_group_shards(options, statuses):
         options.num_shard_groups if options.num_shard_groups is not None else len(statuses), len(statuses)
     )
     if num_groups == 1:
-        group_names = ["generator::all_shards"]
+        group_names = [f"generator::{name}::all_shards"]
     elif len(statuses) == num_groups:
-        group_names = [f"generator::{status.shard_name}" for status in statuses]
+        group_names = [f"generator::{name}::{status.shard_name}" for status in statuses]
     else:
-        group_names = [f"generator::group_{i}" for i in range(num_groups)]
+        group_names = [f"generator::{name}::group_{i}" for i in range(num_groups)]
 
     groups = _assign_shards_to_groups(statuses, num_groups)
     return group_names, groups
