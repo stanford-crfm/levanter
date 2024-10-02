@@ -9,8 +9,6 @@ from typing import Optional
 import ray
 import tblib
 
-from levanter.store.cache import DEFAULT_LOG_LEVEL, LOG_FORMAT, logger
-
 
 @dataclass
 class ExceptionInfo:
@@ -106,10 +104,15 @@ def log_failures_to(parent, suppress=False):
             raise e
 
 
+DEFAULT_LOG_LEVEL = logging.INFO
+LOG_FORMAT = "%(asctime)s %(levelname)s: %(message)s"
+
+
 @ray.remote
 class StopwatchActor:
     def __init__(self):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
+        self._logger = pylogging.getLogger("StopwatchActor")
         self._times_per = {}
         self._counts_per = {}
         self._total = 0
@@ -121,7 +124,7 @@ class StopwatchActor:
 
         if self._total % 1000 == 0:
             for name, time in self._times_per.items():
-                logger.info(f"{name}: {time / self._counts_per[name]}")
+                self._logger.info(f"{name}: {time / self._counts_per[name]}")
 
     def get(self, name: str):
         return self._times_per.get(name, 0), self._counts_per.get(name, 0)
