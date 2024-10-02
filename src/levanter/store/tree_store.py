@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Generic, List, TypeVar
+from typing import Generic, List, Sequence, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -60,7 +60,7 @@ class TreeStore(Generic[T]):
     def append(self, ex: T):
         return self.extend([ex])
 
-    def extend(self, batch: List[T]):
+    def extend(self, batch: Sequence[T]):
         """
         Append a batch of data to the store.
         """

@@ -27,9 +27,6 @@ from levanter.utils.ray_utils import ExceptionInfo, SnitchRecipient
 
 
 class TestProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
-    def __init__(self, batch_size: int = 8):
-        self._batch_size = batch_size
-
     def __call__(self, batch: Sequence[Sequence[int]]) -> Sequence[dict[str, np.ndarray]]:
         # return pa.RecordBatch.from_arrays([pa.array(batch)], ["test"])
         return [{"test": np.asarray(x)} for x in batch]
@@ -41,10 +38,6 @@ class TestProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
     @property
     def output_exemplar(self):
         return {"test": np.array([0], dtype=np.int64)}
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
 
     @property
     def num_cpus(self) -> int:
@@ -60,8 +53,7 @@ def simple_process(processor, source):
     return result
 
 
-def process_interleave(processor, source):
-    batch_size = processor.batch_size
+def process_interleave(processor, source, batch_size):
     shard_iterators = {
         shard_name: batched(iter(source.open_shard(shard_name)), batch_size) for shard_name in source.shard_names
     }
@@ -90,15 +82,8 @@ def teardown_module(module):
 
 
 class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
-    def __init__(self, batch_size: int = 8):
-        self._batch_size = batch_size
-
     def __call__(self, batch: Sequence[Sequence[int]]) -> Sequence[dict[str, Sequence[int]]]:
         return [{"data": x} for x in batch]
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
 
     @property
     def num_cpus(self) -> int:
@@ -136,7 +121,7 @@ def test_serial_cache_writer():
 
         with SerialCacheWriter(tmpdir1, exemplar) as writer:
             for shard_name in source.shard_names:
-                for ex in batched(source.open_shard(shard_name), processor.batch_size):
+                for ex in batched(source.open_shard(shard_name), 32):
                     writer.write_batch(processor(ex))
 
         _ = writer.result()
@@ -219,12 +204,12 @@ def test_full_end_to_end_cache():
         ray_ds = build_or_load_cache(
             tmpdir,
             SimpleShardSource(num_shards=2),
-            TestProcessor(8),
+            TestProcessor(),
             await_finished=True,
-            options=CacheOptions.no_fanciness(),
+            options=CacheOptions.no_fanciness(8),
         )
 
-        expected = process_interleave(TestProcessor(8), SimpleShardSource(num_shards=2))
+        expected = process_interleave(TestProcessor(), SimpleShardSource(num_shards=2), 8)
 
         all_data = ray_ds[:]
 
@@ -236,8 +221,6 @@ def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
         ds1 = build_or_load_cache(tmpdir, SimpleShardSource(), TestProcessor(), await_finished=True)
-
-        print(f"First run: {crappy_du(tmpdir)}")
 
         class ThrowingProcessor(TestProcessor):
             def __call__(self, batch: Sequence[Sequence[int]]):
@@ -344,18 +327,19 @@ def test_chunk_ordering_is_correct_with_slow_shards():
                 yield [i * 10 + shard_id] * 10
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        processor = TestProcessor(16)
+        processor = TestProcessor()
         cache = build_or_load_cache(
             tmpdir,
             SlowShardSource(),
             processor,
             await_finished=False,
+            options=CacheOptions.no_fanciness(16),
         )
 
         # now block until the cache is done
         cache.await_finished(timeout=30)
 
-        expected = process_interleave(processor, SlowShardSource())
+        expected = process_interleave(processor, SlowShardSource(), 16)
 
         check_datasets_equal(list(cache[:]), expected)
 
@@ -390,7 +374,12 @@ async def test_can_get_elems_before_finished():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = build_or_load_cache(
-            tmpdir, SlowShardSource(), TestProcessor(5), await_finished=False, force_flush=True
+            tmpdir,
+            SlowShardSource(),
+            TestProcessor(),
+            await_finished=False,
+            force_flush=True,
+            options=CacheOptions.no_fanciness(5),
         )  # we need force_flush to ensure the cache is written to disk
 
         # read the first 10 elements
@@ -512,13 +501,13 @@ def test_sharded_cache_writer():
     with tempfile.TemporaryDirectory() as tmpdir:
         source = SimpleShardSource(num_shards=4)
         processor = SimpleProcessor()
-        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, None)
+        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, CacheOptions.no_fanciness(8))
 
         exemplar = {"data": np.array([0], dtype=np.int64)}
 
         writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
         for shard_name in source.shard_names:
-            for ex in batched(source.open_shard(shard_name), processor.batch_size):
+            for ex in batched(source.open_shard(shard_name), ledger.metadata.options.batch_size):
                 writer.write_batch(shard_name, processor(ex))
 
         store = writer.finish()
@@ -550,11 +539,11 @@ def test_sharded_cache_writer_trims_on_resume():
 
         exemplar = {"data": np.array([0], dtype=np.int64)}
 
-        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, None)
+        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, CacheOptions.no_fanciness(batch_size=8))
 
         writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
         for shard_name in source.shard_names:
-            for ex in batched(source.open_shard(shard_name), processor.batch_size):
+            for ex in batched(source.open_shard(shard_name), 8):
                 writer.write_batch(shard_name, processor(ex))
 
         writer.finish()

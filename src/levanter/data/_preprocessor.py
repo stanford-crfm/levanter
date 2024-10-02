@@ -56,11 +56,6 @@ class BatchProcessor(Generic[T_contra, U], ABC):
         return 0
 
     @property
-    def batch_size(self) -> int:
-        """TODO: push this into CacheConfig"""
-        return 128
-
-    @property
     @abstractmethod
     def metadata(self) -> Dict[str, Any]:
         """Any metadata that changes the behavior of this processor."""
@@ -155,7 +150,7 @@ def _construct_composite_batch_processor(dataset):
 
 
 class _CompositeBatchProcessor(BatchProcessor):
-    def __init__(self, transforms, batch_size, num_cpus, num_gpus, resources):
+    def __init__(self, transforms, num_cpus, num_gpus, resources):
         self.transforms = transforms
         self._num_cpus = num_cpus
         self._num_gpus = num_gpus

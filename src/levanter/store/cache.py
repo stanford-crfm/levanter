@@ -66,24 +66,27 @@ class CacheOptions:
 
     num_shard_groups: Optional[int] = 128
     shard_order_randomization_key: Optional[int] = 0
+    batch_size: int = 128
 
     @staticmethod
     def default():
         return CacheOptions()
 
     @staticmethod
-    def no_fanciness():
+    def no_fanciness(batch_size: Optional[int] = None):
         """
         For testing, disables all the fancy features of the cache. This makes it easier to predict the behavior
         """
-        return CacheOptions(num_shard_groups=None, shard_order_randomization_key=None)
+        if batch_size is None:
+            batch_size = 128
+        return CacheOptions(num_shard_groups=None, shard_order_randomization_key=None, batch_size=batch_size)
 
     @staticmethod
     def one_group():
         """
         For testing, disables all the fancy features of the cache. This makes it easier to predict the behavior
         """
-        return CacheOptions(num_shard_groups=1, shard_order_randomization_key=None)
+        return CacheOptions(num_shard_groups=1, shard_order_randomization_key=None, batch_size=128)
 
 
 def build_or_load_cache(
@@ -1130,7 +1133,7 @@ def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger: Cache
     def _make_generator_fn(group: _ShardGroup):
         def generator():
             pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
-            for message in _shard_reader_generator(source, group, processor.batch_size):
+            for message in _shard_reader_generator(source, group, options.batch_size):
                 match message:
                     case _Batch():
                         processed = process_task.remote(message)

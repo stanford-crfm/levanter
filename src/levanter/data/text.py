@@ -34,7 +34,7 @@ from levanter.data.mixture import MixtureDataset, StopStrategy
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
-from levanter.store.cache import TreeCache
+from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
@@ -196,7 +196,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         enforce_bos=True,
         enforce_eos=True,
         *,
-        batch_size=128,
         override_resources=None,
         _workaround_len=LONG_STRING_WORKAROUND,
         return_attention_mask=False,
@@ -229,8 +228,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         else:
             should_append_eos = False
             should_append_bos = False
-
-        self._batch_size = batch_size
 
         self._need_to_add_eos = should_append_eos
         self._need_to_add_bos = should_append_bos
@@ -379,10 +376,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         if self.override_resources is not None:
             return self.override_resources.get("num_gpus", 0)
         return 0
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
 
 
 def concatenate_and_group_texts(
@@ -538,7 +531,7 @@ class LMTaskConfig(abc.ABC):
 
     # config related to caching
     cache_dir: str = "cache/"
-    tokenizer_batch_size: int = 32
+    cache_options: CacheOptions = field(default_factory=CacheOptions)
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     ignore_token_id: Optional[int] = None
@@ -665,9 +658,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif monitors is False:
             monitors = []
 
-        bt = BatchTokenizer(
-            self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos, batch_size=self.tokenizer_batch_size
-        )
+        bt = BatchTokenizer(self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos)
 
         return build_or_load_cache(
             split_cache_dir,
@@ -675,6 +666,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             bt,
             monitors=monitors,
             await_finished=False,
+            options=self.cache_options,
         )
 
 
