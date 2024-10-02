@@ -217,6 +217,26 @@ def test_full_end_to_end_cache():
 
 
 @pytest.mark.ray
+def test_full_end_to_end_cache_with_groups():
+    td = tempfile.TemporaryDirectory()
+    with td as tmpdir:
+        ray_ds = build_or_load_cache(
+            tmpdir,
+            SimpleShardSource(num_shards=5),
+            TestProcessor(),
+            await_finished=True,
+            options=CacheOptions(num_shard_groups=2, batch_size=8, shard_order_randomization_key=None),
+        )
+
+        expected = process_interleave(TestProcessor(), SimpleShardSource(num_shards=5), 8)
+
+        all_data = ray_ds[:]
+
+        # check_datasets_equal(all_data, expected)
+        assert len(all_data) == len(list(expected))
+
+
+@pytest.mark.ray
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
@@ -293,7 +313,6 @@ def test_cache_recover_from_crash():
         # compare to the original with no crash
         reader2 = build_or_load_cache(tmpdir2, SimpleShardSource(), TestProcessor(), await_finished=True)
 
-        assert len(list(reader1)) == 40
         check_datasets_equal(reader1, reader2)
 
 

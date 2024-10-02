@@ -23,10 +23,18 @@ _SENTINEL = _Sentinel()
 
 
 class RayPrefetchQueue(Generic[T]):
-    def __init__(self, producer: Callable[[], Iterator[T]], max_queue_size: int = 100):
+    def __init__(self, producer: Callable[[], Iterator[T]], max_queue_size: int = 100, name: str | None = None):
         self.max_queue_size = max_queue_size
-        self.queue: Queue = Queue(maxsize=max_queue_size)  # [T | _Sentinel | _PrefetchException]
-        self.producer = _run_producer.remote(self.queue, producer)
+        if name is not None:
+            actor_options = {"name": f"{name}::queue"}
+            producer_options = {"name": f"{name}::producer"}
+        else:
+            actor_options = {}
+            producer_options = {}
+        self.queue: Queue = Queue(
+            maxsize=max_queue_size, actor_options=actor_options
+        )  # [T | _Sentinel | _PrefetchException]
+        self.producer = _run_producer.options(**producer_options).remote(self.queue, producer)
         self._stopped = False
         self._finished = False
 
@@ -39,15 +47,21 @@ class RayPrefetchQueue(Generic[T]):
     def __iter__(self):
         return self
 
-    def get_next(self) -> T:
+    def get_next(self, timeout: float | None = None) -> T:
         """
         Get the next item from the producer. If the producer raises an exception, it will be reraised here.
 
         If the producer is done, this will raise StopIteration.
+
+        Args:
+            timeout (float|None): Timeout in seconds for getting the next item. If None, will block indefinitely.
+
+        Raises:
+            Empty: If the queue is empty and the timeout is reached.
         """
         if self._finished:
             raise StopIteration
-        item = self.queue.get()
+        item = self.queue.get(timeout=timeout)
         if isinstance(item, _PrefetchException):
             item.info.reraise()
         if isinstance(item, _Sentinel):
@@ -64,7 +78,7 @@ class RayPrefetchQueue(Generic[T]):
         return self._stopped
 
 
-@ray.remote
+@ray.remote(scheduling_strategy="SPREAD")
 def _run_producer(queue: Queue, producer_fn: Callable[[], Iterator[T]]):
     try:
         producer = producer_fn()

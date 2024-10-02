@@ -22,6 +22,7 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
 from ray.remote_function import RemoteFunction
+from ray.util.queue import Empty
 
 from levanter.data.dataset import AsyncDataset
 from levanter.store._prefetch_actor import RayPrefetchQueue
@@ -212,10 +213,7 @@ class TreeCache(AsyncDataset[T_co]):
         return len(self.store)
 
     async def final_length_is_known(self) -> bool:
-        if self._builder is not None:
-            return await self._builder.is_finished.remote()
-
-        return True
+        return self.ledger is not None and self.ledger.is_finished
 
     def is_finite(self) -> bool:
         return True
@@ -325,10 +323,7 @@ class TreeCache(AsyncDataset[T_co]):
 
     @property
     def is_finished(self):
-        if self._builder is None:
-            return True
-        else:
-            return ray.get(self._builder.is_finished.remote())
+        return self.ledger is not None and self.ledger.is_finished
 
     def __getitem__(self, item):
         if isinstance(item, slice):
@@ -430,6 +425,7 @@ class TreeCache(AsyncDataset[T_co]):
             try:
                 try:
                     ledger = ray.get(self._builder.updated_ledger.remote(), timeout=10.0)
+                    self.ledger = ledger
                     metrics = _ledger_to_metrics(ledger)
                     for monitor in self._metrics_monitors:
                         monitor(metrics)
@@ -596,7 +592,6 @@ class ShardedCacheWriter:
 
     Similar to _OrderedCacheWriter, it also supports resuming, and it
     groups together batches before writing (at some interval) in order to improve performance.
-    It does its actual writes in a background thread.
     """
 
     def __init__(
@@ -613,19 +608,7 @@ class ShardedCacheWriter:
 
         self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")  # type: ignore
         self._tree_store.trim_to_size(self._ledger.total_num_rows)
-
-        # set up the writer thread
-        if not self._ledger.is_finished:
-            self._stop_loop = threading.Event()
-            self._done = False
-            self._actual_writer_thread = threading.Thread(target=self._write_loop, daemon=True)
-
-            self._last_write_time = time.time()
-            self._items_ready_to_write: list = []
-
-            self._actual_writer_thread.start()
-        else:
-            logger.info("Cache is already finished. Not starting writer thread")
+        self._items_ready_to_write: list = []
 
     @property
     def ledger(self):
@@ -634,10 +617,6 @@ class ShardedCacheWriter:
     @property
     def is_finished(self):
         return self._ledger.is_finished
-
-    @property
-    def last_write_time(self):
-        return self._last_write_time
 
     def finish_shard(self, shard_name: str, num_rows: int):
         self.flush()
@@ -659,27 +638,10 @@ class ShardedCacheWriter:
 
         self._items_ready_to_write.append((shard_name, batch))
 
-    def _write_loop(self):
-        done = False
-        while not done:
-            self._attempt_to_write_batches()
-            try:
-                if self._stop_loop.wait(1):
-                    logger.info("Stopping writer thread")
-                    done = True
-            except TimeoutError:
-                pass
-            if self._ledger.is_finished:
-                logger.info("Ledger is finished. Stopping writer thread")
-                return
-
     def flush(self):
         self._attempt_to_write_batches()
 
     def finish(self):
-        self._done = True
-        self._stop_loop.set()
-        self._actual_writer_thread.join()
         self.flush()
 
         # if successful, write the ledger
@@ -695,10 +657,8 @@ class ShardedCacheWriter:
         if self._ledger.is_finished:
             return
 
-        if len(self._items_ready_to_write) == 0:
+        if not self._items_ready_to_write:
             return
-
-        logger.debug(f"Writing {len(self._items_ready_to_write)} batches")
 
         updated_shards = self._write_available_batches()
 
@@ -710,7 +670,6 @@ class ShardedCacheWriter:
             for shard, num_rows in updated_shards.items():
                 self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
 
-            self._last_write_time = time.time()
             total_rows = self._ledger.total_num_rows + sum(updated_shards.values())
             self._ledger.total_num_rows = total_rows
             self._ledger._serialize_and_commit(self.cache_dir)
@@ -719,10 +678,11 @@ class ShardedCacheWriter:
                 self._on_write(self._ledger)
 
     def _write_available_batches(self):
-        if len(self._items_ready_to_write) == 0:
-            return {}
         ready = self._items_ready_to_write
         self._items_ready_to_write = []
+
+        if len(ready) == 0:
+            return {}
 
         to_write = []
         written_by_shard = {}
@@ -926,6 +886,9 @@ _Message = _Batch | _ShardFinished
 A message that can be sent from a reader task to the writer task.
 """
 
+_TIME_BETWEEN_WRITES = 10.0  # seconds
+_MAX_WRITE_BATCHES = 1000
+
 
 @ray.remote(num_cpus=1)
 def _core_writer_task(
@@ -964,35 +927,57 @@ def _core_writer_task(
         total_time = Stopwatch()
         loading_time = Stopwatch()
         append_time = Stopwatch()
+        flush_time = Stopwatch()
 
-        # iterator = iter(enumerate(interleave))
         i = 0
+        batches_since_last_write = 0
+        time_of_last_write = time.time()
 
         # for i, batch_box in enumerate(interleave):
         while True:
             with total_time:  # 0.014
                 try:
+                    cur_time = time.time()
+                    time_since_last_write = cur_time - time_of_last_write
+                    remaining_time = _TIME_BETWEEN_WRITES - time_since_last_write
+
+                    if batches_since_last_write > 0:
+                        if remaining_time <= 0 or batches_since_last_write >= _MAX_WRITE_BATCHES or force_flush:
+                            with flush_time:
+                                logger.info("Flushing cache to disk")
+                                sharded_cache_writer.flush()
+                                time_of_last_write = time.time()
+                                batches_since_last_write = 0
+                                continue
+                    else:
+                        time_since_last_write = 0
+                        remaining_time = _TIME_BETWEEN_WRITES
+
                     with loading_time:
-                        message = next(interleave)  # TIME: 0.014
-                        i += 1
+                        try:
+                            message = interleave.get_next(timeout=max(remaining_time, 0.1))
+                        except Empty:
+                            logger.info("Writer running ahead of reader.")
+                            continue
 
                     with append_time:
                         match message:
                             case _Batch(shard, _, payload):
                                 # TODO: ensure indices are what we expect
                                 sharded_cache_writer.write_batch(shard, payload)
+                                i += 1
+                                batches_since_last_write += 1
                             case _ShardFinished(shard, total_rows):
                                 sharded_cache_writer.finish_shard(shard, total_rows)
                             case _:
                                 raise AssertionError(f"Unexpected message type {type(message)}")
 
-                    if force_flush:
-                        sharded_cache_writer.flush()
-                    # if i % 1000 == 0:
-                    #     print(
-                    #         f"Processed {i} batches: {loading_time.average()}s load,"
-                    #         f" {append_time.average()}s append, {total_time.average()}s total"
-                    #     )
+                    if i % 1000 == 0:
+                        print(
+                            f"Processed {i} batches: {loading_time.average()}s load,"
+                            f" {append_time.average()}s append, {flush_time.average()}s flush, "
+                            f"{total_time.average()}s total"
+                        )
                 except StopIteration:
                     break
                 except Exception as e:
@@ -1108,7 +1093,7 @@ def _make_interleave(source: ShardedDataSource, initial_ledger: CacheLedger, pro
         logger.info("All shards finished. Nothing to do.")
         return
 
-    groups = _randomize_and_group_shards(options, statuses)
+    group_names, groups = _randomize_and_group_shards(options, statuses)
 
     logger.warning(f"Starting cache build with {len(statuses)} shards, in {len(groups)} groups")
 
@@ -1132,7 +1117,7 @@ def _make_interleave(source: ShardedDataSource, initial_ledger: CacheLedger, pro
 
     generator_fns = [_make_generator_fn(group) for group in groups]
 
-    readers = [RayPrefetchQueue(fn, 128) for fn in generator_fns]
+    readers = [RayPrefetchQueue(fn, 128, name=name) for name, fn in zip(group_names, generator_fns)]
 
     # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
     first_group_to_start = min(
@@ -1166,8 +1151,15 @@ def _randomize_and_group_shards(options, statuses):
     num_groups = min(
         options.num_shard_groups if options.num_shard_groups is not None else len(statuses), len(statuses)
     )
+    if num_groups == 1:
+        group_names = ["generator::all_shards"]
+    elif len(statuses) == num_groups:
+        group_names = [f"generator::{status.shard_name}" for status in statuses]
+    else:
+        group_names = [f"generator::group_{i}" for i in range(num_groups)]
+
     groups = _assign_shards_to_groups(statuses, num_groups)
-    return groups
+    return group_names, groups
 
 
 def _shard_reader_generator(
@@ -1210,6 +1202,7 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     the processor and wraps its call
     """
     processor_ref = ray.put(processor)
+    # exemplar = processor.output_exemplar
 
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: _Batch):
@@ -1217,6 +1210,7 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
         logger.debug(f"Processing batch {batch.shard_name}:{batch.row_indices}")
         try:
             result = processor(batch.payload)  # TIME: 0.03 seconds
+            # result = [exemplar for _ in batch.row_indices]
             result = _canonicalize_batch(result)  # type: ignore
             logger.debug(f"Finished processing batch {batch.shard_name}:{batch.row_indices}")
             return dataclasses.replace(batch, payload=result)
