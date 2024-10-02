@@ -115,7 +115,7 @@ def main(config: TrainASRConfig):
 
         eval_datasets = config.data.validation_sets()
         train_dataset = AudioTextDataset(
-            config.data.train_set(config.batch_size),
+            config.data.train_set(),
             Pos,
             [config.model.Mels, config.model.MelPos],
             KeyPos,
