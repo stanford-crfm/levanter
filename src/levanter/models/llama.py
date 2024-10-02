@@ -110,8 +110,6 @@ class LlamaConfig(HFCompatConfig):
     def from_hf_config(cls, hf_config: HfConfig):
         rope_theta = hf_config.rope_theta
         rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
-        print("\n hf config is \n", hf_config)
-        print(f"\n dir of hf config is {dir(hf_config)} \n")
         if 'olmo' in hf_config._name_or_path.lower():
             hf_config.rms_norm_eps = 1e-6
         return LlamaConfig(
