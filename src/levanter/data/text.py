@@ -673,7 +673,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             split_cache_dir,
             source,
             bt,
-            await_finished=split == "validation",
             monitors=monitors,
         )
 

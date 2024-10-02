@@ -13,6 +13,8 @@ from levanter.data import BatchProcessor, ShardedDataSource, batched
 from levanter.data.sharded_datasource import TextUrlDataSource
 from levanter.store.cache import (
     LEDGER_FILE_NAME,
+    CacheLedger,
+    CacheOptions,
     SerialCacheWriter,
     ShardedCacheWriter,
     TreeStore,
@@ -219,6 +221,7 @@ def test_full_end_to_end_cache():
             SimpleShardSource(num_shards=2),
             TestProcessor(8),
             await_finished=True,
+            options=CacheOptions.no_fanciness(),
         )
 
         expected = process_interleave(TestProcessor(8), SimpleShardSource(num_shards=2))
@@ -232,9 +235,11 @@ def test_full_end_to_end_cache():
 def test_cache_remembers_its_cached():
     directory = tempfile.TemporaryDirectory()
     with directory as tmpdir:
-        ds1 = build_or_load_cache(tmpdir, SimpleShardSource(), TestProcessor())
+        ds1 = build_or_load_cache(tmpdir, SimpleShardSource(), TestProcessor(), await_finished=True)
 
-        class ThrowingProcessor(SimpleProcessor):
+        print(f"First run: {crappy_du(tmpdir)}")
+
+        class ThrowingProcessor(TestProcessor):
             def __call__(self, batch: Sequence[Sequence[int]]):
                 raise RuntimeError("This should not be called")
 
@@ -507,10 +512,11 @@ def test_sharded_cache_writer():
     with tempfile.TemporaryDirectory() as tmpdir:
         source = SimpleShardSource(num_shards=4)
         processor = SimpleProcessor()
+        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, None)
 
         exemplar = {"data": np.array([0], dtype=np.int64)}
 
-        writer = ShardedCacheWriter(source, tmpdir, exemplar)
+        writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
         for shard_name in source.shard_names:
             for ex in batched(source.open_shard(shard_name), processor.batch_size):
                 writer.write_batch(shard_name, processor(ex))
@@ -544,12 +550,14 @@ def test_sharded_cache_writer_trims_on_resume():
 
         exemplar = {"data": np.array([0], dtype=np.int64)}
 
-        writer = ShardedCacheWriter(source, tmpdir, exemplar)
+        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, None)
+
+        writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
         for shard_name in source.shard_names:
             for ex in batched(source.open_shard(shard_name), processor.batch_size):
                 writer.write_batch(shard_name, processor(ex))
 
-        # store = writer.finish()
+        writer.finish()
 
         # now deliberately truncate the ledger a bit
         ledger = copy.deepcopy(writer.ledger)
@@ -564,7 +572,7 @@ def test_sharded_cache_writer_trims_on_resume():
 
         _serialize_json_and_commit(os.path.join(tmpdir, LEDGER_FILE_NAME), ledger)
 
-        writer = ShardedCacheWriter(source, tmpdir, exemplar)
+        writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
 
         # ensure it got truncated
         assert writer.ledger.total_num_rows == 24

@@ -5,6 +5,7 @@ import dataclasses
 import logging as pylogging
 import os
 import pprint
+import random
 import threading
 import time
 from asyncio import InvalidStateError
@@ -68,12 +69,26 @@ class CacheOptions:
     It is intended that caching it deterministic conditional on the input data, processor, and these options.
     """
 
-    num_shard_groups: int = 32
+    num_shard_groups: Optional[int] = 32
     shard_order_randomization_key: Optional[int] = 0
 
     @staticmethod
     def default():
         return CacheOptions()
+
+    @staticmethod
+    def no_fanciness():
+        """
+        For testing, disables all the fancy features of the cache. This makes it easier to predict the behavior
+        """
+        return CacheOptions(num_shard_groups=None, shard_order_randomization_key=None)
+
+    @staticmethod
+    def one_group():
+        """
+        For testing, disables all the fancy features of the cache. This makes it easier to predict the behavior
+        """
+        return CacheOptions(num_shard_groups=1, shard_order_randomization_key=None)
 
 
 def build_or_load_cache(
@@ -512,6 +527,10 @@ class CacheMetadata:
             sorta_self = self
         return deepdiff.DeepDiff(sorta_self, other)
 
+    @staticmethod
+    def empty():
+        return CacheMetadata(options=CacheOptions.default(), preprocessor_metadata=None)
+
 
 @dataclass
 class _ShardStatus:
@@ -535,7 +554,7 @@ class SerialCacheWriter(AbstractContextManager):
         self,
         cache_dir: str,
         exemplar: T,
-        metadata: Optional["CacheMetadata"],
+        metadata: Optional["CacheMetadata"] = None,
     ):
         self.cache_dir = cache_dir
         self.metadata = metadata
@@ -555,7 +574,7 @@ class SerialCacheWriter(AbstractContextManager):
             shard_rows={"": len(self._tree_store)},
             finished_shards=[""],
             field_counts={},
-            metadata=self.metadata or CacheMetadata(),
+            metadata=self.metadata or CacheMetadata.empty(),
         )
 
         if exc_type is None:
@@ -625,6 +644,15 @@ class ShardedCacheWriter:
     @property
     def last_write_time(self):
         return self._last_write_time
+
+    def finish_shard(self, shard_name: str, num_rows: int):
+        self.flush()
+        current_rows = self._ledger.shard_rows.get(shard_name, 0)
+        if current_rows != num_rows:
+            raise ValueError(f"Expected {num_rows} rows in finished shard {shard_name}, but found {current_rows}")
+
+        self._ledger.finished_shards.append(shard_name)
+        self._ledger._serialize_and_commit(self.cache_dir)
 
     def write_batch(self, shard_name: str, batch: BatchResult):
         if self.is_finished:
@@ -889,11 +917,27 @@ def _preprocess_task_chain(
     return writer_task
 
 
-def _make_shard_statuses(initial_ledger, source):
+def _get_shard_statuses(initial_ledger, source):
     return [
         _ShardStatus(name, initial_ledger.shard_rows.get(name, 0), name in initial_ledger.finished_shards)
         for name in source.shard_names
     ]
+
+
+@dataclass
+class _Batch:
+    shard_name: str
+    row_indices: List[int]
+    payload: Any = None  # could use a type param, but it's more trouble than its worth in python
+
+
+@dataclass
+class _ShardFinished:
+    shard_name: str
+    total_rows: int
+
+
+_Message = _Batch | _ShardFinished
 
 
 @ray.remote(num_cpus=1)
@@ -917,7 +961,9 @@ def _core_writer_task(
             cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
-        interleave = RayPrefetchQueue(lambda: _make_interleave_for_shards(source, initial_ledger, processor), 1024)
+        interleave: RayPrefetchQueue[_Message] = RayPrefetchQueue(
+            lambda: _make_interleave_for_shards(source, initial_ledger, processor), 1024
+        )
 
         total_time = Stopwatch()
         loading_time = Stopwatch()
@@ -933,13 +979,19 @@ def _core_writer_task(
                 try:
                     with loading_time:
                         # i, batch_box = next(iterator)
-                        shard, batch = interleave.get_next()
+                        message = interleave.get_next()
                         i += 1
 
-                    # with get_time:
-                    #     shard, batch = batch_box.get()
                     with append_time:
-                        sharded_cache_writer.write_batch(shard, batch)
+                        match message:
+                            case _Batch(shard, payload):
+                                # TODO: ensure indices are what we expect
+                                sharded_cache_writer.write_batch(shard, payload)
+                            case _ShardFinished(shard, total_rows):
+                                sharded_cache_writer.finish_shard(shard, total_rows)
+                            case _:
+                                raise AssertionError(f"Unexpected message type {type(message)}")
+
                     if force_flush:
                         sharded_cache_writer.flush()
                     if i % 1000 == 0:
@@ -948,7 +1000,6 @@ def _core_writer_task(
                             f" {append_time.average()}s append, {total_time.average()}s total"
                         )
                 except StopIteration:
-                    print("stop!")
                     break
                 except Exception as e:
                     logger.exception("Error while processing batch")
@@ -961,44 +1012,88 @@ def _core_writer_task(
         return out
 
 
-def _interleave_shards(
-    shard_names: Sequence[str], readers: Sequence[RayPrefetchQueue[RefBox]], first_shard_index: int
-) -> Iterator[T]:
+def _interleave_shards(readers: Sequence[RayPrefetchQueue[RefBox]], first_index: int) -> Iterator[T]:
     """
     Interleaves the results of multiple iterators. To support resume,
     we need to be able to start from not the "first" iterator.
     """
-    if len(shard_names) != len(readers):
-        raise ValueError("shard_names and readers must have the same length")
 
-    if len(shard_names) == 0:
-        logger.info("No shards to interleave")
-        return
-
-    finished: set[str] = set()
+    finished: set[int] = set()
     total = 0
-    while len(finished) < len(shard_names):
-        for i in range(first_shard_index, len(shard_names)):
-            shard_name = shard_names[i]
+    while len(finished) < len(readers):
+        for i in range(first_index, len(readers)):
             reader = readers[i]
-            if shard_name not in finished:
+            if i not in finished:
                 try:
-                    out = reader.get_next()
+                    message = next(reader)
                     total += 1
-                    yield out.ref
+                    yield message
                 except StopIteration:
-                    logger.info(f"Finished shard {shard_name}")
-                    finished.add(shard_name)
+                    finished.add(i)
                 except Exception as e:
-                    logger.exception(f"Error while processing shard {shard_name}")
+                    logger.exception(f"Error while processing group {i}")
                     raise e
 
-        first_shard_index = 0
+        first_index = 0
 
     logger.info(f"Finished all shards, got {total} batches")
 
 
-def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger, processor: BatchProcessor):
+def _assign_shards_to_groups(shards: Sequence[_ShardStatus], num_groups: int) -> list["_ShardGroup"]:
+    """
+    Assigns shards to groups.
+    """
+    groups: list = [[_ShardStatus] for _ in range(num_groups)]
+    for i, shard in enumerate(shards):
+        groups[i % num_groups].append(shard)
+    return [_ShardGroup(group) for group in groups]
+
+
+def _randomize_shards(shards: Sequence[T], seed: int) -> list[T]:
+    """
+    Randomizes the order of shards.
+    """
+    prng = random.Random(seed)
+    shuffled = list(shards)
+    prng.shuffle(shuffled)
+    return shuffled
+
+
+class _ShardGroup:
+    """
+    Given a group of shards and a list of statuses, implicitly concatenates the shards and reads from them.
+    """
+
+    def __init__(self, group: list[_ShardStatus]):
+        self.shards = group
+
+        self.total_rows_committed, _all_finished = self._impute_total_rows_committed_and_check_invariants()
+
+    def _impute_total_rows_committed_and_check_invariants(self):
+        # we also want to ensure that we haven't started any shards until we've finished the previous ones
+        total_committed = 0
+        last_shard_name = None
+        last_was_finished = True
+        all_finished = True
+
+        for status in self.shards:
+            shard_name = status.shard_name
+            if not last_was_finished and status.num_rows_committed > 0:
+                raise ValueError(
+                    f"Shard {shard_name} has rows committed but previous shard in group {last_shard_name} "
+                    "is not finished. Something about the cache configuration has changed: either the "
+                    "number/order of shards, the shard shuffle random seed, or the number of groups."
+                )
+            total_committed += status.num_rows_committed
+            if not status.is_finished:
+                all_finished = False
+            last_was_finished = status.is_finished
+            last_shard_name = shard_name
+
+        return total_committed, all_finished
+
+
+def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger: CacheLedger, processor: BatchProcessor):
     """
     Given a list of ShardStatus objects and sources, creates an interleaving generator
     that reads from shards and tokenizes them in parallel.
@@ -1008,7 +1103,13 @@ def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger, proce
     and starts interleaving from the next shard (i.e. the one with the fewest rows that isn't finished).
     """
     logger.setLevel(DEFAULT_LOG_LEVEL)
-    statuses = _make_shard_statuses(initial_ledger, source)
+    statuses = _get_shard_statuses(initial_ledger, source)
+
+    options = initial_ledger.metadata.options
+    if options.shard_order_randomization_key is not None:
+        seed = options.shard_order_randomization_key
+        logger.info(f"Randomizing shard order with seed {seed}")
+        statuses = _randomize_shards(statuses, seed)
 
     unfinished_shards: list[_ShardStatus] = []
     shards_with_progress: dict[str, int] = {}
@@ -1025,53 +1126,76 @@ def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger, proce
     elif shards_with_progress:
         formatted = ", ".join(f"{k}: {v}" for k, v in shards_with_progress.items())
         logger.info(f"Resuming from shards with progress: {formatted}")
-    logger.warning(f"Starting cache build with {len(unfinished_shards)} shards")
+
+    num_groups = min(
+        options.num_shard_groups if options.num_shard_groups is not None else len(statuses), len(statuses)
+    )
+    groups = _assign_shards_to_groups(statuses, num_groups)
+
+    logger.warning(f"Starting cache build with {len(unfinished_shards)} unfinished shards, in {num_groups} groups")
 
     process_task = _mk_process_task(processor)
 
-    def _make_generator_fn(status: _ShardStatus) -> Callable[[], Iterator[RefBox]]:
+    def _make_generator_fn(group: _ShardGroup):
         def generator():
-            for shard_name, batch in _shard_reader_generator(
-                source, status.shard_name, status.num_rows_committed, processor.batch_size
-            ):
-                processed = process_task.remote(status.shard_name, batch)
-                # We don't want Ray to dereference the ObjectRef, so we wrap it in a RefBox
-                yield RefBox(processed)
+            for message in _shard_reader_generator(source, group, processor.batch_size):
+                match message:
+                    case _Batch():
+                        processed = process_task.remote(message)
+                        # We don't want Ray to dereference the ObjectRef, so we wrap it in a RefBox
+                        yield processed
+                    case _ShardFinished():
+                        yield message
+                    case _:
+                        raise AssertionError(f"Unexpected message type {type(message)}")
 
         return generator
 
-    generator_fns = [_make_generator_fn(status) for status in unfinished_shards]
+    generator_fns = [_make_generator_fn(group) for group in groups]
 
-    readers = [
-        RayPrefetchQueue(generator_fn, max_queue_size=4)
-        for shard, generator_fn in zip(unfinished_shards, generator_fns)
-    ]
+    readers = [RayPrefetchQueue(fn, 32) for fn in generator_fns]
 
     # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
-    min_unfinished = min(range(len(unfinished_shards)), key=lambda x: unfinished_shards[x].num_rows_committed)
+    first_group_to_start = min(
+        range(len(groups)),
+        key=lambda i: groups[i].total_rows_committed,
+    )
 
-    yield from _interleave_shards([status.shard_name for status in unfinished_shards], readers, min_unfinished)
+    yield from _interleave_shards(readers, first_group_to_start)
 
 
-def _shard_reader_generator(shard_source: ShardedDataSource[T], shard_name: str, start_row: int, batch_size: int):
-    # TODO: track more metadata about batches
-    logger.info(f"Opening shard {shard_name} at row {start_row}")
-    shard_iter = shard_source.open_shard_at_row(shard_name, start_row)
-    batch = []
-    i = 0
-    for row in shard_iter:
-        batch.append(row)
+def _shard_reader_generator(
+    shard_source: ShardedDataSource[T], group: _ShardGroup, batch_size: int
+) -> Iterator[_Message]:
+    """
+    Given a group of shards, implicitly concatenates the shards and reads from them.
+    """
+    for status in group.shards:
+        if status.is_finished:
+            logger.info(f"Skipping finished shard {status.shard_name}")
+            continue
+        start_row = status.num_rows_committed
+        logger.info(f"Opening shard {status.shard_name} at row {start_row}")
+        shard_iter = shard_source.open_shard_at_row(status.shard_name, start_row)
 
-        if len(batch) == batch_size:
-            i += 1
-            yield (shard_name, batch)
-            batch = []
+        batch = []
+        batch_idxes = []
+        row_idx = start_row
+        for row in shard_iter:
+            batch.append(row)
+            batch_idxes.append(row_idx)
+            row_idx += 1
 
-    if len(batch) > 0:
-        yield (shard_name, batch)
-        i += 1
+            if len(batch) == batch_size:
+                yield _Batch(status.shard_name, batch_idxes, batch)
+                batch = []
+                batch_idxes = []
 
-    logger.info(f"Finished generating shard {shard_name} with {i} batches")
+        if len(batch) > 0:
+            yield _Batch(status.shard_name, batch_idxes, batch)
+
+        logger.info(f"Finished generating shard {status.shard_name} with {row_idx} rows")
+        yield _ShardFinished(status.shard_name, row_idx)
 
 
 def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
@@ -1086,16 +1210,16 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     """
 
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(desc, batch: List[T]):
+    def process_task(batch: _Batch):
         # pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
-        logger.debug(f"Processing batch {desc}")
+        logger.debug(f"Processing batch {batch.shard_name}:{batch.row_indices}")
         try:
-            result = processor(batch)
+            result = processor(batch.payload)
             result = _canonicalize_batch(result)  # type: ignore
-            logger.debug(f"Finished processing batch {desc}")
-            return desc, result
+            logger.debug(f"Finished processing batch {batch.shard_name}:{batch.row_indices}")
+            return dataclasses.replace(batch, payload=result)
         except Exception as e:
-            logger.exception(f"Error while processing batch {desc}")
+            logger.exception(f"Error while processing batch {batch.shard_name}:{batch.row_indices}")
             raise e
         finally:
             pass
