@@ -165,6 +165,8 @@ def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: 
         key = key_map.get(field.name, field.name)
         value = getattr(mod, field.name)
         # TODO: might want to add a flag that allows missing keys?
+        if 'layernorm' in prefix.lower():
+            continue
         new = jax_tree_from_state_dict(value, state_dict, apply_prefix(prefix, key))
         # Do not try to update parameters that are never defined
         if value is None and new is None:
