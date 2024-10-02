@@ -1,12 +1,15 @@
 import contextlib
 import dataclasses
 import logging
+import logging as pylogging
 import sys
 from dataclasses import dataclass
 from typing import Optional
 
 import ray
 import tblib
+
+from levanter.store.cache import DEFAULT_LOG_LEVEL, LOG_FORMAT, logger
 
 
 @dataclass
@@ -101,3 +104,27 @@ def log_failures_to(parent, suppress=False):
         parent._child_failed.remote(handle, ser_exc_info(e))
         if not suppress:
             raise e
+
+
+@ray.remote
+class StopwatchActor:
+    def __init__(self):
+        pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
+        self._times_per = {}
+        self._counts_per = {}
+        self._total = 0
+
+    def measure(self, name: str, time: float):
+        self._times_per[name] = self._times_per.get(name, 0) + time
+        self._counts_per[name] = self._counts_per.get(name, 0) + 1
+        self._total += 1
+
+        if self._total % 1000 == 0:
+            for name, time in self._times_per.items():
+                logger.info(f"{name}: {time / self._counts_per[name]}")
+
+    def get(self, name: str):
+        return self._times_per.get(name, 0), self._counts_per.get(name, 0)
+
+    def average(self, name: str):
+        return self._times_per.get(name, 0) / self._counts_per.get(name, 1)

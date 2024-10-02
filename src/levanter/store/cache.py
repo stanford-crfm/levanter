@@ -30,14 +30,7 @@ from levanter.utils.py_utils import Stopwatch
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_datasource import ShardedDataSource
-from ..utils.ray_utils import (
-    ExceptionInfo,
-    RefBox,
-    SnitchRecipient,
-    current_actor_handle,
-    log_failures_to,
-    ser_exc_info,
-)
+from ..utils.ray_utils import ExceptionInfo, SnitchRecipient, current_actor_handle, log_failures_to, ser_exc_info
 from .tree_store import TreeStore
 
 
@@ -65,8 +58,13 @@ class CacheOptions:
     """
 
     num_shard_groups: Optional[int] = 128
+    """Number of groups to divide the shards into. This is used to parallelize the cache building process without
+    overloading Ray. If None, all shards will be in their own group."""
     shard_order_randomization_key: Optional[int] = 0
+    """A key used to randomize the order of the shards before building and grouping."""
     batch_size: int = 128
+    """The batch size to use when processing the data. This is used to control the memory usage of the cache building
+    process. Lower values will use less memory but take somewhat longer to build the cache."""
 
     @staticmethod
     def default():
@@ -507,8 +505,8 @@ class CacheLedger:
 @dataclass_json
 @dataclass(frozen=True)
 class CacheMetadata:
-    options: CacheOptions
-    preprocessor_metadata: Optional[dict[str, Any]]
+    options: CacheOptions = CacheOptions.default()
+    preprocessor_metadata: Optional[dict[str, Any]] = None
 
     def compare_to(self, other: "CacheMetadata") -> deepdiff.DeepDiff:
         """
@@ -525,7 +523,7 @@ class CacheMetadata:
 
     @staticmethod
     def empty():
-        return CacheMetadata(options=CacheOptions.default(), preprocessor_metadata=None)
+        return CacheMetadata()
 
 
 @dataclass
@@ -787,8 +785,8 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             if self._ledger.is_finished:
                 self.logger.info("Cache already finished. Nothing to do.")
                 return
-            self._cache_writer = _preprocess_task_chain(
-                current_actor_handle(), cache_dir, name, self._ledger, source, processor, force_flush
+            self._cache_writer = _core_writer_task.remote(
+                current_actor_handle(), cache_dir, self._ledger, source, processor, force_flush
             )
         except Exception:
             # Ray behaves poorly if the constructor of an actor fails, so we catch and log here
@@ -886,42 +884,28 @@ def _get_builder_actor(cache_dir, shard_source, processor, options=CacheOptions.
     )
 
 
-def _preprocess_task_chain(
-    parent,
-    cache_dir: str,
-    name: str,
-    initial_ledger: CacheLedger,
-    source: ShardedDataSource,
-    processor: BatchProcessor,
-    force_flush: bool = False,
-):
-    """
-    This is the main task that processes the data and writes it to the cache.
+#####
+# Core implementation starts below.
+#####
+# The main idea is to have a bunch of reader tasks that read batches, dispatch tokenization tasks, producing
+# a stream of tokenized batches. We then interleave these tokenized batches and write them to the cache.
+# The reader tasks are given a group of shards, which are implicitly concatenated together.
 
-    It chains together:
-    * 1 generator per shard
-    * interleaving of the generators
-    * processing of the batches
-    * writing of the batches to the cache
-
-    It handles resumes on the reading side
-    """
-    with log_failures_to(parent):
-
-        writer_task = _core_writer_task.remote(parent, cache_dir, initial_ledger, source, processor, force_flush)
-
-    return writer_task
-
-
-def _get_shard_statuses(initial_ledger, source):
-    return [
-        _ShardStatus(name, initial_ledger.shard_rows.get(name, 0), name in initial_ledger.finished_shards)
-        for name in source.shard_names
-    ]
+# This is still much slower than I would like but I haven't figured out why yet.
+# TODO:
+# - [ ] Profile the tokenization process more (see TIME comments)
+# - [ ] Is the use of a Thread in the writer actually a problem? I think it's I/O/C++ bound so it shouldn't be.
+# - [ ] Try Ray's autoscaling actorpool if the issue is tokenization isn't fast enough
+#       https://github.com/ray-project/ray/blob/1bab09bf842edee51c3778be4cfb16f8b900d764/python/ray/data/_internal/execution/operators/actor_pool_map_operator.py
+# - [ ] More observability into what's queued and how long work items take
 
 
 @dataclass
 class _Batch:
+    """
+    A batch of data that has either been read or tokenized.
+    """
+
     shard_name: str
     row_indices: List[int]
     payload: Any = None  # could use a type param, but it's more trouble than its worth in python
@@ -929,11 +913,18 @@ class _Batch:
 
 @dataclass
 class _ShardFinished:
+    """
+    A message indicating that a shard has finished.
+    """
+
     shard_name: str
     total_rows: int
 
 
 _Message = _Batch | _ShardFinished
+"""
+A message that can be sent from a reader task to the writer task.
+"""
 
 
 @ray.remote(num_cpus=1)
@@ -945,6 +936,15 @@ def _core_writer_task(
     processor,
     force_flush: bool,
 ):
+    """
+    This is the main task that processes the data and writes it to the cache.
+
+    It chains together:
+        * 1 generator per shard group
+        * interleaving of the generators
+        * processing of the batches
+        * writing of the batches to the cache
+    """
     logger.setLevel(DEFAULT_LOG_LEVEL)
     logger.info("Starting writer task")
 
@@ -958,7 +958,7 @@ def _core_writer_task(
         )
 
         interleave: RayPrefetchQueue[_Message] = RayPrefetchQueue(
-            lambda: _make_interleave_for_shards(source, initial_ledger, processor), 4096
+            lambda: _make_interleave(source, initial_ledger, processor), 4096
         )
 
         total_time = Stopwatch()
@@ -970,7 +970,7 @@ def _core_writer_task(
 
         # for i, batch_box in enumerate(interleave):
         while True:
-            with total_time:
+            with total_time:  # 0.014
                 try:
                     with loading_time:
                         message = next(interleave)  # TIME: 0.014
@@ -988,28 +988,31 @@ def _core_writer_task(
 
                     if force_flush:
                         sharded_cache_writer.flush()
-                    if i % 1000 == 0:
-                        print(
-                            f"Processed {i} batches: {loading_time.average()}s load,"
-                            f" {append_time.average()}s append, {total_time.average()}s total"
-                        )
+                    # if i % 1000 == 0:
+                    #     print(
+                    #         f"Processed {i} batches: {loading_time.average()}s load,"
+                    #         f" {append_time.average()}s append, {total_time.average()}s total"
+                    #     )
                 except StopIteration:
                     break
                 except Exception as e:
                     logger.exception("Error while processing batch")
                     raise e
 
-        logger.warning(f"Got {i} batches")
         sharded_cache_writer.finish()
 
         out = sharded_cache_writer.ledger
         return out
 
 
-def _interleave_shards(readers: Sequence[RayPrefetchQueue[RefBox]], first_index: int) -> Iterator[T]:
+def _interleave_shards(readers: Sequence[RayPrefetchQueue[_Message]], first_index: int) -> Iterator[T]:
     """
     Interleaves the results of multiple iterators. To support resume,
     we need to be able to start from not the "first" iterator.
+
+    Args:
+        readers: A list of iterators
+        first_index: The index of the first iterator to start from. We use this to support resuming.
     """
 
     finished: set[int] = set()
@@ -1035,7 +1038,7 @@ def _interleave_shards(readers: Sequence[RayPrefetchQueue[RefBox]], first_index:
 
 def _assign_shards_to_groups(shards: Sequence[_ShardStatus], num_groups: int) -> list["_ShardGroup"]:
     """
-    Assigns shards to groups.
+    Assigns shards to groups in a round-robin fashion.
     """
     groups: list[list] = [[] for _ in range(num_groups)]
     for i, shard in enumerate(shards):
@@ -1044,9 +1047,6 @@ def _assign_shards_to_groups(shards: Sequence[_ShardStatus], num_groups: int) ->
 
 
 def _randomize_shards(shards: Sequence[T], seed: int) -> list[T]:
-    """
-    Randomizes the order of shards.
-    """
     prng = random.Random(seed)
     shuffled = list(shards)
     prng.shuffle(shuffled)
@@ -1056,11 +1056,12 @@ def _randomize_shards(shards: Sequence[T], seed: int) -> list[T]:
 class _ShardGroup:
     """
     Given a group of shards and a list of statuses, implicitly concatenates the shards and reads from them.
+
+    This class mostly exists for resuming: we want to be able to start from the last shard we were working on.
     """
 
     def __init__(self, group: list[_ShardStatus]):
         self.shards = group
-
         self.total_rows_committed, _all_finished = self._impute_total_rows_committed_and_check_invariants()
 
     def _impute_total_rows_committed_and_check_invariants(self):
@@ -1087,7 +1088,7 @@ class _ShardGroup:
         return total_committed, all_finished
 
 
-def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger: CacheLedger, processor: BatchProcessor):
+def _make_interleave(source: ShardedDataSource, initial_ledger: CacheLedger, processor: BatchProcessor):
     """
     Given a list of ShardStatus objects and sources, creates an interleaving generator
     that reads from shards and tokenizes them in parallel.
@@ -1100,33 +1101,16 @@ def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger: Cache
     statuses = _get_shard_statuses(initial_ledger, source)
 
     options = initial_ledger.metadata.options
-    if options.shard_order_randomization_key is not None:
-        seed = options.shard_order_randomization_key
-        logger.info(f"Randomizing shard order with seed {seed}")
-        statuses = _randomize_shards(statuses, seed)
 
-    unfinished_shards: list[_ShardStatus] = []
-    shards_with_progress: dict[str, int] = {}
-
-    for status in statuses:
-        if not status.is_finished:
-            unfinished_shards.append(status)
-        if status.num_rows_committed > 0:
-            shards_with_progress[status.shard_name] = status.num_rows_committed
+    unfinished_shards = _check_current_shard_progress(statuses)
 
     if not unfinished_shards:
         logger.info("All shards finished. Nothing to do.")
         return
-    elif shards_with_progress:
-        formatted = ", ".join(f"{k}: {v}" for k, v in shards_with_progress.items())
-        logger.info(f"Resuming from shards with progress: {formatted}")
 
-    num_groups = min(
-        options.num_shard_groups if options.num_shard_groups is not None else len(statuses), len(statuses)
-    )
-    groups = _assign_shards_to_groups(statuses, num_groups)
+    groups = _randomize_and_group_shards(options, statuses)
 
-    logger.warning(f"Starting cache build with {len(unfinished_shards)} unfinished shards, in {num_groups} groups")
+    logger.warning(f"Starting cache build with {len(statuses)} shards, in {len(groups)} groups")
 
     process_task = _mk_process_task(processor)
 
@@ -1157,6 +1141,33 @@ def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger: Cache
     )
 
     yield from _interleave_shards(readers, first_group_to_start)
+
+
+def _check_current_shard_progress(statuses):
+    unfinished_shards: list[_ShardStatus] = []
+    shards_with_progress: dict[str, int] = {}
+    for status in statuses:
+        if not status.is_finished:
+            unfinished_shards.append(status)
+        if status.num_rows_committed > 0:
+            shards_with_progress[status.shard_name] = status.num_rows_committed
+    if unfinished_shards and shards_with_progress:
+        formatted = ", ".join(f"{k}: {v}" for k, v in shards_with_progress.items())
+        logger.info(f"Resuming from shards with progress: {formatted}")
+    return unfinished_shards
+
+
+def _randomize_and_group_shards(options, statuses):
+    if options.shard_order_randomization_key is not None:
+        seed = options.shard_order_randomization_key
+        logger.info(f"Randomizing shard order with seed {seed}")
+        statuses = _randomize_shards(statuses, seed)
+
+    num_groups = min(
+        options.num_shard_groups if options.num_shard_groups is not None else len(statuses), len(statuses)
+    )
+    groups = _assign_shards_to_groups(statuses, num_groups)
+    return groups
 
 
 def _shard_reader_generator(
@@ -1193,38 +1204,12 @@ def _shard_reader_generator(
         yield _ShardFinished(status.shard_name, row_idx)
 
 
-@ray.remote
-class StopwatchActor:
-    def __init__(self):
-        pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
-        self._times_per = {}
-        self._counts_per = {}
-        self._total = 0
-
-    def measure(self, name: str, time: float):
-        self._times_per[name] = self._times_per.get(name, 0) + time
-        self._counts_per[name] = self._counts_per.get(name, 0) + 1
-        self._total += 1
-
-        if self._total % 1000 == 0:
-            for name, time in self._times_per.items():
-                logger.info(f"{name}: {time / self._counts_per[name]}")
-
-    def get(self, name: str):
-        return self._times_per.get(name, 0), self._counts_per.get(name, 0)
-
-    def average(self, name: str):
-        return self._times_per.get(name, 0) / self._counts_per.get(name, 1)
-
-
 def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     """
     Returns a Ray remote function that processes a batch of data. Basically it takes the resources from
     the processor and wraps its call
     """
     processor_ref = ray.put(processor)
-
-    # perf_actor = StopwatchActor.options(name="perf_actor_preproc", get_if_exists=True).remote()
 
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: _Batch):
@@ -1273,3 +1258,10 @@ def _ledger_to_metrics(ledger: CacheLedger) -> InProgressCacheMetrics:
         shards_finished=len(ledger.finished_shards),
         field_counts=ledger.field_counts,
     )
+
+
+def _get_shard_statuses(ledger: CacheLedger, source: ShardedDataSource):
+    return [
+        _ShardStatus(name, ledger.shard_rows.get(name, 0), name in ledger.finished_shards)
+        for name in source.shard_names
+    ]

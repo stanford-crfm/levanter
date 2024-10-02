@@ -81,7 +81,6 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
 
     async def _get_offsets(self) -> np.ndarray:
         if self._offsets is None:
-            print("Computing offsets")
             lengths = await asyncio.gather(*[dataset.async_len() for dataset, _ in self.datasets])
             if self._max_examples_per_dataset is not None:
                 lengths = [min(length, self._max_examples_per_dataset) for length in lengths]
