@@ -22,6 +22,7 @@ def ray_init_and_shutdown():
     ray.shutdown()
 
 
+@pytest.mark.ray
 def test_initialization_and_basic_functionality():
     def simple_producer():
         for i in range(10):
@@ -32,6 +33,7 @@ def test_initialization_and_basic_functionality():
     assert results == list(range(10))
 
 
+@pytest.mark.ray
 def test_queue_size_limit():
     def simple_producer() -> Iterator[ray.ObjectRef]:
         for i in range(100):
@@ -48,6 +50,7 @@ def test_queue_size_limit():
     assert actor.queue_size() == 10
 
 
+@pytest.mark.ray
 def test_stop_functionality():
     def simple_producer():
         for i in range(10):
@@ -59,6 +62,7 @@ def test_stop_functionality():
     _sleep_until(lambda: actor.is_stopped(), message="Actor did not stop")
 
 
+@pytest.mark.ray
 def test_exception_handling():
     def faulty_producer():
         for i in range(5):
@@ -75,6 +79,7 @@ def test_exception_handling():
     assert results == list(range(5))
 
 
+@pytest.mark.ray
 def test_empty_producer():
     def empty_producer() -> Iterator[ray.ObjectRef]:
         if False:
@@ -85,6 +90,7 @@ def test_empty_producer():
         actor.get_next()
 
 
+@pytest.mark.ray
 def test_multiple_consumers():
     def simple_producer() -> Iterator[ray.ObjectRef]:
         for i in range(20):
@@ -96,6 +102,7 @@ def test_multiple_consumers():
     assert results == list(range(20))
 
 
+@pytest.mark.ray
 def test_producer_completion():
     def simple_producer():
         for i in range(10):
