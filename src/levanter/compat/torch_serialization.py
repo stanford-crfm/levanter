@@ -170,7 +170,11 @@ def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: 
         if prefix is not None:
             if 'layernorm' in prefix.lower() or 'model.norm.weight' in prefix.lower():
                 continue
-        new = jax_tree_from_state_dict(value, state_dict, apply_prefix(prefix, key))
+        new_prefix = apply_prefix(prefix, key)
+        if new_prefix is not None:
+            if 'layernorm' in new_prefix.lower() or 'model.norm.weight' in new_prefix.lower():
+                continue
+        new = jax_tree_from_state_dict(value, state_dict, new_prefix)
         # Do not try to update parameters that are never defined
         if value is None and new is None:
             continue
