@@ -674,6 +674,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             source,
             bt,
             monitors=monitors,
+            await_finished=False,
         )
 
 

@@ -408,6 +408,7 @@ class TreeCache(AsyncDataset[T_co]):
 
         try:
             store = TreeStore.open(self._exemplar, self.cache_dir, mode="r")
+            logger.info(f"Loaded store from {self.cache_dir}")
         except FileNotFoundError:
             assert self._builder is not None
             ledger = ray.get(self._builder.current_ledger.remote())
@@ -418,7 +419,9 @@ class TreeCache(AsyncDataset[T_co]):
             else:
                 raise
         try:
+            logger.info(f"Setting store future for {self.cache_dir}")
             self._store_future.set_result(store)
+            logger.info(f"Set store future for {self.cache_dir}")
         except concurrent.futures.InvalidStateError:
             pass
 
@@ -984,7 +987,7 @@ def _core_writer_task(
 
                     with append_time:
                         match message:
-                            case _Batch(shard, payload):
+                            case _Batch(shard, _, payload):
                                 # TODO: ensure indices are what we expect
                                 sharded_cache_writer.write_batch(shard, payload)
                             case _ShardFinished(shard, total_rows):
@@ -1043,7 +1046,7 @@ def _assign_shards_to_groups(shards: Sequence[_ShardStatus], num_groups: int) ->
     """
     Assigns shards to groups.
     """
-    groups: list = [[_ShardStatus] for _ in range(num_groups)]
+    groups: list[list] = [[] for _ in range(num_groups)]
     for i, shard in enumerate(shards):
         groups[i % num_groups].append(shard)
     return [_ShardGroup(group) for group in groups]
@@ -1138,6 +1141,7 @@ def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger: Cache
 
     def _make_generator_fn(group: _ShardGroup):
         def generator():
+            pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
             for message in _shard_reader_generator(source, group, processor.batch_size):
                 match message:
                     case _Batch():
@@ -1202,15 +1206,12 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     """
     Returns a Ray remote function that processes a batch of data. Basically it takes the resources from
     the processor and wraps its call
-    Args:
-        processor:
-
-    Returns:
-
     """
+    processor_ref = ray.put(processor)
 
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: _Batch):
+        processor = ray.get(processor_ref)
         # pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         logger.debug(f"Processing batch {batch.shard_name}:{batch.row_indices}")
         try:
