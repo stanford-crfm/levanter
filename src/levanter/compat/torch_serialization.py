@@ -87,7 +87,7 @@ def jax_tree_from_state_dict(tree: PyTree, state_dict: StateDict, prefix: Option
         # TODO: where's the best place to put this logic for NamedArrays
         if prefix is None:
             raise ValueError("Cannot extract a leaf value from a torch dict without a prefix")
-
+        print(f"Extracting {prefix}")
         array = state_dict[prefix]
 
         if isinstance(array, np.ndarray):
