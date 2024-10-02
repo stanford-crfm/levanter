@@ -168,7 +168,7 @@ def default_eqx_module_from_state_dict(mod: Mod, state_dict: StateDict, prefix: 
         # Hack to get around the fact we're using llama code for
         # olmo model and something weird w layernorm
         if prefix is not None:
-            if 'layernorm' in prefix.lower():
+            if 'layernorm' in prefix.lower() or 'model.norm.weight' in prefix.lower():
                 continue
         new = jax_tree_from_state_dict(value, state_dict, apply_prefix(prefix, key))
         # Do not try to update parameters that are never defined
