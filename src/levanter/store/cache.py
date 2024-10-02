@@ -52,11 +52,6 @@ LEDGER_FILE_NAME = "shard_ledger.json"
 DEFAULT_LOG_LEVEL = pylogging.INFO
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-# TODO: should probably do this in terms of bytes
-# this is kinda silly, but the bigger the better.
-MIN_ITEMS_TO_WRITE = 32 * 1024
-MAX_TIME_BETWEEN_WRITES = 100.0
-
 
 @dataclass_json
 @dataclass(frozen=True)
@@ -69,7 +64,7 @@ class CacheOptions:
     It is intended that caching it deterministic conditional on the input data, processor, and these options.
     """
 
-    num_shard_groups: Optional[int] = 32
+    num_shard_groups: Optional[int] = 128
     shard_order_randomization_key: Optional[int] = 0
 
     @staticmethod
@@ -404,11 +399,8 @@ class TreeCache(AsyncDataset[T_co]):
         if self._store_future.done():
             return
 
-        logger.info(f"Attempting to load store from {self.cache_dir}")
-
         try:
             store = TreeStore.open(self._exemplar, self.cache_dir, mode="r")
-            logger.info(f"Loaded store from {self.cache_dir}")
         except FileNotFoundError:
             assert self._builder is not None
             ledger = ray.get(self._builder.current_ledger.remote())
@@ -419,9 +411,7 @@ class TreeCache(AsyncDataset[T_co]):
             else:
                 raise
         try:
-            logger.info(f"Setting store future for {self.cache_dir}")
             self._store_future.set_result(store)
-            logger.info(f"Set store future for {self.cache_dir}")
         except concurrent.futures.InvalidStateError:
             pass
 
@@ -707,7 +697,7 @@ class ShardedCacheWriter:
         if len(self._items_ready_to_write) == 0:
             return
 
-        logger.warning(f"Writing {len(self._items_ready_to_write)} batches")
+        logger.debug(f"Writing {len(self._items_ready_to_write)} batches")
 
         updated_shards = self._write_available_batches()
 
@@ -965,12 +955,11 @@ def _core_writer_task(
         )
 
         interleave: RayPrefetchQueue[_Message] = RayPrefetchQueue(
-            lambda: _make_interleave_for_shards(source, initial_ledger, processor), 1024
+            lambda: _make_interleave_for_shards(source, initial_ledger, processor), 4096
         )
 
         total_time = Stopwatch()
         loading_time = Stopwatch()
-        get_time = Stopwatch()
         append_time = Stopwatch()
 
         # iterator = iter(enumerate(interleave))
@@ -981,8 +970,7 @@ def _core_writer_task(
             with total_time:
                 try:
                     with loading_time:
-                        # i, batch_box = next(iterator)
-                        message = interleave.get_next()
+                        message = next(interleave)  # TIME: 0.014
                         i += 1
 
                     with append_time:
@@ -999,7 +987,7 @@ def _core_writer_task(
                         sharded_cache_writer.flush()
                     if i % 1000 == 0:
                         print(
-                            f"Processed {i} batches: {loading_time.average()}s load, {get_time.average()}s get,"
+                            f"Processed {i} batches: {loading_time.average()}s load,"
                             f" {append_time.average()}s append, {total_time.average()}s total"
                         )
                 except StopIteration:
@@ -1157,7 +1145,7 @@ def _make_interleave_for_shards(source: ShardedDataSource, initial_ledger: Cache
 
     generator_fns = [_make_generator_fn(group) for group in groups]
 
-    readers = [RayPrefetchQueue(fn, 32) for fn in generator_fns]
+    readers = [RayPrefetchQueue(fn, 128) for fn in generator_fns]
 
     # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
     first_group_to_start = min(
@@ -1202,6 +1190,30 @@ def _shard_reader_generator(
         yield _ShardFinished(status.shard_name, row_idx)
 
 
+@ray.remote
+class StopwatchActor:
+    def __init__(self):
+        pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
+        self._times_per = {}
+        self._counts_per = {}
+        self._total = 0
+
+    def measure(self, name: str, time: float):
+        self._times_per[name] = self._times_per.get(name, 0) + time
+        self._counts_per[name] = self._counts_per.get(name, 0) + 1
+        self._total += 1
+
+        if self._total % 1000 == 0:
+            for name, time in self._times_per.items():
+                logger.info(f"{name}: {time / self._counts_per[name]}")
+
+    def get(self, name: str):
+        return self._times_per.get(name, 0), self._counts_per.get(name, 0)
+
+    def average(self, name: str):
+        return self._times_per.get(name, 0) / self._counts_per.get(name, 1)
+
+
 def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     """
     Returns a Ray remote function that processes a batch of data. Basically it takes the resources from
@@ -1209,13 +1221,14 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     """
     processor_ref = ray.put(processor)
 
+    # perf_actor = StopwatchActor.options(name="perf_actor_preproc", get_if_exists=True).remote()
+
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch: _Batch):
-        processor = ray.get(processor_ref)
-        # pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
+        processor = ray.get(processor_ref)  # TIME: 0.13 seconds (!)
         logger.debug(f"Processing batch {batch.shard_name}:{batch.row_indices}")
         try:
-            result = processor(batch.payload)
+            result = processor(batch.payload)  # TIME: 0.03 seconds
             result = _canonicalize_batch(result)  # type: ignore
             logger.debug(f"Finished processing batch {batch.shard_name}:{batch.row_indices}")
             return dataclasses.replace(batch, payload=result)
