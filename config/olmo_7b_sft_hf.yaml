@@ -15,7 +15,7 @@ model:  # 7B class model
   # num_kv_heads: 32
   # use_flash_attention: True
   # use_bias: false
-  # use_layer_norm_weight: false
+  use_layer_norm_weight: false
 initialize_from_hf: "allenai/OLMo-7B-hf"
 use_hf_model_config: true
   #flash_attention_block_size: 1024
