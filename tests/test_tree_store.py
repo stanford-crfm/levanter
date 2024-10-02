@@ -1,5 +1,5 @@
 import tempfile
-from typing import Iterator, List, Sequence
+from typing import Any, Dict, Iterator, List, Sequence
 
 import numpy as np
 import pytest
@@ -21,6 +21,10 @@ class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
     @property
     def num_cpus(self) -> int:
         return 1
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
 
 class SimpleShardSource(ShardedDataSource[List[int]]):
