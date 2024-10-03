@@ -117,6 +117,7 @@ def _get_data_source(path_or_id):
 
 
 def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):
+    # so this just filters based on the columns we expect for alpaca
     dataset = _get_data_source(config.data)
 
     prompts = get_prompts(config.prompts)
