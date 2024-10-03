@@ -1,13 +1,18 @@
+import asyncio
+import logging
+import time
 from dataclasses import dataclass
-from typing import Callable, Generic, Iterator, TypeVar
+from queue import Empty as QueueEmpty
+from typing import Callable, Generic, Iterator, List, Optional, TypeVar
 
 import ray
-from ray.util.queue import Queue
 
 from levanter.utils.ray_utils import ExceptionInfo, ser_exc_info
 
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,23 +28,19 @@ _SENTINEL = _Sentinel()
 
 
 class RayPrefetchQueue(Generic[T]):
-    def __init__(self, producer: Callable[[], Iterator[T]], max_queue_size: int = 100, name: str | None = None):
+    def __init__(
+        self, producer: Callable[[], Iterator[T]], max_queue_size: int = 100, producer_options: dict | None = None
+    ):
         self.max_queue_size = max_queue_size
-        if name is not None:
-            actor_options = {"name": f"{name}::queue"}
-            producer_options = {"name": f"{name}::producer"}
-        else:
-            actor_options = {}
+        if producer_options is None:
             producer_options = {}
-        self.queue: Queue = Queue(
-            maxsize=max_queue_size, actor_options=actor_options
-        )  # [T | _Sentinel | _PrefetchException]
-        self.producer = _run_producer.options(**producer_options).remote(self.queue, producer)
+        self.queue_actor = _QueueActor.remote(max_queue_size)  # type: ignore
+        self.producer_task = _run_producer.options(**producer_options).remote(self.queue_actor, producer)
         self._stopped = False
         self._finished = False
 
     def queue_size(self):
-        return self.queue.qsize()
+        return ray.get(self.queue_actor.qsize.remote())
 
     def __next__(self):
         return self.get_next()
@@ -61,7 +62,13 @@ class RayPrefetchQueue(Generic[T]):
         """
         if self._finished:
             raise StopIteration
-        item = self.queue.get(timeout=timeout)
+        time_in = time.time()
+        item = ray.get(self.queue_actor.get_next.remote(timeout))
+        time_out = time.time()
+        if time_out - time_in > 0.1:
+            current_name = ray.get_runtime_context().get_actor_name()
+            print(f"{current_name} :: Queue get took {time_out - time_in} seconds :: {self.queue_size()}")
+            logger.info(f"{current_name} :: Queue get took {time_out - time_in} seconds :: {self.queue_size()}")
         if isinstance(item, _PrefetchException):
             item.info.reraise()
         if isinstance(item, _Sentinel):
@@ -70,25 +77,81 @@ class RayPrefetchQueue(Generic[T]):
         return item
 
     def stop(self):
-        ray.cancel(self.producer)
-        self.queue.shutdown()
+        ray.cancel(self.producer_task)
+        ray.get(self.queue_actor.stop.remote())
         self._stopped = True
 
     def is_stopped(self):
         return self._stopped
 
+    def drain_available(self, max_size: int) -> List[T]:
+        return ray.get(self.queue_actor.drain_available.remote(max_size))
 
-@ray.remote(scheduling_strategy="SPREAD")
-def _run_producer(queue: Queue, producer_fn: Callable[[], Iterator[T]]):
-    try:
-        producer = producer_fn()
-        del producer_fn
 
-        while True:
-            next_item = next(producer)
-            queue.put(next_item)
-    except StopIteration:
-        queue.put(_SENTINEL)
-    except Exception as e:
-        queue.put(_PrefetchException(ser_exc_info(e)))
-        raise
+@ray.remote
+class _QueueActor:
+    def __init__(self, max_queue_size: int):
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue_size)
+        self._stopped = False
+        self._finished = False
+
+    async def put(self, item):
+        await self.queue.put(item)
+
+    async def get_next(self, timeout: Optional[float] = None):
+        try:
+            if timeout is not None:
+                item = await asyncio.wait_for(self.queue.get(), timeout)
+            else:
+                item = await self.queue.get()
+            if isinstance(item, _Sentinel):
+                self._finished = True
+            return item
+        except asyncio.TimeoutError:
+            raise QueueEmpty
+
+    async def drain_available(self, max_size: int) -> List[T]:
+        items: list[T] = []
+        while len(items) < max_size:
+            try:
+                item = self.queue.get_nowait()
+                if isinstance(item, _Sentinel):
+                    self._finished = True
+                    break
+                if isinstance(item, _PrefetchException):
+                    item.info.reraise()
+                items.append(item)
+            except asyncio.QueueEmpty:
+                break
+        return items
+
+    async def qsize(self):
+        return self.queue.qsize()
+
+    async def stop(self):
+        self._stopped = True
+
+
+@ray.remote
+def _run_producer(queue_actor, producer_fn: Callable[[], Iterator[T]]):
+    async def _run_producer(queue_actor, producer_fn):
+        previous_put = None
+        try:
+            producer = producer_fn()
+            del producer_fn
+
+            while True:
+                next_item = next(producer)
+                if previous_put is not None:
+                    await previous_put
+                previous_put = queue_actor.put.remote(next_item)
+        except StopIteration:
+            if previous_put is not None:
+                await previous_put
+            await queue_actor.put.remote(_SENTINEL)
+        except Exception as e:
+            if previous_put is not None:
+                await previous_put
+            await queue_actor.put.remote(_PrefetchException(ser_exc_info(e)))
+
+    asyncio.run(_run_producer(queue_actor, producer_fn))
