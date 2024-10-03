@@ -439,6 +439,8 @@ class TreeCache(AsyncDataset[T_co]):
                     if str(e).startswith("Failed to submit task to actor"):
                         logger.warning("Cache builder actor is gone. Stopping monitoring.")
                         break
+                    else:
+                        raise
                 try:
                     self._attempt_to_load_store()
                 except FileNotFoundError:
@@ -616,6 +618,10 @@ class ShardedCacheWriter:
     def ledger(self):
         return self._ledger
 
+    # we have both versions b/c we need this one for actors
+    def get_ledger(self):
+        return self._ledger
+
     @property
     def is_finished(self):
         return self._ledger.is_finished
@@ -662,6 +668,8 @@ class ShardedCacheWriter:
         if not self._items_ready_to_write:
             return
 
+        time_in = time.time()
+
         updated_shards = self._write_available_batches()
 
         logger.debug(f"Updated shards: {updated_shards}")
@@ -669,6 +677,9 @@ class ShardedCacheWriter:
         did_write = len(updated_shards) > 0
 
         if did_write:
+            time_out = time.time()
+            print(f"Flush took {time_out - time_in} seconds")
+
             for shard, num_rows in updated_shards.items():
                 self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
 
@@ -899,7 +910,7 @@ _Message = _Batch | _ShardFinished
 A message that can be sent from a reader task to the writer task.
 """
 
-_TIME_BETWEEN_WRITES = 10.0  # seconds
+_TIME_BETWEEN_WRITES = 20.0  # seconds
 _MAX_WRITE_BATCHES = 1000
 
 
@@ -929,11 +940,10 @@ def _core_writer_task(
     name += f"::{random.randint(0, 1000)}"
 
     def on_write(ledger):
-        # todo: send serial numbers to ensure we don't process old data
         ray.get(parent._notify_updated_ledger.remote(ledger))
 
     with log_failures_to(parent):
-        sharded_cache_writer = ShardedCacheWriter(
+        sharded_cache_writer = ray.remote(ShardedCacheWriter).remote(
             cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
@@ -950,19 +960,10 @@ def _core_writer_task(
         flush_amortized_time = Stopwatch()
 
         i = 0
-        batches_since_last_write: list[tuple[str, ray.ObjectRef]] = []
+        batches_since_last_write = 0
         time_of_last_write = time.time()
-
-        def flush_batches():
-            nonlocal time_of_last_write
-            payloads = ray.get([payload for _, payload in batches_since_last_write])
-            for (shard, _), payload in zip(batches_since_last_write, payloads):
-                sharded_cache_writer.write_batch(shard, payload)
-
-            batches_since_last_write.clear()
-
-            sharded_cache_writer.flush()
-            time_of_last_write = time.time()
+        last_flush_future: Optional[ray.ObjectRef] = None
+        start_of_last_flush = time_of_last_write
 
         # for i, batch_box in enumerate(interleave):
         while True:
@@ -972,16 +973,21 @@ def _core_writer_task(
                     time_since_last_write = cur_time - time_of_last_write
                     remaining_time = _TIME_BETWEEN_WRITES - time_since_last_write
 
-                    if len(batches_since_last_write) > 0:
+                    if batches_since_last_write > 0:
                         with flush_amortized_time:
-                            if (
-                                remaining_time <= 0
-                                or len(batches_since_last_write) >= _MAX_WRITE_BATCHES
-                                or force_flush
-                            ):
+                            if remaining_time <= 0 or batches_since_last_write >= _MAX_WRITE_BATCHES or force_flush:
                                 with flush_time:
-                                    logger.info("Flushing cache to disk")
-                                    flush_batches()
+                                    # TODO: don't block?
+                                    if last_flush_future:
+                                        ray.get(last_flush_future)
+                                        print(
+                                            f"Flushed {batches_since_last_write} batches in"
+                                            f" {time.time() - start_of_last_flush} seconds"
+                                        )
+                                    last_flush_future = sharded_cache_writer.flush.remote()
+                                    start_of_last_flush = time.time()
+                                    batches_since_last_write = 0
+                                    time_of_last_write = cur_time
                                     continue
                     else:
                         remaining_time = _TIME_BETWEEN_WRITES
@@ -997,19 +1003,18 @@ def _core_writer_task(
                         match message:
                             case _Batch(shard, _, payload):
                                 # TODO: ensure indices are what we expect
-                                # sharded_cache_writer.write_batch(shard, ray.get(payload))
-                                batches_since_last_write.append((shard, payload))
+                                sharded_cache_writer.write_batch.remote(shard, payload)
+                                batches_since_last_write += 1
                                 i += 1
                             case _ShardFinished(shard, total_rows):
-                                flush_batches()
-                                sharded_cache_writer.finish_shard(shard, total_rows)
+                                ray.get(sharded_cache_writer.finish_shard.remote(shard, total_rows))
                             case _:
                                 raise AssertionError(f"Unexpected message type {type(message)}")
 
                     if i % 1000 == 0:
                         print(
                             f"Processed {i} batches: {loading_time.average()}s load,"
-                            f" {append_time.average()}s append, {flush_time.average()}s flush, "
+                            f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
                             f"{flush_amortized_time.average()}s amortized flush, "
                             f"{total_time.average()}s total"
                         )
@@ -1020,9 +1025,9 @@ def _core_writer_task(
                     logger.exception("Error while processing batch")
                     raise e
 
-        sharded_cache_writer.finish()
+        sharded_cache_writer.finish.remote()
 
-        out = sharded_cache_writer.ledger
+        out = sharded_cache_writer.get_ledger.remote()
         return out
 
 
@@ -1141,7 +1146,7 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
             for message in _shard_reader_generator(source, group, options.batch_size):
                 match message:
                     case _Batch():
-                        # processed = process_task.remote(message)
+                        # processed = ray.put(process_task(ray.get(message.payload)))
                         processed = process_task.remote(message.payload)
                         yield dataclasses.replace(message, payload=processed)
                     case _ShardFinished():
@@ -1241,13 +1246,16 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     """
     # processor_ref = ray.put(processor)
     # exemplar = processor.output_exemplar
+    # exemplar = {
+    #     "input_ids": np.random.randint(0, 100, size=(4096,))
+    # }
 
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
     def process_task(batch_payload):
         # processor = ray.get(processor_ref)  # TIME: 0.13 seconds (!)
         try:
             result = processor(batch_payload)  # TIME: 0.03 seconds
-            # result = [exemplar for _ in batch.row_indices]
+            # result = [exemplar for _ in batch_payload]
             result = _canonicalize_batch(result)  # type: ignore
             logger.debug("Finished processing batch")
             return result
