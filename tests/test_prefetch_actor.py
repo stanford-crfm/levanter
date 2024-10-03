@@ -42,18 +42,16 @@ def test_queue_size_limit():
     actor = RayPrefetchQueue(simple_producer, max_queue_size=10)
     # Allow some time for the queue to fill up
     _sleep_until(lambda: actor.queue_size() == 10)
-    assert actor.queue_size() == 10
 
     # get a few items to make some space
     [actor.get_next() for _ in range(5)]
     _sleep_until(lambda: actor.queue_size() == 10, message="Queue size did not reach 10")
-    assert actor.queue_size() == 10
 
 
 @pytest.mark.ray
 def test_stop_functionality():
     def simple_producer():
-        for i in range(10):
+        for i in range(10000):
             yield i
 
     actor = RayPrefetchQueue(simple_producer)
@@ -116,3 +114,24 @@ def test_producer_completion():
     except StopIteration:
         pass
     assert results == list(range(10))
+
+
+@pytest.mark.ray
+def test_drain_queue():
+    def simple_producer():
+        for i in range(10):
+            yield i
+
+    actor = RayPrefetchQueue(simple_producer)
+
+    all_results = []
+
+    for tot in range(0, 5):
+        out = actor.drain_available(tot)
+        assert len(out) <= tot
+        all_results.extend(out)
+
+    while len(all_results) < 10:
+        all_results.append(actor.get_next())
+
+    assert all_results == list(range(10))

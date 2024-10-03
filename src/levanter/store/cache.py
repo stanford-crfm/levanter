@@ -22,10 +22,9 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from ray.actor import ActorHandle
 from ray.remote_function import RemoteFunction
-from ray.util.queue import Empty
 
 from levanter.data.dataset import AsyncDataset
-from levanter.store._prefetch_actor import RayPrefetchQueue
+from levanter.store._prefetch_actor import QueueEmpty, RayPrefetchQueue
 from levanter.utils.py_utils import Stopwatch
 
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
@@ -424,9 +423,12 @@ class TreeCache(AsyncDataset[T_co]):
         while not self._stop:
             try:
                 try:
-                    ledger = ray.get(self._builder.updated_ledger.remote(), timeout=10.0)
-                    self.ledger = ledger
-                    metrics = _ledger_to_metrics(ledger)
+                    # it's better to let the Ray actor handle the timeout
+                    ledger_or_timeout = ray.get(self._builder.updated_ledger.remote(timeout=4.0), timeout=10.0)
+                    if isinstance(ledger_or_timeout, Exception):
+                        raise ledger_or_timeout
+                    self.ledger = ledger_or_timeout
+                    metrics = _ledger_to_metrics(self.ledger)
                     for monitor in self._metrics_monitors:
                         monitor(metrics)
                     if metrics.is_finished:
@@ -777,16 +779,27 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
     async def finished_sentinel(self):
         await self._finished_promise
 
-    async def updated_ledger(self) -> CacheLedger:
+    async def updated_ledger(self, timeout: float | None = None) -> CacheLedger | TimeoutError:
+        """
+        NB: we **return** a timeout error, we don't raise it. This is because we want to find real failures
+        in the ray dashboard, and it's a real pain to find exceptions in the logs.
+        """
         if self._finished_promise.done():
             if self._finished_promise.exception() is not None:
                 raise self._finished_promise.exception()  # type: ignore
             else:
                 return self._ledger
 
-        async with self._updated_ledger_condition:
-            await self._updated_ledger_condition.wait()
+        try:
+            async with self._updated_ledger_condition:
+                cond = self._updated_ledger_condition.wait()
+                if timeout is not None:
+                    await asyncio.wait_for(cond, timeout=timeout)
+                else:
+                    await cond
             return self._ledger
+        except asyncio.TimeoutError:
+            return TimeoutError("Timed out waiting for cache to update")
 
     def _writer_exception(self, shard_name, exc_info: ExceptionInfo):
         info = exc_info.restore()
@@ -868,7 +881,7 @@ class _Batch:
 
     shard_name: str
     row_indices: List[int]
-    payload: Any = None  # could use a type param, but it's more trouble than its worth in python
+    payload: ray.ObjectRef
 
 
 @dataclass
@@ -912,6 +925,8 @@ def _core_writer_task(
     logger.info("Starting writer task")
 
     name = str(os.path.join(*cache_dir.split("/")[-2:]))
+    # append a small random number to the name to avoid collisions
+    name += f"::{random.randint(0, 1000)}"
 
     def on_write(ledger):
         # todo: send serial numbers to ensure we don't process old data
@@ -922,18 +937,32 @@ def _core_writer_task(
             cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
-        interleave: RayPrefetchQueue[_Message] = RayPrefetchQueue(
-            lambda: _make_interleave(name, source, initial_ledger, processor), 4096
+        interleave: RayPrefetchQueue = RayPrefetchQueue(
+            lambda: _make_interleave(name, source, initial_ledger, processor),
+            4096,
+            producer_options={"num_cpus": 1, "name": f"{name}::interleave"},
         )
 
         total_time = Stopwatch()
         loading_time = Stopwatch()
         append_time = Stopwatch()
         flush_time = Stopwatch()
+        flush_amortized_time = Stopwatch()
 
         i = 0
-        batches_since_last_write = 0
+        batches_since_last_write: list[tuple[str, ray.ObjectRef]] = []
         time_of_last_write = time.time()
+
+        def flush_batches():
+            nonlocal time_of_last_write
+            payloads = ray.get([payload for _, payload in batches_since_last_write])
+            for (shard, _), payload in zip(batches_since_last_write, payloads):
+                sharded_cache_writer.write_batch(shard, payload)
+
+            batches_since_last_write.clear()
+
+            sharded_cache_writer.flush()
+            time_of_last_write = time.time()
 
         # for i, batch_box in enumerate(interleave):
         while True:
@@ -943,22 +972,24 @@ def _core_writer_task(
                     time_since_last_write = cur_time - time_of_last_write
                     remaining_time = _TIME_BETWEEN_WRITES - time_since_last_write
 
-                    if batches_since_last_write > 0:
-                        if remaining_time <= 0 or batches_since_last_write >= _MAX_WRITE_BATCHES or force_flush:
-                            with flush_time:
-                                logger.info("Flushing cache to disk")
-                                sharded_cache_writer.flush()
-                                time_of_last_write = time.time()
-                                batches_since_last_write = 0
-                                continue
+                    if len(batches_since_last_write) > 0:
+                        with flush_amortized_time:
+                            if (
+                                remaining_time <= 0
+                                or len(batches_since_last_write) >= _MAX_WRITE_BATCHES
+                                or force_flush
+                            ):
+                                with flush_time:
+                                    logger.info("Flushing cache to disk")
+                                    flush_batches()
+                                    continue
                     else:
-                        time_since_last_write = 0
                         remaining_time = _TIME_BETWEEN_WRITES
 
                     with loading_time:
                         try:
                             message = interleave.get_next(timeout=max(remaining_time, 0.1))
-                        except Empty:
+                        except QueueEmpty:
                             logger.info("Writer running ahead of reader.")
                             continue
 
@@ -966,10 +997,11 @@ def _core_writer_task(
                         match message:
                             case _Batch(shard, _, payload):
                                 # TODO: ensure indices are what we expect
-                                sharded_cache_writer.write_batch(shard, payload)
+                                # sharded_cache_writer.write_batch(shard, ray.get(payload))
+                                batches_since_last_write.append((shard, payload))
                                 i += 1
-                                batches_since_last_write += 1
                             case _ShardFinished(shard, total_rows):
+                                flush_batches()
                                 sharded_cache_writer.finish_shard(shard, total_rows)
                             case _:
                                 raise AssertionError(f"Unexpected message type {type(message)}")
@@ -978,9 +1010,11 @@ def _core_writer_task(
                         print(
                             f"Processed {i} batches: {loading_time.average()}s load,"
                             f" {append_time.average()}s append, {flush_time.average()}s flush, "
+                            f"{flush_amortized_time.average()}s amortized flush, "
                             f"{total_time.average()}s total"
                         )
                 except StopIteration:
+                    logger.info("Finished all shards")
                     break
                 except Exception as e:
                     logger.exception("Error while processing batch")
@@ -992,7 +1026,7 @@ def _core_writer_task(
         return out
 
 
-def _interleave_shards(readers: Sequence[RayPrefetchQueue[_Message]], first_index: int) -> Iterator[T]:
+def _interleave_shards(readers: Sequence[RayPrefetchQueue], first_index: int) -> Iterator[T]:  # _Message
     """
     Interleaves the results of multiple iterators. To support resume,
     we need to be able to start from not the "first" iterator.
@@ -1009,7 +1043,7 @@ def _interleave_shards(readers: Sequence[RayPrefetchQueue[_Message]], first_inde
             reader = readers[i]
             if i not in finished:
                 try:
-                    message = next(reader)
+                    message = reader.get_next()
                     total += 1
                     yield message
                 except StopIteration:
@@ -1107,9 +1141,9 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
             for message in _shard_reader_generator(source, group, options.batch_size):
                 match message:
                     case _Batch():
-                        processed = process_task.remote(message)
-                        # We don't want Ray to dereference the ObjectRef, so we wrap it in a RefBox
-                        yield processed
+                        # processed = process_task.remote(message)
+                        processed = process_task.remote(message.payload)
+                        yield dataclasses.replace(message, payload=processed)
                     case _ShardFinished():
                         yield message
                     case _:
@@ -1119,7 +1153,9 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
 
     generator_fns = [_make_generator_fn(group) for group in groups]
 
-    readers = [RayPrefetchQueue(fn, 128, name=name) for name, fn in zip(group_names, generator_fns)]
+    readers = [
+        RayPrefetchQueue(fn, 128, producer_options=dict(name=name)) for name, fn in zip(group_names, generator_fns)
+    ]
 
     # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
     first_group_to_start = min(
@@ -1187,12 +1223,12 @@ def _shard_reader_generator(
             row_idx += 1
 
             if len(batch) == batch_size:
-                yield _Batch(status.shard_name, batch_idxes, batch)
+                yield _Batch(status.shard_name, batch_idxes, ray.put(batch))
                 batch = []
                 batch_idxes = []
 
         if len(batch) > 0:
-            yield _Batch(status.shard_name, batch_idxes, batch)
+            yield _Batch(status.shard_name, batch_idxes, ray.put(batch))
 
         logger.info(f"Finished generating shard {status.shard_name} with {row_idx} rows")
         yield _ShardFinished(status.shard_name, row_idx)
@@ -1203,21 +1239,20 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     Returns a Ray remote function that processes a batch of data. Basically it takes the resources from
     the processor and wraps its call
     """
-    processor_ref = ray.put(processor)
+    # processor_ref = ray.put(processor)
     # exemplar = processor.output_exemplar
 
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch: _Batch):
-        processor = ray.get(processor_ref)  # TIME: 0.13 seconds (!)
-        logger.debug(f"Processing batch {batch.shard_name}:{batch.row_indices}")
+    def process_task(batch_payload):
+        # processor = ray.get(processor_ref)  # TIME: 0.13 seconds (!)
         try:
-            result = processor(batch.payload)  # TIME: 0.03 seconds
+            result = processor(batch_payload)  # TIME: 0.03 seconds
             # result = [exemplar for _ in batch.row_indices]
             result = _canonicalize_batch(result)  # type: ignore
-            logger.debug(f"Finished processing batch {batch.shard_name}:{batch.row_indices}")
-            return dataclasses.replace(batch, payload=result)
+            logger.debug("Finished processing batch")
+            return result
         except Exception as e:
-            logger.exception(f"Error while processing batch {batch.shard_name}:{batch.row_indices}")
+            logger.exception("Error while processing batch")
             raise e
         finally:
             pass
