@@ -16,7 +16,6 @@ class TestActor(PoolWorkerBase):
         return self.node_id
 
     def double(self, v):
-        print(v)
         return 2 * v
 
 
@@ -49,10 +48,8 @@ class BlockingTestActor(PoolWorkerBase):
         return self.node_id
 
     def double(self, v, bypass_blocker=False):
-        print(v)
         if not bypass_blocker:
             ray.get(self.blocker.block.remote())
-        print(f"Unblocked {v}")
         return 2 * v
 
 
