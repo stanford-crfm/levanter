@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from queue import Empty as QueueEmpty
 from typing import Callable, Generic, Iterator, List, Optional, TypeVar
@@ -62,13 +61,13 @@ class RayPrefetchQueue(Generic[T]):
         """
         if self._finished:
             raise StopIteration
-        time_in = time.time()
+        # time_in = time.time()
         item = ray.get(self.queue_actor.get_next.remote(timeout))
-        time_out = time.time()
-        if time_out - time_in > 0.1:
-            current_name = ray.get_runtime_context().get_actor_name()
-            print(f"{current_name} :: Queue get took {time_out - time_in} seconds :: {self.queue_size()}")
-            logger.info(f"{current_name} :: Queue get took {time_out - time_in} seconds :: {self.queue_size()}")
+        # time_out = time.time()
+        # if time_out - time_in > 0.1:
+        #     current_name = ray.get_runtime_context().get_actor_name()
+        #     print(f"{current_name} :: Queue get took {time_out - time_in} seconds :: {self.queue_size()}")
+        #     logger.info(f"{current_name} :: Queue get took {time_out - time_in} seconds :: {self.queue_size()}")
         if isinstance(item, _PrefetchException):
             item.info.reraise()
         if isinstance(item, _Sentinel):
