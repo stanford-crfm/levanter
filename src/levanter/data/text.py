@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
 import braceexpand
 import datasets
@@ -34,7 +34,7 @@ from levanter.data.mixture import MixtureDataset, StopStrategy
 from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
-from levanter.store.cache import TreeCache
+from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
@@ -112,23 +112,6 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
                 out.append(token_arrays.data[offset : offset + self.seq_len].read())
 
         out = await asyncio.gather(*out)
-        return out
-
-    def get_batch_sync(self, indices: Sequence[int]) -> Sequence[T_co]:
-        token_arrays = self.doc_cache.store.tree["input_ids"]
-        # logger.info(f"Time to get token cache: {time.time() - time_in}")
-        # len = await self.wait_until_len_at_least(max(indices) + 1)
-        # if len is not None and len < max(indices) + 1:
-        # raise ValueError("Requested indices beyond the end of the dataset")
-        offsets = np.array(indices) * self.seq_len
-        with ts.Batch():
-            out = []
-            for offset in offsets:
-                out.append(token_arrays.data[offset : offset + self.seq_len].read())
-        # logger.info(f"Time to read token cache: {time.time() - time_in}")
-
-        out = [x.result() for x in out]
-        # logger.info(f"Time to wait for token cache: {time.time() - time_in}")
         return out
 
     async def wait_until_len_at_least(self, length: int) -> int:
@@ -213,7 +196,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         enforce_bos=True,
         enforce_eos=True,
         *,
-        batch_size=128,
         override_resources=None,
         _workaround_len=LONG_STRING_WORKAROUND,
         return_attention_mask=False,
@@ -246,8 +228,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         else:
             should_append_eos = False
             should_append_bos = False
-
-        self._batch_size = batch_size
 
         self._need_to_add_eos = should_append_eos
         self._need_to_add_bos = should_append_bos
@@ -305,6 +285,18 @@ class BatchTokenizer(BatchProcessor[str, dict]):
 
             batch.append(d)
         return batch, needs_merge
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "tokenizer": self.tokenizer.name_or_path,
+            "vocab_size": len(self.tokenizer),
+            "return_attention_mask": self.return_attention_mask,
+            "padding": self.padding,
+            "max_length": self.max_length,
+            "append_bos": self._need_to_add_bos,
+            "append_eos": self._need_to_add_eos,
+        }
 
     @property
     def output_exemplar(self) -> dict:
@@ -384,10 +376,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         if self.override_resources is not None:
             return self.override_resources.get("num_gpus", 0)
         return 0
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
 
 
 def concatenate_and_group_texts(
@@ -543,7 +531,7 @@ class LMTaskConfig(abc.ABC):
 
     # config related to caching
     cache_dir: str = "cache/"
-    tokenizer_batch_size: int = 32
+    cache_options: CacheOptions = field(default_factory=CacheOptions)
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
     ignore_token_id: Optional[int] = None
@@ -650,6 +638,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         name = logger_name or os.path.basename(self.cache_dir)
 
         try:
+            # TODO: pass in options
             return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
         except FileNotFoundError:
             pass
@@ -669,20 +658,15 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif monitors is False:
             monitors = []
 
-        bt = BatchTokenizer(
-            self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos, batch_size=self.tokenizer_batch_size
-        )
+        bt = BatchTokenizer(self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos)
 
         return build_or_load_cache(
             split_cache_dir,
             source,
             bt,
-            await_finished=False,
             monitors=monitors,
-            cache_config={
-                "tokenizer": self.the_tokenizer.name_or_path,
-                "vocab_size": self.the_tokenizer.vocab_size,
-            },
+            await_finished=False,
+            options=self.cache_options,
         )
 
 
@@ -820,9 +804,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         # in practice it works best if we block on validation caches
         if split == "validation":
-            logger.info("Waiting for validation caches to finish building...")
             for cache in caches.values():
                 cache.await_finished()
+
+        else:
+            logger.info(f"Not waiting for {split} caches to finish building")
 
         return caches
 

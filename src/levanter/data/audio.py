@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -29,7 +29,7 @@ from levanter.data.text import BatchTokenizer
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
-from levanter.store.cache import TreeCache, build_or_load_cache
+from levanter.store.cache import CacheOptions, TreeCache, build_or_load_cache
 from levanter.utils.jax_utils import local_cpu_mesh
 
 
@@ -73,7 +73,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         enforce_bos=True,
         enforce_eos=True,
         *,
-        batch_size=128,
         override_resources=None,
         max_length=448,
         padding=True,
@@ -83,7 +82,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
             tokenizer,
             enforce_bos=enforce_bos,
             enforce_eos=enforce_eos,
-            batch_size=batch_size,
             override_resources=override_resources,
             return_attention_mask=True,
             padding="max_length" if padding else False,
@@ -91,7 +89,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         )
 
         self.override_resources = override_resources
-        self._batch_size = batch_size
 
     def __call__(self, batch: Sequence[Tuple[np.ndarray, int, str]]) -> Sequence[AudioTextDict]:
         """
@@ -124,6 +121,13 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         return out  # type: ignore
 
     @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "tokenizer": self.bt.metadata,
+            "processor": self.feature_extractor.to_dict(),
+        }
+
+    @property
     def output_exemplar(self):
         return AudioTextDict_exemplar
 
@@ -135,10 +139,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
     @property
     def num_gpus(self) -> int:
         return self.bt.num_gpus
-
-    @property
-    def batch_size(self) -> int:
-        return self.bt._batch_size
 
 
 @dataclass
@@ -247,8 +247,10 @@ class AudioTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def train_set(
-        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> AsyncDataset[np.ndarray]:
+        self,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        options: CacheOptions = CacheOptions.default(),
+    ) -> AsyncDataset[AudioTextDict]:
         pass
 
     @abc.abstractmethod
@@ -294,18 +296,17 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         tokenizer: PreTrainedTokenizerBase,
         enforce_bos=True,
         enforce_eos=True,
-        batch_size=128,
         monitors=None,
         await_finished=True,
         override_resources=None,
         max_length=448,
+        cache_options: CacheOptions = CacheOptions.default(),
     ) -> "ProcessedAudioCache":
         bp = BatchAudioProcessor(
             processor,
             tokenizer,
             enforce_bos=enforce_bos,
             enforce_eos=enforce_eos,
-            batch_size=batch_size,
             override_resources=override_resources,
             max_length=max_length,
         )
@@ -316,6 +317,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
             bp,
             await_finished=await_finished,
             monitors=monitors,
+            options=cache_options,
         )
         if cache.is_finished:
             logger.info(f"Cache {cache_dir} is complete.")
@@ -339,7 +341,8 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         """
 
         try:
-            cache = TreeCache.load(cache_dir, AudioTextDict_exemplar)
+            # TODO: populate cache config
+            cache = TreeCache.load(cache_dir, AudioTextDict_exemplar, options=None)
             return ProcessedAudioCache(cache)
         except FileNotFoundError:
             raise FileNotFoundError(f"{cache_dir} is not a complete cache")
@@ -352,8 +355,10 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
 class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
-    def train_set(self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True) -> ProcessedAudioCache:
-        ds = self.build_or_load_cache(self.train_split, batch_size=batch_size, monitors=monitors)
+    def train_set(
+        self, monitors: Union[bool, List[MetricsMonitor]] = True, options: CacheOptions = CacheOptions.default()
+    ) -> ProcessedAudioCache:
+        ds = self.build_or_load_cache(self.train_split, monitors=monitors)
         if ds is None:
             raise ValueError("No training set!")
         return ds
@@ -388,9 +393,9 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
     def build_or_load_cache(
         self,
         split: str,
-        batch_size: int = 128,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         logger_name: Optional[str] = None,
+        cache_options: CacheOptions = CacheOptions.default(),
     ) -> Optional[ProcessedAudioCache]:
         split_cache_dir = os.path.join(self.cache_dir, split)
         name = logger_name or os.path.basename(self.cache_dir)
@@ -422,10 +427,10 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             self.the_tokenizer,
             enforce_bos=self.enforce_bos,
             enforce_eos=self.enforce_eos,
-            batch_size=batch_size,
             monitors=monitors,
             await_finished=(split == "validation"),
             max_length=self.max_length,
+            cache_options=cache_options,
         )
 
 
