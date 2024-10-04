@@ -525,12 +525,17 @@ class LMDatasetSourceConfig:
 
 
 @dataclass
+class LMDatasetMixtureComponentConfig(LMDatasetSourceConfig):
+    cache_dir: Optional[str] = None  # Optionally override the cache dir for this component
+
+
+@dataclass
 class LMTaskConfig(abc.ABC):
     tokenizer: str = "gpt2"
     vocab_size: Optional[int] = None  # if using the passthrough tokenizer, this is required
 
     # config related to caching
-    cache_dir: str = "cache/"
+    cache_dir: Optional[str] = "cache/"
     cache_options: CacheOptions = field(default_factory=CacheOptions)
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
@@ -560,7 +565,7 @@ class LMTaskConfig(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         pass
 
     def tagged_eval_sets(
@@ -605,7 +610,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             return {}
 
     @property
-    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         return {"": self}
 
     @cached_property
@@ -634,6 +639,9 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
     ) -> Optional[TreeCache[BatchEncoding]]:
+        if self.cache_dir is None:
+            raise ValueError("cache_dir cannot be None")
+
         split_cache_dir = os.path.join(self.cache_dir, split)
         name = logger_name or os.path.basename(self.cache_dir)
 
@@ -702,7 +710,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """This class represents a mixture of datasets with their associated weights."""
 
     # data source configs and weights
-    configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
+    configs: Dict[str, LMDatasetMixtureComponentConfig] = field(default_factory=dict)
     """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
@@ -788,10 +796,23 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             if weight == 0 and split == "train":
                 continue
 
-            source_config_dict = source_config.__dict__
+            source_config_dict = dict(**source_config.__dict__)
+            if "cache_dir" in source_config_dict:
+                del source_config_dict["cache_dir"]
+
+            if source_config.cache_dir is not None:
+                cache_dir = source_config.cache_dir
+            else:
+                if self.cache_dir is None:
+                    raise ValueError(
+                        "If the 'main' cache_dir is None, then all component cache_dirs must be non-None, but"
+                        f"{name}'s cache_dir is None."
+                    )
+
+                cache_dir = os.path.join(self.cache_dir, name)
 
             dataset = LMDatasetConfig(
-                cache_dir=os.path.join(self.cache_dir, name),
+                cache_dir=cache_dir,
                 **source_config_dict,
                 **task_config_dict,
             )
@@ -813,5 +834,5 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         return caches
 
     @property
-    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         return self.configs
