@@ -1156,7 +1156,8 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
     generator_fns = [_make_generator_fn(group) for group in groups]
 
     readers = [
-        RayPrefetchQueue(fn, 128, producer_options=dict(name=name)) for name, fn in zip(group_names, generator_fns)
+        RayPrefetchQueue(fn, 128, producer_options=dict(name=name, scheduling_strategy="SPREAD"))
+        for name, fn in zip(group_names, generator_fns)
     ]
 
     # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
