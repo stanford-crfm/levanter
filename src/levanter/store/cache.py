@@ -553,7 +553,7 @@ class SerialCacheWriter(AbstractContextManager):
         self.cache_dir = cache_dir
         self.metadata = metadata
         self._exemplar = exemplar
-        self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="w")  # type: ignore
+        self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="w", cache_metadata=True)
         self._is_closed = False
 
     def __enter__(self) -> "SerialCacheWriter":
@@ -675,6 +675,7 @@ class ShardedCacheWriter:
         did_write = len(updated_shards) > 0
 
         if did_write:
+
             for shard, num_rows in updated_shards.items():
                 self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
 
@@ -873,7 +874,6 @@ def _get_builder_actor(cache_dir, shard_source, processor, options=CacheOptions.
 # This is still much slower than I would like but I haven't figured out why yet.
 # TODO:
 # - [ ] Profile the tokenization process more (see TIME comments)
-# - [ ] Is the use of a Thread in the writer actually a problem? I think it's I/O/C++ bound so it shouldn't be.
 # - [ ] Try Ray's autoscaling actorpool if the issue is tokenization isn't fast enough
 #       https://github.com/ray-project/ray/blob/1bab09bf842edee51c3778be4cfb16f8b900d764/python/ray/data/_internal/execution/operators/actor_pool_map_operator.py
 # - [ ] More observability into what's queued and how long work items take
@@ -905,8 +905,9 @@ _Message = _Batch | _ShardFinished
 A message that can be sent from a reader task to the writer task.
 """
 
-_TIME_BETWEEN_WRITES = 10.0  # seconds
+_TIME_BETWEEN_WRITES = 20.0  # seconds
 _MAX_WRITE_BATCHES = 1000
+_MIN_WRITE_BATCHES = 100
 
 
 @ray.remote(num_cpus=1)
@@ -957,6 +958,8 @@ def _core_writer_task(
         i = 0
         batches_since_last_write = 0
         time_of_last_write = time.time()
+        last_flush_future: Optional[ray.ObjectRef] = None
+        # start_of_last_flush = time_of_last_write
 
         # for i, batch_box in enumerate(interleave):
         while True:
@@ -970,11 +973,17 @@ def _core_writer_task(
                         with flush_amortized_time:
                             if remaining_time <= 0 or batches_since_last_write >= _MAX_WRITE_BATCHES or force_flush:
                                 with flush_time:
-                                    logger.info("Flushing cache to disk")
                                     # TODO: don't block?
-                                    ray.get(sharded_cache_writer.flush.remote())
+                                    if last_flush_future:
+                                        ray.get(last_flush_future)
+                                        # print(
+                                        #     f"Flushed {batches_since_last_write} batches in"
+                                        #     f" {time.time() - start_of_last_flush} seconds"
+                                        # )
+                                    last_flush_future = sharded_cache_writer.flush.remote()
+                                    # start_of_last_flush = time.time()
                                     batches_since_last_write = 0
-                                    time_of_last_write = cur_time
+                                    time_of_last_write = time.time()
                                     continue
                     else:
                         remaining_time = _TIME_BETWEEN_WRITES
@@ -998,13 +1007,13 @@ def _core_writer_task(
                             case _:
                                 raise AssertionError(f"Unexpected message type {type(message)}")
 
-                    if i % 1000 == 0:
-                        print(
-                            f"Processed {i} batches: {loading_time.average()}s load,"
-                            f" {append_time.average()}s append, {flush_time.average()}s flush, "
-                            f"{flush_amortized_time.average()}s amortized flush, "
-                            f"{total_time.average()}s total"
-                        )
+                    # if i % 1000 == 0:
+                    #     print(
+                    #         f"Processed {i} batches: {loading_time.average()}s load,"
+                    #         f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
+                    #         f"{flush_amortized_time.average()}s amortized flush, "
+                    #         f"{total_time.average()}s total"
+                    #     )
                 except StopIteration:
                     logger.info("Finished all shards")
                     break
@@ -1126,6 +1135,7 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
     logger.warning(f"Starting cache build with {len(statuses)} shards, in {len(groups)} groups")
 
     process_task = _mk_process_task(processor)
+    processor_ref = ray.put(processor)
 
     def _make_generator_fn(group: _ShardGroup):
         def generator():
@@ -1134,7 +1144,7 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
                 match message:
                     case _Batch():
                         # processed = ray.put(process_task(ray.get(message.payload)))
-                        processed = process_task.remote(message.payload)
+                        processed = process_task.remote(processor_ref, message.payload)
                         yield dataclasses.replace(message, payload=processed)
                     case _ShardFinished():
                         yield message
@@ -1146,7 +1156,8 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
     generator_fns = [_make_generator_fn(group) for group in groups]
 
     readers = [
-        RayPrefetchQueue(fn, 128, producer_options=dict(name=name)) for name, fn in zip(group_names, generator_fns)
+        RayPrefetchQueue(fn, 128, producer_options=dict(name=name, scheduling_strategy="SPREAD"))
+        for name, fn in zip(group_names, generator_fns)
     ]
 
     # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
@@ -1232,17 +1243,14 @@ def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
     the processor and wraps its call
     """
     # processor_ref = ray.put(processor)
-    # exemplar = processor.output_exemplar
     # exemplar = {
     #     "input_ids": np.random.randint(0, 100, size=(4096,))
     # }
 
     @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(batch_payload):
-        # processor = ray.get(processor_ref)  # TIME: 0.13 seconds (!)
+    def process_task(processor, batch_payload):
         try:
             result = processor(batch_payload)  # TIME: 0.03 seconds
-            # result = [exemplar for _ in batch_payload]
             result = _canonicalize_batch(result)  # type: ignore
             logger.debug("Finished processing batch")
             return result
