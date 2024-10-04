@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Generic, List, TypeVar
+from typing import Generic, List, Sequence, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -50,17 +50,17 @@ class TreeStore(Generic[T]):
         self.tree = tree
 
     @staticmethod
-    def open(exemplar: T, path: str, *, mode="a") -> "TreeStore":
+    def open(exemplar: T, path: str, *, mode="a", cache_metadata: bool = False) -> "TreeStore":
         """
         Open a TreeStoreBuilder from a file.
         """
-        tree = _construct_builder_tree(exemplar, path, mode)
+        tree = _construct_builder_tree(exemplar, path, mode, cache_metadata)
         return TreeStore(tree, path, mode)
 
     def append(self, ex: T):
         return self.extend([ex])
 
-    def extend(self, batch: List[T]):
+    def extend(self, batch: Sequence[T]):
         """
         Append a batch of data to the store.
         """
@@ -168,12 +168,18 @@ class TreeStore(Generic[T]):
         return out
 
 
-def _construct_builder_tree(exemplar, path, mode):
+def _construct_builder_tree(exemplar, path, mode, cache_metadata):
     def open_builder(tree_path, item):
         item = np.asarray(item)
         rank = item.ndim
         render_tree_path = "/".join(_render_path_elem(x) for x in tree_path)
-        return JaggedArrayStore.open(os.path.join(path, render_tree_path), mode=mode, item_rank=rank, dtype=item.dtype)
+        return JaggedArrayStore.open(
+            os.path.join(path, render_tree_path),
+            mode=mode,
+            item_rank=rank,
+            dtype=item.dtype,
+            cache_metadata=cache_metadata,
+        )
 
     return jtu.tree_map_with_path(open_builder, exemplar, is_leaf=heuristic_is_leaf)
 

@@ -1,5 +1,5 @@
 import tempfile
-from typing import Iterator, List, Sequence
+from typing import Any, Dict, Iterator, List, Sequence
 
 import numpy as np
 import pytest
@@ -11,9 +11,6 @@ from levanter.store.tree_store import TreeStore
 
 
 class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
-    def __init__(self, batch_size: int = 8):
-        self._batch_size = batch_size
-
     def __call__(self, batch: Sequence[Sequence[int]]) -> Sequence[dict[str, Sequence[int]]]:
         return [{"data": x} for x in batch]
 
@@ -22,12 +19,12 @@ class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
         return {"data": np.array([0], dtype=np.int64)}
 
     @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @property
     def num_cpus(self) -> int:
         return 1
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
 
 class SimpleShardSource(ShardedDataSource[List[int]]):
@@ -52,7 +49,7 @@ def test_tree_builder_with_processor():
         processor = SimpleProcessor()
         source = SimpleShardSource()
 
-        for batch in batched(source, processor.batch_size):
+        for batch in batched(source, 8):
             processed = processor(batch)
             builder.extend(processed)
 
