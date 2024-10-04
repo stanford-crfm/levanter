@@ -14,7 +14,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, TypeVar, Union
 
-import deepdiff
+# import deepdiff
 import fsspec.core
 import pyarrow as pa
 import ray
@@ -508,7 +508,7 @@ class CacheMetadata:
     options: CacheOptions = CacheOptions.default()
     preprocessor_metadata: Optional[dict[str, Any]] = None
 
-    def compare_to(self, other: "CacheMetadata") -> deepdiff.DeepDiff:
+    def compare_to(self, other: "CacheMetadata"):
         """
         Compare this metadata to another set of metadata. This is used to check if the cache being loaded
         was created with the expected configuration.
@@ -519,7 +519,15 @@ class CacheMetadata:
             sorta_self = dataclasses.replace(self, preprocessor_metadata=None)
         else:
             sorta_self = self
-        return deepdiff.DeepDiff(sorta_self, other)
+        try:
+            import deepdiff
+
+            return deepdiff.DeepDiff(sorta_self, other)
+        except Exception as e:
+            if "deepdiff" in str(e):
+                if sorta_self != other:
+                    return {"message": "Metadata mismatch"}
+                return {}
 
     @staticmethod
     def empty():
