@@ -1,6 +1,5 @@
 import asyncio
 import os
-import time
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -15,7 +14,7 @@ from levanter.utils import fsspec_utils
 from levanter.utils.thread_utils import future_from_value
 
 
-# zarr suggests 1MB chunk size (in bytes, but whatever)
+# zarr suggests 1MB chunk size
 # at 4 bytes this is 256k elements
 DEFAULT_CHUNK_SIZE = 256 * 1024
 DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 512
@@ -239,7 +238,6 @@ class JaggedArrayStore:
             self._cached_data_size = current_data_size + len(data)
 
     def _prepare_batch(self, arrays):
-        time_in = time.time()
         if self.shapes is not None:
             for data in arrays:
                 if data.ndim != self.item_rank:
@@ -253,8 +251,6 @@ class JaggedArrayStore:
         new_offsets = np.array([data.size for data in arrays], dtype=np.int64)
         new_offsets = np.cumsum(new_offsets) + self.data_size
         data = np.concatenate([data.reshape(-1) for data in arrays])
-        time_out = time.time()
-        print(f"Prepare batch took {time_out - time_in} seconds")
         return data, new_offsets, shapes
 
     async def reload_async(self) -> "JaggedArrayStore":

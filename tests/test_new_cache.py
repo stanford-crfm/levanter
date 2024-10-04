@@ -190,12 +190,6 @@ class PretendParent(SnitchRecipient):
     def is_finished(self):
         return self._finished
 
-    def signal_backpressure(self, desired_next_item: float):
-        self._desired_next_item = desired_next_item
-
-    def desired_next_item(self):
-        return self._desired_next_item
-
 
 @pytest.mark.ray
 def test_full_end_to_end_cache():
@@ -267,7 +261,7 @@ class _CustomException(Exception):
 
 
 @pytest.mark.ray
-# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataSource[list[int]]):
         def __init__(self, crash_point: int):
@@ -427,7 +421,7 @@ async def test_can_get_elems_before_finished():
         cache.await_finished(timeout=10)
 
 
-# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
     class ThrowingProcessor(SimpleProcessor):
@@ -440,7 +434,7 @@ def test_shard_cache_crashes_if_processor_throws():
 
 
 @pytest.mark.ray
-# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
     with tempfile.TemporaryDirectory() as tmpdir:
         with open(f"{tmpdir}/data.txt", "w") as f:
@@ -461,7 +455,7 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
-# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 @pytest.mark.asyncio
 async def test_shard_cache_fails_gracefully_with_unknown_file_type_async():
@@ -489,7 +483,7 @@ async def test_shard_cache_fails_gracefully_with_unknown_file_type_async():
         del cache
 
 
-# @pytest.mark.skip("This test segfaults in CI. I think a ray bug")
+@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 def test_shard_cache_fails_gracefully_with_unknown_file_type():
     with tempfile.TemporaryDirectory() as tmpdir:
