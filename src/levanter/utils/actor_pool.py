@@ -23,15 +23,15 @@ class AutoScalingActorPool:
         create_actor_fn: Callable[[], "ray.actor.ActorHandle"],
         min_size: int = 1,
         max_size: int = 10,
-        max_tasks_in_flight_per_actor: int = 4,
     ):
         self._create_actor_fn = create_actor_fn
         self._min_size = min_size
         self._max_size = max_size
-        self._max_tasks_in_flight = max_tasks_in_flight_per_actor
 
         self._idle_actors: List[ray.actor.ActorHandle] = []
         self._busy_actors: Dict[ray.ObjectRef, ray.actor.ActorHandle] = {}
+        self._pending_actors: Dict[ray.ObjectRef, ray.actor.ActorHandle] = {}
+
         self._actor_locations: Dict[ray.actor.ActorHandle, str] = {}
         self._pending_tasks: List[Tuple[Callable, Any, Optional[ray.ObjectRef], int]] = []
         self._task_futures: Dict[int, asyncio.Future] = {}
@@ -43,26 +43,49 @@ class AutoScalingActorPool:
         for _ in range(num_actors):
             try:
                 actor = self._create_actor_fn()
-                self._idle_actors.append(actor)
-                self._actor_locations[actor] = ray.get(actor.get_location.remote())
+                ready_ref = actor.get_location.remote()
+                self._pending_actors[ready_ref] = actor
+
+                async def wait_for_ready(ready_ref):
+                    loc = await ready_ref
+                    print("Actor ready at location", loc)
+                    del self._pending_actors[ready_ref]
+                    self._push_inner(actor, loc)
+
+                asyncio.ensure_future(wait_for_ready(ready_ref))
+
             except Exception as e:
                 logger.error(f"Failed to create actor: {e}")
 
     def _scale_down(self, num_actors: int):
         for _ in range(num_actors):
-            if self._idle_actors:
-                actor = self._idle_actors.pop()
+            if self._pending_actors:
+                print("Killing pending actor")
+                actor = self._pending_actors.popitem()[1]
                 ray.kill(actor)
+            elif self._idle_actors:
+                print("Killing idle actor")
+                actor = self._idle_actors.pop()
                 del self._actor_locations[actor]
+                ray.kill(actor)
+            else:
+                break
 
     def _adjust_pool_size(self):
         num_pending_tasks = len(self._pending_tasks)
         num_idle_actors = len(self._idle_actors)
         num_busy_actors = len(self._busy_actors)
+        num_pending_actors = len(self._pending_actors)
 
-        if num_pending_tasks > 0 and num_idle_actors == 0 and num_busy_actors < self._max_size:
+        # TODO: better autoscale logic
+        if (
+            num_pending_actors == 0
+            and num_pending_tasks > 0
+            and num_idle_actors == 0
+            and num_busy_actors < self._max_size
+        ):
             self._scale_up(min(self._max_size - num_busy_actors, num_pending_tasks))
-        elif num_pending_tasks == 0 and num_idle_actors > self._min_size:
+        elif num_pending_tasks == 0 and (num_idle_actors + num_idle_actors) > self._min_size:
             self._scale_down(num_idle_actors - self._min_size)
 
     def _get_object_location(self, obj_ref: ray.ObjectRef) -> Optional[str]:
@@ -116,7 +139,16 @@ class AutoScalingActorPool:
         self._idle_actors.remove(actor)
         ray_future = fn(actor, value)
         self._busy_actors[ray_future] = actor
+        print(f"Actor {actor} is now busy with task {ray_future}")
         asyncio.ensure_future(self._wrap_ray_future(ray_future, future))
+
+    def _maybe_start_pending_task(self, actor):
+        if self._pending_tasks:
+            fn, value, obj_ref, pending_task_id = self._pending_tasks.pop(0)
+            future = self._task_futures.pop(pending_task_id)
+            self._assign_task_to_actor(actor, fn, value, future)
+            return True
+        return False
 
     async def _wrap_ray_future(self, ray_future, future):
         try:
@@ -130,12 +162,10 @@ class AutoScalingActorPool:
     def _on_task_done(self, ray_future):
         actor = self._busy_actors.pop(ray_future)
         self._idle_actors.append(actor)
+        print(f"Task {ray_future} done. Actor {actor} is now idle.")
 
-        if self._pending_tasks:
-            fn, value, obj_ref, pending_task_id = self._pending_tasks.pop(0)
-            future = self._task_futures.pop(pending_task_id)
-            self._assign_task_to_actor(actor, fn, value, future)
-        else:
+        started = self._maybe_start_pending_task(actor)
+        if not started:
             self._adjust_pool_size()
 
     async def map(
@@ -161,16 +191,16 @@ class AutoScalingActorPool:
     def push(self, actor: "ray.actor.ActorHandle"):
         if actor in self._idle_actors or actor in self._busy_actors.values():
             raise ValueError("Actor already belongs to current ActorPool")
-        self._actor_locations[actor] = ray.get(actor.get_location.remote())
+        location = ray.get(actor.get_location.remote())
 
-        if self._pending_tasks:
-            fn, value, obj_ref, id = self._pending_tasks.pop(0)
-            future = self._task_futures.pop(id)
-            self._assign_task_to_actor(actor, fn, value, future)
-        else:
-            self._idle_actors.append(actor)
+        self._push_inner(actor, location)
 
-        self._adjust_pool_size()
+    def _push_inner(self, actor, location):
+        self._actor_locations[actor] = location
+        self._idle_actors.append(actor)
+        assigned = self._maybe_start_pending_task(actor)
+        if not assigned:
+            self._adjust_pool_size()
 
 
 class PoolWorkerBase(ABC):
