@@ -24,6 +24,8 @@ class AutoScalingActorPool:
         min_size: int = 1,
         max_size: int = 10,
     ):
+        if max_size < min_size:
+            raise ValueError("max_size must be greater than or equal to min_size.")
         self._create_actor_fn = create_actor_fn
         self._min_size = min_size
         self._max_size = max_size
@@ -38,6 +40,11 @@ class AutoScalingActorPool:
         self._next_task_id = 0
 
         self._scale_up(self._min_size)
+
+
+    @property
+    def num_pending_tasks(self):
+        return len(self._pending_tasks)
 
     def _scale_up(self, num_actors: int):
         for _ in range(num_actors):

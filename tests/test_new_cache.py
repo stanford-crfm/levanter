@@ -145,51 +145,6 @@ def crappy_du(path):
     return total
 
 
-@ray.remote
-class PretendParent(SnitchRecipient):
-    def __init__(self):
-        self.logger = logging.getLogger("SnitchRecipient")
-        self.failure_received = asyncio.Event()
-        self.exception_info = None
-        self._finished_shards = set()
-        self._finished = False
-        self._ledger = None
-        self._desired_next_item = None
-
-    def _child_failed(self, child: ray.actor.ActorHandle, exception: ExceptionInfo):
-        try:
-            self.logger.error(f"Child {child} failed with exception {exception}")
-            self.exception_info = exception
-            self.failure_received.set()
-        except Exception as e:
-            self.logger.error(f"Error in _child_failed: {e}")
-
-    def shard_failed(self, shard_name, exc_info):
-        self.exception_info = exc_info
-        self.failure_received.set()
-
-    async def wait_for_failure(self):
-        await self.failure_received.wait()
-        return self.exception_info
-
-    def shard_finished(self, shard_name):
-        self._finished_shards.add(shard_name)
-
-    def get_finished_shards(self):
-        return self._finished_shards
-
-    def _notify_updated_ledger(self, ledger):
-        if ledger.is_finished:
-            self._finished = True
-
-        self._ledger = ledger
-
-    def _finalize(self):
-        self._finished = True
-
-    def is_finished(self):
-        return self._finished
-
 
 @pytest.mark.ray
 def test_full_end_to_end_cache():

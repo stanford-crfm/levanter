@@ -27,10 +27,11 @@ from levanter.data.dataset import AsyncDataset
 from levanter.store._prefetch_actor import QueueEmpty, RayPrefetchQueue
 from levanter.utils.py_utils import Stopwatch
 
-from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
+from ..data._preprocessor import BatchProcessor, BatchProcessorPool, BatchResult, dict_from_record_batch
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_datasource import ShardedDataSource
-from ..utils.ray_utils import ExceptionInfo, SnitchRecipient, current_actor_handle, log_failures_to, ser_exc_info
+from ..utils.ray_utils import ExceptionInfo, RefBox, SnitchRecipient, current_actor_handle, log_failures_to, \
+    ser_exc_info
 from .tree_store import TreeStore
 
 
@@ -1134,8 +1135,7 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
 
     logger.warning(f"Starting cache build with {len(statuses)} shards, in {len(groups)} groups")
 
-    process_task = _mk_process_task(processor)
-    processor_ref = ray.put(processor)
+    processor_pool = BatchProcessorPool.remote(processor, min_size=len(groups), max_size=len(groups) * 4)
 
     def _make_generator_fn(group: _ShardGroup):
         def generator():
@@ -1144,7 +1144,8 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
                 match message:
                     case _Batch():
                         # processed = ray.put(process_task(ray.get(message.payload)))
-                        processed = process_task.remote(processor_ref, message.payload)
+                        # processed = process_task.remote(processor_ref, message.payload)
+                        processed = processor_pool.process_batch.remote(RefBox(message.payload))
                         yield dataclasses.replace(message, payload=processed)
                     case _ShardFinished():
                         yield message
