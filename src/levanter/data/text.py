@@ -577,6 +577,8 @@ class LMTaskConfig(abc.ABC):
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
+    cache_dir: Optional[str] = "cache/"
+
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
     ) -> AsyncDataset[np.ndarray]:
@@ -704,6 +706,8 @@ class PassthroughTokenizer(PreTrainedTokenizer):
 @dataclass
 class LMMixtureDatasetConfig(LMTaskConfig):
     """This class represents a mixture of datasets with their associated weights."""
+
+    cache_dir: Optional[str] = "cache/"
 
     # data source configs and weights
     configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
