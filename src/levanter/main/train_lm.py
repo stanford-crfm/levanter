@@ -212,7 +212,7 @@ def main(config: TrainLmConfig):
 
         train_loader = trainer.data_loader(train_dataset, Batch)
         if seek_dataloader:
-            train_loader = train_loader.iter_from_step(state.step)
+            train_loader = train_loader.iter_from_step(int(state.step))
         else:
             train_loader = iter(train_loader)
 
