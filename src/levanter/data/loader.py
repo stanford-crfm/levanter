@@ -129,32 +129,26 @@ class DataLoaderIterator(Iterator[Ex]):
         return out
 
     async def _produce_batches(self):
-        for epoch in range(self.epochs or 1):
-            self.current_epoch = epoch
-            batch_number = self._start_from_batch or 0
-            total_ex_loaded = 0
-            done = False
-            while not done:
-                next_batch_numbers = []
-                for i in range(self.dl.prefetch_size):
-                    if self.dl.data_store.is_finite():
-                        next_end = (batch_number + 1) * self.dl.batch_size
-                        available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
-                        if available_len < next_end:
-                            done = True
-                            break
+        batch_number = self._start_from_batch or 0
+        total_ex_loaded = 0
+        done = False
+        while not done:
+            next_batch_numbers = []
+            for i in range(self.dl.prefetch_size):
+                if self.dl.data_store.is_finite():
+                    next_end = (batch_number + 1) * self.dl.batch_size
+                    available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
+                    if available_len < next_end:
+                        done = True
+                        break
 
-                    next_batch_numbers.append(batch_number)
-                    batch_number += 1
+                next_batch_numbers.append(batch_number)
+                batch_number += 1
 
-                async for batch in self._retrieve_batches(next_batch_numbers):
-                    yield batch
+            async for batch in self._retrieve_batches(next_batch_numbers):
+                yield batch
 
-                total_ex_loaded += self.dl.batch_size * len(next_batch_numbers)
-            
-            # Reset batch_number at the end of each epoch if the dataset is finite
-            if self.dl.data_store.is_finite():
-                self._start_from_batch = 0
+            total_ex_loaded += self.dl.batch_size * len(next_batch_numbers)
 
     async def _retrieve_batches(self, batch_numbers: list[int]):
         with hax.axis_mapping(self.mapping), self.dl.mesh:
