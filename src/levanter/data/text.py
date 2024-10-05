@@ -797,22 +797,18 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 continue
 
             source_config_dict = dict(**source_config.__dict__)
-            if "cache_dir" in source_config_dict:
-                del source_config_dict["cache_dir"]
 
-            if source_config.cache_dir is not None:
-                cache_dir = source_config.cache_dir
-            else:
+            if source_config.cache_dir is None:
+                # replace with the main cache dir/{name}
                 if self.cache_dir is None:
                     raise ValueError(
                         "If the 'main' cache_dir is None, then all component cache_dirs must be non-None, but"
                         f"{name}'s cache_dir is None."
                     )
-
                 cache_dir = os.path.join(self.cache_dir, name)
+                source_config_dict["cache_dir"] = cache_dir
 
             dataset = LMDatasetConfig(
-                cache_dir=cache_dir,
                 **source_config_dict,
                 **task_config_dict,
             )
