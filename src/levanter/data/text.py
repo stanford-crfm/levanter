@@ -466,6 +466,7 @@ class LMDatasetSourceConfig:
 
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
+    cache_dir: Optional[str] = None  # Optionally override the cache dir for this component
 
     def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
         if self.id is not None:
@@ -530,7 +531,7 @@ class LMTaskConfig(abc.ABC):
     vocab_size: Optional[int] = None  # if using the passthrough tokenizer, this is required
 
     # config related to caching
-    cache_dir: str = "cache/"
+    cache_dir: Optional[str] = "cache/"
     cache_options: CacheOptions = field(default_factory=CacheOptions)
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
@@ -560,7 +561,7 @@ class LMTaskConfig(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         pass
 
     def tagged_eval_sets(
@@ -605,7 +606,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             return {}
 
     @property
-    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         return {"": self}
 
     @cached_property
@@ -634,6 +635,9 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
     ) -> Optional[TreeCache[BatchEncoding]]:
+        if self.cache_dir is None:
+            raise ValueError("cache_dir cannot be None")
+
         split_cache_dir = os.path.join(self.cache_dir, split)
         name = logger_name or os.path.basename(self.cache_dir)
 
@@ -788,10 +792,19 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             if weight == 0 and split == "train":
                 continue
 
-            source_config_dict = source_config.__dict__
+            source_config_dict = dict(**source_config.__dict__)
+
+            if source_config.cache_dir is None:
+                # replace with the main cache dir/{name}
+                if self.cache_dir is None:
+                    raise ValueError(
+                        "If the 'main' cache_dir is None, then all component cache_dirs must be non-None, but"
+                        f"{name}'s cache_dir is None."
+                    )
+                cache_dir = os.path.join(self.cache_dir, name)
+                source_config_dict["cache_dir"] = cache_dir
 
             dataset = LMDatasetConfig(
-                cache_dir=os.path.join(self.cache_dir, name),
                 **source_config_dict,
                 **task_config_dict,
             )
@@ -813,5 +826,5 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         return caches
 
     @property
-    def sources(self) -> dict[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         return self.configs

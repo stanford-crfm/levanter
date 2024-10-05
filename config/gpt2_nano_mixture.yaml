@@ -5,6 +5,7 @@ data:
       id: dlwh/wikitext_103_detokenized
     w2:
       id: dlwh/wikitext_103_detokenized
+      cache_dir: wikitext2_cache
   train_weights:
     wikitext: 1.0
     w2: 1.0
