@@ -466,6 +466,7 @@ class LMDatasetSourceConfig:
 
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
+    cache_dir: Optional[str] = None  # Optionally override the cache dir for this component
 
     def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
         if self.id is not None:
@@ -522,11 +523,6 @@ class LMDatasetSourceConfig:
 
         urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
         return urls
-
-
-@dataclass
-class LMDatasetMixtureComponentConfig(LMDatasetSourceConfig):
-    cache_dir: Optional[str] = None  # Optionally override the cache dir for this component
 
 
 @dataclass
@@ -710,7 +706,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """This class represents a mixture of datasets with their associated weights."""
 
     # data source configs and weights
-    configs: Dict[str, LMDatasetMixtureComponentConfig] = field(default_factory=dict)
+    configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
     """ configuration of each dataset source (urls, hf dataset id, etc.) """
     train_weights: Dict[str, float] = field(default_factory=dict)
     """ weights for each dataset source. They will be normalized to sum to 1. """
