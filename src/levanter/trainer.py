@@ -367,34 +367,50 @@ class Trainer:
 
         return StepInfo(new_state, loss, step_time())
 
-    def training_steps(self, state: S, train_loader, run_hooks: bool = True) -> typing.Iterator[StepInfo[S]]:
+    def training_steps(self, state: S, train_loader, run_hooks: bool = True, epochs: Optional[int] = None) -> typing.Iterator[StepInfo[S]]:
         """
         Generator that yields training steps and runs hooks.
         """
-        iter_data = iter(train_loader)
+        current_epoch = 0
+        target_steps = self.num_train_steps
 
-        while int(state.step) < self.num_train_steps:
-            with capture_time() as loading_time:
-                example = next(iter_data)
+        while int(state.step) < target_steps and (epochs is None or current_epoch < epochs):
+            current_epoch += 1
+            print(f"Starting epoch {current_epoch}")
 
-            info = self.train_step(state, example)
-            state = info.state
+            # Reset the DataLoader iterator at the start of each epoch
+            iter_data = iter(train_loader)
 
-            if run_hooks:
-                with capture_time() as hook_time:
-                    self.run_hooks(info)
+            while True:
+                try:
+                    with capture_time() as loading_time:
+                        example = next(iter_data)
+                except StopIteration:
+                    # End of DataLoader iterator, proceed to next epoch
+                    break
 
-                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=info.step)
+                info = self.train_step(state, example)
+                state = info.state
 
-            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=info.step)
+                if run_hooks:
+                    with capture_time() as hook_time:
+                        self.run_hooks(info)
 
-            yield info
+                    levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=info.step)
 
-    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[S]:
+                levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=info.step)
+
+                yield info
+
+                # Check if we've reached the total training steps
+                if int(state.step) >= target_steps:
+                    return
+
+    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True, epochs: Optional[int] = None) -> StepInfo[S]:
         """
-        Performs training until the number of steps is reached.
+        Performs training until the number of steps is reached or the specified number of epochs is completed.
         """
-        for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
+        for info in self.training_steps(state, train_loader, run_hooks=run_hooks, epochs=epochs):
             pass
 
         if run_hooks:
