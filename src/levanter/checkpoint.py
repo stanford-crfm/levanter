@@ -549,8 +549,12 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
+    append_run_id_to_base_path: bool = True
+
     def expanded_path(self, run_id) -> str:
-        return os.path.expanduser(os.path.join(self.base_path, run_id))
+        if self.append_run_id_to_base_path:
+            return os.path.expanduser(os.path.join(self.base_path, run_id))
+        return os.path.expanduser(self.base_path)
 
     def create(self, run_id) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
