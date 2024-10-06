@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 import ray
@@ -136,6 +137,8 @@ async def test_scaling_down():
 @pytest.mark.asyncio
 async def test_push_pop_idle():
     pool = AutoScalingActorPool(create_test_actor, min_size=1, max_size=4)
+    # wait until the actor is created
+    await pool.submit(lambda a, v: a.double.remote(v), 1)
     actor = pool.pop_idle()
     assert actor is not None
     pool.push(actor)
@@ -146,12 +149,20 @@ async def test_push_pop_idle():
 async def test_has_free():
     block_actor = BlockerActor.remote()
     pool = AutoScalingActorPool(lambda: create_test_actor_blocker(block_actor), min_size=1, max_size=1)
-    assert pool.has_free()
+    await _sleep_until(lambda: pool.has_free())
     f = pool.submit(lambda a, v: a.double.remote(v), 1)
-    assert not pool.has_free()
+    await _sleep_until(lambda: not pool.has_free())
     await block_actor.unblock.remote()
     await f
-    assert pool.has_free()
+    await _sleep_until(lambda: pool.has_free())
+
+
+async def _sleep_until(condition, timeout=5, message="Condition not met within timeout"):
+    start = time.time()
+    while not condition():
+        if time.time() - start > timeout:
+            pytest.fail(message)
+        await asyncio.sleep(0.1)
 
 
 @pytest.mark.asyncio
@@ -159,8 +170,9 @@ async def test_submit_with_no_idle_actors():
     blocker = BlockerActor.remote()
     pool = AutoScalingActorPool(lambda: create_test_actor_blocker(blocker), min_size=1, max_size=4)
     futs = [pool.submit(lambda a, v: a.double.remote(v), i) for i in range(4)]
+    await _sleep_until(lambda: pool.num_pending_tasks == 4)
     f5 = pool.submit(lambda a, v: a.double.remote(v), 5)
-    assert len(pool._pending_tasks) == 1
+    await _sleep_until(lambda: pool.num_pending_tasks == 1, timeout=10000)
     await blocker.unblock.remote()
     await asyncio.gather(*futs)
     assert len(pool._pending_tasks) == 0
