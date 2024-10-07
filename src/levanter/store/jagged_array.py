@@ -213,7 +213,7 @@ class JaggedArrayStore:
             self._cached_num_rows = num_rows + len(arrays)
             self._cached_data_size = current_data_size + len(data)
 
-    def extend(self, arrays: Sequence[jax.Array]):
+    def extend(self, arrays: Sequence[jax.Array | np.ndarray]):
         data, new_offsets, shapes = self._prepare_batch(arrays)
 
         num_rows = self.num_rows

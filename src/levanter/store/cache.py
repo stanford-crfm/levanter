@@ -675,13 +675,13 @@ class ShardedCacheWriter:
         if not self._items_ready_to_write:
             return
 
-        time_in = time.time()
+        # time_in = time.time()
 
         updated_shards = self._write_available_batches()
 
-        time_out = time.time()
-        print(f"Flushing took {time_out - time_in} seconds")
-        logger.info(f"Flushing took {time_out - time_in} seconds")
+        # time_out = time.time()
+        # print(f"Flushing took {time_out - time_in} seconds")
+        # logger.info(f"Flushing took {time_out - time_in} seconds")
 
         logger.debug(f"Updated shards: {updated_shards}")
 
@@ -924,6 +924,18 @@ _MIN_WRITE_BATCHES = 100
 _MAX_OUTSTANDING_MESSAGES = 1000
 
 
+def _write_batches(writer, batches, finished_shards):
+    shards_for_batches, payloads_for_batches = zip(*batches)
+    payloads_for_batches = ray.get(list(payloads_for_batches))
+    batches = list(zip(shards_for_batches, payloads_for_batches))
+
+    for shard, batch in batches:
+        writer.write_batch(shard, batch)
+    writer.flush()
+    for shard, total_rows in finished_shards:
+        writer.finish_shard(shard, total_rows)
+
+
 @ray.remote(num_cpus=1)
 def _core_writer_task(
     parent,
@@ -953,10 +965,8 @@ def _core_writer_task(
         ray.get(parent._notify_updated_ledger.remote(ledger))
 
     with log_failures_to(parent):
-        sharded_cache_writer = (
-            ray.remote(ShardedCacheWriter)
-            .options(num_cpus=0)
-            .remote(cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write)  # type: ignore
+        sharded_cache_writer = ShardedCacheWriter(
+            cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
         interleave: RayPrefetchQueue = RayPrefetchQueue(
@@ -973,14 +983,15 @@ def _core_writer_task(
         backpressure_time = Stopwatch()
 
         i = 0
-        batches_since_last_write = 0
+        batches: list = []
         time_of_last_write = time.time()
-        last_batches_since_last_write = 0
-        last_flush_future: Optional[ray.ObjectRef] = None
+        # last_batches_since_last_write = 0
         outstanding_messages_to_writer: list = []
-        payloads_already_ready = 0.0
+        # payloads_already_ready = 0.0
         payloads_total = 0.0
-        start_of_last_flush = time_of_last_write
+        # start_of_last_flush = time_of_last_write
+        thread = None
+        finished_shards_last_flush: list = []
 
         # for i, batch_box in enumerate(interleave):
         while True:
@@ -990,21 +1001,32 @@ def _core_writer_task(
                     time_since_last_write = cur_time - time_of_last_write
                     remaining_time = _TIME_BETWEEN_WRITES - time_since_last_write
 
-                    if batches_since_last_write > 0:
+                    if len(batches) > 0:
                         with flush_amortized_time:
-                            if remaining_time <= 0 or batches_since_last_write >= _MAX_WRITE_BATCHES or force_flush:
+                            if remaining_time <= 0 or len(batches) >= _MAX_WRITE_BATCHES or force_flush:
                                 with flush_time:
                                     # TODO: don't block?
-                                    if last_flush_future:
-                                        ray.get(last_flush_future)
-                                        print(
-                                            f"Flushed {last_batches_since_last_write} batches in"
-                                            f" {time.time() - start_of_last_flush} seconds"
+                                    if thread is not None:
+                                        thread.join()
+                                        # print(
+                                        #     f"Flushed {last_batches_since_last_write} batches in"
+                                        #     f" {time.time() - start_of_last_flush} seconds"
+                                        # )
+
+                                    if force_flush:
+                                        thread = threading.Thread(
+                                            target=_write_batches,
+                                            args=(sharded_cache_writer, batches, finished_shards_last_flush),
                                         )
-                                    last_flush_future = sharded_cache_writer.flush.remote()
-                                    start_of_last_flush = time.time()
-                                    last_batches_since_last_write = batches_since_last_write
-                                    batches_since_last_write = 0
+                                        thread.start()
+                                    else:
+                                        _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
+
+                                    # last_batches_since_last_write = len(batches)
+                                    batches = []
+                                    finished_shards_last_flush = []
+                                    # last_flush_future = sharded_cache_writer.flush.remote()
+                                    # start_of_last_flush = time.time()
                                     time_of_last_write = time.time()
                                     continue
                     else:
@@ -1031,35 +1053,30 @@ def _core_writer_task(
                     with append_time:
                         match message:
                             case _Batch(shard, _, payload):
-                                try:
-                                    ray.wait([payload], timeout=0.1, fetch_local=False)
-                                    payloads_already_ready += 1
-                                except TimeoutError:
-                                    pass
-                                except Exception:
-                                    logger.exception("Error while waiting for payload")
-                                    raise
                                 payloads_total += 1
-                                # TODO: ensure indices in _Batch are what we expect
-                                result = sharded_cache_writer.write_batch.remote(shard, payload)
-                                outstanding_messages_to_writer.append(result)
-                                batches_since_last_write += 1
+                                batches.append((shard, payload))
+                                if force_flush:
+                                    _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
+                                    batches = []
+                                    finished_shards_last_flush = []
                                 i += 1
                             case _ShardFinished(shard, total_rows):
-                                result = sharded_cache_writer.finish_shard.remote(shard, total_rows)
-                                outstanding_messages_to_writer.append(result)
+                                # sharded_cache_writer.finish_shard(shard, total_rows)
+                                finished_shards_last_flush.append((shard, total_rows))
+                                # result = sharded_cache_writer.finish_shard.remote(shard, total_rows)
+                                # outstanding_messages_to_writer.append(result)
                             case _:
                                 raise AssertionError(f"Unexpected message type {type(message)}")
 
-                    if i % 1000 == 0:
-                        print(
-                            f"Processed {i} batches: {loading_time.average()}s load,"
-                            f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
-                            f"{flush_amortized_time.average()}s amortized flush, "
-                            f"{backpressure_time.average()}s backpressure, "
-                            f"{payloads_already_ready/payloads_total:.2f} payloads ready"
-                            f"{total_time.average()}s total"
-                        )
+                    # if i % 1000 == 0:
+                    #     print(
+                    #         f"Processed {i} batches: {loading_time.average()}s load,"
+                    #         f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
+                    #         f"{flush_amortized_time.average()}s amortized flush, "
+                    #         f"{backpressure_time.average()}s backpressure, "
+                    #         f"{payloads_already_ready/payloads_total:.2f} payloads ready"
+                    #         f"{total_time.average()}s total"
+                    #     )
                 except StopIteration:
                     logger.info("Finished all shards")
                     break
@@ -1067,9 +1084,13 @@ def _core_writer_task(
                     logger.exception("Error while processing batch")
                     raise e
 
-        sharded_cache_writer.finish.remote()
+        # force a flush
+        if len(batches) > 0:
+            _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
 
-        out = sharded_cache_writer.get_ledger.remote()
+        sharded_cache_writer.finish()
+
+        out = sharded_cache_writer.get_ledger()
         return out
 
 
