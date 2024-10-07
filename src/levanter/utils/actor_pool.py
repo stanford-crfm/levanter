@@ -63,7 +63,6 @@ class AutoScalingActorPool:
                 logger.error("Failed to create actor.", exc_info=e)
 
     def _scale_down(self, num_actors: int):
-        return
         for _ in range(num_actors):
             if self._pending_actors:
                 actor = self._pending_actors.popitem()[1]
