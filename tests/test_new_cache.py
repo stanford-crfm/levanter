@@ -1,6 +1,5 @@
 import asyncio
 import copy
-import logging
 import os
 import tempfile
 from typing import Any, Dict, Iterator, Sequence
@@ -23,7 +22,6 @@ from levanter.store.cache import (
     build_or_load_cache,
 )
 from levanter.utils.py_utils import logical_cpu_core_count
-from levanter.utils.ray_utils import ExceptionInfo, SnitchRecipient
 
 
 class TestProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
@@ -143,7 +141,6 @@ def crappy_du(path):
         for f in files:
             total += os.path.getsize(os.path.join(root, f))
     return total
-
 
 
 @pytest.mark.ray
