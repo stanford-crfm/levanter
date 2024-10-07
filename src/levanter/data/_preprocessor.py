@@ -1,4 +1,3 @@
-import asyncio
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Generic, Iterable, Mapping, Sequence, TypeVar, Union
 
@@ -6,8 +5,9 @@ import numpy as np
 import pyarrow as pa
 import ray
 
-from levanter.utils.ray_utils import RefBox
 from levanter.utils.actor_pool import AutoScalingActorPool, PoolWorkerBase
+from levanter.utils.ray_utils import RefBox
+
 
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
@@ -233,17 +233,18 @@ def dict_from_record_batch(b) -> dict:
     return {b.field(i).name: to_hf_batched(b.column(i).to_numpy(zero_copy_only=False)) for i in range(b.num_columns)}
 
 
-@ray.remote(num_cpus=1)
+@ray.remote(num_cpus=0)
 class BatchProcessorPool:
-
     def __init__(self, processor: BatchProcessor, min_size: int = 1, max_size: int = 10):
         processor_ref = ray.put(processor)
         self.actor_pool = AutoScalingActorPool(
             lambda: _create_batch_processor_actor(processor, processor_ref), min_size, max_size
         )
 
-    async def process_batch(self, batch_ref: RefBox) -> asyncio.Future:
-        return self.actor_pool.submit(lambda a, b: a.process_batch.remote(b), batch_ref.ref, obj_ref=batch_ref.ref)
+    async def process_batch(self, batch_ref: RefBox):
+        return await self.actor_pool.submit(
+            lambda a, b: a.process_batch.remote(b), batch_ref.ref, obj_ref=batch_ref.ref
+        )
 
     def num_pending_tasks(self):
         return self.actor_pool.num_pending_tasks
@@ -253,15 +254,37 @@ def _create_batch_processor_actor(processor: BatchProcessor, processor_ref):
     cpus = processor.num_cpus
     gpus = processor.num_gpus
     resources = processor.resources
-    return _BatchProcessorActor.options(num_cpus=cpus, num_gpus=gpus, resources=resources,
-                                        scheduling_strategy="SPREAD").remote(processor_ref)
+    return _BatchProcessorActor.options(  # type: ignore
+        num_cpus=cpus, num_gpus=gpus, resources=resources, scheduling_strategy="SPREAD"
+    ).remote(processor_ref)
 
 
+@ray.remote
 class _BatchProcessorActor(PoolWorkerBase):
     def __init__(self, processor: BatchProcessor):
         self.processor = processor
 
     def process_batch(self, batch):
         result = self.processor(batch)
-        result = _canonicalize_batch(result)  # type: ignore
+        result = _canonicalize_batch(result)
         return result
+
+
+def _canonicalize_batch(batch: Union[dict, list[dict]]) -> list[dict]:
+    if isinstance(batch, pa.RecordBatch):
+        batch = dict_from_record_batch(batch)
+
+    if isinstance(batch, dict):
+        return _to_list_of_dicts(batch)
+    else:
+        return batch
+
+
+def _to_list_of_dicts(batch: dict) -> list[dict]:
+    """
+    Convert a batch of dictionaries to a list of dictionaries, suitable for writing to a cache.
+    """
+    keys = list(batch.keys())
+    values = list(batch.values())
+    num_rows = len(values[0])
+    return [{key: values[i][j] for i, key in enumerate(keys)} for j in range(num_rows)]
