@@ -83,16 +83,22 @@ class AutoScalingActorPool:
         num_pending_actors = len(self._pending_actors)
 
         num_nonworking_actors = num_idle_actors + num_pending_actors
+        total_actors = num_nonworking_actors + num_busy_actors
 
         # TODO: better autoscale logic
         if (
             num_pending_actors == 0
             and num_pending_tasks > 0
             and num_idle_actors == 0
-            and num_busy_actors < self._max_size
+            and total_actors < self._max_size
         ):
+            logger.info(
+                f"Scaling up due to {num_pending_tasks} pending tasks. Current pool size: {total_actors}. Max size:"
+                f" {self._max_size}"
+            )
             self._scale_up(min(self._max_size - num_busy_actors, num_pending_tasks))
         elif num_pending_tasks == 0 and num_nonworking_actors > self._min_size:
+            logger.info(f"Scaling down due to no pending tasks. Current pool size: {total_actors}")
             self._scale_down(num_nonworking_actors - self._min_size)
 
     def _get_object_location(self, obj_ref: ray.ObjectRef) -> Optional[str]:

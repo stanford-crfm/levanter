@@ -767,9 +767,9 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             if self._ledger.is_finished:
                 self.logger.info("Cache already finished. Nothing to do.")
                 return
-            self._cache_writer = _core_writer_task.remote(
-                current_actor_handle(), cache_dir, self._ledger, source, processor, force_flush
-            )
+            self._cache_writer = _core_writer_task.options(
+                name=f"writer::{path_for_name}", scheduling_strategy="SPREAD"
+            ).remote(current_actor_handle(), cache_dir, self._ledger, source, processor, force_flush)
         except Exception:
             # Ray behaves poorly if the constructor of an actor fails, so we catch and log here
             # this also propagates to the finished promise, so we can handle it there
@@ -969,8 +969,12 @@ def _core_writer_task(
             cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
+        num_groups = min(initial_ledger.metadata.options.num_shard_groups, len(source.shard_names))
+
+        processor_pool = _mk_processor_pool(processor, num_groups, num_groups * 4)
+
         interleave: RayPrefetchQueue = RayPrefetchQueue(
-            lambda: _make_interleave(name, source, initial_ledger, processor),
+            lambda: _make_interleave(name, source, initial_ledger, processor_pool),
             64,
             producer_options={"num_cpus": 1, "name": f"{name}::interleave"},
         )
@@ -987,9 +991,9 @@ def _core_writer_task(
         time_of_last_write = time.time()
         # last_batches_since_last_write = 0
         outstanding_messages_to_writer: list = []
-        # payloads_already_ready = 0.0
+        payloads_already_ready = 0.0
         payloads_total = 0.0
-        # start_of_last_flush = time_of_last_write
+        start_of_last_flush = time_of_last_write
         thread = None
         finished_shards_last_flush: list = []
 
@@ -1008,10 +1012,10 @@ def _core_writer_task(
                                     # TODO: don't block?
                                     if thread is not None:
                                         thread.join()
-                                        # print(
-                                        #     f"Flushed {last_batches_since_last_write} batches in"
-                                        #     f" {time.time() - start_of_last_flush} seconds"
-                                        # )
+                                        print(
+                                            f"Flushed {last_batches_since_last_write} batches in"
+                                            f" {time.time() - start_of_last_flush} seconds"
+                                        )
 
                                     if force_flush:
                                         thread = threading.Thread(
@@ -1022,11 +1026,11 @@ def _core_writer_task(
                                     else:
                                         _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
 
-                                    # last_batches_since_last_write = len(batches)
+                                    last_batches_since_last_write = len(batches)
                                     batches = []
                                     finished_shards_last_flush = []
                                     # last_flush_future = sharded_cache_writer.flush.remote()
-                                    # start_of_last_flush = time.time()
+                                    start_of_last_flush = time.time()
                                     time_of_last_write = time.time()
                                     continue
                     else:
@@ -1068,15 +1072,15 @@ def _core_writer_task(
                             case _:
                                 raise AssertionError(f"Unexpected message type {type(message)}")
 
-                    # if i % 1000 == 0:
-                    #     print(
-                    #         f"Processed {i} batches: {loading_time.average()}s load,"
-                    #         f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
-                    #         f"{flush_amortized_time.average()}s amortized flush, "
-                    #         f"{backpressure_time.average()}s backpressure, "
-                    #         f"{payloads_already_ready/payloads_total:.2f} payloads ready"
-                    #         f"{total_time.average()}s total"
-                    #     )
+                    if i % 1000 == 0:
+                        print(
+                            f"Processed {i} batches: {loading_time.average()}s load,"
+                            f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
+                            f"{flush_amortized_time.average()}s amortized flush, "
+                            f"{backpressure_time.average()}s backpressure, "
+                            f"{payloads_already_ready/payloads_total:.2f} payloads ready"
+                            f"{total_time.average()}s total"
+                        )
                 except StopIteration:
                     logger.info("Finished all shards")
                     break
@@ -1177,7 +1181,7 @@ class _ShardGroup:
         return total_committed, all_finished
 
 
-def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: CacheLedger, processor: BatchProcessor):
+def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: CacheLedger, processor_pool: ActorHandle):
     """
     Given a list of ShardStatus objects and sources, creates an interleaving generator
     that reads from shards and tokenizes them in parallel.
@@ -1201,10 +1205,6 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
 
     logger.warning(f"Starting cache build with {len(statuses)} shards, in {len(groups)} groups")
 
-    processor_pool = BatchProcessorPool.remote(  # type: ignore
-        processor, min_size=len(groups), max_size=len(groups) * 4
-    )
-
     def _make_generator_fn(group: _ShardGroup):
         def generator():
             pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
@@ -1225,7 +1225,7 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
     generator_fns = [_make_generator_fn(group) for group in groups]
 
     readers = [
-        RayPrefetchQueue(fn, 32, producer_options=dict(name=name, scheduling_strategy="SPREAD"))
+        RayPrefetchQueue(fn, 4, producer_options=dict(num_cpus=0, name=name, scheduling_strategy="SPREAD"))
         for name, fn in zip(group_names, generator_fns)
     ]
 
@@ -1236,6 +1236,20 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
     )
 
     yield from _interleave_shards(readers, first_group_to_start)
+
+
+def _mk_processor_pool(processor, min_size, max_size):
+    import hashlib
+
+    metadata_hash = hashlib.md5(str(processor.metadata).encode()).hexdigest()
+    processor_pool_name = f"processor_pool::{metadata_hash}"
+    processor_pool = BatchProcessorPool.options(  # type: ignore
+        name=processor_pool_name, get_if_exists=True
+    ).remote(  # type: ignore
+        processor, min_size, max_size
+    )
+
+    return processor_pool
 
 
 def _check_current_shard_progress(statuses):

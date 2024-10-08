@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Generic, Iterable, Mapping, Sequence, TypeVar, Union
 
@@ -236,6 +237,7 @@ def dict_from_record_batch(b) -> dict:
 @ray.remote(num_cpus=0)
 class BatchProcessorPool:
     def __init__(self, processor: BatchProcessor, min_size: int = 1, max_size: int = 10):
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(message)s")
         processor_ref = ray.put(processor)
         self.actor_pool = AutoScalingActorPool(
             lambda: _create_batch_processor_actor(processor, processor_ref), min_size, max_size
