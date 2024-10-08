@@ -33,7 +33,7 @@ from levanter.data.text import BatchTokenizer
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
 from levanter.store.cache import CacheOptions, TreeCache, build_or_load_cache
-from levanter.utils.jax_utils import local_cpu_mesh
+from levanter.utils.jax_utils import key_iterator, local_cpu_mesh
 
 
 silence_transformer_nag()  # noqa
@@ -252,6 +252,7 @@ class AudioTaskConfig(abc.ABC):
         self,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         options: CacheOptions = CacheOptions.default(),
+        *,
         key: Optional[PRNGKeyArray] = None,
     ) -> AsyncDataset[AudioTextDict]:
         pass
@@ -362,6 +363,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
         self,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         options: CacheOptions = CacheOptions.default(),
+        *,
         key: Optional[PRNGKeyArray] = None,
     ) -> ProcessedAudioCache:
         ds = self.build_or_load_cache(self.train_split, monitors=monitors)
@@ -508,8 +510,12 @@ class AudioMixtureDatasetConfig(AudioTaskConfig):
             )
 
     def train_set(
-        self, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
-    ) -> AsyncDataset[np.ndarray]:
+        self,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        options: CacheOptions = CacheOptions.default(),
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> AsyncDataset[AudioTextDict]:
         audio_datasets = self.training_sets(monitors)
 
         if key is None:
@@ -546,15 +552,13 @@ class AudioMixtureDatasetConfig(AudioTaskConfig):
 
     def training_sets(self, monitors: Union[bool, List[MetricsMonitor]] = True) -> Mapping[str, ProcessedAudioCache]:
         doc_caches = self.build_caches("train", monitors=monitors)
-        audio_datasets = {name: ProcessedAudioCache(cache) for name, cache in doc_caches.items()}
-        return audio_datasets
+        return doc_caches
 
     def validation_sets(
         self, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        audio_datasets = {name: ProcessedAudioCache(cache) for name, cache in doc_caches.items()}
-        return audio_datasets
+        return doc_caches
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -610,5 +614,5 @@ class AudioMixtureDatasetConfig(AudioTaskConfig):
         return caches
 
     @property
-    def sources(self) -> Mapping[str, AudioIODatasetConfig]:
+    def sources(self) -> Mapping[str, AudioDatasetSourceConfig]:
         return self.configs
