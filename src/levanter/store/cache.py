@@ -895,26 +895,6 @@ _MIN_WRITE_BATCHES = 100
 _MAX_OUTSTANDING_MESSAGES = 1000
 
 
-def _write_batches(writer: ShardedCacheWriter, batches, finished_shards):
-    logger.info(f"Writing {len(batches)} batches to cache")
-    shards_for_batches, payloads_for_batches = zip(*batches)
-    time_in = time.time()
-    payloads_for_batches = ray.get(list(payloads_for_batches))
-    time_out = time.time()
-    logger.info(f"Getting payloads took {time_out - time_in} seconds")
-
-    # concatenate the payloads
-    final_payload = jax.tree.map(lambda *bs: PreparedBatch.concat(bs), *payloads_for_batches)
-    shard_row_totals: dict[str, int] = {}
-    for shard, payload in zip(shards_for_batches, payloads_for_batches):
-        shard_row_totals[shard] = shard_row_totals.get(shard, 0) + jax.tree.leaves(payload)[0].num_rows
-
-    writer.write_prepared_batch(shard_row_totals, final_payload)
-
-    for shard, total_rows in finished_shards:
-        writer.finish_shard(shard, total_rows)
-
-
 @ray.remote(num_cpus=1)
 def _core_writer_task(
     parent,
@@ -974,7 +954,7 @@ def _core_writer_task(
         payloads_already_ready = 0.0
         payloads_total = 0.0
         start_of_last_flush = time_of_last_write
-        thread = None
+        flush_thread = None
         finished_shards_last_flush: list = []
 
         # for i, batch_box in enumerate(interleave):
@@ -989,21 +969,23 @@ def _core_writer_task(
                         with flush_amortized_time:
                             if remaining_time <= 0 or len(batches) >= _MAX_WRITE_BATCHES or force_flush:
                                 with flush_time:
-                                    if thread is not None:
-                                        thread.join()
+                                    shard_rows, payloads = _fetch_batches(batches)
+                                    if flush_thread is not None:
+                                        flush_thread.join()
                                         print(
                                             f"Flushed {last_batches_since_last_write} batches in"
                                             f" {time.time() - start_of_last_flush} seconds"
                                         )
 
-                                    thread = ExceptionTrackingThread(
-                                        target=_write_batches,
-                                        args=(sharded_cache_writer, batches, finished_shards_last_flush),
-                                    )
-                                    thread.start()
-
                                     last_batches_since_last_write = len(batches)
                                     batches = []
+
+                                    flush_thread = ExceptionTrackingThread(
+                                        target=_write_batches,
+                                        args=(sharded_cache_writer, shard_rows, payloads, finished_shards_last_flush),
+                                    )
+                                    flush_thread.start()
+
                                     finished_shards_last_flush = []
                                     # last_flush_future = sharded_cache_writer.flush.remote()
                                     start_of_last_flush = time.time()
@@ -1036,7 +1018,11 @@ def _core_writer_task(
                                 payloads_total += 1
                                 batches.append((shard, payload))
                                 if force_flush:
-                                    _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
+                                    shard_rows, payloads = _fetch_batches(batches)
+                                    del batches
+                                    _write_batches(
+                                        sharded_cache_writer, shard_rows, payloads, finished_shards_last_flush
+                                    )
                                     batches = []
                                     finished_shards_last_flush = []
                                 i += 1
@@ -1066,14 +1052,39 @@ def _core_writer_task(
 
         # force a flush
         if len(batches) > 0:
-            if thread is not None:
-                thread.join()
-            _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
+            shard_row_totals, payloads_for_batches = _fetch_batches(batches)
+            del batches
+            if flush_thread is not None:
+                flush_thread.join()
+            _write_batches(sharded_cache_writer, shard_row_totals, payloads_for_batches, finished_shards_last_flush)
 
         sharded_cache_writer.finish()
 
         out = sharded_cache_writer.get_ledger()
         return out
+
+
+def _write_batches(writer: ShardedCacheWriter, shard_totals, batches, finished_shards):
+    # concatenate the payloads
+    final_payload = jax.tree.map(lambda *bs: PreparedBatch.concat(bs), *batches)
+    writer.write_prepared_batch(shard_totals, final_payload)
+
+    for shard, total_rows in finished_shards:
+        writer.finish_shard(shard, total_rows)
+
+
+def _fetch_batches(batches) -> tuple[dict[str, int], list[PreparedBatch]]:
+    time_in = time.time()
+    shards_for_batches, payloads_for_batches = zip(*batches)
+    payloads_for_batches = ray.get(list(payloads_for_batches))
+    time_out = time.time()
+    logger.info(f"Fetched {len(batches)} batches in {time_out - time_in} seconds")
+
+    shard_row_totals: dict[str, int] = {}
+    for shard, payload in zip(shards_for_batches, payloads_for_batches):
+        shard_row_totals[shard] = shard_row_totals.get(shard, 0) + jax.tree.leaves(payload)[0].num_rows
+
+    return shard_row_totals, payloads_for_batches
 
 
 def _interleave_shards(readers: Sequence[RayPrefetchQueue], first_index: int) -> Iterator[T]:  # _Message

@@ -133,16 +133,6 @@ def test_serial_cache_writer():
             np.testing.assert_array_equal(x["data"], np.asarray([i % 10 + i // 10 * 10] * 10))
 
 
-def crappy_du(path):
-    import os
-
-    total = 0
-    for root, dirs, files in os.walk(path):
-        for f in files:
-            total += os.path.getsize(os.path.join(root, f))
-    return total
-
-
 @pytest.mark.ray
 def test_full_end_to_end_cache():
     td = tempfile.TemporaryDirectory()
