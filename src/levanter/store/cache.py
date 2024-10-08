@@ -23,7 +23,6 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 from ray.actor import ActorHandle
-from ray.remote_function import RemoteFunction
 
 from levanter.data.dataset import AsyncDataset
 from levanter.store._prefetch_actor import QueueEmpty, RayPrefetchQueue
@@ -1290,32 +1289,6 @@ def _shard_reader_generator(
 
         logger.info(f"Finished generating shard {status.shard_name} with {row_idx} rows")
         yield _ShardFinished(status.shard_name, row_idx)
-
-
-def _mk_process_task(processor: BatchProcessor[T, U]) -> RemoteFunction:
-    """
-    Returns a Ray remote function that processes a batch of data. Basically it takes the resources from
-    the processor and wraps its call
-    """
-    # processor_ref = ray.put(processor)
-    # exemplar = {
-    #     "input_ids": np.random.randint(0, 100, size=(4096,))
-    # }
-
-    @ray.remote(num_cpus=processor.num_cpus, num_gpus=processor.num_gpus, resources=processor.resources)
-    def process_task(processor, batch_payload):
-        try:
-            result = processor(batch_payload)  # TIME: 0.03 seconds
-            result = _canonicalize_batch(result)  # type: ignore
-            logger.debug("Finished processing batch")
-            return result
-        except Exception as e:
-            logger.exception("Error while processing batch")
-            raise e
-        finally:
-            pass
-
-    return process_task
 
 
 def _canonicalize_batch(batch: Union[dict, List[dict]]) -> List[dict]:

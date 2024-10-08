@@ -21,21 +21,25 @@ DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 512
 
 @dataclass
 class PreparedBatch:
+    """
+    A batch of data that has been prepared for storage in a jagged array.
+    """
+
     data: np.ndarray
-    new_offsets: np.ndarray
+    offsets: np.ndarray
     shapes: Optional[np.ndarray]
 
     def astype(self, dtype):
-        return PreparedBatch(self.data.astype(dtype), self.new_offsets, self.shapes)
+        return PreparedBatch(self.data.astype(dtype), self.offsets, self.shapes)
 
     @property
     def num_rows(self):
-        return len(self.new_offsets)
+        return len(self.offsets)
 
     @staticmethod
     def from_batch(items: Sequence[np.ndarray], item_rank: Optional[int] = None) -> "PreparedBatch":
-        data, new_offsets, shapes = _prepare_batch(items, item_rank)
-        return PreparedBatch(data, new_offsets, shapes)
+        data, offsets, shapes = _prepare_batch(items, item_rank)
+        return PreparedBatch(data, offsets, shapes)
 
     @staticmethod
     def concat(batches: Sequence["PreparedBatch"]) -> "PreparedBatch":
@@ -43,9 +47,9 @@ class PreparedBatch:
         shapes = np.concatenate([batch.shapes for batch in batches]) if batches[0].shapes is not None else None
         # offsets have to be adjusted by adding the previous offset
         totals = np.cumsum([0] + [batch.data.size for batch in batches])
-        new_offsets = np.concatenate([batch.new_offsets + total for batch, total in zip(batches, totals)])
+        offsets = np.concatenate([batch.offsets + total for batch, total in zip(batches, totals)])
 
-        return PreparedBatch(data, new_offsets, shapes)
+        return PreparedBatch(data, offsets, shapes)
 
 
 def _prepare_batch(arrays, item_rank):
@@ -56,10 +60,10 @@ def _prepare_batch(arrays, item_rank):
         shapes = np.array([data.shape[:-1] for data in arrays], dtype=np.int64)
     else:
         shapes = None
-    new_offsets = np.array([data.size for data in arrays], dtype=np.int64)
-    new_offsets = np.cumsum(new_offsets)
+    offsets = np.array([data.size for data in arrays], dtype=np.int64)
+    offsets = np.cumsum(offsets)
     data = np.concatenate([data.reshape(-1) for data in arrays])
-    return data, new_offsets, shapes
+    return data, offsets, shapes
 
 
 @dataclass
@@ -238,7 +242,7 @@ class JaggedArrayStore:
         else:
             prepared = PreparedBatch.from_batch(arrays, self.item_rank)
         data = prepared.data
-        new_offsets = prepared.new_offsets
+        new_offsets = prepared.offsets
         shapes = prepared.shapes
 
         num_rows = await self.num_rows_async()
@@ -269,7 +273,7 @@ class JaggedArrayStore:
         else:
             prepared = PreparedBatch.from_batch(arrays, self.item_rank)
         data = prepared.data
-        new_offsets = prepared.new_offsets
+        new_offsets = prepared.offsets
         shapes = prepared.shapes
 
         num_rows = self.num_rows
