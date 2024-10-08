@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from abc import ABC
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 import ray
 
@@ -35,15 +35,14 @@ class AutoScalingActorPool:
         self._pending_actors: Dict[ray.ObjectRef, ray.actor.ActorHandle] = {}
 
         self._actor_locations: Dict[ray.actor.ActorHandle, str] = {}
-        self._pending_tasks: List[Tuple[Callable, Any, Optional[ray.ObjectRef], int]] = []
-        self._task_futures: Dict[int, asyncio.Future] = {}
+        self._tasks_waiting_for_actor: list[asyncio.Future] = []
         self._next_task_id = 0
 
         self._scale_up(self._min_size)
 
     @property
     def num_pending_tasks(self):
-        return len(self._pending_tasks)
+        return len(self._tasks_waiting_for_actor)
 
     def _scale_up(self, num_actors: int):
         for _ in range(num_actors):
@@ -54,8 +53,11 @@ class AutoScalingActorPool:
 
                 async def wait_for_ready(actor, ready_ref):
                     loc = await ready_ref
+                    # pending -> floating
                     del self._pending_actors[ready_ref]
-                    self._push_inner(actor, loc)
+                    self._assert_is_floating(actor)
+                    self._actor_locations[actor] = loc
+                    self._maybe_start_pending_task(actor)  # floating -> {idle, busy}
 
                 asyncio.ensure_future(wait_for_ready(actor, ready_ref))
 
@@ -66,18 +68,16 @@ class AutoScalingActorPool:
         for _ in range(num_actors):
             if self._pending_actors:
                 actor = self._pending_actors.popitem()[1]
-                print(f"Killing pending actor {actor}")
                 ray.kill(actor)
             elif self._idle_actors:
                 actor = self._idle_actors.pop()
-                print(f"Killing idle actor {actor}")
                 del self._actor_locations[actor]
                 ray.kill(actor)
             else:
                 break
 
     def _adjust_pool_size(self):
-        num_pending_tasks = len(self._pending_tasks)
+        num_pending_tasks = self.num_pending_tasks
         num_idle_actors = len(self._idle_actors)
         num_busy_actors = len(self._busy_actors)
         num_pending_actors = len(self._pending_actors)
@@ -114,6 +114,7 @@ class AutoScalingActorPool:
 
     def _pick_actor(self, obj_ref: Optional[ray.ObjectRef] = None) -> Optional[ray.actor.ActorHandle]:
         """Pick an actor based on locality and busyness."""
+        # idle -> floating
         if not self._idle_actors:
             return None
 
@@ -128,57 +129,60 @@ class AutoScalingActorPool:
             return requires_remote_fetch
 
         actor = min(self._idle_actors, key=penalty_key)
+        actor = self._idle_actors.pop(self._idle_actors.index(actor))
         return actor
 
-    def submit(
-        self, fn: Callable[["ray.actor.ActorHandle", V], R], value: V, obj_ref: Optional[ray.ObjectRef] = None
-    ) -> asyncio.Future[R]:
-        future: asyncio.Future = asyncio.Future()
+    def submit(self, fn: Callable[["ray.actor.ActorHandle", V], R], value: V, obj_ref: Optional[ray.ObjectRef] = None):
         actor = self._pick_actor(obj_ref)
         if actor:
-            self._assign_task_to_actor(actor, fn, value, future)
+            return self._assign_task_to_actor(actor, fn, value)
         else:
-            self._enqueue_pending_task(fn, obj_ref, value, future)
-        self._adjust_pool_size()
-        return future
+            actor_future: asyncio.Future = asyncio.Future()
+            self._tasks_waiting_for_actor.append(actor_future)
+            f = asyncio.ensure_future(self._enqueue_pending_task(fn, obj_ref, value, actor_future))
+            self._adjust_pool_size()
+            return f
 
-    def _enqueue_pending_task(self, fn, obj_ref, value, future):
-        task_id = self._next_task_id
-        self._next_task_id += 1
-        self._task_futures[task_id] = future
-        self._pending_tasks.append((fn, value, obj_ref, task_id))
-
-    def _assign_task_to_actor(self, actor, fn, value, future):
-        self._idle_actors.remove(actor)
+    def _assign_task_to_actor(self, actor, fn, value):
+        # floating -> busy
         ray_future = fn(actor, value)
         self._busy_actors[ray_future] = actor
         self._adjust_pool_size()
-        asyncio.ensure_future(self._wrap_ray_future(ray_future, future))
+
+        # return ray_future
+        return asyncio.ensure_future(self._wrap_ray_future(ray_future))
+
+    async def _enqueue_pending_task(self, fn, obj_ref, value, actor_future):
+        actor = await actor_future
+        return await self._assign_task_to_actor(actor, fn, value)
+
+    def _assert_is_floating(self, actor):
+        assert actor not in self._idle_actors
+        assert actor not in self._busy_actors
+        assert actor not in self._pending_actors
 
     def _maybe_start_pending_task(self, actor):
-        if self._pending_tasks:
-            fn, value, obj_ref, pending_task_id = self._pending_tasks.pop(0)
-            future = self._task_futures.pop(pending_task_id)
-            self._assign_task_to_actor(actor, fn, value, future)
-            return True
-        return False
+        self._assert_is_floating(actor)
+        if self._tasks_waiting_for_actor:
+            # floating -> busy (inside the _enqueue_pending_task coroutine)
+            actor_future = self._tasks_waiting_for_actor.pop(0)
+            actor_future.set_result(actor)
+            assigned = True
+        else:
+            # floating -> idle
+            self._idle_actors.append(actor)
+            self._adjust_pool_size()
+            assigned = False
+        return assigned
 
-    async def _wrap_ray_future(self, ray_future, future):
-        try:
-            result = await ray_future
-            future.set_result(result)
-        except Exception as e:
-            future.set_exception(e)
-        finally:
-            self._on_task_done(ray_future)
+    async def _wrap_ray_future(self, ray_future):
+        await asyncio.wait([ray_future])
+        self._on_task_done(ray_future)
+        return await ray_future
 
     def _on_task_done(self, ray_future):
         actor = self._busy_actors.pop(ray_future)
-        self._idle_actors.append(actor)
-
-        started = self._maybe_start_pending_task(actor)
-        if not started:
-            self._adjust_pool_size()
+        self._maybe_start_pending_task(actor)
 
     async def map(
         self,
@@ -195,26 +199,18 @@ class AutoScalingActorPool:
     def has_free(self):
         return bool(self._idle_actors)
 
+    def has_free_or_pending_actors(self):
+        return bool(self._idle_actors) or bool(self._pending_actors)
+
     def pop_idle(self):
         if self._idle_actors:
             return self._idle_actors.pop()
         return None
 
     def push(self, actor: "ray.actor.ActorHandle"):
-        if actor in self._idle_actors or actor in self._busy_actors.values():
-            raise ValueError("Actor already belongs to current ActorPool")
         location = ray.get(actor.get_location.remote())
-
-        self._push_inner(actor, location)
-
-    def _push_inner(self, actor, location):
-        if actor in self._idle_actors or actor in self._busy_actors.values():
-            raise ValueError("Actor already belongs to current ActorPool")
         self._actor_locations[actor] = location
-        self._idle_actors.append(actor)
-        assigned = self._maybe_start_pending_task(actor)
-        if not assigned:
-            self._adjust_pool_size()
+        self._maybe_start_pending_task(actor)
 
 
 class PoolWorkerBase(ABC):

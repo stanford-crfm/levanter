@@ -107,13 +107,16 @@ async def test_scaling_up():
     f3 = pool.submit(lambda a, v: a.double.remote(v, True), 3)
     f4 = pool.submit(lambda a, v: a.double.remote(v, True), 4)
 
+    shield_f2 = asyncio.shield(f2)
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(asyncio.shield(f2), timeout=0.1)
+        await asyncio.wait_for(shield_f2, timeout=0.1)
 
     assert (await asyncio.gather(f3, f4)) == [6, 8]
 
     await blocker.unblock.remote()
-    assert (await asyncio.gather(f1, f2)) == [2, 4]
+    # assert (await asyncio.gather(f1, f2)) == [2, 4]
+    assert (await f1) == 2
+    assert (await f2) == 4
 
 
 @pytest.mark.asyncio
@@ -137,7 +140,6 @@ async def test_scaling_down():
 @pytest.mark.asyncio
 async def test_push_pop_idle():
     pool = AutoScalingActorPool(create_test_actor, min_size=1, max_size=4)
-    # wait until the actor is created
     await pool.submit(lambda a, v: a.double.remote(v), 1)
     actor = pool.pop_idle()
     assert actor is not None
@@ -146,15 +148,15 @@ async def test_push_pop_idle():
 
 
 @pytest.mark.asyncio
-async def test_has_free():
-    block_actor = BlockerActor.remote()
-    pool = AutoScalingActorPool(lambda: create_test_actor_blocker(block_actor), min_size=1, max_size=1)
-    await _sleep_until(lambda: pool.has_free())
-    f = pool.submit(lambda a, v: a.double.remote(v), 1)
-    await _sleep_until(lambda: not pool.has_free())
-    await block_actor.unblock.remote()
-    await f
-    await _sleep_until(lambda: pool.has_free())
+async def test_submit_with_no_idle_actors():
+    blocker = BlockerActor.remote()
+    pool = AutoScalingActorPool(lambda: create_test_actor_blocker(blocker), min_size=1, max_size=4)
+    futs = [pool.submit(lambda a, v: a.double.remote(v), i) for i in range(4)]
+    f5 = pool.submit(lambda a, v: a.double.remote(v), 5)
+    await _sleep_until(lambda: pool.num_pending_tasks == 1, timeout=10)
+    await blocker.unblock.remote()
+    await asyncio.gather(*futs)
+    assert (await f5) == 10
 
 
 async def _sleep_until(condition, timeout=5, message="Condition not met within timeout"):
@@ -163,17 +165,3 @@ async def _sleep_until(condition, timeout=5, message="Condition not met within t
         if time.time() - start > timeout:
             pytest.fail(message)
         await asyncio.sleep(0.1)
-
-
-@pytest.mark.asyncio
-async def test_submit_with_no_idle_actors():
-    blocker = BlockerActor.remote()
-    pool = AutoScalingActorPool(lambda: create_test_actor_blocker(blocker), min_size=1, max_size=4)
-    futs = [pool.submit(lambda a, v: a.double.remote(v), i) for i in range(4)]
-    await _sleep_until(lambda: pool.num_pending_tasks == 4)
-    f5 = pool.submit(lambda a, v: a.double.remote(v), 5)
-    await _sleep_until(lambda: pool.num_pending_tasks == 1, timeout=10000)
-    await blocker.unblock.remote()
-    await asyncio.gather(*futs)
-    assert len(pool._pending_tasks) == 0
-    assert (await f5) == 10

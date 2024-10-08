@@ -969,7 +969,7 @@ def _core_writer_task(
             cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
-        num_groups = min(initial_ledger.metadata.options.num_shard_groups, len(source.shard_names))
+        num_groups = min(initial_ledger.metadata.options.num_shard_groups or 1000000, len(source.shard_names))
 
         processor_pool = _mk_processor_pool(processor, num_groups, num_groups * 4)
 
@@ -989,7 +989,7 @@ def _core_writer_task(
         i = 0
         batches: list = []
         time_of_last_write = time.time()
-        # last_batches_since_last_write = 0
+        last_batches_since_last_write = 0
         outstanding_messages_to_writer: list = []
         payloads_already_ready = 0.0
         payloads_total = 0.0
