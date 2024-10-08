@@ -105,6 +105,7 @@ def build_or_load_cache(
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     options: CacheOptions = CacheOptions.default(),
     force_flush: bool = False,
+    split: str = "test",
 ) -> "TreeCache[U]":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
@@ -144,6 +145,7 @@ def build_or_load_cache(
         processor=processor,
         options=options,
         force_flush=force_flush,
+        split=split,
     )
 
     if cache.is_finished:
@@ -307,6 +309,7 @@ class TreeCache(AsyncDataset[T_co]):
         processor: BatchProcessor[T, U],
         options: Optional["CacheOptions"] = None,
         force_flush: bool = False,
+        split: str = "test",
     ) -> "TreeCache[U]":
         if options is None:
             options = CacheOptions.default()
@@ -320,6 +323,7 @@ class TreeCache(AsyncDataset[T_co]):
                 processor=processor,
                 options=options,
                 force_flush=force_flush,
+                split=split,
             )
             return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
 
@@ -706,6 +710,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self,
         cache_dir: str,
         name: str,
+        split: str,  # to workaround https://github.com/ray-project/ray/issues/44083
         source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         options: CacheOptions,
@@ -734,7 +739,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
                 return
             self._cache_writer = _core_writer_task.options(
                 name=f"writer::{path_for_name}", scheduling_strategy="SPREAD"
-            ).remote(current_actor_handle(), cache_dir, self._ledger, source, processor, force_flush)
+            ).remote(current_actor_handle(), cache_dir, split, self._ledger, source, processor, force_flush)
         except Exception:
             # Ray behaves poorly if the constructor of an actor fails, so we catch and log here
             # this also propagates to the finished promise, so we can handle it there
@@ -827,13 +832,14 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         asyncio.create_task(_do_notify_async())
 
 
-def _get_builder_actor(cache_dir, shard_source, processor, options=CacheOptions.default(), force_flush=False):
-    name = f"lev_cache_manager::{cache_dir}"
+def _get_builder_actor(split, cache_dir, shard_source, processor, options=CacheOptions.default(), force_flush=False):
+    name = f"lev_cache_manager::{split}::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
 
     return _TreeStoreCacheBuilder.options(name=name, get_if_exists=True).remote(  # type: ignore
         name=name_for_display,
+        split=split,
         cache_dir=cache_dir,
         source=shard_source,
         processor=processor,
@@ -913,6 +919,7 @@ def _write_batches(writer: ShardedCacheWriter, batches, finished_shards):
 def _core_writer_task(
     parent,
     cache_dir,
+    split,
     initial_ledger: CacheLedger,
     source: ShardedDataSource,
     processor,
@@ -944,7 +951,7 @@ def _core_writer_task(
 
         num_groups = min(initial_ledger.metadata.options.num_shard_groups or 1000000, len(source.shard_names))
 
-        processor_pool = _mk_processor_pool(processor, num_groups, num_groups * 4)
+        processor_pool = _mk_processor_pool(split, processor, num_groups, num_groups * 4)
 
         interleave: RayPrefetchQueue = RayPrefetchQueue(
             lambda: _make_interleave(name, source, initial_ledger, processor_pool),
@@ -1209,11 +1216,11 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
     yield from _interleave_shards(readers, first_group_to_start)
 
 
-def _mk_processor_pool(processor, min_size, max_size):
+def _mk_processor_pool(split, processor, min_size, max_size):
     import hashlib
 
     metadata_hash = hashlib.md5(str(processor.metadata).encode()).hexdigest()
-    processor_pool_name = f"processor_pool::{metadata_hash}"
+    processor_pool_name = f"processor_pool::{split}::{metadata_hash}"
     processor_pool = BatchProcessorPool.options(  # type: ignore
         name=processor_pool_name, get_if_exists=True
     ).remote(  # type: ignore

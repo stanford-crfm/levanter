@@ -301,6 +301,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         override_resources=None,
         max_length=448,
         cache_options: CacheOptions = CacheOptions.default(),
+        split: str = "",
     ) -> "ProcessedAudioCache":
         bp = BatchAudioProcessor(
             processor,
@@ -312,12 +313,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         )
         monitors = monitors or []
         cache = build_or_load_cache(
-            cache_dir,
-            source,
-            bp,
-            await_finished=await_finished,
-            monitors=monitors,
-            options=cache_options,
+            cache_dir, source, bp, await_finished=await_finished, monitors=monitors, options=cache_options, split=split
         )
         if cache.is_finished:
             logger.info(f"Cache {cache_dir} is complete.")
