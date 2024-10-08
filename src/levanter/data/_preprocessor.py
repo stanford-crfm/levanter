@@ -264,12 +264,16 @@ def _create_batch_processor_actor(processor: BatchProcessor, processor_ref):
 @ray.remote
 class _BatchProcessorActor(PoolWorkerBase):
     def __init__(self, processor: BatchProcessor):
+        from levanter.store.tree_store import TreeBatchPreparer
+
         self.processor = processor
+        self.preparer = TreeBatchPreparer(processor.output_exemplar)
 
     def process_batch(self, batch):
         result = self.processor(batch)
         result = _canonicalize_batch(result)
-        return result
+        prepared = self.preparer(result)
+        return prepared
 
 
 def _canonicalize_batch(batch: Union[dict, list[dict]]) -> list[dict]:

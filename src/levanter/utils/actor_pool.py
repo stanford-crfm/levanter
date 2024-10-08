@@ -54,6 +54,9 @@ class AutoScalingActorPool:
                 async def wait_for_ready(actor, ready_ref):
                     loc = await ready_ref
                     # pending -> floating
+                    if ready_ref not in self._pending_actors:
+                        logger.info("Actor was cancelled before it was ready.")
+                        return
                     del self._pending_actors[ready_ref]
                     self._assert_is_floating(actor)
                     self._actor_locations[actor] = loc
@@ -68,11 +71,13 @@ class AutoScalingActorPool:
         for _ in range(num_actors):
             if self._pending_actors:
                 actor = self._pending_actors.popitem()[1]
-                ray.kill(actor)
+                # let it die through gc
+                # ray.kill(actor)
             elif self._idle_actors:
                 actor = self._idle_actors.pop()
                 del self._actor_locations[actor]
-                ray.kill(actor)
+                # let it die through gc
+                # ray.kill(actor)
             else:
                 break
 
@@ -98,6 +103,7 @@ class AutoScalingActorPool:
             )
             self._scale_up(min(self._max_size - num_busy_actors, num_pending_tasks))
         elif num_pending_tasks == 0 and num_nonworking_actors > self._min_size:
+            return  # never scal edown. too many issues
             logger.info(f"Scaling down due to no pending tasks. Current pool size: {total_actors}")
             self._scale_down(num_nonworking_actors - self._min_size)
 

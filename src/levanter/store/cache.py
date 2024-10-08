@@ -12,14 +12,16 @@ from asyncio import InvalidStateError
 from concurrent.futures import Future as threading_Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, TypeVar, Union
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, TypeVar, Union
 
 import deepdiff
 import fsspec.core
+import jax
 import pyarrow as pa
 import ray
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
+from jaxtyping import PyTree
 from ray.actor import ActorHandle
 from ray.remote_function import RemoteFunction
 
@@ -38,6 +40,8 @@ from ..utils.ray_utils import (
     log_failures_to,
     ser_exc_info,
 )
+from ..utils.thread_utils import ExceptionTrackingThread
+from .jagged_array import PreparedBatch
 from .tree_store import TreeStore
 
 
@@ -619,7 +623,6 @@ class ShardedCacheWriter:
 
         self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")  # type: ignore
         self._tree_store.trim_to_size(self._ledger.total_num_rows)
-        self._items_ready_to_write: list = []
 
     @property
     def ledger(self):
@@ -634,13 +637,27 @@ class ShardedCacheWriter:
         return self._ledger.is_finished
 
     def finish_shard(self, shard_name: str, num_rows: int):
-        self.flush()
         current_rows = self._ledger.shard_rows.get(shard_name, 0)
         if current_rows != num_rows:
             raise ValueError(f"Expected {num_rows} rows in finished shard {shard_name}, but found {current_rows}")
 
         self._ledger.finished_shards.append(shard_name)
         self._ledger._serialize_and_commit(self.cache_dir)
+
+    def write_prepared_batch(self, shard_counts: Mapping[str, int], batch: PyTree[PreparedBatch]):
+        if self.is_finished:
+            raise RuntimeError("Cannot write to a finished cache")
+        self._tree_store.extend_with_batch(batch)
+
+        for shard, num_rows in shard_counts.items():
+            self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
+
+        total_rows = self._ledger.total_num_rows + sum(shard_counts.values())
+        self._ledger.total_num_rows = total_rows
+        self._ledger._serialize_and_commit(self.cache_dir)
+
+        if self._on_write:
+            self._on_write(self._ledger)
 
     def write_batch(self, shard_name: str, batch: BatchResult):
         if self.is_finished:
@@ -650,15 +667,11 @@ class ShardedCacheWriter:
             raise NotImplementedError("Only non-RecordBatch batches are supported for now")
 
         batch = _canonicalize_batch(batch)  # type: ignore
+        prepared = self._tree_store.batch_preparer(batch)
 
-        self._items_ready_to_write.append((shard_name, batch))
-
-    def flush(self):
-        self._attempt_to_write_batches()
+        return self.write_prepared_batch({shard_name: len(batch)}, prepared)
 
     def finish(self):
-        self.flush()
-
         # if successful, write the ledger
         logger.info("Finished writing cache")
         self._ledger.is_finished = True
@@ -667,53 +680,6 @@ class ShardedCacheWriter:
             self._on_write(self._ledger)
 
         return self._tree_store
-
-    def _attempt_to_write_batches(self):
-        if self._ledger.is_finished:
-            return
-
-        if not self._items_ready_to_write:
-            return
-
-        # time_in = time.time()
-
-        updated_shards = self._write_available_batches()
-
-        # time_out = time.time()
-        # print(f"Flushing took {time_out - time_in} seconds")
-        # logger.info(f"Flushing took {time_out - time_in} seconds")
-
-        logger.debug(f"Updated shards: {updated_shards}")
-
-        did_write = len(updated_shards) > 0
-
-        if did_write:
-
-            for shard, num_rows in updated_shards.items():
-                self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
-
-            total_rows = self._ledger.total_num_rows + sum(updated_shards.values())
-            self._ledger.total_num_rows = total_rows
-            self._ledger._serialize_and_commit(self.cache_dir)
-
-            if self._on_write:
-                self._on_write(self._ledger)
-
-    def _write_available_batches(self):
-        ready = self._items_ready_to_write
-        self._items_ready_to_write = []
-
-        if len(ready) == 0:
-            return {}
-
-        to_write = []
-        written_by_shard = {}
-        for shard, batch in ready:
-            to_write.extend(batch)
-            written_by_shard[shard] = written_by_shard.get(shard, 0) + len(batch)
-
-        self._tree_store.extend(to_write)
-        return written_by_shard
 
 
 def _serialize_json_and_commit(path, obj):
@@ -924,14 +890,22 @@ _MIN_WRITE_BATCHES = 100
 _MAX_OUTSTANDING_MESSAGES = 1000
 
 
-def _write_batches(writer, batches, finished_shards):
+def _write_batches(writer: ShardedCacheWriter, batches, finished_shards):
+    logger.info(f"Writing {len(batches)} batches to cache")
     shards_for_batches, payloads_for_batches = zip(*batches)
+    time_in = time.time()
     payloads_for_batches = ray.get(list(payloads_for_batches))
-    batches = list(zip(shards_for_batches, payloads_for_batches))
+    time_out = time.time()
+    logger.info(f"Getting payloads took {time_out - time_in} seconds")
 
-    for shard, batch in batches:
-        writer.write_batch(shard, batch)
-    writer.flush()
+    # concatenate the payloads
+    final_payload = jax.tree.map(lambda *bs: PreparedBatch.concat(bs), *payloads_for_batches)
+    shard_row_totals: dict[str, int] = {}
+    for shard, payload in zip(shards_for_batches, payloads_for_batches):
+        shard_row_totals[shard] = shard_row_totals.get(shard, 0) + jax.tree.leaves(payload)[0].num_rows
+
+    writer.write_prepared_batch(shard_row_totals, final_payload)
+
     for shard, total_rows in finished_shards:
         writer.finish_shard(shard, total_rows)
 
@@ -975,7 +949,7 @@ def _core_writer_task(
 
         interleave: RayPrefetchQueue = RayPrefetchQueue(
             lambda: _make_interleave(name, source, initial_ledger, processor_pool),
-            64,
+            512,
             producer_options={"num_cpus": 1, "name": f"{name}::interleave"},
         )
 
@@ -1009,7 +983,6 @@ def _core_writer_task(
                         with flush_amortized_time:
                             if remaining_time <= 0 or len(batches) >= _MAX_WRITE_BATCHES or force_flush:
                                 with flush_time:
-                                    # TODO: don't block?
                                     if thread is not None:
                                         thread.join()
                                         print(
@@ -1017,14 +990,11 @@ def _core_writer_task(
                                             f" {time.time() - start_of_last_flush} seconds"
                                         )
 
-                                    if force_flush:
-                                        thread = threading.Thread(
-                                            target=_write_batches,
-                                            args=(sharded_cache_writer, batches, finished_shards_last_flush),
-                                        )
-                                        thread.start()
-                                    else:
-                                        _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
+                                    thread = ExceptionTrackingThread(
+                                        target=_write_batches,
+                                        args=(sharded_cache_writer, batches, finished_shards_last_flush),
+                                    )
+                                    thread.start()
 
                                     last_batches_since_last_write = len(batches)
                                     batches = []
@@ -1090,6 +1060,8 @@ def _core_writer_task(
 
         # force a flush
         if len(batches) > 0:
+            if thread is not None:
+                thread.join()
             _write_batches(sharded_cache_writer, batches, finished_shards_last_flush)
 
         sharded_cache_writer.finish()
