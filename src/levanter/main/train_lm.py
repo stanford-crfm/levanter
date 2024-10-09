@@ -16,7 +16,7 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, LMSupervisedDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
+    supervised_data: Optional[LMSupervisedDatasetConfig] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -170,7 +171,6 @@ def main(config: TrainLmConfig):
                 (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
                 for ds, tags in tagged_eval_datasets
             ]
-
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
                 causal_datasets,
@@ -178,6 +178,22 @@ def main(config: TrainLmConfig):
                 trainer.device_mesh,
                 compute_axis_mapping,
                 max_eval_examples_per_ds,
+                mp=config.trainer.mp,
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
+
+        if config.supervised_data is not None:
+            logger.info("Using supervised data")
+            supervised_eval = [(levanter.data.text.mk_supervised_dataset(config.supervised_data, tokenizer), "")]
+            # TODO Add tags
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                EvalBatch,
+                supervised_eval,
+                tokenizer,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                prefix="internal_eval",
                 mp=config.trainer.mp,
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
