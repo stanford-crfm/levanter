@@ -29,6 +29,11 @@ def skip_if_not_enough_devices(count: int):
     return pytest.mark.skipif(len(jax.devices()) < count, reason=f"Not enough devices ({len(jax.devices())})")
 
 
+def is_in_pycharm_test():
+    # This gets set by pycharm when running tests
+    return os.getenv("_JB_PPRINT_PRIMITIVES") == "1"
+
+
 class MLP(eqx.Module):
     """slightly less annoying MLP, used for testing purposes"""
 
