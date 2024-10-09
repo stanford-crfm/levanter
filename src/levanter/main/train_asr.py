@@ -14,7 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, ModelWithHfSerializationMixin, save_hf_checkpoint_callback
-from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
+from levanter.data.audio import AudioIODatasetConfig, AudioMixtureDatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig, AudioTextExample
 from levanter.models.whisper import WhisperConfig
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainASRConfig:
-    data: AudioIODatasetConfig = field(default_factory=AudioIODatasetConfig)
+    data: Union[AudioIODatasetConfig, AudioMixtureDatasetConfig] = field(default_factory=AudioMixtureDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: ASRConfig = field(default_factory=WhisperConfig)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -37,6 +37,7 @@ class TrainASRConfig:
     initialize_from_hf: Union[bool, str] = False
     """if provided, this will override the model config in the config. if true, use the default hf checkpoint for this model class"""
     use_hf_model_config: bool = False  # if true, replace the model config with the hf config from the checkpoint
+    data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
 
     # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
@@ -113,9 +114,13 @@ def main(config: TrainASRConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
+        if config.data_seed is not None:
+            logger.info(f"Overriding data seed with {config.data_seed}")
+            data_key = jrandom.PRNGKey(config.data_seed)
+
         eval_datasets = config.data.validation_sets()
         train_dataset = AudioTextDataset(
-            config.data.train_set(config.batch_size),
+            config.data.train_set(key=data_key),
             Pos,
             [config.model.Mels, config.model.MelPos],
             KeyPos,

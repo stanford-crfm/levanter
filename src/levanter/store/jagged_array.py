@@ -14,7 +14,7 @@ from levanter.utils import fsspec_utils
 from levanter.utils.thread_utils import future_from_value
 
 
-# zarr suggests 1MB chunk size (in bytes, but whatever)
+# zarr suggests 1MB chunk size
 # at 4 bytes this is 256k elements
 DEFAULT_CHUNK_SIZE = 256 * 1024
 DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 512
@@ -38,9 +38,14 @@ class JaggedArrayStore:
     data: ts.TensorStore
     shapes: Optional[ts.TensorStore]  # (len(offsets), len(data.shape)-1)
     item_rank: int = 1
+    _cache_metadata: bool = False
+    _cached_num_rows: Optional[int] = None
+    _cached_data_size: Optional[int] = None
 
     @staticmethod
-    async def open_async(path: Optional[str], *, mode="a", item_rank=1, dtype) -> "JaggedArrayStore":
+    async def open_async(
+        path: Optional[str], *, mode="a", item_rank=1, dtype, cache_metadata: bool = False
+    ) -> "JaggedArrayStore":
         offset_path = _extend_path(path, "offsets")
         offsets = _ts_open_async(offset_path, jnp.int64, [1], mode=mode)
 
@@ -53,10 +58,12 @@ class JaggedArrayStore:
         else:
             shapes = None
 
-        return JaggedArrayStore(await offsets, await data, await shapes if shapes is not None else None, item_rank)
+        return JaggedArrayStore(
+            await offsets, await data, await shapes if shapes is not None else None, item_rank, cache_metadata
+        )
 
     @staticmethod
-    def open(path: Optional[str], *, mode="a", item_rank=1, dtype) -> "JaggedArrayStore":
+    def open(path: Optional[str], *, mode="a", item_rank=1, dtype, cache_metadata: bool = False) -> "JaggedArrayStore":
         offset_path = _extend_path(path, "offsets")
         offsets = _ts_open_sync(offset_path, jnp.int64, [1], mode=mode)
 
@@ -69,18 +76,42 @@ class JaggedArrayStore:
         else:
             shapes = None
 
-        return JaggedArrayStore(offsets, data, shapes, item_rank)
+        return JaggedArrayStore(offsets, data, shapes, item_rank, cache_metadata)
 
     @property
     def num_rows(self):
-        return int(self.offsets[0].read().result())
+        if self._cached_num_rows is not None:
+            return self._cached_num_rows
+        result = int(self.offsets[0].read().result())
+        if self._cache_metadata:
+            self._cached_num_rows = result
+        return result
 
     async def num_rows_async(self):
-        return int(await self.offsets[0].read())
+        if self._cached_num_rows is not None:
+            return self._cached_num_rows
+        result = int(await self.offsets[0].read())
+        if self._cache_metadata:
+            self._cached_num_rows = result
+        return result
 
     @property
     def data_size(self):
-        return int(self.offsets[self.num_rows].read().result())
+        # return int(self.offsets[self.num_rows].read().result())
+        if self._cached_data_size is not None:
+            return self._cached_data_size
+        result = int(self.offsets[self.num_rows].read().result())
+        if self._cache_metadata:
+            self._cached_data_size = result
+        return result
+
+    async def data_size_async(self):
+        if self._cached_data_size is not None:
+            return self._cached_data_size
+        result = int(await self.offsets[self.num_rows].read())
+        if self._cache_metadata:
+            self._cached_data_size = result
+        return result
 
     async def append_async(self, data: jax.Array):
         await self.extend_async([data])
@@ -122,6 +153,10 @@ class JaggedArrayStore:
         await data_fut
         await offsets_fut
 
+        if self._cache_metadata:
+            self._cached_num_rows = size
+            self._cached_data_size = new_max
+
     def trim_to_size(self, size: int):
         if size >= self.num_rows:
             return
@@ -151,6 +186,10 @@ class JaggedArrayStore:
         if shape_fut is not None:
             shape_fut.result()
 
+        if self._cache_metadata:
+            self._cached_num_rows = size
+            self._cached_data_size = new_max
+
     async def extend_async(self, arrays: Sequence[jax.Array]):
         data, new_offsets, shapes = self._prepare_batch(arrays)
 
@@ -165,13 +204,14 @@ class JaggedArrayStore:
         ]
         if self.shapes is not None:
             write_tasks.append(self.shapes[num_rows : num_rows + num_added].write(shapes))
-
         await asyncio.gather(*write_tasks)
 
         # Update num_rows
-        int(self.offsets[self.num_rows].read().result())
         await self.offsets[0].write(num_rows + len(arrays))
-        # print("done")
+
+        if self._cache_metadata:
+            self._cached_num_rows = num_rows + len(arrays)
+            self._cached_data_size = current_data_size + len(data)
 
     def extend(self, arrays: Sequence[jax.Array]):
         data, new_offsets, shapes = self._prepare_batch(arrays)
@@ -187,11 +227,15 @@ class JaggedArrayStore:
         if self.shapes is not None:
             write_tasks.append(self.shapes[num_rows : num_rows + num_added].write(shapes))
 
+        # Update num_rows. We want to make sure this comes after the other data is committed to avoid a race
         for task in write_tasks:
             task.result()
 
-        # Update num_rows. We want to make sure this comes after the other data is committed to avoid a race
         self.offsets[0].write(num_rows + len(arrays)).result()
+
+        if self._cache_metadata:
+            self._cached_num_rows = num_rows + len(arrays)
+            self._cached_data_size = current_data_size + len(data)
 
     def _prepare_batch(self, arrays):
         if self.shapes is not None:

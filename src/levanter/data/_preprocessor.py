@@ -27,10 +27,8 @@ class BatchProcessor(Generic[T_contra, U], ABC):
     @abstractmethod
     def __call__(self, batch: Sequence[T_contra]) -> Sequence[U] | U:  # U can be batched "structure of arrays" form
         """
-        Process a batch of data. You should return either a RecordBatch, a sequence of dicts (one per output
+        Process a batch of data. You should return a sequence of dicts (one per output
         example), or a dict of sequences (one per output field).
-
-        (We allow Mapping so that you can just return HF's BatchEncoding if you want.)
         """
         raise NotImplementedError
 
@@ -58,8 +56,10 @@ class BatchProcessor(Generic[T_contra, U], ABC):
         return 0
 
     @property
-    def batch_size(self) -> int:
-        return 128
+    @abstractmethod
+    def metadata(self) -> Dict[str, Any]:
+        """Any metadata that changes the behavior of this processor."""
+        raise NotImplementedError
 
 
 class _DatasetTransform(ABC):
@@ -152,7 +152,7 @@ def _construct_composite_batch_processor(dataset):
 
 
 class _CompositeBatchProcessor(BatchProcessor):
-    def __init__(self, transforms, batch_size, num_cpus, num_gpus, resources):
+    def __init__(self, transforms, num_cpus, num_gpus, resources):
         self.transforms = transforms
         self._num_cpus = num_cpus
         self._num_gpus = num_gpus
@@ -208,6 +208,10 @@ class _CompositeBatchProcessor(BatchProcessor):
             batch = list(batch)
 
         return batch
+
+    @property
+    def metadata(self):
+        return {}
 
 
 def dict_from_record_batch(b) -> dict:

@@ -1,10 +1,11 @@
 import abc
+import dataclasses
 import functools
 import logging
 import os
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 import braceexpand
 import datasets
@@ -12,6 +13,7 @@ import equinox as eqx
 import fsspec
 import jax
 import numpy as np
+from draccus import field
 from jaxtyping import PRNGKeyArray
 from typing_extensions import TypedDict
 
@@ -23,14 +25,15 @@ from levanter.data import AsyncDataset
 from levanter.data._preprocessor import BatchProcessor
 from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor
+from levanter.data.mixture import MixtureDataset, StopStrategy
 from levanter.data.sharded_datasource import AudioTextUrlDataSource, ShardedDataSource, WrappedHFDataSource
 from levanter.data.text import BatchTokenizer
 
 # intercept the logging nonsense here
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
-from levanter.store.cache import TreeCache, build_or_load_cache
-from levanter.utils.jax_utils import local_cpu_mesh
+from levanter.store.cache import CacheOptions, TreeCache, build_or_load_cache
+from levanter.utils.jax_utils import key_iterator, local_cpu_mesh
 
 
 silence_transformer_nag()  # noqa
@@ -73,7 +76,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         enforce_bos=True,
         enforce_eos=True,
         *,
-        batch_size=128,
         override_resources=None,
         max_length=448,
         padding=True,
@@ -83,7 +85,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
             tokenizer,
             enforce_bos=enforce_bos,
             enforce_eos=enforce_eos,
-            batch_size=batch_size,
             override_resources=override_resources,
             return_attention_mask=True,
             padding="max_length" if padding else False,
@@ -91,7 +92,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         )
 
         self.override_resources = override_resources
-        self._batch_size = batch_size
 
     def __call__(self, batch: Sequence[Tuple[np.ndarray, int, str]]) -> Sequence[AudioTextDict]:
         """
@@ -124,6 +124,13 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         return out  # type: ignore
 
     @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "tokenizer": self.bt.metadata,
+            "processor": self.feature_extractor.to_dict(),
+        }
+
+    @property
     def output_exemplar(self):
         return AudioTextDict_exemplar
 
@@ -135,10 +142,6 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
     @property
     def num_gpus(self) -> int:
         return self.bt.num_gpus
-
-    @property
-    def batch_size(self) -> int:
-        return self.bt._batch_size
 
 
 @dataclass
@@ -154,8 +157,11 @@ class AudioDatasetSourceConfig:
     audio_key: str = "audio"  # key for the text field in the jsonl file or hf dataset
     sampling_rate: int = 16_000
 
+    train_split: str = "train"
+    validation_split: str = "validation"
     train_urls: List[str] = ()  # type: ignore
     validation_urls: List[str] = ()  # type:ignore
+    cache_dir: str = "cache/"
 
     def get_shard_source(self, split) -> Optional[ShardedDataSource[Tuple[np.ndarray, int, str]]]:
         if self.id is not None:
@@ -218,10 +224,6 @@ class AudioDatasetSourceConfig:
 class AudioTaskConfig(abc.ABC):
     processor: str = "openai/whisper-tiny"
     tokenizer: Optional[str] = None
-    # config related to caching
-    train_split: str = "train"
-    validation_split: str = "validation"
-    cache_dir: str = "cache/"
     enforce_bos: bool = True  # whether to append bos even if the tokenizer doesn't
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
     max_length: int = 448
@@ -247,8 +249,12 @@ class AudioTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def train_set(
-        self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> AsyncDataset[np.ndarray]:
+        self,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        options: CacheOptions = CacheOptions.default(),
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> AsyncDataset[AudioTextDict]:
         pass
 
     @abc.abstractmethod
@@ -294,18 +300,17 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         tokenizer: PreTrainedTokenizerBase,
         enforce_bos=True,
         enforce_eos=True,
-        batch_size=128,
         monitors=None,
         await_finished=True,
         override_resources=None,
         max_length=448,
+        cache_options: CacheOptions = CacheOptions.default(),
     ) -> "ProcessedAudioCache":
         bp = BatchAudioProcessor(
             processor,
             tokenizer,
             enforce_bos=enforce_bos,
             enforce_eos=enforce_eos,
-            batch_size=batch_size,
             override_resources=override_resources,
             max_length=max_length,
         )
@@ -316,6 +321,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
             bp,
             await_finished=await_finished,
             monitors=monitors,
+            options=cache_options,
         )
         if cache.is_finished:
             logger.info(f"Cache {cache_dir} is complete.")
@@ -339,7 +345,8 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         """
 
         try:
-            cache = TreeCache.load(cache_dir, AudioTextDict_exemplar)
+            # TODO: populate cache config
+            cache = TreeCache.load(cache_dir, AudioTextDict_exemplar, options=None)
             return ProcessedAudioCache(cache)
         except FileNotFoundError:
             raise FileNotFoundError(f"{cache_dir} is not a complete cache")
@@ -352,8 +359,14 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
 class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
-    def train_set(self, batch_size: int, monitors: Union[bool, List[MetricsMonitor]] = True) -> ProcessedAudioCache:
-        ds = self.build_or_load_cache(self.train_split, batch_size=batch_size, monitors=monitors)
+    def train_set(
+        self,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        options: CacheOptions = CacheOptions.default(),
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> ProcessedAudioCache:
+        ds = self.build_or_load_cache(self.train_split, monitors=monitors)
         if ds is None:
             raise ValueError("No training set!")
         return ds
@@ -388,9 +401,9 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
     def build_or_load_cache(
         self,
         split: str,
-        batch_size: int = 128,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         logger_name: Optional[str] = None,
+        cache_options: CacheOptions = CacheOptions.default(),
     ) -> Optional[ProcessedAudioCache]:
         split_cache_dir = os.path.join(self.cache_dir, split)
         name = logger_name or os.path.basename(self.cache_dir)
@@ -422,10 +435,10 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
             self.the_tokenizer,
             enforce_bos=self.enforce_bos,
             enforce_eos=self.enforce_eos,
-            batch_size=batch_size,
             monitors=monitors,
             await_finished=(split == "validation"),
             max_length=self.max_length,
+            cache_options=cache_options,
         )
 
 
@@ -466,3 +479,140 @@ class AudioTextDataset(MappedAsyncDataset[AudioTextDict, AudioTextExample]):
     #         for example in self.dataset:
     #             converted_example = _convert_example(example)
     #             yield converted_example
+
+
+@dataclass
+class AudioMixtureDatasetConfig(AudioTaskConfig):
+    """This class represents a mixture of datasets with their associated weights."""
+
+    cache_dir: Optional[str] = "cache/"
+
+    # data source configs and weights
+    configs: Dict[str, AudioDatasetSourceConfig] = field(default_factory=dict)
+    """ configuration of each dataset source (urls, hf dataset id, etc.) """
+    train_weights: Dict[str, float] = field(default_factory=dict)
+    """ weights for each dataset source. They will be normalized to sum to 1. """
+    shuffle: bool | int = False
+    """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
+    If you want to shuffle in eras, set this to the era length"""
+    stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+    mixture_block_size: int = 2048
+    """ block size for the mixture dataset."""
+
+    def __post_init__(self):
+        if len(self.configs) == 0:
+            raise ValueError("At least one dataset must be provided")
+
+        if set(self.configs.keys()) != set(self.train_weights.keys()):
+            raise ValueError(
+                f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
+                f" {self.train_weights.keys()}"
+            )
+
+    def train_set(
+        self,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        options: CacheOptions = CacheOptions.default(),
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> AsyncDataset[AudioTextDict]:
+        audio_datasets = self.training_sets(monitors)
+
+        if key is None:
+            key = jax.random.PRNGKey(0)
+
+        mix_key, shuffle_key = jax.random.split(key)
+
+        # We shuffle the components and not the overall mixture because this lets us preserve
+        # the "stable batch" property of the mixture dataset.
+        def shuffle_ds(ds, key):
+            if self.shuffle is True:
+                ds = ds.shuffle(key)
+            elif isinstance(self.shuffle, int):
+                ds = ds.era_shuffle(self.shuffle, key=key)
+
+            return ds
+
+        if self.shuffle:
+            out_datasets = {}
+            key_iter = key_iterator(shuffle_key)
+            for name, ds in audio_datasets.items():
+                out_datasets[name] = shuffle_ds(ds, next(key_iter))
+            audio_datasets = out_datasets
+
+        mixture = MixtureDataset(
+            datasets=audio_datasets,
+            weights=self.train_weights,
+            stop_strategy=self.stop_strategy,
+            key=mix_key,
+            block_size=2048,
+        )
+
+        return mixture
+
+    def training_sets(self, monitors: Union[bool, List[MetricsMonitor]] = True) -> Mapping[str, ProcessedAudioCache]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        return doc_caches
+
+    def validation_sets(
+        self, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+        doc_caches = self.build_caches("validation", monitors=monitors)
+        return doc_caches
+
+    def build_caches(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Dict[str, ProcessedAudioCache]:
+        # this is a bit gross, but we want to forward all "Task" config fields to the AudioIODatasetConfig for building.
+        # We do this by just grabbing all the fields from the AudioTaskConfig and forwarding them.
+        task_config_fields = set(x.name for x in dataclasses.fields(AudioTaskConfig))
+        task_config_dict = {k: v for k, v in self.__dict__.items() if k in task_config_fields and k != "cache_dir"}
+
+        caches = {}
+        for name, source_config in self.configs.items():
+            weight = self.train_weights.get(name, 0)
+
+            if weight == 0 and split == "train":
+                continue
+
+            source_config_dict = dict(**source_config.__dict__)
+
+            if source_config.cache_dir is None:
+                # replace with the main cache dir/{name}
+                if self.cache_dir is None:
+                    raise ValueError(
+                        "If the 'main' cache_dir is None, then all component cache_dirs must be non-None, but"
+                        f"{name}'s cache_dir is None."
+                    )
+                cache_dir = os.path.join(self.cache_dir, name)
+                source_config_dict["cache_dir"] = cache_dir
+
+            dataset = AudioIODatasetConfig(
+                **source_config_dict,
+                **task_config_dict,
+            )
+            if split == "train":
+                cache = dataset.build_or_load_cache(dataset.train_split, monitors)
+            elif split == "validation":
+                cache = dataset.build_or_load_cache(dataset.validation_split, monitors)
+            else:
+                cache = dataset.build_or_load_cache(split, monitors)
+            # drop the data source and corresponding weight if the cache is not built
+            if cache is None:
+                logger.warning(f"Skipping {name} for split {split} because no source was provided")
+            else:
+                caches[name] = cache
+
+        # in practice it works best if we block on validation caches
+        if split == "validation":
+            for cache in caches.values():
+                cache.cache.await_finished()
+
+        else:
+            logger.info(f"Not waiting for {split} caches to finish building")
+
+        return caches
+
+    @property
+    def sources(self) -> Mapping[str, AudioDatasetSourceConfig]:
+        return self.configs
