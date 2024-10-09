@@ -695,14 +695,24 @@ class ShardedCacheWriter:
 def _serialize_json_and_commit(path, obj):
     # just to be paranoid, we write to a temp file and then rename it
     # TODO: probably we could do better here
-    with fsspec.open(f"{path}.tmp", "w") as file:
-        file.write(obj.to_json())
-    # now copy the old file to a backup
     fs: AbstractFileSystem = fsspec.core.url_to_fs(path)[0]
     fs.mkdirs(os.path.dirname(path), exist_ok=True)
     if fs.exists(path):
+        # copy the old file to a backup
         fs.copy(path, f"{path}.bak")
-    fs.rename(f"{path}.tmp", path)
+
+    for i in range(10):
+        with fsspec.open(f"{path}.tmp", "w") as file:
+            file.write(obj.to_json())
+
+        try:
+            fs.rename(f"{path}.tmp", path)
+            break
+        except FileNotFoundError:
+            # this happens for some reason sometimes. It makes no sense.
+            # FileNotFoundError: b/levanter-data/o/scratch%2Fdlwh%2Fpile-YYY%2Fpubmed_abs%2Ftrain%2Fshard_ledger.json.tmp/rewriteTo/b/levanter-data/o/scratch%2Fdlwh%2Fpile-YYY%2Fpubmed_abs%2Ftrain%2Fshard_ledger.json
+            logger.exception(f"Failed to rename {path}.tmp to {path}")
+            pass
 
 
 @ray.remote(num_cpus=0.1)  # keep this small b/c it doesn't do a lot
