@@ -59,7 +59,14 @@ def _prepare_batch(arrays, item_rank):
     if item_rank != 1:
         shapes = np.array([data.shape[:-1] for data in arrays], dtype=np.int64)
     else:
+
         shapes = None
+
+    # check shapes
+    for data in arrays:
+        if data.ndim != item_rank:
+            raise ValueError(f"Expected data to have rank {item_rank}, but got {data.ndim}")
+
     offsets = np.array([data.size for data in arrays], dtype=np.int64)
     offsets = np.cumsum(offsets)
     data = np.concatenate([data.reshape(-1) for data in arrays])
@@ -272,9 +279,15 @@ class JaggedArrayStore:
             prepared = arrays
         else:
             prepared = PreparedBatch.from_batch(arrays, self.item_rank)
+
         data = prepared.data
         new_offsets = prepared.offsets
         shapes = prepared.shapes
+
+        if shapes is None and self.item_rank != 1:
+            raise ValueError("Shapes must be provided for non-vector data")
+        elif shapes is not None and shapes.shape[1] != self.item_rank - 1:
+            raise ValueError(f"Shapes must have {self.item_rank-1} dimensions, but got {shapes.shape[1]}")
 
         num_rows = self.num_rows
         num_added = len(new_offsets)
