@@ -629,7 +629,7 @@ def preprocess_supervised_example(batch, tokenizer: PreTrainedTokenizerBase):
     sources = [example["input"] for example in batch]
 
     targets = [f"{example['output']}" for example in batch]
-    # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how the original code does it.
+    # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how alpaca does it.
     examples = [s + t for s, t in zip(sources, targets)]
     sources_tokenized = tokenizer(sources, padding=False, truncation=True)
     examples_tokenized = tokenizer(examples, padding=False, truncation=True)
