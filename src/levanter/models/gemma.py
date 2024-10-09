@@ -28,6 +28,7 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
     LlamaMlp,
 )
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
 
@@ -80,7 +81,6 @@ class GemmaConfig(HFCompatConfig):
     attn_dropout = 0.0
     norm_eps = 1e-6
 
-    rope_base: int = 10_000
     norm_embeddings: bool = True
 
     # Attention-related config
@@ -94,8 +94,11 @@ class GemmaConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
-    rope_scaling: Optional[dict] = None
     rope_theta: float = 10000.0
+
+    @property
+    def rope(self) -> RotaryEmbeddingsConfig:
+        return DefaultRotaryEmbeddingsConfig(theta=self.rope_theta)
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -146,7 +149,7 @@ class GemmaConfig(HFCompatConfig):
             num_kv_heads=hf_config.num_key_value_heads,
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
-            rope_base=hf_config.rope_theta,
+            rope_theta=hf_config.rope_theta,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfGemmaConfig:

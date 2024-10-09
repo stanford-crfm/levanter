@@ -519,7 +519,6 @@ class TrainerConfig:
 
     wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")
-    run_base_dir: Path = Path("runs/")
     id: Optional[str] = None  # run id. if None, will be set to a random string
 
     tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)

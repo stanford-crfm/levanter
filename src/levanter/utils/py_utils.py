@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
@@ -181,3 +182,37 @@ def actual_sizeof(obj):
                 need_to_see.extend(obj)
         objects = need_to_see
     return size
+
+
+class Stopwatch:
+    """Resumable stop watch for tracking time per call"""
+
+    def __init__(self):
+        self._start_time = time.time()
+        self._elapsed = 0.0
+        self._n = 0
+
+    def start(self):
+        self._start_time = time.time()
+        self._n += 1
+
+    def stop(self):
+        self._elapsed += time.time() - self._start_time
+
+    def reset(self):
+        self._elapsed = 0.0
+
+    def elapsed(self):
+        return self._elapsed
+
+    def average(self):
+        if self._n == 0:
+            return 0.0
+        return self._elapsed / self._n
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()

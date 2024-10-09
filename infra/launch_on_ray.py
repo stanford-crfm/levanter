@@ -1,41 +1,41 @@
 #!/usr/bin/python
+# Similar to launch.py, but this instead launches on a Ray cluster configured with auto-scaling TPUs
 
 import argparse
 import getpass
-import subprocess
+import os
 import time
 from pathlib import Path
 
+from ray.dashboard.modules.job.common import JobStatus
+from ray.dashboard.modules.job.sdk import JobSubmissionClient
+
 import levanter.infra.cli_helpers as cli
 import levanter.infra.docker as docker
-import levanter.infra.tpus
-from levanter.infra.tpus import launch_job
+from levanter.infra import ray_tpu
 
 
 def main():
     parser = argparse.ArgumentParser()
     config = cli.load_config()
 
-    cli.add_arg(
-        parser, config, ["--autodelete"], default=False, action="store_true", help="Delete TPU after job completes."
-    )
     cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/stanford-crfm/levanter-base:latest")
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
-    cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
+    cli.add_arg(parser, config, ["--address"], default=None)
     cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
     cli.add_capacity_type_args(parser, config)
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
-    cli.add_arg(parser, config, ["--tpu_name"], required=True)
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
-    cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
-    cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
-    cli.add_arg(parser, config, ["--zone"], default=None, type=str, required=False)
+    # TODO: bring node_count to Ray
+    # cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
+    cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
     cli.add_arg(parser, config, ["--retries"], default=10, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=cli.default_run_id(), type=str)
     cli.add_arg(parser, config, ["--docker_registry"], default="gcp", choices=["gcp", "ghcr"])
     cli.add_arg(parser, config, ["--github_user"], type=str)
     cli.add_arg(parser, config, ["--github_token"], type=str)
     cli.add_arg(parser, config, ["--extra_context"], type=Path, required=False, default=None)
+    cli.add_arg(parser, config, ["--zone"], default=None, type=str, required=False)
 
     parser.add_argument(
         "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
@@ -44,21 +44,17 @@ def main():
 
     args = parser.parse_args()
 
-    autodelete = args.autodelete
     command = args.command
     docker_repository = args.docker_repository
-    foreground = args.foreground
     image_id = args.image_name
-    capacity_type = args.capacity_type
     project = args.project
     if args.retries < 0:
         retries = 10000000
     else:
         retries = args.retries
-    tpu_name = args.tpu_name
+
     tpu_type = args.tpu_type
-    node_count = args.node_count
-    version = args.version
+
     zone = args.zone
     run_id = args.run_id
     registry = args.docker_registry
@@ -73,14 +69,6 @@ def main():
         raise ValueError("Zone must be specified or set in gcloud config.")
 
     region = "-".join(zone.split("-")[:-1])
-    env = {k: v for k, v in args.env}
-
-    if "WANDB_PROJECT" not in env:
-        env["WANDB_PROJECT"] = "levanter"
-
-    env["GIT_COMMIT"] = cli.get_git_commit()
-    env["RUN_ID"] = run_id
-    env["WANDB_DOCKER"] = image_id
 
     if command[0] == "--":
         command = command[1:]
@@ -114,59 +102,82 @@ def main():
     else:
         raise ValueError(f"Unknown docker registry: {registry}")
 
-    failure = None
+    env = {k: v for k, v in args.env}
 
-    for i in range(retries + 1):
-        try:
-            launch_job(
-                command=command,
-                tpu_name=tpu_name,
-                tpu_type=tpu_type,
-                capacity_type=capacity_type,
-                zone=zone,
-                node_count=node_count,
-                full_image_id=full_image_id,
-                env=env,
-                foreground=foreground,
-                version=version,
-            )
-        except subprocess.CalledProcessError as e:  # noqa: F841
-            print(f"Error running command {e.cmd}")
-            if i < retries - 1:
-                print("Retrying... %d/%d" % (i + 1, retries))
-            else:
-                print("Retries exhausted. Raising error.")
-                print(f"Error running command {e.cmd}")
-                print(f"Output: {e.output}")
-                failure = e
-        else:
-            print("Job finished with no error.")
+    if "WANDB_PROJECT" not in env:
+        env["WANDB_PROJECT"] = "levanter"
+
+    env["GIT_COMMIT"] = cli.get_git_commit()
+    env["RUN_ID"] = run_id
+    env["WANDB_DOCKER"] = full_image_id
+
+    # Submit the job to the Ray cluster. We have to use the JobSubmissionClient to do this and stringify the arguments
+    # we want:
+    from levanter.infra.ray_tpu import RunDockerOnPodConfig
+
+    config = RunDockerOnPodConfig(
+        image_id=full_image_id,
+        command=command,
+        tpu_type=tpu_type,
+        env=env,
+        name="levanter",
+        retries=retries,
+    )
+
+    address = args.address or os.getenv("RAY_ADDRESS")
+
+    job_id = ray_tpu.submit_tpu_job_on_ray(
+        config,
+        ray_address=address,
+        run_id=run_id,
+    )
+
+    print(
+        f"""
+-------------------------------------------------------
+Job '{job_id}' submitted successfully
+-------------------------------------------------------
+
+Next steps
+  Query the logs of the job:
+    ray job logs {job_id}
+  Query the status of the job:
+    ray job status {job_id}
+  Request the job to be stopped:
+    ray job stop {job_id}
+"""
+    )
+
+    if args.foreground:
+        client = JobSubmissionClient(address)
+
+        async def tail_job(job_id):
+            async for line in client.tail_job_logs(job_id):  # type: ignore
+                print(line, end="")
+
+                status = client.get_job_status(job_id)
+                if status in {JobStatus.FAILED, JobStatus.SUCCEEDED, JobStatus.STOPPED}:
+                    break
+
+        print("Tailing job logs")
+        wait_until_status(
+            client, job_id, {JobStatus.RUNNING, JobStatus.FAILED, JobStatus.SUCCEEDED, JobStatus.STOPPED}
+        )
+        import asyncio
+
+        asyncio.run(tail_job(job_id))
+
+
+def wait_until_status(client, job_id, status_to_wait_for, timeout_seconds=5):
+    start = time.time()
+    while time.time() - start <= timeout_seconds:
+        status = client.get_job_status(job_id)
+        print(f"status: {status}")
+        if status in status_to_wait_for:
             break
+        time.sleep(1)
 
-    try:
-        if autodelete:
-            print("Autodelete is set to True. Tearing down machine...")
-            levanter.infra.tpus.run_command(
-                "gcloud",
-                "alpha",
-                "compute",
-                "tpus",
-                "queued-resources",
-                "delete",
-                tpu_name,
-                "--quiet",
-                f"--zone={zone}",
-                "--force",
-            )
-    except Exception as e:
-        print(f"Error tearing down TPU {tpu_name}: {e}")
-        if failure:
-            raise failure
-        else:
-            raise e
-
-    if failure:
-        raise failure
+    return status
 
 
 if __name__ == "__main__":

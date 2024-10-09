@@ -13,4 +13,4 @@ from levanter.tracker import current_tracker
 from levanter.trainer import initialize
 
 
-__version__ = "1.1"
+__version__ = "1.2"

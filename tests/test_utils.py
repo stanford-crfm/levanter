@@ -1,7 +1,7 @@
 import glob
 import os
 from functools import reduce
-from typing import Callable, List, Optional, Sequence, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar
 
 import draccus
 import equinox as eqx
@@ -203,6 +203,10 @@ class IdentityProcessor(BatchProcessor[BatchEncoding, BatchEncoding]):
     @property
     def num_cpus(self) -> int:
         return 0
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
 
 class ShardsDataSource(ShardedDataSource[T]):
