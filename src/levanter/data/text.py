@@ -10,7 +10,7 @@ from functools import cached_property
 from itertools import chain
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
-import braceexpand
+
 import datasets
 import equinox as eqx
 import fsspec
@@ -38,6 +38,7 @@ from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
+from levanter.utils.fsspec_utils import fsspec_expand_glob
 
 
 silence_transformer_nag()  # noqa
@@ -509,19 +510,7 @@ class LMDatasetSourceConfig:
         else:
             raise ValueError(f"Unknown split {split}")
 
-        def fsspec_expand_glob(url):
-            if "*" in url:
-                fs = fsspec.core.url_to_fs(url)[0]
-                globbed = fs.glob(url)
-                # have to append the fs prefix back on
-                protocol, _ = fsspec.core.split_protocol(url)
-                if protocol is None:
-                    return globbed
-                return [f"{protocol}://{path}" for path in globbed]
-            else:
-                return [url]
-
-        urls = [globbed for pat in urls for url in braceexpand.braceexpand(pat) for globbed in fsspec_expand_glob(url)]
+        urls = [globbed for url in urls for globbed in fsspec_expand_glob(url)]
         return urls
 
 
@@ -571,6 +560,79 @@ class LMTaskConfig(abc.ABC):
         eval_sets = self.validation_sets(seq_len, monitors)
 
         return [(eval_sets[name], tags[name]) for name in eval_sets]
+
+
+@dataclass
+class LMSupervisedDatasetConfig:
+    """This class represents a dataset source with URLs or hf name/id."""
+
+    cache_dir: str = "cache/"
+
+    tags: Optional[List[str]] = None
+    """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
+    name: Optional[str] = None  # name for hf dataset
+
+    validation_urls: List[str] = ()  # type:ignore
+
+
+def preprocess_supervised_example(batch, tokenizer: PreTrainedTokenizerBase):
+    sources = [example["input"] for example in batch]
+
+    targets = [f"{example['output']}" for example in batch]
+    # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how alpaca does it.
+    examples = [s + t for s, t in zip(sources, targets)]
+    sources_tokenized = tokenizer(sources, padding=False, truncation=True)
+    examples_tokenized = tokenizer(examples, padding=False, truncation=True)
+
+    source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
+    return {
+        "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
+        "sources_len": np.array(source_lens, dtype=np.int32),
+    }
+
+
+def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) -> LmExample:
+    """
+    Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
+
+    It goes through the following steps:
+
+    1. Pad the batch to the maximum length.
+    2. Mask out the input and prompt if requested.
+    3. Create an LmExample with the input_ids as the input and the next token as the target.
+    """
+    with local_cpu_mesh():
+        # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+        ex = tokenizer.pad({k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length")
+        ex = {k: v[0] for k, v in ex.items()}
+        input_ids = hax.named(ex["input_ids"], "position")
+        # mask out padding and anything before the start of the target
+        Pos = input_ids.resolve_axis("position")
+        loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
+
+        # don't predict the padding
+        targets = hax.roll(input_ids, -1, Pos)
+        loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+        loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
+        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
+        return lm_ex
+
+
+def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
+    import levanter.data
+
+    validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
+    dataset = levanter.data.datasource_from_jsonl(validation_urls)
+
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((), dtype=np.int32)}
+
+    dataset = dataset.map_batches(lambda ex: preprocess_supervised_example(ex, tokenizer), batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
+    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
 
 
 @dataclass

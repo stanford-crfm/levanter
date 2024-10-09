@@ -79,13 +79,15 @@ class _BatchMapTransform(_DatasetTransform):
     num_cpus: int
     num_gpus: int
     resources: dict
+    output_exemplar: Any
 
-    def __init__(self, fn, batch_size, num_cpus, num_gpus, resources):
+    def __init__(self, fn, batch_size, num_cpus, num_gpus, resources, output_exemplar=None):
         self.fn = fn
         self.batch_size = batch_size
         self.num_cpus = num_cpus
         self.num_gpus = num_gpus
         self.resources = resources
+        self.output_exemplar = output_exemplar
 
 
 def as_record_batch(doc: BatchResult) -> pa.RecordBatch:
