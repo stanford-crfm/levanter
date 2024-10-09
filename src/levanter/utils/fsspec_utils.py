@@ -1,6 +1,7 @@
 import fsspec
 import braceexpand
 
+
 def exists(url, **kwargs) -> bool:
     """Check if a file exists on a remote filesystem."""
     fs, path = fsspec.core.url_to_fs(url, **kwargs)
@@ -11,6 +12,7 @@ def mkdirs(path):
     """Create a directory and any necessary parent directories."""
     fs, path = fsspec.core.url_to_fs(path)
     fs.makedirs(path, exist_ok=True)
+
 
 def fsspec_expand_glob(url):
     expanded_urls = braceexpand.braceexpand(url)

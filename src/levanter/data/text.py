@@ -379,8 +379,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         return 0
 
 
-
-
 def concatenate_and_group_texts(
     encoding: BatchEncoding,
     seq_len: int,
