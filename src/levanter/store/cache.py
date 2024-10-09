@@ -53,7 +53,7 @@ logger = pylogging.getLogger(__name__)
 LEDGER_FILE_NAME = "shard_ledger.json"
 
 DEFAULT_LOG_LEVEL = pylogging.INFO
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
 
 @dataclass_json
@@ -75,6 +75,13 @@ class CacheOptions:
     batch_size: int = 128
     """The batch size to use when processing the data. This is used to control the memory usage of the cache building
     process. Lower values will use less memory but take somewhat longer to build the cache."""
+
+    # the below options don't actually impact the cache's result, but do impact construction
+    num_batches_per_flush = 256
+    """The number of batches to process before flushing the cache to disk. This is used to control the memory usage of
+    the cache building process. Lower values will use less memory but may take somewhat longer to build the cache."""
+    prefetch_per_group: int = 4
+    """The number of batches to prefetch per group. This is used to keep the processors busy and to reduce the time"""
 
     @staticmethod
     def default():
@@ -890,9 +897,7 @@ A message that can be sent from a reader task to the writer task.
 """
 
 _TIME_BETWEEN_WRITES = 20.0  # seconds
-_MAX_WRITE_BATCHES = 1000
 _MIN_WRITE_BATCHES = 100
-_MAX_OUTSTANDING_MESSAGES = 1000
 
 
 @ray.remote(num_cpus=1)
@@ -921,17 +926,19 @@ def _core_writer_task(
     # append a small random number to the name to avoid collisions
     name += f"::{random.randint(0, 1000)}"
 
-    def on_write(ledger):
-        ray.get(parent._notify_updated_ledger.remote(ledger))
-
     with log_failures_to(parent):
+
+        def on_write(ledger):
+            ray.get(parent._notify_updated_ledger.remote(ledger))
+
         sharded_cache_writer = ShardedCacheWriter(
             cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
         )
 
-        num_groups = min(initial_ledger.metadata.options.num_shard_groups or 1000000, len(source.shard_names))
+        options = initial_ledger.metadata.options
+        num_groups = min(options.num_shard_groups or 1000000, len(source.shard_names))
 
-        processor_pool = _mk_processor_pool(split, processor, num_groups, num_groups * 4)
+        processor_pool = _mk_processor_pool(split, processor, 0, num_groups * 4)
 
         interleave: RayPrefetchQueue = RayPrefetchQueue(
             lambda: _make_interleave(name, source, initial_ledger, processor_pool),
@@ -944,42 +951,29 @@ def _core_writer_task(
         append_time = Stopwatch()
         flush_time = Stopwatch()
         flush_amortized_time = Stopwatch()
-        backpressure_time = Stopwatch()
 
-        i = 0
         batches: list = []
         time_of_last_write = time.time()
-        last_batches_since_last_write = 0
-        outstanding_messages_to_writer: list = []
-        payloads_already_ready = 0.0
-        payloads_total = 0.0
-        start_of_last_flush = time_of_last_write
+        batches_total = 0.0
         flush_thread = None
         finished_shards_last_flush: list = []
 
-        # for i, batch_box in enumerate(interleave):
         while True:
-            with total_time:  # 0.014
+            with total_time:  # 0.0051
                 try:
                     cur_time = time.time()
                     time_since_last_write = cur_time - time_of_last_write
                     remaining_time = _TIME_BETWEEN_WRITES - time_since_last_write
 
                     if len(batches) > 0:
-                        with flush_amortized_time:
-                            if remaining_time <= 0 or len(batches) >= _MAX_WRITE_BATCHES or force_flush:
-                                with flush_time:
+                        with flush_amortized_time:  # 6e-4
+                            if remaining_time <= 0 or len(batches) >= options.num_batches_per_flush or force_flush:
+                                with flush_time:  # 0.613s
                                     shard_rows, payloads = _fetch_batches(batches)
                                     if flush_thread is not None:
                                         flush_thread.join()
-                                        print(
-                                            f"Flushed {last_batches_since_last_write} batches in"
-                                            f" {time.time() - start_of_last_flush} seconds"
-                                        )
 
-                                    last_batches_since_last_write = len(batches)
                                     batches = []
-
                                     flush_thread = ExceptionTrackingThread(
                                         target=_write_batches,
                                         args=(sharded_cache_writer, shard_rows, payloads, finished_shards_last_flush),
@@ -987,19 +981,10 @@ def _core_writer_task(
                                     flush_thread.start()
 
                                     finished_shards_last_flush = []
-                                    # last_flush_future = sharded_cache_writer.flush.remote()
-                                    start_of_last_flush = time.time()
                                     time_of_last_write = time.time()
                                     continue
                     else:
                         remaining_time = _TIME_BETWEEN_WRITES
-
-                    # drain backpressure
-                    with backpressure_time:
-                        while len(outstanding_messages_to_writer) > _MAX_OUTSTANDING_MESSAGES:
-                            drained, outstanding_messages_to_writer = ray.wait(
-                                outstanding_messages_to_writer, num_returns=1, fetch_local=False
-                            )
 
                     with loading_time:
                         try:
@@ -1008,15 +993,12 @@ def _core_writer_task(
                             logger.info("Writer running ahead of reader.")
                             continue
 
-                    if i % 100 == 0:
-                        qsize = interleave.queue_size()
-                        logger.info(f"Queue size: {qsize}")
-
                     with append_time:
                         match message:
                             case _Batch(shard, _, payload):
-                                payloads_total += 1
+                                batches_total += 1
                                 batches.append((shard, payload))
+
                                 if force_flush:
                                     shard_rows, payloads = _fetch_batches(batches)
                                     del batches
@@ -1025,24 +1007,19 @@ def _core_writer_task(
                                     )
                                     batches = []
                                     finished_shards_last_flush = []
-                                i += 1
+
                             case _ShardFinished(shard, total_rows):
-                                # sharded_cache_writer.finish_shard(shard, total_rows)
                                 finished_shards_last_flush.append((shard, total_rows))
-                                # result = sharded_cache_writer.finish_shard.remote(shard, total_rows)
-                                # outstanding_messages_to_writer.append(result)
                             case _:
                                 raise AssertionError(f"Unexpected message type {type(message)}")
 
-                    if i % 1000 == 0:
-                        print(
-                            f"Processed {i} batches: {loading_time.average()}s load,"
-                            f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
-                            f"{flush_amortized_time.average()}s amortized flush, "
-                            f"{backpressure_time.average()}s backpressure, "
-                            f"{payloads_already_ready/payloads_total:.2f} payloads ready"
-                            f"{total_time.average()}s total"
-                        )
+                    # if batches_total % 1000 == 0:
+                    #     print(
+                    #         f"Processed {batches_total} batches: {loading_time.average()}s load,"
+                    #         f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
+                    #         f"{flush_amortized_time.average()}s amortized flush, "
+                    #         f"{total_time.average()}s total"
+                    #     )
                 except StopIteration:
                     logger.info("Finished all shards")
                     break
@@ -1214,7 +1191,9 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
     generator_fns = [_make_generator_fn(group) for group in groups]
 
     readers = [
-        RayPrefetchQueue(fn, 4, producer_options=dict(num_cpus=0, name=name, scheduling_strategy="SPREAD"))
+        RayPrefetchQueue(
+            fn, options.prefetch_per_group, producer_options=dict(num_cpus=0, name=name, scheduling_strategy="SPREAD")
+        )
         for name, fn in zip(group_names, generator_fns)
     ]
 
@@ -1231,9 +1210,9 @@ def _mk_processor_pool(split, processor, min_size, max_size):
     import hashlib
 
     metadata_hash = hashlib.md5(str(processor.metadata).encode()).hexdigest()
-    processor_pool_name = f"processor_pool::{split}::{metadata_hash}"
+    processor_pool_name = f"processor_pool::{metadata_hash}"
     processor_pool = BatchProcessorPool.options(  # type: ignore
-        name=processor_pool_name, get_if_exists=True
+        name=processor_pool_name, get_if_exists=True, lifetime="detached"
     ).remote(  # type: ignore
         processor, min_size, max_size
     )
