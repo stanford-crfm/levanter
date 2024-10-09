@@ -10,7 +10,7 @@ from functools import cached_property
 from itertools import chain
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
-import braceexpand
+
 import datasets
 import equinox as eqx
 import fsspec
@@ -38,6 +38,7 @@ from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
+from levanter.utils.fsspec_utils import fsspec_expand_glob
 
 
 silence_transformer_nag()  # noqa
@@ -378,20 +379,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         return 0
 
 
-def fsspec_expand_glob(url):
-    expanded_urls = braceexpand.braceexpand(url)
-    for expanded_url in expanded_urls:
-        if "*" in expanded_url:
-            fs = fsspec.core.url_to_fs(expanded_url)[0]
-            globbed = fs.glob(expanded_url)
-            # have to append the fs prefix back on
-            protocol, _ = fsspec.core.split_protocol(expanded_url)
-            if protocol is None:
-                yield from globbed
-            else:
-                yield from [f"{protocol}://{path}" for path in globbed]
-        else:
-            yield expanded_url
 
 
 def concatenate_and_group_texts(
@@ -578,7 +565,7 @@ class LMTaskConfig(abc.ABC):
 
 
 @dataclass
-class LMSupervisedDatasetConfig(LMDatasetSourceConfig):
+class LMSupervisedDatasetConfig:
     """This class represents a dataset source with URLs or hf name/id."""
 
     cache_dir: str = "cache/"
@@ -588,30 +575,6 @@ class LMSupervisedDatasetConfig(LMDatasetSourceConfig):
     name: Optional[str] = None  # name for hf dataset
 
     validation_urls: List[str] = ()  # type:ignore
-
-    # def token_seq_dataset(
-    #     self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    # ) -> Optional[TokenSeqDataset]:
-    #     cache = self.build_or_load_cache(split, monitors=monitors)
-    #     if cache is None:
-    #         return None
-    #     return TokenSeqDataset(cache, seq_len)
-
-    # def validation_set(
-    #     self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    # ) -> Optional[TokenSeqDataset]:
-    #     return self.token_seq_dataset("validation", seq_len, monitors)
-
-    # def validation_sets(
-    #     self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    # ) -> Mapping[str, AsyncDataset[np.ndarray]]:
-    #     validation_set = self.validation_set(seq_len, monitors)
-    #     if validation_set is not None:
-    #         return {"": validation_set}
-    #     else:
-    #         return {}
-
-    # Add tagged eval set with split for auxiliary and validation dataset
 
 
 def preprocess_supervised_example(batch, tokenizer: PreTrainedTokenizerBase):
