@@ -1,8 +1,13 @@
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Generic, Iterable, Mapping, Sequence, TypeVar, Union
 
 import numpy as np
 import pyarrow as pa
+import ray
+
+from levanter.utils.actor_pool import AutoScalingActorPool, PoolWorkerBase
+from levanter.utils.ray_utils import RefBox
 
 
 T = TypeVar("T")
@@ -143,12 +148,12 @@ def _construct_composite_batch_processor(dataset):
 
     source, transforms, batch_transform = rec(dataset)
 
-    batch_size = batch_transform.batch_size if batch_transform is not None else 1024
+    # batch_size = batch_transform.batch_size if batch_transform is not None else 1024
     cpus = batch_transform.num_cpus if batch_transform is not None else 1
     gpus = batch_transform.num_gpus if batch_transform is not None else 0
     resources = batch_transform.resources if batch_transform is not None else {}
 
-    return source, _CompositeBatchProcessor(transforms, batch_size, cpus, gpus, resources)
+    return source, _CompositeBatchProcessor(transforms, cpus, gpus, resources)
 
 
 class _CompositeBatchProcessor(BatchProcessor):
@@ -157,7 +162,6 @@ class _CompositeBatchProcessor(BatchProcessor):
         self._num_cpus = num_cpus
         self._num_gpus = num_gpus
         self._resources = resources
-        self._batch_size = batch_size
 
     @property
     def batch_size(self):
@@ -230,3 +234,65 @@ def dict_from_record_batch(b) -> dict:
             return x
 
     return {b.field(i).name: to_hf_batched(b.column(i).to_numpy(zero_copy_only=False)) for i in range(b.num_columns)}
+
+
+@ray.remote(num_cpus=0)
+class BatchProcessorPool:
+    def __init__(self, processor: BatchProcessor, min_size: int = 1, max_size: int = 10):
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(message)s")
+        processor_ref = ray.put(processor)
+        self.actor_pool = AutoScalingActorPool(
+            lambda: _create_batch_processor_actor(processor, processor_ref), min_size, max_size
+        )
+
+    async def process_batch(self, batch_ref: RefBox):
+        return await self.actor_pool.submit(
+            lambda a, b: a.process_batch.remote(b), batch_ref.ref, obj_ref=batch_ref.ref
+        )
+
+    def num_pending_tasks(self):
+        return self.actor_pool.num_pending_tasks
+
+
+def _create_batch_processor_actor(processor: BatchProcessor, processor_ref):
+    cpus = processor.num_cpus
+    gpus = processor.num_gpus
+    resources = processor.resources
+    return _BatchProcessorActor.options(  # type: ignore
+        num_cpus=cpus, num_gpus=gpus, resources=resources, scheduling_strategy="SPREAD"
+    ).remote(processor_ref)
+
+
+@ray.remote
+class _BatchProcessorActor(PoolWorkerBase):
+    def __init__(self, processor: BatchProcessor):
+        from levanter.store.tree_store import TreeBatchPreparer
+
+        self.processor = processor
+        self.preparer = TreeBatchPreparer(processor.output_exemplar)
+
+    def process_batch(self, batch):
+        result = self.processor(batch)
+        result = _canonicalize_batch(result)
+        prepared = self.preparer(result)
+        return prepared
+
+
+def _canonicalize_batch(batch: Union[dict, list[dict]]) -> list[dict]:
+    if isinstance(batch, pa.RecordBatch):
+        batch = dict_from_record_batch(batch)
+
+    if isinstance(batch, dict):
+        return _to_list_of_dicts(batch)
+    else:
+        return batch
+
+
+def _to_list_of_dicts(batch: dict) -> list[dict]:
+    """
+    Convert a batch of dictionaries to a list of dictionaries, suitable for writing to a cache.
+    """
+    keys = list(batch.keys())
+    values = list(batch.values())
+    num_rows = len(values[0])
+    return [{key: values[i][j] for i, key in enumerate(keys)} for j in range(num_rows)]

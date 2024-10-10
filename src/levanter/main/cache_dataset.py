@@ -48,6 +48,7 @@ def main(args: RayCachedLMDatasetConfig):
             processor=batch_tokenizer,
             await_finished=False,
             monitors=monitors,
+            split=split,
         )
 
         cache.await_finished()
