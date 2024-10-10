@@ -55,6 +55,8 @@ class TrainLmConfig:
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
 
+    # number of epochs over the dataset. If none will fall back to num_train_steps
+    epochs: Optional[int] = None
 
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
@@ -230,12 +232,12 @@ def main(config: TrainLmConfig):
 
         train_loader = trainer.data_loader(train_dataset, Batch)
         if seek_dataloader:
-            train_loader = train_loader.iter_from_step(state.step)
+            train_loader = train_loader.iter_from_step(int(state.step))
         else:
             train_loader = iter(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, train_loader)
+        trainer.train(state, train_loader, epochs=config.epochs)
         # checkpointer.on_step(last_step, force=True)
 
 

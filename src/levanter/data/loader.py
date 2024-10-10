@@ -109,16 +109,23 @@ class DataLoaderIterator(Iterator[Ex]):
         if self.mapping is None:
             self.mapping = hax.partitioning.current_thread_local_mapping()
 
-        # TODO: bring back non-prefetching version
+        self._init_batches()
+
+    def _init_batches(self):
         buffered_batches = self.dl.max_buffered_batches
         self._batches = iter(BackgroundIterable(self._produce_batches, max_capacity=buffered_batches))
 
     def __next__(self):
-        time_start = time.time()
-        out = next(self._batches)
-        time_end = time.time()
-        if (time_end - time_start) > 0.5:
-            logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}")
+        try:
+            time_start = time.time()
+            out = next(self._batches)
+            time_end = time.time()
+            if (time_end - time_start) > 0.5:
+                logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}")
+        except StopIteration:
+            self._init_batches()
+            return next(self._batches)
+        
         return out
 
     async def _produce_batches(self):
