@@ -735,6 +735,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             monitors=monitors,
             await_finished=False,
             options=self.cache_options,
+            split=split,
         )
 
 

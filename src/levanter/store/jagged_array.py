@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import fsspec.core
-import jax
 import jax.experimental.array_serialization.serialization as ser
 import jax.numpy as jnp
 import numpy as np
@@ -18,6 +17,60 @@ from levanter.utils.thread_utils import future_from_value
 # at 4 bytes this is 256k elements
 DEFAULT_CHUNK_SIZE = 256 * 1024
 DEFAULT_WRITE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 512
+
+
+@dataclass
+class PreparedBatch:
+    """
+    A batch of data that has been prepared for storage in a jagged array.
+    """
+
+    data: np.ndarray
+    offsets: np.ndarray
+    shapes: Optional[np.ndarray]
+
+    def astype(self, dtype):
+        return PreparedBatch(self.data.astype(dtype), self.offsets, self.shapes)
+
+    @property
+    def num_rows(self):
+        return len(self.offsets)
+
+    @staticmethod
+    def from_batch(items: Sequence[np.ndarray], item_rank: Optional[int] = None) -> "PreparedBatch":
+        data, offsets, shapes = _prepare_batch(items, item_rank)
+        return PreparedBatch(data, offsets, shapes)
+
+    @staticmethod
+    def concat(batches: Sequence["PreparedBatch"]) -> "PreparedBatch":
+        data = np.concatenate([batch.data for batch in batches])
+        shapes = np.concatenate([batch.shapes for batch in batches]) if batches[0].shapes is not None else None
+        # offsets have to be adjusted by adding the previous offset
+        totals = np.cumsum([0] + [batch.data.size for batch in batches])
+        offsets = np.concatenate([batch.offsets + total for batch, total in zip(batches, totals)])
+
+        return PreparedBatch(data, offsets, shapes)
+
+
+def _prepare_batch(arrays, item_rank):
+    if item_rank is None:
+        item_rank = arrays[0].ndim
+
+    if item_rank != 1:
+        shapes = np.array([data.shape[:-1] for data in arrays], dtype=np.int64)
+    else:
+
+        shapes = None
+
+    # check shapes
+    for data in arrays:
+        if data.ndim != item_rank:
+            raise ValueError(f"Expected data to have rank {item_rank}, but got {data.ndim}")
+
+    offsets = np.array([data.size for data in arrays], dtype=np.int64)
+    offsets = np.cumsum(offsets)
+    data = np.concatenate([data.reshape(-1) for data in arrays])
+    return data, offsets, shapes
 
 
 @dataclass
@@ -113,10 +166,10 @@ class JaggedArrayStore:
             self._cached_data_size = result
         return result
 
-    async def append_async(self, data: jax.Array):
+    async def append_async(self, data: np.ndarray):
         await self.extend_async([data])
 
-    def append(self, data: jax.Array):
+    def append(self, data: np.ndarray):
         self.extend([data])
 
     async def trim_to_size_async(self, size: int):
@@ -190,12 +243,20 @@ class JaggedArrayStore:
             self._cached_num_rows = size
             self._cached_data_size = new_max
 
-    async def extend_async(self, arrays: Sequence[jax.Array]):
-        data, new_offsets, shapes = self._prepare_batch(arrays)
+    async def extend_async(self, arrays: Sequence[np.ndarray] | PreparedBatch):
+        if isinstance(arrays, PreparedBatch):
+            prepared = arrays
+        else:
+            prepared = PreparedBatch.from_batch(arrays, self.item_rank)
+        data = prepared.data
+        new_offsets = prepared.offsets
+        shapes = prepared.shapes
 
         num_rows = await self.num_rows_async()
-        num_added = len(arrays)
+        num_added = len(new_offsets)
         current_data_size = self.data_size
+
+        new_offsets = new_offsets + current_data_size
 
         # Write to resized arrays concurrently, adjusting offsets explicitly
         write_tasks = [
@@ -207,18 +268,32 @@ class JaggedArrayStore:
         await asyncio.gather(*write_tasks)
 
         # Update num_rows
-        await self.offsets[0].write(num_rows + len(arrays))
+        await self.offsets[0].write(num_rows + num_added)
 
         if self._cache_metadata:
-            self._cached_num_rows = num_rows + len(arrays)
+            self._cached_num_rows = num_rows + num_added
             self._cached_data_size = current_data_size + len(data)
 
-    def extend(self, arrays: Sequence[jax.Array]):
-        data, new_offsets, shapes = self._prepare_batch(arrays)
+    def extend(self, arrays: Sequence[np.ndarray] | PreparedBatch):
+        if isinstance(arrays, PreparedBatch):
+            prepared = arrays
+        else:
+            prepared = PreparedBatch.from_batch(arrays, self.item_rank)
+
+        data = prepared.data
+        new_offsets = prepared.offsets
+        shapes = prepared.shapes
+
+        if shapes is None and self.item_rank != 1:
+            raise ValueError("Shapes must be provided for non-vector data")
+        elif shapes is not None and shapes.shape[1] != self.item_rank - 1:
+            raise ValueError(f"Shapes must have {self.item_rank-1} dimensions, but got {shapes.shape[1]}")
 
         num_rows = self.num_rows
-        num_added = len(arrays)
+        num_added = len(new_offsets)
         current_data_size = self.data_size
+
+        new_offsets = new_offsets + current_data_size
 
         write_tasks = [
             self.data[current_data_size : current_data_size + len(data)].write(data),
@@ -231,27 +306,11 @@ class JaggedArrayStore:
         for task in write_tasks:
             task.result()
 
-        self.offsets[0].write(num_rows + len(arrays)).result()
+        self.offsets[0].write(num_rows + num_added).result()
 
         if self._cache_metadata:
-            self._cached_num_rows = num_rows + len(arrays)
+            self._cached_num_rows = num_rows + num_added
             self._cached_data_size = current_data_size + len(data)
-
-    def _prepare_batch(self, arrays):
-        if self.shapes is not None:
-            for data in arrays:
-                if data.ndim != self.item_rank:
-                    raise ValueError(f"Expected data to have rank {self.item_rank}, got {data.ndim}")
-            shapes = np.array([data.shape[:-1] for data in arrays], dtype=np.int64)
-        else:
-            for data in arrays:
-                if data.ndim > 1:
-                    raise ValueError(f"Expected data to have rank 1, got {data.ndim}")
-            shapes = None
-        new_offsets = np.array([data.size for data in arrays], dtype=np.int64)
-        new_offsets = np.cumsum(new_offsets) + self.data_size
-        data = np.concatenate([data.reshape(-1) for data in arrays])
-        return data, new_offsets, shapes
 
     async def reload_async(self) -> "JaggedArrayStore":
         """
@@ -309,7 +368,7 @@ class JaggedArrayStore:
                 else:
                     raise e
 
-    async def get_batch(self, indices: Sequence[int]) -> Sequence[jax.Array]:
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[np.ndarray]:
         # get indices
         with ts.Batch():
             all_indices_futs = [self._bounds_for_rows_async(indices[i], indices[i] + 1) for i in range(len(indices))]
@@ -334,7 +393,7 @@ class JaggedArrayStore:
 
         return data
 
-    def get_batch_sync(self, indices: Sequence[int]) -> Sequence[jax.Array]:
+    def get_batch_sync(self, indices: Sequence[int]) -> Sequence[np.ndarray]:
         all_indices = self._bounds_for_rows_batch(indices)
 
         with ts.Batch():
