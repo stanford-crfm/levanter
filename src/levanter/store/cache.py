@@ -1061,11 +1061,8 @@ def _write_batches(writer: ShardedCacheWriter, shard_totals, batches, finished_s
 
 
 def _fetch_batches(batches) -> tuple[dict[str, int], list[PreparedBatch]]:
-    time_in = time.time()
     shards_for_batches, payloads_for_batches = zip(*batches)
     payloads_for_batches = ray.get(list(payloads_for_batches))
-    time_out = time.time()
-    logger.info(f"Fetched {len(batches)} batches in {time_out - time_in} seconds")
 
     shard_row_totals: dict[str, int] = {}
     for shard, payload in zip(shards_for_batches, payloads_for_batches):
