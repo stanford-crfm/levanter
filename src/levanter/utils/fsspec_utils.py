@@ -1,5 +1,5 @@
-import fsspec
 import braceexpand
+import fsspec
 
 
 def exists(url, **kwargs) -> bool:
