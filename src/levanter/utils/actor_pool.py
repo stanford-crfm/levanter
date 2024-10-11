@@ -50,6 +50,25 @@ class AutoScalingActorPool:
     def num_pending_tasks(self):
         return len(self._tasks_waiting_for_actor)
 
+    def resize_pool(self, *, min_size: Optional[int] = None, max_size: Optional[int] = None):
+        old_min_size = self._min_size
+        if min_size is not None:
+            self._min_size = min_size
+        old_max_size = self._max_size
+        if max_size is not None:
+            self._max_size = max_size
+
+        if old_min_size != self._min_size or old_max_size != self._max_size:
+            logger.info(f"Resizing pool to min_size: {self._min_size}, max_size: {self._max_size}")
+
+        self._adjust_pool_size()
+
+    def get_max_size(self):
+        return self._max_size
+
+    def get_min_size(self):
+        return self._min_size
+
     def _scale_up(self, num_actors: int):
         if self._scale_down_task and not self._scale_down_task.done():
             self._scale_down_task.cancel()

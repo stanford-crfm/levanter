@@ -236,7 +236,7 @@ def dict_from_record_batch(b) -> dict:
     return {b.field(i).name: to_hf_batched(b.column(i).to_numpy(zero_copy_only=False)) for i in range(b.num_columns)}
 
 
-@ray.remote(num_cpus=0)
+@ray.remote(num_cpus=0.1)  # keep this low b/c it doesn't do much
 class BatchProcessorPool:
     def __init__(self, processor: BatchProcessor, min_size: int = 1, max_size: int = 10):
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(message)s")
@@ -252,6 +252,12 @@ class BatchProcessorPool:
 
     def num_pending_tasks(self):
         return self.actor_pool.num_pending_tasks
+
+    def resize_pool(self, *, min_size: int | None = None, max_size: int | None = None):
+        self.actor_pool.resize_pool(min_size=min_size, max_size=max_size)
+
+    def ensure_max_at_least(self, size: int):
+        self.actor_pool.resize_pool(max_size=max(size, self.actor_pool.get_max_size()))
 
 
 def _create_batch_processor_actor(processor: BatchProcessor, processor_ref):
