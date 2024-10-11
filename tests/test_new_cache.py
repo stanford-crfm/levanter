@@ -505,6 +505,9 @@ def test_sharded_cache_writer_trims_on_resume():
             for ex in batched(source.open_shard(shard_name), 8):
                 writer.write_batch(shard_name, processor(ex))
 
+        for shard_name in source.shard_names:
+            writer.finish_shard(shard_name, 10)
+
         writer.finish()
 
         # now deliberately truncate the ledger a bit
