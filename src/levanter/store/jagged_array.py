@@ -29,6 +29,10 @@ class PreparedBatch:
     offsets: np.ndarray
     shapes: Optional[np.ndarray]
 
+    @property
+    def byte_size(self):
+        return self.data.nbytes + self.offsets.nbytes + (self.shapes.nbytes if self.shapes is not None else 0)
+
     def astype(self, dtype):
         return PreparedBatch(self.data.astype(dtype), self.offsets, self.shapes)
 

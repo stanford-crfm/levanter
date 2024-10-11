@@ -133,7 +133,7 @@ class AutoScalingActorPool:
 
         # Schedule scale down if idle
         elif num_pending_tasks == 0 and num_nonworking_actors > self._min_size:
-            if self._scale_down_task is None or self._scale_down_task.done():
+            if self._scale_down_task is None:
                 self._scale_down_task = asyncio.create_task(self._schedule_scale_down())
 
     async def _schedule_scale_down(self):
@@ -142,8 +142,9 @@ class AutoScalingActorPool:
             if self.num_pending_tasks == 0:
                 logger.info("Scaling down due to no pending tasks.")
                 self._scale_down(self._min_size)
+                self._scale_down_task = None
         except asyncio.CancelledError:
-            logger.info("Scale down task was cancelled due to new activity.")
+            logger.debug("Scale down task was cancelled due to new activity.")
 
     def _get_object_location(self, obj_ref: ray.ObjectRef) -> Optional[str]:
         """Get the location of the given object reference."""
