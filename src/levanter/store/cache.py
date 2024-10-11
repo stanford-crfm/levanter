@@ -1199,7 +1199,9 @@ def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: Cache
 
     readers = [
         RayPrefetchQueue(
-            fn, options.prefetch_per_group, producer_options=dict(num_cpus=0, name=name, scheduling_strategy="SPREAD")
+            fn,
+            options.prefetch_per_group,
+            producer_options=dict(num_cpus=0.1, name=name, scheduling_strategy="SPREAD"),
         )
         for name, fn in zip(group_names, generator_fns)
     ]
@@ -1223,6 +1225,8 @@ def _mk_processor_pool(split, processor, min_size, max_size):
     ).remote(  # type: ignore
         processor, min_size, max_size
     )
+
+    ray.get(processor_pool.ensure_max_at_least.remote(max_size))
 
     return processor_pool
 
