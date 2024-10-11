@@ -97,8 +97,9 @@ class SimpleProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
 
 
 class SimpleShardSource(ShardedDataSource[list[int]]):
-    def __init__(self, num_shards: int = 4):
+    def __init__(self, num_shards: int = 4, rows_per_shard: int = 10):
         self._num_shards = num_shards
+        self._rows_per_shard = rows_per_shard
 
     @property
     def shard_names(self) -> Sequence[str]:
@@ -107,7 +108,7 @@ class SimpleShardSource(ShardedDataSource[list[int]]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[list[int]]:
         # parse the shard name to get the shard number
         shard_num = int(shard_name.split("_")[1])
-        return ([shard_num * 10 + i] * 10 for i in range(row, 10))
+        return ([shard_num * 10 + i] * 10 for i in range(row, self._rows_per_shard))
 
 
 def test_serial_cache_writer():
@@ -464,6 +465,9 @@ def test_sharded_cache_writer():
         for shard_name in source.shard_names:
             for ex in batched(source.open_shard(shard_name), ledger.metadata.options.batch_size):
                 writer.write_batch(shard_name, processor(ex))
+
+        for shard_name in source.shard_names:
+            writer.finish_shard(shard_name, source._rows_per_shard)
 
         store = writer.finish()
 
