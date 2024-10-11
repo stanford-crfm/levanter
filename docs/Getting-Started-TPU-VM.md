@@ -233,7 +233,7 @@ Then, **in a separate terminal**, you can submit a job to the cluster. To replic
 
 ```bash
 export RAY_ADDRESS=http://localhost:8265  # tell ray where the cluster is
-python infra/launch_on_ray.py --tpu_type v4-32 --foreground --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch_on_ray.py --tpu_type v4-32 --foreground -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 Even without `--foreground`, the job will be restarted if it fails. The `--tpu_type` flag is required, and should be
