@@ -21,7 +21,6 @@ import datasets
 import fsspec
 import numpy as np
 import pyarrow.parquet as pq
-import pandas as pd
 
 from levanter.utils import fsspec_utils
 
@@ -248,7 +247,7 @@ class TextUrlDataSource(ShardedDataSource[str]):
                     table = pq.read_table(f)
                     sliced_table = table.slice(row)
                     for record in sliced_table.to_pylist():
-                        yield record[self.text_key] # assumes text_key is in record
+                        yield record[self.text_key]  # assumes text_key is in record
                 case _:
                     raise ValueError(f"Unknown format {format}")
 
@@ -441,7 +440,7 @@ class ParquetDataSource(ShardedDataSource[dict]):
         url = self._shard_name_to_url_mapping[shard_name]
         with fsspec.open(url, "r", compression="infer") as f:
             table = pq.read_table(f)
-            sliced_table = table.slice(row) # zero-copy slicing
+            sliced_table = table.slice(row)  # zero-copy slicing
             for record in sliced_table.to_pylist():
                 yield record
 
