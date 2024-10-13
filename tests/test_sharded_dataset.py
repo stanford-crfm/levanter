@@ -1,6 +1,7 @@
+import os
 import tempfile
 
-from levanter.data.sharded_datasource import AudioTextUrlDataSource, _sniff_format_for_dataset, ParquetDataSource
+from levanter.data.sharded_datasource import AudioTextUrlDataSource, ParquetDataSource, _sniff_format_for_dataset
 from test_utils import skip_if_no_soundlibs
 
 
@@ -30,7 +31,7 @@ def test_sniff_format_for_parquet():
     import pyarrow.parquet as pq
 
     with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
-        table = pa.table({'col1': [1, 2, 3], 'col2': ['a', 'b', 'c']})
+        table = pa.table({"col1": [1, 2, 3], "col2": ["a", "b", "c"]})
         pq.write_table(table, f.name)
         f.flush()
 
@@ -47,19 +48,22 @@ def test_basic_parquet_datasource_read_row():
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
         # Create a simple dataset
-        data = {
-            "column1": ["value1", "value2", "value3"],
-            "column2": [10, 20, 30]
-        }
+        data = {"column1": ["value1", "value2", "value3"], "column2": [10, 20, 30]}
         table = pa.Table.from_pydict(data)
         pq.write_table(table, f.name)
 
-        datasource = ParquetDataSource([f.name])
+    try:
+
+        datasource = ParquetDataSource([os.path.abspath(f.name)])
 
         assert len(datasource.shard_names) == 1, "Expected only one shard"
         shard_name = datasource.shard_names[0]
+
+        print(f"Shard name: {shard_name}")
+        print("File name: ", f.name)
+        print("File path: ", os.path.abspath(f.name))
 
         # sanity check: Read data starting from row 1
         row_data = list(datasource.open_shard_at_row(shard_name=shard_name, row=1))
@@ -70,3 +74,6 @@ def test_basic_parquet_datasource_read_row():
         assert row_data[0]["column2"] == 20
         assert row_data[1]["column1"] == "value3"
         assert row_data[1]["column2"] == 30
+
+    finally:
+        os.unlink(f.name)
