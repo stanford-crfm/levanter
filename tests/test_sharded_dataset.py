@@ -61,10 +61,6 @@ def test_basic_parquet_datasource_read_row():
         assert len(datasource.shard_names) == 1, "Expected only one shard"
         shard_name = datasource.shard_names[0]
 
-        print(f"Shard name: {shard_name}")
-        print("File name: ", f.name)
-        print("File path: ", os.path.abspath(f.name))
-
         # sanity check: Read data starting from row 1
         row_data = list(datasource.open_shard_at_row(shard_name=shard_name, row=1))
 
