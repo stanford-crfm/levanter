@@ -438,7 +438,7 @@ class ParquetDataSource(ShardedDataSource[dict]):
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
-        with fsspec.open(url, "r", compression="infer") as f:
+        with fsspec.open(url, "rb", compression="infer") as f:
             table = pq.read_table(f)
             sliced_table = table.slice(row)  # zero-copy slicing
             for record in sliced_table.to_pylist():
