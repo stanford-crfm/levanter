@@ -63,10 +63,11 @@ class DataLoader(Iterable[Ex]):
         self.mesh = mesh
         self.Batch = Batch
 
-        def _exemplar_shape():
-            return blocking_wait(self.data_store.getitem_async(0))
-
-        self._ex_leaves, self._ex_structure = jax.tree_flatten(_exemplar_shape(), is_leaf=is_named_array)
+        with local_cpu_mesh():
+            # It's important that all data loading happens CPU side. We might relax this one day.
+            self._ex_leaves, self._ex_structure = jax.tree_flatten(
+                blocking_wait(self.data_store.getitem_async(0)), is_leaf=is_named_array
+            )
 
         local_device_indices, local_indices = self._compute_local_device_indices()
 
