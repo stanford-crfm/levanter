@@ -4,6 +4,7 @@ import sys
 import threading
 from typing import AsyncIterator, Callable, Iterable, Iterator, Optional, TypeVar, Union
 
+import jax
 import tblib
 
 from levanter.utils.thread_utils import AsyncIteratorWrapper
@@ -92,6 +93,7 @@ class BackgroundIterator(Iterator[Ex]):
             if isinstance(iterator, Iterator):
                 self._produce_batches_sync(iterator)
             else:
+                print("asyncio", jax.devices())
                 asyncio.run(self._produce_batches_async(iterator))
         except Exception:
             self.q.put(_ExceptionWrapper(sys.exc_info()))
@@ -121,6 +123,7 @@ class BackgroundIterator(Iterator[Ex]):
     async def _produce_batches_async(self, iterator):
         try:
             async for batch in iterator:
+                print(jax.devices())
                 while not self._stop_event.is_set():
                     try:
                         self.q.put(batch, block=True, timeout=1)
