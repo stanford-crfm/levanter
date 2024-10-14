@@ -205,7 +205,6 @@ class DataLoaderIterator(Iterator[Ex]):
                 if all(idx == slice(None) for idx in other_indices):
                     return leaf_data
                 else:
-                    # TODO: this doesn't work with named axes
                     return leaf_data[(..., *other_indices)]
 
         def make_global_array_for_leaf(leaf_index, item_leaf_shape: ShapeSpec | NamedShapeSpec):
