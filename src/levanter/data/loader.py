@@ -264,7 +264,6 @@ class _JaxCpuBackgroundIterator(BackgroundIterator[Ex]):
 
     def _fill_queue_with_batches(self):
         with local_cpu_mesh():
-            print("sub", jax.devices())
             super()._fill_queue_with_batches()
 
 
