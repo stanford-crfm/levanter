@@ -1,11 +1,14 @@
-cache_dir: "gs://marin-data/tokenized/dclm/gpt_neo_tokenizer"
+cache_dir: "gs://marin-us-central2/tokenized/gpt_neox/"
 tokenizer: "EleutherAI/gpt-neox-20b"
+cache_options:
+  batch_size: 256
+  num_shard_groups: 1024
 stop_strategy: restart
-shuffle_buffer_size: 100000
+shuffle: 100000
 configs:
   "dclm":
     train_urls:
-      - gs://marin-data/datacomp/dclm-baseline-dedup-07-09/*/*/*.jsonl.zstd
+      - gs://marin-us-central2/raw/dclm/v2024-07-09-baseline-dedup/**/*.zstd
   # these are just for eval
   "paloma/4chan":
     validation_urls:

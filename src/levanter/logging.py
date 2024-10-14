@@ -75,11 +75,13 @@ class LoadingTimeTrackerIterator(Iterator[T]):
         start = time.perf_counter()
         self.items = iter(items)
         self.total_time += time.perf_counter() - start
+        self.this_load_time = 0.0
 
     def __next__(self) -> T:
         start = time.perf_counter()
         item = next(self.items)
-        self.total_time += time.perf_counter() - start
+        self.this_load_time = time.perf_counter() - start
+        self.total_time += self.this_load_time
         return item
 
 

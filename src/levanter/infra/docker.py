@@ -65,7 +65,12 @@ def _run(argv):
 
         return b"".join(output)
     else:
-        return subprocess.check_output(argv, stderr=subprocess.STDOUT)
+        try:
+            return subprocess.check_output(argv, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as e:
+            # print the output if the command failed, reraising the exception
+            print(e.output.decode())
+            raise e
 
 
 def configure_gcp_docker(project_id, region, repository):
@@ -159,7 +164,7 @@ def copy_extra_ctx(extra_ctx):
         mount_dst = Path(".mnt")
         _cp(extra_ctx, mount_dst)
         try:
-            yield mount_dst
+            yield extra_ctx
         finally:
             _rm(mount_dst)
     else:
@@ -222,3 +227,12 @@ def push_to_gcp(local_id, project_id, region, repository) -> str:
     _run(["docker", "push", full_image_name])
 
     return f"{artifact_repo}/{local_id}"
+
+
+def split_image_and_tag(docker_base_image):
+    if ":" in docker_base_image:
+        base_image, base_tag = docker_base_image.rsplit(":", 1)
+    else:
+        base_image = docker_base_image
+        base_tag = "latest"
+    return base_image, base_tag

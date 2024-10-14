@@ -242,12 +242,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     ck_path = f"{tmpdir}/hf_model"
     hf_model.save_pretrained(ck_path)
 
-    model = converter.load_pretrained(
-        config.model_type,
-        config,
-        ck_path,
-        resize_vocab_to_match_tokenizer=False
-    )
+    model = converter.load_pretrained(config.model_type, ref=ck_path, resize_vocab_to_match_tokenizer=False)
 
 # compare the output values between Levanter and HF
 # ...

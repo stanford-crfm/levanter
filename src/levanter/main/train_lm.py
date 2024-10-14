@@ -16,7 +16,7 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, LMSupervisedDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
+    supervised_data: Optional[LMSupervisedDatasetConfig] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -114,7 +115,8 @@ def main(config: TrainLmConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        tagged_eval_datasets = config.data.tagged_eval_sets(Pos.size)
+        # TODO: fix this
+        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
             config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
@@ -147,7 +149,7 @@ def main(config: TrainLmConfig):
                 gc.collect()
                 model = converter.load_pretrained(
                     config.model.model_type,
-                    config.model,
+                    config=config.model if not config.use_hf_model_config else None,
                     axis_mapping=parameter_axis_mapping,
                     dtype=trainer.mp.compute_dtype,
                 )
@@ -161,20 +163,37 @@ def main(config: TrainLmConfig):
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
-            causal_datasets = [
-                (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
-                for ds, tags in tagged_eval_datasets
-            ]
             max_eval_examples_per_ds = config.trainer.max_eval_batches
             if max_eval_examples_per_ds is not None:
                 max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
+            causal_datasets = [
+                (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
+                for ds, tags in tagged_eval_datasets
+            ]
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
                 causal_datasets,
+                tokenizer,
                 trainer.device_mesh,
                 compute_axis_mapping,
                 max_eval_examples_per_ds,
+                mp=config.trainer.mp,
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
+
+        if config.supervised_data is not None:
+            logger.info("Using supervised data")
+            supervised_eval = [(levanter.data.text.mk_supervised_dataset(config.supervised_data, tokenizer), "")]
+            # TODO Add tags
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                EvalBatch,
+                supervised_eval,
+                tokenizer,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                prefix="internal_eval",
                 mp=config.trainer.mp,
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
@@ -185,7 +204,11 @@ def main(config: TrainLmConfig):
             callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
         )
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+            # bit gross to reach this far into the config, but it's fine
+            if config.trainer.checkpointer.append_run_id_to_base_path:
+                full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+            else:
+                full_save_path = config.hf_save_path
 
             trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
@@ -205,23 +228,11 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # engine.add_hook(
-        #     callbacks.compute_and_visualize_log_probs(
-        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-        #     ),
-        #     every=config.trainer.steps_per_eval,
-        # )
-        #
-        # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
-
-        if int(state.step) > 0 and seek_dataloader:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader)
+        train_loader = trainer.data_loader(train_dataset, Batch)
+        if seek_dataloader:
+            train_loader = train_loader.iter_from_step(state.step)
+        else:
+            train_loader = iter(train_loader)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

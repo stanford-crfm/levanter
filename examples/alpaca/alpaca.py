@@ -15,8 +15,7 @@ import haliax as hax
 
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
-from levanter.data import Dataset
-from levanter.data.sharded_dataset import JsonDataset, JsonlDataset, WrappedHFDataset
+from levanter.data import PermutationDataset
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -100,53 +99,21 @@ class TrainArgs:
     hf_save_steps: int = 1000  # How often to save the HuggingFace checkpoint.
 
 
-# Encoder/Decoder dataset for Alpaca.
-# We basically do string interpolation of the (instruction, input, output) triples with the prompt,
-# and mask out the prompt and padding.
-class SupervisedDataset(Dataset[LmExample]):
-    def __init__(self, preproc_dataset, tokenizer, mask_inputs):
-        self.preproc_dataset = preproc_dataset
-        self.tokenizer = tokenizer
-        self.mask_inputs = mask_inputs
-
-    def __iter__(self):
-        for ex in self.preproc_dataset:
-            # annoyingly, pad expects things to be batched so we have to prepend a batch axis
-            ex = self.tokenizer.pad(
-                {k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length"
-            )
-            ex = {k: v[0] for k, v in ex.items()}
-            input_ids = hax.named(ex["input_ids"], "position")
-
-            # mask out padding and anything before the start of the target
-            Pos = input_ids.resolve_axis("position")
-            if self.mask_inputs:
-                loss_mask = hax.arange(Pos) >= ex["source_lens"]
-
-                # don't predict the padding
-                targets = hax.roll(input_ids, -1, Pos)
-                loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
-            else:
-                loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
-
-            yield LmExample(input_ids, loss_mask)
-
-
 def _get_data_source(path_or_id):
     """The original alpaca.py used a json file, but it's since been moved to the HF dataset hub. You can use any
     dataset that's compatible with the structure of the alpaca dataset."""
     if fsspec_utils.exists(path_or_id):
         # we're a bit generous here b/c we support compression
         if ".jsonl" in path_or_id:
-            return JsonlDataset([path_or_id])
+            return levanter.data.datasource_from_jsonl([path_or_id])
         elif ".json" in path_or_id:
-            return JsonDataset([path_or_id])
+            return levanter.data.datasource_from_json([path_or_id])
         else:
             raise ValueError(
                 f"We only support HF Datasets or a data file with .json or .jsonl extensions, not {path_or_id}!"
             )
     else:
-        return WrappedHFDataset(path_or_id, split="train")
+        return levanter.data.datasource_from_hf(path_or_id, split="train")
 
 
 def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):
@@ -175,12 +142,37 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
             "source_lens": source_lens,
         }
 
-    dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
-    dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)
+    dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))  # type: ignore
+    dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)  # type: ignore
 
-    dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)
+    def _prepare_example(ex: dict) -> LmExample:
+        """
+        Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
 
-    return dataset
+        It goes through the following steps:
+
+        1. Pad the batch to the maximum length.
+        2. Mask out the input and prompt if requested.
+        3. Create an LmExample with the input_ids as the input and the next token as the target.
+        """
+        # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+        ex = tokenizer.pad({k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length")
+        ex = {k: v[0] for k, v in ex.items()}
+        input_ids = hax.named(ex["input_ids"], "position")
+        # mask out padding and anything before the start of the target
+        Pos = input_ids.resolve_axis("position")
+        if config.mask_inputs:
+            loss_mask = hax.arange(Pos) >= ex["source_lens"]
+
+            # don't predict the padding
+            targets = hax.roll(input_ids, -1, Pos)
+            loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+        else:
+            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
+        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
+        return lm_ex
+
+    return dataset.map(_prepare_example)
 
 
 def get_prompts(prompt_path) -> dict:
@@ -208,7 +200,7 @@ def train(config: TrainArgs):
         )
 
     # Randomness in JAX is tightly controlled. We pass around a key that is used to generate random numbers.
-    training_key = jrandom.PRNGKey(config.trainer.seed)
+    training_key, data_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 2)
 
     # This is largely the same as in Alpaca. Only change is we use the fast tokenizer.
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -224,6 +216,7 @@ def train(config: TrainArgs):
     converter = converter.replaced(tokenizer=tokenizer)
 
     train_dataset = mk_dataset(config, tokenizer)
+    train_dataset = PermutationDataset(train_dataset, data_key)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
@@ -234,7 +227,7 @@ def train(config: TrainArgs):
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            model_config.model_type, model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
+            model_config.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
         )
 
         # this must be in jit b/c it uses arrays across accelerators (b/c of FSDP)
@@ -243,11 +236,12 @@ def train(config: TrainArgs):
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
         # datasets. We use replicated here since the dataset is small.
-        loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
+        loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
         state = trainer.initial_state(training_key, model=model)
 
+        # TODO: remove this. we don't need it now
         if int(state.step) != 0:
             logger.info(f"Resuming training from step {state.step}")
             for i in range(state.step):

@@ -1,9 +1,8 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple, Type, Union
+from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
@@ -28,6 +27,7 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
 
@@ -77,8 +77,7 @@ class LlamaConfig(HFCompatConfig):
 
     use_bias: bool = False
     use_layer_norm_weight: bool = True
-    rope_scaling: Optional[dict] = None
-    rope_theta: float = 10000.0
+    rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
 
     reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
@@ -109,6 +108,8 @@ class LlamaConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
+        rope_theta = hf_config.rope_theta
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
         return LlamaConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
@@ -119,8 +120,7 @@ class LlamaConfig(HFCompatConfig):
             activation_function=hf_config.hidden_act,
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
-            rope_scaling=hf_config.rope_scaling,
-            rope_theta=hf_config.rope_theta,
+            rope=rope_config,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
@@ -136,6 +136,8 @@ class LlamaConfig(HFCompatConfig):
         if config_overrides is None:
             config_overrides = {}
 
+        rope_theta, rope_scaling = self.rope.to_hf_config()
+
         return HfLlamaConfig(
             max_position_embeddings=self.seq_len,
             hidden_size=self.hidden_dim,
@@ -146,9 +148,10 @@ class LlamaConfig(HFCompatConfig):
             hidden_act=self.activation_function,
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
-            rope_scaling=self.rope_scaling,
+            # rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
-            rope_theta=self.rope_theta,
+            rope_theta=rope_theta,
+            rope_scaling=rope_scaling,
             **config_overrides,
         )
 
@@ -274,13 +277,6 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         )
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
 
-    def _rope_scale_factor(self) -> float:
-        # hasattr for gemma and I'm feeling lazy
-        if hasattr(self.config, "rope_scaling") and self.config.rope_scaling is not None:
-            assert self.config.rope_scaling["type"] == "linear"
-            return self.config.rope_scaling["factor"]
-        return 1.0
-
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
@@ -290,13 +286,8 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = llama_rotary_pos_emb(
-            self.config.HeadSize,
-            x.resolve_axis("position"),
-            scale=self._rope_scale_factor(),
-            theta=self.config.rope_theta,
-        )
-        q, k = _apply_rotary_pos_emb(q, k, cos, sin)
+        rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
+        q, k = rot_embs(self.config.HeadSize, q, k)
 
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
@@ -588,43 +579,3 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
 
         state_dict.update(my_dict)
         return state_dict
-
-
-def _rotate_half(x: NamedArray) -> NamedArray:
-    """Rotates half of the hidden dims of the input and concatenates them."""
-    HeadSize = x.axes[-1]
-    x1 = x[HeadSize, : HeadSize.size // 2]
-    x2 = x[HeadSize, HeadSize.size // 2 :]
-    out = hax.concatenate(HeadSize, (-x2, x1))
-    return out
-
-
-def _apply_rotary_pos_emb(
-    q: NamedArray,  # [batch, position, kv_heads, q_heads_per_group, head_size]
-    k: NamedArray,  # [batch, position, kv_heads, head_size]
-    cos: NamedArray,  # [position, head_size]
-    sin: NamedArray,  # [position, head_size]
-) -> Tuple[NamedArray, NamedArray]:
-    """Applies rotary position embedding to q and k."""
-    q_embed = q * cos + _rotate_half(q) * sin
-    k_embed = k * cos + _rotate_half(k) * sin
-    return q_embed, k_embed
-
-
-def llama_rotary_pos_emb(
-    HeadSize: Axis, Pos: Axis, theta: float = 10000, scale: float = 1.0
-) -> Tuple[NamedArray, NamedArray]:
-    with jax.ensure_compile_time_eval():
-        HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
-        inv_freq: NamedArray = 1.0 / (theta ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
-
-        position_ids: NamedArray = hax.arange(Pos) / scale
-
-        freqs = position_ids * inv_freq.broadcast_axis(Pos)
-        # This is different from the paper but aligns with HF implementation:
-        # It uses a different permutation in order to obtain the same calculation
-        emb = hax.concatenate(HeadSize, (freqs, freqs))
-        cos = hax.cos(emb)
-        sin = hax.sin(emb)
-        # This is different from the paper but aligns with HF implementation:
-        return cos, sin

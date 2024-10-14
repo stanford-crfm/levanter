@@ -1,9 +1,12 @@
 name: Build and Push Docker TPU Images
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["Run Tests"]
+    types:
+      - completed
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "levanter"
-version = "1.1"
+version = "1.2"
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
     { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
@@ -22,22 +22,22 @@ classifiers = [
 ]
 dependencies = [
     "haliax>=1.4.dev307",
-    "equinox>=0.11.5",
+    "equinox>=0.11.4",
     "jaxtyping>=0.2.20",
     "tokenizers>=0.15.2",
     "transformers>=4.41.2",
     "optax>=0.1.9",
-    "wandb>=0.16.6,<0.17.6",
+    "wandb>=0.17.8",
     "scipy<=1.12.0",
     "draccus>=0.8.0",
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
-    "datasets~=2.18",
-    "gcsfs>=2024.2,<2024.7",
+    "datasets>=2.18,<4.0",
+    "gcsfs>=2024.2,<2024.10",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
-    "fsspec[http]>=2024.2,<2024.7",
-    "tensorstore>=0.1.62",
+    "fsspec[http]>=2024.2,<2024.10",
+    "tensorstore>=0.1.65",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]~=0.4.2",
@@ -49,6 +49,9 @@ dependencies = [
     "rich~=13.0",
     "filelock~=3.13",
     #    "ai2-olmo",
+    "async-lru~=2.0",
+    "tqdm-loggable>=0.2",
+    "deepdiff"
 ]
 
 [project.urls]
@@ -105,13 +108,6 @@ test = [
     "pytest-asyncio",
 ]
 
-#[tool.setuptools.packages.find]
-#where = ["src"]
-#include = ["levanter", "levanter.*"]
-
-
-[tool.setuptools]
-packages = ["levanter"]
-
-[tool.setuptools.package-dir]
-levanter = "src/levanter"
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["levanter", "levanter.*"]

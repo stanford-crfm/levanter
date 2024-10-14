@@ -498,8 +498,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
     def load_pretrained(
         self,
         lm_model_cls: Type[ModelWithHfSerializationMixin],
-        config: HFCompatConfig,
         ref: Optional[Union[str, RepoRef]] = None,
+        config: Optional[HFCompatConfig] = None,
         axis_mapping: Optional[ResourceMapping] = None,
         resize_vocab_to_match_tokenizer: bool = True,
         dtype: Optional[jnp.dtype] = None,
@@ -515,6 +515,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
         from contextlib import ExitStack
 
         hf_config = self.hf_config_from_hf_checkpoint(ref)
+        if config is None:
+            config = self.config_from_hf_config(hf_config)
         lm_model_cls = config.model_type
 
         # Vocab: first we have to resize the vocab as loaded from the checkpoint
@@ -973,7 +975,7 @@ def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key
             else:
                 return None
 
-        return jax.tree_map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
+        return jax.tree.map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
 
     new_buffers = _init_buffers()
 
