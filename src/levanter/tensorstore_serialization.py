@@ -45,8 +45,8 @@ def tree_serialize_leaves_tensorstore(
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
 
     paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
-    paths = jtu.tree_leaves(paths)
-    leaves = jtu.tree_leaves(pytree)
+    paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
+    leaves = jtu.tree_leaves(pytree, is_leaf=lambda x: x is None)
     assert len(leaves) == len(paths)
 
     # ok, not all of these are arrays, but we'll deal with that in the async function

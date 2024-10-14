@@ -170,13 +170,13 @@ def leaf_key_paths(
             if field.metadata.get("static", False):
                 continue
             field_name = field.name
-            field = getattr(pytree, field_name)
+            field_value = getattr(pytree, field_name)
             names.append(field_name)
 
             if use_state_dict_keys and hasattr(pytree, "_state_dict_key_map"):
                 field_name = pytree._state_dict_key_map().get(field_name, field_name)
 
-            rec_value = rec(field, field_name)
+            rec_value = rec(field_value, field_name)
             rec_values.append(rec_value)
 
         _, tree_def = eqx.tree_flatten_one_level(pytree)
@@ -186,7 +186,9 @@ def leaf_key_paths(
         # return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values, is_leaf=lambda x: x is None)
     else:
         leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
-        if len(leaves) == 1:
+        if len(leaves) == 0:
+            return None
+        elif len(leaves) == 1:
             return jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
         else:
             return jax.tree_util.tree_unflatten(treedef, [join_key(prefix, str(i)) for i in range(len(leaves))])
