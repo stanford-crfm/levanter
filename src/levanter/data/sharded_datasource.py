@@ -20,6 +20,7 @@ from typing import (
 import datasets
 import fsspec
 import numpy as np
+import pyarrow.parquet as pq
 
 from levanter.utils import fsspec_utils
 
@@ -158,6 +159,10 @@ def datasource_from_json(urls_or_paths: Sequence[str]) -> ShardedDataSource[dict
     return JsonDataSource(urls_or_paths)
 
 
+def datasource_from_parquet(urls_or_paths: Sequence[str]) -> ShardedDataSource[dict]:
+    return ParquetDataSource(urls_or_paths)
+
+
 class WrappedHFDataSource(ShardedDataSource[dict]):
     """
     This class is responsible for loading a dataset from HuggingFace Datasets and returning the shards.
@@ -247,6 +252,11 @@ class TextUrlDataSource(ShardedDataSource[str]):
                     data = json.load(f)
                     for doc in data[row:]:
                         yield doc[self.text_key]
+                case ".parquet":
+                    table = pq.read_table(f)
+                    sliced_table = table.slice(row)
+                    for record in sliced_table.to_pylist():
+                        yield record[self.text_key]  # assumes text_key is in record
                 case _:
                     raise ValueError(f"Unknown format {format}")
 
@@ -322,7 +332,7 @@ class AudioTextUrlDataSource(ShardedDataSource[Tuple[np.ndarray, int, str]]):
 
 
 def _sniff_format_for_dataset(url):
-    good_formats = [".jsonl", ".txt", ".json"]
+    good_formats = [".jsonl", ".txt", ".json", ".parquet"]
     format_from_url = None
     # try both with and without compression (could be gz, bz2, etc, so look at the "first" extension)
     extensions = [os.path.splitext(url)[1], os.path.splitext(os.path.splitext(url)[0])[1]]
@@ -424,6 +434,24 @@ class JsonDataSource(ShardedDataSource[dict]):
             # TODO: would be nice if we could seek faster than this. Can't even skip json parsing
             data = json.load(f)
             return iter(data[row:])
+
+
+class ParquetDataSource(ShardedDataSource[dict]):
+    def __init__(self, urls):
+        self.urls = urls
+        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        with fsspec.open(url, "rb", compression="infer") as f:
+            table = pq.read_table(f)
+            sliced_table = table.slice(row)  # zero-copy slicing
+            for record in sliced_table.to_pylist():
+                yield record
 
 
 def _mk_shard_name_mapping(urls):
