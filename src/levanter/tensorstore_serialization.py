@@ -132,7 +132,7 @@ def tree_deserialize_leaves_tensorstore(
     # TODO: support ShapeDtypeStructs that are not NamedArrays
     leaf_key_paths = jax_utils.leaf_key_paths(shardings, is_leaf=is_named_array)
     paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
-    paths = jtu.tree_leaves(paths)
+    paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
 
     shardings_leaves, shardings_structure = jtu.tree_flatten(shardings)
 
