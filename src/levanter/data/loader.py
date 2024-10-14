@@ -99,6 +99,8 @@ class DataLoader(Iterable[Ex]):
         return self.iter_from_step(None)
 
     def iter_from_step(self, start_from_batch: Optional[int] = None):
+        # sometimes we pass in an array for the start_from_batch, so we need to check for that
+        start_from_batch = int(start_from_batch) if start_from_batch is not None else None
         return DataLoaderIterator(self, start_from_batch=start_from_batch)
 
 
