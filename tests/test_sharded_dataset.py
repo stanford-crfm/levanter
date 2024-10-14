@@ -48,13 +48,11 @@ def test_basic_parquet_datasource_read_row():
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as f:
         # Create a simple dataset
         data = {"column1": ["value1", "value2", "value3"], "column2": [10, 20, 30]}
         table = pa.Table.from_pydict(data)
         pq.write_table(table, f.name)
-
-    try:
 
         datasource = ParquetDataSource([os.path.abspath(f.name)])
 
@@ -70,6 +68,3 @@ def test_basic_parquet_datasource_read_row():
         assert row_data[0]["column2"] == 20
         assert row_data[1]["column1"] == "value3"
         assert row_data[1]["column2"] == 30
-
-    finally:
-        os.unlink(f.name)
