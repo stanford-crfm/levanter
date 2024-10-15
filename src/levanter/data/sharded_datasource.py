@@ -249,8 +249,10 @@ class TextUrlDataSource(ShardedDataSource[str]):
                     if row >= total_rows:
                         return iter([])
 
+                    num_row_groups = parquet_file.metadata.num_row_groups
+
                     # Compute cumulative row counts
-                    row_counts = [rg.num_rows for rg in parquet_file.metadata.row_groups]
+                    row_counts = [parquet_file.metadata.row_group(i).num_rows for i in range(num_row_groups)]
                     cumulative_rows = [0]
                     for count in row_counts:
                         cumulative_rows.append(cumulative_rows[-1] + count)
@@ -465,8 +467,10 @@ class ParquetDataSource(ShardedDataSource[dict]):
             if row >= total_rows:
                 return iter([])
 
-            # compute cumulative row counts
-            row_counts = [rg_meta.num_rows for rg_meta in parquet_file.metadata.row_groups]
+            num_row_groups = parquet_file.metadata.num_row_groups
+
+            # Compute cumulative row counts
+            row_counts = [parquet_file.metadata.row_group(i).num_rows for i in range(num_row_groups)]
             cumulative_rows = [0]
             for count in row_counts:
                 cumulative_rows.append(cumulative_rows[-1] + count)
