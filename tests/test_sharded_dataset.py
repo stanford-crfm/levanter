@@ -4,8 +4,8 @@ import tempfile
 from levanter.data.sharded_datasource import (
     AudioTextUrlDataSource,
     ParquetDataSource,
-    _sniff_format_for_dataset,
     TextUrlDataSource,
+    _sniff_format_for_dataset,
 )
 from test_utils import skip_if_no_soundlibs
 

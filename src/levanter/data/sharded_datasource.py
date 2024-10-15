@@ -224,26 +224,30 @@ class TextUrlDataSource(ShardedDataSource[str]):
         compression = "infer"
         if url.endswith(".zstd"):  # hacky way to detect zstd
             compression = "zstd"
-        with fsspec.open(url, "r", compression=compression) as f:
-            format = _sniff_format_for_dataset(url)
-            match format:
-                case ".jsonl":
+
+        format = _sniff_format_for_dataset(url)
+        match format:
+            case ".jsonl":
+                with fsspec.open(url, "r", compression=compression) as f:
                     # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
                     # which is not nothing, but not ideal.
                     for line in f:
                         if i >= row:
                             yield json.loads(line)[self.text_key]
                         i += 1
-                case ".txt":
+            case ".txt":
+                with fsspec.open(url, "r", compression=compression) as f:
                     for line in f:
                         if i >= row:
                             yield line
                         i += 1
-                case ".json":
+            case ".json":
+                with fsspec.open(url, "r", compression=compression) as f:
                     data = json.load(f)
                     for doc in data[row:]:
                         yield doc[self.text_key]
-                case ".parquet":
+            case ".parquet":
+                with fsspec.open(url, "rb", compression=compression) as f:
                     parquet_file = pq.ParquetFile(f)
                     total_rows = parquet_file.metadata.num_rows
                     if row >= total_rows:
@@ -271,8 +275,8 @@ class TextUrlDataSource(ShardedDataSource[str]):
                             table = table.slice(start_row_in_group)
                         for record in table.to_pylist():
                             yield record[self.text_key]
-                case _:
-                    raise ValueError(f"Unknown format {format}")
+            case _:
+                raise ValueError(f"Unknown format {format}")
 
 
 class AudioTextUrlDataSource(ShardedDataSource[Tuple[np.ndarray, int, str]]):
