@@ -31,5 +31,5 @@ optimizer:
   weight_decay: 0.1
   min_lr_ratio: 0.1
   warmup: 0.01
- 
+
  data_shuffle: true

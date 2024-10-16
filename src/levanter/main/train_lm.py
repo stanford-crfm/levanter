@@ -119,7 +119,7 @@ def main(config: TrainLmConfig):
         # TODO: fix this
         tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         # TokenSeqDataset is config.data.train_set(Pos.size, key=data_key)
-        
+
         train_dataset = CausalLmDataset(
             config.data.train_set(Pos.size, key=data_key, epochs=config.epoch), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
@@ -244,7 +244,7 @@ def main(config: TrainLmConfig):
 
         ## OK, actually run training!
         trainer.train(state, train_loader)
-        
+
         # checkpointer.on_step(last_step, force=True)
 
 

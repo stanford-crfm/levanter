@@ -93,10 +93,10 @@ class TokenSeqEpochDataset(AsyncDataset[np.ndarray]):
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         token_arrays = await self._await_token_cache()
         dataset_len = await self.async_len()
-        
+
         wrapped_indices = [idx % dataset_len for idx in indices]
         offsets = np.array(wrapped_indices) * self.seq_len
-        
+
         with ts.Batch():
             out = []
             for offset in offsets:
@@ -691,9 +691,9 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     cache_dir: Optional[str] = "cache/"
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None, epochs: bool = False 
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None, epochs: bool = False
     ) -> AsyncDataset[np.ndarray]:
-        
+
         if epochs:
             ds = self.token_epoch_dataset("train", seq_len, monitors)
         else:
@@ -750,7 +750,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         if cache is None:
             return None
         return TokenSeqDataset(cache, seq_len)
-    
+
     def token_epoch_dataset(
         self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[TokenSeqDataset]:
