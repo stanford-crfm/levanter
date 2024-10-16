@@ -48,7 +48,6 @@ dependencies = [
     "pydantic<3",
     "rich~=13.0",
     "filelock~=3.13",
-    "ai2-olmo",
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
     "deepdiff"
