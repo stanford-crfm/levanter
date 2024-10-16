@@ -25,10 +25,54 @@ from levanter.trainer import StepInfo
 from levanter.utils import flop_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
+from levanter.data.text import TokenSeqEpochDataset
+from concurrent.futures import ThreadPoolExecutor
+
 
 
 logger = pylogging.getLogger(__name__)
 
+
+def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size):
+    total_tokens = None
+
+    def log_epoch(step_info: StepInfo):
+        nonlocal total_tokens
+        if total_tokens is None:
+            if not total_tokens_future.done():
+                return  # We don't have the total tokens yet, so we can't calculate epoch
+            total_tokens = total_tokens_future.result()
+
+        # Get the total processed tokens from the metrics logged by log_performance_stats
+        processed_tokens = tokens_per_example * batch_size * step_info.step
+        if processed_tokens is None:
+            return  # No token count available yet
+
+        current_epoch = processed_tokens / total_tokens
+        levanter.tracker.log_metrics({"train/current_epoch": current_epoch}, step=step_info.step)
+
+    return log_epoch
+
+def get_total_dataset_tokens(ds: TokenSeqEpochDataset, seq_length: int):
+    def log_length():
+        # If ds.async_len() is the only option, run it in an event loop inside the thread
+        import asyncio
+
+        async def compute_length():
+            length = await ds.async_len()
+            return length
+
+        # Run the async function synchronously in this thread
+        length = asyncio.run(compute_length())
+        total_tokens = length * seq_length
+        levanter.tracker.log_summary({"dataset/total_tokens": total_tokens})
+        return total_tokens
+
+    # Create a ThreadPoolExecutor with a single worker thread
+    executor = ThreadPoolExecutor(max_workers=1)
+    # Submit the log_length function to be executed in a separate thread
+    future = executor.submit(log_length)
+    return future
 
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0

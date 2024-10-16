@@ -54,6 +54,7 @@ class TrainLmConfig:
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
+    epoch: bool = False  # if true, will keep epoching over the dataset and track epochs
 
 
 def main(config: TrainLmConfig):
@@ -118,9 +119,15 @@ def main(config: TrainLmConfig):
         # TODO: fix this
         tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         # TokenSeqDataset is config.data.train_set(Pos.size, key=data_key)
+        
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size, key=data_key, epochs=False), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key, epochs=config.epoch), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
+
+        if config.epoch:
+            # add epoch logging
+            total_tokens_future = callbacks.get_total_dataset_tokens(train_dataset.dataset, config.model.seq_len)
+            trainer.add_hook(callbacks.log_epoch_progress(total_tokens_future, Pos.size, trainer.config.train_batch_size), every=1)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
