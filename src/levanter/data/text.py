@@ -691,10 +691,10 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     cache_dir: Optional[str] = "cache/"
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None, epochs: bool = False 
     ) -> AsyncDataset[np.ndarray]:
         
-        if self.epochs is not None:
+        if epochs:
             ds = self.token_epoch_dataset("train", seq_len, monitors)
         else:
             ds = self.token_seq_dataset("train", seq_len, monitors)

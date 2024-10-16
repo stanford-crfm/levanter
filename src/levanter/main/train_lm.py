@@ -119,7 +119,7 @@ def main(config: TrainLmConfig):
         tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         # TokenSeqDataset is config.data.train_set(Pos.size, key=data_key)
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key, epochs=False), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -230,14 +230,16 @@ def main(config: TrainLmConfig):
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         train_loader = trainer.data_loader(train_dataset, Batch)
-        # if seek_dataloader:
-        #     train_loader = train_loader.iter_from_step(int(state.step))
-        # else:
-        #     train_loader = iter(train_loader)
+        if seek_dataloader:
+            train_loader = train_loader.iter_from_step(state.step)
+        else:
+            train_loader = iter(train_loader)
 
         ## OK, actually run training!
-        train_loader = train_loader.iter_from_step(int(state.step))
-        trainer.train(state, train_loader, epochs=config.epochs)
+        trainer.train(state, train_loader)
+
+        ## OK, actually run training!
+        
         # checkpointer.on_step(last_step, force=True)
 
 
