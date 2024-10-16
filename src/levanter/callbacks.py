@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Callable, Optional
 
@@ -18,6 +19,7 @@ from tqdm_loggable.auto import tqdm
 
 import levanter.tracker
 from levanter.data import DataLoader
+from levanter.data.text import TokenSeqEpochDataset
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
@@ -25,9 +27,6 @@ from levanter.trainer import StepInfo
 from levanter.utils import flop_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
-from levanter.data.text import TokenSeqEpochDataset
-from concurrent.futures import ThreadPoolExecutor
-
 
 
 logger = pylogging.getLogger(__name__)
@@ -53,6 +52,7 @@ def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size):
 
     return log_epoch
 
+
 def get_total_dataset_tokens(ds: TokenSeqEpochDataset, seq_length: int):
     def log_length():
         # If ds.async_len() is the only option, run it in an event loop inside the thread
@@ -73,6 +73,7 @@ def get_total_dataset_tokens(ds: TokenSeqEpochDataset, seq_length: int):
     # Submit the log_length function to be executed in a separate thread
     future = executor.submit(log_length)
     return future
+
 
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
