@@ -15,6 +15,10 @@ trainer:
     project: "marin"
     tags: ["dolma", "olmo", "llama"]
 
+    checkpointer:
+    keep:
+      - every: 250
+
   mp: p=f32,c=bfloat16
   train_batch_size: 2048
   num_train_steps: 750000  # 3,000,000,000,000 / 4,000,000 = 750,000
@@ -27,3 +31,5 @@ optimizer:
   weight_decay: 0.1
   min_lr_ratio: 0.1
   warmup: 0.01
+ 
+ data_shuffle: true
