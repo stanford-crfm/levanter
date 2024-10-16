@@ -63,6 +63,57 @@ LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
+class TokenSeqEpochDataset(AsyncDataset[np.ndarray]):
+    def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
+        self.doc_cache = doc_cache
+        self.seq_len = seq_len
+        self._store: Optional[TreeStore] = None
+        self._cached_len: Optional[int] = None
+
+    async def async_len(self) -> int:
+        await self.doc_cache.finished()
+        token_arrays = await self._await_token_cache()
+        return token_arrays.data_size // self.seq_len
+
+    async def _await_token_cache(self) -> JaggedArrayStore:
+        if self._store is None:
+            self._store = await self.doc_cache.store_async()
+        return self._store.tree["input_ids"]
+
+    async def final_length_is_known(self) -> bool:
+        return await self.doc_cache.final_length_is_known()
+
+    def is_finite(self) -> bool:
+        return False  # Now infinite due to epoch wrapping
+
+    async def current_len(self) -> Optional[int]:
+        store = await self._await_token_cache()
+        return store.data_size // self.seq_len
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+        token_arrays = await self._await_token_cache()
+        dataset_len = await self.async_len()
+        
+        wrapped_indices = [idx % dataset_len for idx in indices]
+        offsets = np.array(wrapped_indices) * self.seq_len
+        
+        with ts.Batch():
+            out = []
+            for offset in offsets:
+                out.append(token_arrays.data[offset : offset + self.seq_len].read())
+
+        out = await asyncio.gather(*out)
+        return out
+
+    async def wait_until_len_at_least(self, length: int) -> int:
+        # length is brutally slow to compute, so we cache it
+        if self._cached_len is not None:
+            return self._cached_len
+
+        # TODO: would be better to listen for cache updates
+        length = await super().wait_until_len_at_least(length)
+        self._cached_len = length
+        return length
 
 class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
@@ -642,7 +693,13 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     def train_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
     ) -> AsyncDataset[np.ndarray]:
-        ds = self.token_seq_dataset("train", seq_len, monitors)
+        
+        if self.epochs is not None:
+            ds = self.token_epoch_dataset("train", seq_len, monitors)
+        else:
+            ds = self.token_seq_dataset("train", seq_len, monitors)
+
+        # add epoch flag here.
         if ds is None:
             raise ValueError("No training set!")
 
@@ -693,6 +750,14 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         if cache is None:
             return None
         return TokenSeqDataset(cache, seq_len)
+    
+    def token_epoch_dataset(
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TokenSeqDataset]:
+        cache = self.build_or_load_cache(split, monitors=monitors)
+        if cache is None:
+            return None
+        return TokenSeqEpochDataset(cache, seq_len)
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
