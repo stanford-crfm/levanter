@@ -63,6 +63,7 @@ LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
+
 class TokenSeqEpochDataset(AsyncDataset[np.ndarray]):
     def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
         self.doc_cache = doc_cache
@@ -114,6 +115,7 @@ class TokenSeqEpochDataset(AsyncDataset[np.ndarray]):
         length = await super().wait_until_len_at_least(length)
         self._cached_len = length
         return length
+
 
 class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
@@ -691,7 +693,12 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     cache_dir: Optional[str] = "cache/"
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None, epochs: bool = False
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+        epochs: bool = False,
     ) -> AsyncDataset[np.ndarray]:
 
         if epochs:
