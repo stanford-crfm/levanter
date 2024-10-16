@@ -244,8 +244,6 @@ def main(config: TrainLmConfig):
 
         ## OK, actually run training!
         trainer.train(state, train_loader)
-
-        ## OK, actually run training!
         
         # checkpointer.on_step(last_step, force=True)
 
