@@ -376,26 +376,12 @@ class Trainer:
         while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
-        # while int(state.step) < target_steps and (epochs is None or current_epoch < epochs):
-        #     current_epoch += 1
-        #     print(f"Starting epoch {current_epoch}")
-        #     levanter.tracker.log_metrics({"epochs": current_epoch }, step=state.step)
             info = self.train_step(state, example)
             state = info.state
 
             if run_hooks:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
-            # while True:
-            #     try:
-            #         with capture_time() as loading_time:
-            #             example = next(iter_data)
-            #     except StopIteration:
-            #         # End of DataLoader iterator, proceed to next epoch
-            #         train_loader = train_loader.iter_from_step(int(state.step))
-            #         print(f"End of epoch {current_epoch}")
-            #         levanter.tracker.log_metrics({"epochs": current_epoch }, step=state.step)
-            #         current_epoch += 1
 
                 levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=info.step)
 
