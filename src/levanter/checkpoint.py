@@ -5,7 +5,6 @@ import logging
 import os
 import pathlib
 import queue
-import sys
 import threading
 import time
 import urllib.parse
@@ -110,7 +109,7 @@ class Checkpointer:
         self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
 
         if jax.process_index() == 0:
-            self._async_checkpoint_remover_queue: queue.Queue[str] = queue.Queue()
+            self._async_checkpoint_remover_queue: queue.Queue[str] = queue.Queue(maxsize=-1)
             self._async_checkpoint_remover_thread = threading.Thread(
                 target=self._async_checkpoint_remover, daemon=True
             )
@@ -224,7 +223,7 @@ class Checkpointer:
 
     def _rm_checkpoint(self, checkpoint):
         if jax.process_index() == 0:
-            print(f"Removing checkpoint {checkpoint}", file=sys.stderr, flush=True)
+            logger.info(f"Removing checkpoint {checkpoint}")
             self._async_checkpoint_remover_queue.put(checkpoint)
 
     def _do_rm_checkpoint(self, checkpoint):
@@ -550,8 +549,12 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
+    append_run_id_to_base_path: bool = True
+
     def expanded_path(self, run_id) -> str:
-        return os.path.expanduser(os.path.join(self.base_path, run_id))
+        if self.append_run_id_to_base_path:
+            return os.path.expanduser(os.path.join(self.base_path, run_id))
+        return os.path.expanduser(self.base_path)
 
     def create(self, run_id) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]

@@ -1,4 +1,8 @@
 import os
+import re
+from typing import TypeAlias
+
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from levanter.logging import silence_transformer_nag
 from levanter.utils.py_utils import logical_cpu_core_count
@@ -7,6 +11,8 @@ from levanter.utils.py_utils import logical_cpu_core_count
 silence_transformer_nag()
 
 _HF_TOKENIZER_OFF_VALUES = {"off", "false", "f", "no", "n", "0"}
+
+HfTokenizer: TypeAlias = PreTrainedTokenizerFast | PreTrainedTokenizer
 
 
 def num_cpus_used_by_tokenizer(tokenizer) -> int:
@@ -20,3 +26,27 @@ def num_cpus_used_by_tokenizer(tokenizer) -> int:
             return min(max(1, logical_cpu_core_count() - 2), 12)
     else:
         return 1
+
+
+def byte_length_of_token(tokenizer, idx: int) -> int:
+    # this is a pain because we want the prefix spaces, but we don't want extra noise for bytes
+    # e.g. in llama
+    # >>> t.convert_ids_to_tokens(q[2])
+    # '▁this'
+    # >>> t.convert_ids_to_tokens(25)
+    # '<0x16>'
+    # We want the _ (as a single byte, not the 3 it's encoded as) but not the <0x16>, which should instead be a single byte \x16
+    # decode strips the prefix spaces, but does correctly handle the <0x16> case
+    # we can avoid prefix space issues by prepending another token before decoding, then stripping
+    repr = tokenizer.convert_ids_to_tokens(idx)
+    if idx in tokenizer.all_special_ids:
+        # NB: special tokens don't have bytes, but they contribute to perplexity/bits
+        return 0
+    # handle bytes specially. This is a bit of a hack, but there's no other way
+    elif m := re.match(r"<0x([0-9A-Fa-f]+)>", repr):
+        return len(bytes.fromhex(m.group(1)))
+    else:
+        extra_token = tokenizer(".", add_special_tokens=False)["input_ids"][0]
+        excess_bytes = len(".".encode("utf-8"))
+        decoded = tokenizer.decode([extra_token, idx]).encode("utf-8")
+        return len(decoded) - excess_bytes

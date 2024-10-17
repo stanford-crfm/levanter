@@ -406,7 +406,7 @@ def _get_data_source(path_or_id):
     if fsspec_utils.exists(path_or_id):
         return JsonDataset([path_or_id])
     else:
-        return levanter.data.dataset_from_hf(path_or_id, split="train")
+        return levanter.data.datasource_from_hf(path_or_id, split="train")
 ```
 
 Preprocessing in Levanter typically happens in two phases:

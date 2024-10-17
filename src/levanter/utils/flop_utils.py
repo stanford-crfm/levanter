@@ -138,7 +138,7 @@ DEVICE_AVAILABLE_FLOPS = {
         "int8": 275e12,
     },
     # Source: https://cloud.google.com/tpu/docs/v5e
-    "TPU v5 lite": {
+    "tpu v5 lite": {
         "bf16": 197e12,
         "int8": 393e12,
     },

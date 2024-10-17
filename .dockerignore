@@ -2,6 +2,7 @@
 
 scratch
 cache
+new-cache
 wandb
 checkpoints
 
@@ -116,3 +117,4 @@ dmypy.json
 
 # local execution commands
 local_*.sh
+.aider*

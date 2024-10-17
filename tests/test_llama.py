@@ -12,9 +12,8 @@ import haliax as hax
 
 from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
-from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
-from levanter.models.llama import _rotate_half as levanter_rotate_half
-from levanter.models.llama import llama_rotary_pos_emb
+from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
+from levanter.models.rotary import _rotate_half as levanter_rotate_half
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -51,7 +50,6 @@ def test_llama_flops():
     llama_config = LlamaConfig.from_hf_config(hf_config)
     n_params = 6.738415616e9
     ratio = llama_config.flops_per_token(hf_config.vocab_size) / (2 * n_params)
-    print(ratio)
     assert ratio > 1.1, f"ratio {ratio} < 1.1"
     assert ratio < 1.2, f"ratio {ratio} > 1.2"
 
@@ -72,7 +70,9 @@ def test_llama_rotary_embedding():
     x = random.normal(key, (1, seq_len))
     x_torch = torch.from_numpy(np.array(x))
 
-    levanter_output = llama_rotary_pos_emb(HeadSize=HeadSize, Pos=Pos)
+    levanter_emb = DefaultRotaryEmbeddingsConfig().build(HeadSize=HeadSize, Pos=Pos)
+    levanter_output = (levanter_emb.cos, levanter_emb.sin)
+
     hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
     hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1))
 
@@ -107,8 +107,8 @@ def test_apply_rotary_pos_emb():
     k = hax.random.normal(random.PRNGKey(1), (Batch, Pos, Heads, HeadSize))
 
     # Check the output of _rotate_half() from levanter and hf
-    levanter_out_rf_q = levanter_rotate_half(q)
-    levanter_out_rf_k = levanter_rotate_half(k)
+    levanter_out_rf_q = levanter_rotate_half(q, HeadSize)
+    levanter_out_rf_k = levanter_rotate_half(k, HeadSize)
 
     q_tensor = named_array_to_tensor(q).transpose(1, 2)  # needed for HF
     k_tensor = named_array_to_tensor(k).transpose(1, 2)
@@ -122,7 +122,9 @@ def test_apply_rotary_pos_emb():
     cos = hax.random.normal(random.PRNGKey(2), (Pos, HeadSize))
     sin = hax.random.normal(random.PRNGKey(3), (Pos, HeadSize))
 
-    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin)
+    rot = RotaryEmbeddings(cos=cos, sin=sin)
+
+    levanter_out_rope_q, levanter_out_rope_k = rot(HeadSize, q, k)
     cos_tensor = named_array_to_tensor(cos)[None, :, :]
     sin_tensor = named_array_to_tensor(sin)[None, :, :]
 
@@ -297,7 +299,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            LlamaLMHeadModel, config, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            LlamaLMHeadModel, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
         @hax.named_jit
@@ -329,7 +331,6 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
         hidden_dim=16,
         num_heads=4,
         num_kv_heads=num_kv_heads,
-        rope_scaling=None,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,
@@ -386,6 +387,4 @@ def test_state_dict_consistency(scan_layers, num_kv_heads):
     model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
     hf_config = config.to_hf_config(Vocab.size)
     hf_model = LlamaForCausalLM(hf_config)
-    print(hf_model.state_dict().keys())
-    print(model.to_state_dict().keys())
     assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())

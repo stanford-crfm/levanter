@@ -14,9 +14,8 @@ import transformers
 import haliax as hax
 
 import levanter
-from levanter.data import Dataset
-from levanter.data.dataset import ShuffleDataset
-from levanter.data.sharded_dataset import WrappedHFDataset
+from levanter.data import PermutationDataset
+from levanter.data.sharded_datasource import WrappedHFDataSource
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,
@@ -25,7 +24,7 @@ from levanter.lora import (
     save_peft_checkpoint_callback,
 )
 from levanter.models.llama import LlamaConfig
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
@@ -67,37 +66,8 @@ class TrainArgs:
     merged_hf_upload: Optional[str] = None
 
 
-class SupervisedDataset(Dataset[LmExample]):
-    def __init__(self, preproc_dataset, tokenizer, mask_inputs):
-        self.preproc_dataset = preproc_dataset
-        self.tokenizer = tokenizer
-        self.mask_inputs = mask_inputs
-
-    def __iter__(self):
-        for ex in self.preproc_dataset:
-            # annoyingly, pad expects things to be batched so we have to prepend a batch axis
-            ex = self.tokenizer.pad(
-                {k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length"
-            )
-            ex = {k: v[0] for k, v in ex.items()}
-            input_ids = hax.named(ex["input_ids"], "position")
-
-            # mask out padding and anything before the start of the target
-            Pos = input_ids.resolve_axis("position")
-            if self.mask_inputs:
-                loss_mask = hax.arange(Pos) >= ex["source_lens"]
-
-                # don't predict the padding
-                targets = hax.roll(input_ids, -1, Pos)
-                loss_mask = loss_mask & (targets != self.tokenizer.pad_token_id)
-            else:
-                loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
-
-            yield LmExample.causal(input_ids, loss_mask=loss_mask)
-
-
 def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBase):
-    dataset = WrappedHFDataset("gsm8k", split="train", name="main")
+    dataset = WrappedHFDataSource("gsm8k", split="train", name="main")
 
     def preprocess(batch):
         def format_example(ex):
@@ -125,9 +95,34 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))  # type: ignore
     dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)  # type: ignore
 
-    dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)  # type: ignore
+    def _prepare_example(ex: dict) -> LmExample:
+        """
+        Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
 
-    return dataset
+        It goes through the following steps:
+
+        1. Pad the batch to the maximum length.
+        2. Mask out the input and prompt if requested.
+        3. Create an LmExample with the input_ids as the input and the next token as the target.
+        """
+        # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+        ex = tokenizer.pad({k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length")
+        ex = {k: v[0] for k, v in ex.items()}
+        input_ids = hax.named(ex["input_ids"], "position")
+        # mask out padding and anything before the start of the target
+        Pos = input_ids.resolve_axis("position")
+        if config.mask_inputs:
+            loss_mask = hax.arange(Pos) >= ex["source_lens"]
+
+            # don't predict the padding
+            targets = hax.roll(input_ids, -1, Pos)
+            loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+        else:
+            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
+        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
+        return lm_ex
+
+    return dataset.map(_prepare_example)
 
 
 def train(config: TrainArgs):
@@ -151,21 +146,18 @@ def train(config: TrainArgs):
         data_key = jrandom.PRNGKey(config.data_seed)
 
     train_dataset = mk_dataset(config, tokenizer)
-    train_dataset = ShuffleDataset(train_dataset, data_key, buffer_size=1000 * 1000)
+    train_dataset = PermutationDataset(train_dataset, data_key)
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model: LmHeadModel = converter.load_pretrained(  # type: ignore
-            config.model.model_type,
-            converter.default_config,
-            axis_mapping=parameter_axis_mapping,
-            dtype=trainer.mp.compute_dtype,
+        model: LmHeadModel = converter.load_pretrained(
+            config.model.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
         )
 
         # Major difference from Alpaca: we loraize the model.
@@ -199,7 +191,7 @@ def train(config: TrainArgs):
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
         # datasets. We use replicated here since the dataset is small.
-        loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
+        loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
         if int(state.step) != 0:

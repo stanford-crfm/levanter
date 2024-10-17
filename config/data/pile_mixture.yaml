@@ -1,5 +1,8 @@
 cache_dir: "gs://levanter-data/tokenized/pile-domains/"
 tokenizer: "EleutherAI/gpt-neox-20b"
+cache_options:
+  batch_size: 32
+  num_shard_groups: 16
 configs:
   arxiv:
     train_urls:
@@ -11,11 +14,11 @@ configs:
       - gs://levanter-data/pile-domains/books2/{00..29}.jsonl.zst
     validation_urls:
       - gs://levanter-data/pile-domains/books2/val.jsonl.zst
-  books3:
-    train_urls:
-      - gs://levanter-data/pile-domains/books3/{00..29}.jsonl.zst
-    validation_urls:
-      - gs://levanter-data/pile-domains/books3/val.jsonl.zst
+#  books3:
+#    train_urls:
+#      - gs://levanter-data/pile-domains/books3/{00..29}.jsonl.zst
+#    validation_urls:
+#      - gs://levanter-data/pile-domains/books3/val.jsonl.zst
   dm_math:
     train_urls:
       - gs://levanter-data/pile-domains/dm_math/{00..29}.jsonl.zst
@@ -115,7 +118,7 @@ train_weights:
   # these weights come from the paper https://arxiv.org/pdf/2101.00027.pdf
   pile_cc: 0.1811
   pubmed_central: 0.1440
-  books3: 0.1207
+#  books3: 0.1207
   owt2: 0.1001
   arxiv: 0.0896
   github: 0.0759

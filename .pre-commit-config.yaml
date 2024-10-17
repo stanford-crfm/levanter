@@ -38,4 +38,4 @@ repos:
     hooks:
     -   id: mypy
         args: [--ignore-missing-imports]
-        additional_dependencies: [wandb, types-PyYAML]
+        additional_dependencies: [wandb==0.17.8, types-PyYAML]

@@ -3,4 +3,3 @@ cache_dir: gs://levanter-data/tokenized/redpajama-sample/
 tokenizer: EleutherAI/gpt-neox-20b
 splits:
   - train
-rows_per_chunk: 32768

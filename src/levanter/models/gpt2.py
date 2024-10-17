@@ -39,7 +39,7 @@ from transformers import PretrainedConfig as HfConfig  # noqa: E402
 @LmConfig.register_subclass("gpt2")
 @dataclass(frozen=True)
 class Gpt2Config(HFCompatConfig):
-    seq_len: int = 512
+    seq_len: int = 1024
     hidden_dim: int = 768
     num_layers: int = 12
     num_heads: int = 12
