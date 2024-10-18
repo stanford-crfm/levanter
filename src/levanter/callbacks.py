@@ -39,6 +39,8 @@ def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size):
         nonlocal total_tokens
         if total_tokens is None:
             if not total_tokens_future.done():
+                if step_info.step % 1000 == 0:
+                    logger.info("Dataset not finished. Can't compute epochs.")
                 return  # We don't have the total tokens yet, so we can't calculate epoch
             total_tokens = total_tokens_future.result()
 
