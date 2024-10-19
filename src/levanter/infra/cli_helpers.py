@@ -59,6 +59,37 @@ def get_git_commit():
     return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
 
 
+class DockerRunCommand:
+    def __init__(self, image_id, command, *, foreground, env, name="levanter"):
+        self.base_part = [
+            "docker",
+            "run",
+            "-t" if foreground else "-d",
+            f"--name={name}",
+            "--privileged",
+            "--shm-size=32gb",
+            "--net=host",
+            "--init",
+            "--mount",
+            "type=volume,source=levanter,target=/home/levanter",
+            "-v",
+            "/tmp:/tmp",
+        ]
+
+        self.env_part = []
+        self.add_env(env)
+
+        self.cmd_part = [image_id, *command]
+
+    def add_env(self, env):
+        for k, v in env.items():
+            self.env_part.extend(["-e", k + f"={str(v)}"])
+
+    @property
+    def full_cmd(self):
+        return self.base_part + self.env_part + self.cmd_part
+
+
 def make_docker_run_command(image_id, command, *, foreground, env, name="levanter"):
     docker_command = [
         "docker",
