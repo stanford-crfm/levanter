@@ -2,7 +2,7 @@ import argparse
 import base64
 import os
 import subprocess
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from google.cloud import storage
@@ -60,7 +60,7 @@ def get_git_commit():
 
 
 class DockerRunCommand:
-    def __init__(self, image_id, command, *, foreground, env, name="levanter"):
+    def __init__(self, image_id: str, command: List[str], *, foreground: bool, env: Dict[str, Any], name="levanter"):
         self.base_part = [
             "docker",
             "run",
@@ -76,12 +76,12 @@ class DockerRunCommand:
             "/tmp:/tmp",
         ]
 
-        self.env_part = []
+        self.env_part: List[str] = []
         self.add_env(env)
 
         self.cmd_part = [image_id, *command]
 
-    def add_env(self, env):
+    def add_env(self, env: Dict[str, Any]):
         for k, v in env.items():
             self.env_part.extend(["-e", k + f"={str(v)}"])
 

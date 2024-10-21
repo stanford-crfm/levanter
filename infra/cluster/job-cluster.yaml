@@ -14,8 +14,8 @@ cluster_name: levanter-cluster
 # Configure GCP
 provider:
   type: gcp
-  region: us-central2
-  availability_zone: us-central2-b
+  region: us-west4
+  availability_zone: us-west4-a
   project_id: hai-gcp-models
 
 # Maximum Workers (excluding Head Node)
@@ -126,6 +126,32 @@ available_node_types:
       schedulingConfig:
         preemptible: true
 
+  tpu_slice_v5e_16:
+    min_workers: 0
+    max_workers: 1024
+    resources: { "CPU": 120, "TPU": 4 }
+
+    node_config:
+      acceleratorType: v5litepod-16
+      runtimeVersion: tpu-ubuntu2204-base
+
+      # [IMPORTANT] Configure all TPU Workers to be Preemptible!
+      schedulingConfig:
+        preemptible: true
+
+  tpu_slice_v5e_256:
+    min_workers: 0
+    max_workers: 1024
+    resources: { "CPU": 120, "TPU": 4 }
+
+    node_config:
+      acceleratorType: v5litepod-16
+      runtimeVersion: tpu-ubuntu2204-base
+
+      # [IMPORTANT] Configure all TPU Workers to be Preemptible!
+      schedulingConfig:
+        preemptible: true
+
 docker:
     image: "ghcr.io/stanford-crfm/levanter-cluster:latest"
     container_name: "ray_docker"
@@ -140,7 +166,7 @@ docker:
         - -v "/var/run/docker.sock:/var/run/docker.sock"
 
 initialization_commands:
-  - yes | gcloud auth configure-docker us-central2-docker.pkg.dev
+  - yes | gcloud auth configure-docker us-west4-docker.pkg.dev
   - "export TPU_WORKER_ID=$(curl -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/agent-worker-number) || true"
   - which docker || (curl -fsSL https://get.docker.com -o get-docker.sh; sudo sh get-docker.sh; sudo usermod -aG docker $USER; sudo systemctl restart docker -f)
   # always run this because ray doesn't run with sudo
