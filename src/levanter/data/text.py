@@ -570,13 +570,15 @@ class LMSupervisedDatasetConfig:
     """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
     name: Optional[str] = None  # name for hf dataset
 
-    input_field: str = "prompt" # name of the input field in the jsonl file
-    output_field: str = "response" # name of the output field in the jsonl file
+    input_field: str = "prompt"  # name of the input field in the jsonl file
+    output_field: str = "response"  # name of the output field in the jsonl file
 
     validation_urls: List[str] = ()  # type:ignore
 
 
-def preprocess_supervised_example(batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str) -> dict:
+def preprocess_supervised_example(
+    batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
+) -> dict:
     sources = [example[input_field] for example in batch]
 
     targets = [f"{example[output_field]}" for example in batch]
