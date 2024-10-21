@@ -16,6 +16,8 @@ supervised_data:
   validation_urls:
     - "gs://marin-us-central2/benchmarks/mmlu/mmlu-*-dev-evaluation.jsonl.gz"
   cache_dir: "gs://marin-us-central2/benchmarks/tokenized-gpt2/mmlu/"
+  input_field: "input"
+  output_field: "output"
 model:
   type: gpt2
   hidden_dim: 768
