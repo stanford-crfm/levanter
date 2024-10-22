@@ -78,7 +78,6 @@ def run_on_pod(remote_fn: RemoteFunction | Callable, tpu_type: str) -> ray.Objec
     @ray.remote(resources={f"TPU-{tpu_type}-head": 1})
     def do_run(remote_fn) -> _TpuRunResult:
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()  # -> 4
-
         remote_fn, tpu_name = _redecorate_remote_fn_for_tpu(remote_fn, num_hosts)
 
         info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
