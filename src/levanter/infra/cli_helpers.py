@@ -2,7 +2,7 @@ import argparse
 import base64
 import os
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import yaml
 from google.cloud import storage
@@ -59,37 +59,6 @@ def get_git_commit():
     return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
 
 
-class DockerRunCommand:
-    def __init__(self, image_id: str, command: List[str], *, foreground: bool, env: Dict[str, Any], name="levanter"):
-        self.base_part = [
-            "docker",
-            "run",
-            "-t" if foreground else "-d",
-            f"--name={name}",
-            "--privileged",
-            "--shm-size=32gb",
-            "--net=host",
-            "--init",
-            "--mount",
-            "type=volume,source=levanter,target=/home/levanter",
-            "-v",
-            "/tmp:/tmp",
-        ]
-
-        self.env_part: List[str] = []
-        self.add_env(env)
-
-        self.cmd_part = [image_id, *command]
-
-    def add_env(self, env: Dict[str, Any]):
-        for k, v in env.items():
-            self.env_part.extend(["-e", k + f"={str(v)}"])
-
-    @property
-    def full_cmd(self):
-        return self.base_part + self.env_part + self.cmd_part
-
-
 def make_docker_run_command(image_id, command, *, foreground, env, name="levanter"):
     docker_command = [
         "docker",
@@ -105,6 +74,10 @@ def make_docker_run_command(image_id, command, *, foreground, env, name="levante
         "-v",
         "/tmp:/tmp",
     ]
+
+    # optionally add multislice env vars (if set by ray runtime env vars)
+    for v in ["MEGASCALE_COORDINATOR_ADDRESS", "MEGASCALE_NUM_SLICES", "MEGASCALE_PORT", "MEGASCALE_SLICE_ID"]:
+        docker_command.extend(["-e", v])
 
     for k, v in env.items():
         docker_command.extend(["-e", k + f"={str(v)}"])
