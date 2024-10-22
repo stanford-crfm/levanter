@@ -581,7 +581,7 @@ def preprocess_supervised_example(
 ) -> dict:
     sources = [example[input_field] for example in batch]
 
-    targets = [f"{example[output_field]}" for example in batch]
+    targets = [example[output_field] for example in batch]
     # TODO: this seems pretty wasteful since you end up tokenizing twice, but it's how alpaca does it.
     examples = [s + t for s, t in zip(sources, targets)]
     sources_tokenized = tokenizer(sources, padding=False, truncation=True)
