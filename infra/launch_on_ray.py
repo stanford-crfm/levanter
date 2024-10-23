@@ -27,7 +27,7 @@ def main():
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
     # TODO: bring node_count to Ray
-    # cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
+    cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
     cli.add_arg(parser, config, ["--retries"], default=10, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=cli.default_run_id(), type=str)
@@ -122,6 +122,7 @@ def main():
         env=env,
         name="levanter",
         retries=retries,
+        node_count=args.node_count,
     )
 
     address = args.address or os.getenv("RAY_ADDRESS")
