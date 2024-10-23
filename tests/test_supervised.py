@@ -18,7 +18,7 @@ def test_supervised_eval():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    output = preprocess_supervised_example(examples, tokenizer)
+    output = preprocess_supervised_example(examples, tokenizer, "input", "output")
     assert len(output["input_ids"][0]) == output["sources_len"][0] + 1
 
     ex = {

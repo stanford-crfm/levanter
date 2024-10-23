@@ -1,6 +1,7 @@
 import argparse
 import base64
 import os
+import shlex
 import subprocess
 from typing import Optional
 
@@ -64,7 +65,7 @@ def make_docker_run_command(image_id, command, *, foreground, env, name="levante
         "docker",
         "run",
         "-t" if foreground else "-d",
-        f"--name={name}",
+        f"--name={shlex.quote(name)}",
         "--privileged",
         "--shm-size=32gb",
         "--net=host",
@@ -80,7 +81,9 @@ def make_docker_run_command(image_id, command, *, foreground, env, name="levante
         docker_command.extend(["-e", v])
 
     for k, v in env.items():
-        docker_command.extend(["-e", k + f"={str(v)}"])
+        v = shlex.quote(str(v))
+        k = shlex.quote(str(k))
+        docker_command.extend(["-e", f"{k}={v}"])
 
     docker_command.extend([image_id, *command])
     return docker_command
