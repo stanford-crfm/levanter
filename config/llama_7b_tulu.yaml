@@ -36,4 +36,4 @@ optimizer:
   min_lr_ratio: 0.1
   warmup: 5000
 
-epoch: False
+epoch: 0
