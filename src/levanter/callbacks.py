@@ -55,8 +55,6 @@ def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size):
 
 
 def get_total_dataset_tokens(ds: AsyncDataset, seq_length: int):
-    if not ds.is_finite():
-       raise ValueError("Epochs don't make sense with an infinite dataset.")
 
     def log_length():
         # If ds.async_len() is the only option, run it in an event loop inside the thread

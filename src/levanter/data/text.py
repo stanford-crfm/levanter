@@ -73,8 +73,6 @@ class EpochDataset(AsyncDataset[T_co]):
     :param max_epochs: The maximum number of epochs to cycle through. If None, cycle indefinitely.
     """
     def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
-        if dataset.is_finite():
-            raise ValueError("Cannot apply epoching to a finite dataset.")
         self.dataset = dataset
         self.max_epochs = max_epochs
 
@@ -737,7 +735,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         ds = self.token_seq_dataset("train", seq_len, monitors)
         if epochs:
             logger.info("Wrapping dataset in epoch dataset")
-            ds = EpochDataset(ds)
+            ds = EpochDataset(ds, max_epochs=epochs)
 
         # add epoch flag here.
         if ds is None:

@@ -54,7 +54,7 @@ class TrainLmConfig:
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
-    epoch: bool | int = False 
+    epoch: int = 0 
 
 
 def main(config: TrainLmConfig):
