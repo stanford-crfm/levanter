@@ -64,59 +64,84 @@ LEDGER_FILE = "ledger.json"
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
 
-class TokenSeqEpochDataset(AsyncDataset[np.ndarray]):
-    def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
-        self.doc_cache = doc_cache
-        self.seq_len = seq_len
-        self._store: Optional[TreeStore] = None
-        self._cached_len: Optional[int] = None
+class EpochDataset(AsyncDataset[T_co]):
+    """
+    A dataset that wraps another dataset, providing infinite epochs by recycling indices.
+    If `max_epochs` is specified, it limits the number of cycles before raising StopIteration.
+
+    :param dataset: The dataset to wrap.
+    :param max_epochs: The maximum number of epochs to cycle through. If None, cycle indefinitely.
+    """
+    def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
+        if dataset.is_finite():
+            raise ValueError("Cannot apply epoching to a finite dataset.")
+        self.dataset = dataset
+        self.max_epochs = max_epochs
 
     async def async_len(self) -> int:
-        await self.doc_cache.finished()
-        token_arrays = await self._await_token_cache()
-        return token_arrays.data_size // self.seq_len
-
-    async def _await_token_cache(self) -> JaggedArrayStore:
-        if self._store is None:
-            self._store = await self.doc_cache.store_async()
-        return self._store.tree["input_ids"]
+        if self.max_epochs is None:
+            raise ValueError("Cannot determine length of an infinite dataset without max_epochs.")
+        # Return the total number of samples: max_epochs * length of the dataset
+        return self.max_epochs * await self.dataset.async_len()
 
     async def final_length_is_known(self) -> bool:
-        return await self.doc_cache.final_length_is_known()
+        return await self.dataset.final_length_is_known()
 
     def is_finite(self) -> bool:
-        return False  # Now infinite due to epoch wrapping
+        # EpochDataset can be finite if max_epochs is set.
+        return self.max_epochs is not None
 
     async def current_len(self) -> Optional[int]:
-        store = await self._await_token_cache()
-        return store.data_size // self.seq_len
+        # If max_epochs is None, the dataset is effectively infinite.
+        if self.max_epochs is None:
+            return None
+
+        # If the final length of the dataset is not known, return the current length of the underlying dataset.
+        if not await self.dataset.final_length_is_known():
+            return await self.dataset.current_len()
+
+        # If the final length is known, return the max_epochs * async_len of the dataset.
+        return self.max_epochs * await self.dataset.async_len()
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
-        token_arrays = await self._await_token_cache()
-        dataset_len = await self.async_len()
+        # Use self.wait_until_len_at_least to ensure we have enough data for the batch.
+        max_index = max(indices)
+        ds_len = await self.wait_until_len_at_least(max_index + 1)
 
-        wrapped_indices = [idx % dataset_len for idx in indices]
-        offsets = np.array(wrapped_indices) * self.seq_len
+        # Determine the epoch based on the largest index
+        epoch = max_index // ds_len
 
-        with ts.Batch():
-            out = []
-            for offset in offsets:
-                out.append(token_arrays.data[offset : offset + self.seq_len].read())
+        # If max_epochs is specified, raise an error if the epoch exceeds the allowed number of epochs
+        if self.max_epochs is not None and epoch >= self.max_epochs:
+            raise StopIteration(f"Reached maximum number of epochs: epoch {epoch} exceeds the maximum allowed {self.max_epochs}")
 
-        out = await asyncio.gather(*out)
-        return out
+        # Wrap the indices within the bounds of the dataset length
+        wrapped_indices = [idx % ds_len for idx in indices]
+
+        # Delegate to the underlying dataset's get_batch
+        return await self.dataset.get_batch(wrapped_indices)
 
     async def wait_until_len_at_least(self, length: int) -> int:
-        # length is brutally slow to compute, so we cache it
-        if self._cached_len is not None:
-            return self._cached_len
+        """
+        Returns the length of the dataset once it is at least `length` or if the dataset has a known (finished) length.
+        If the dataset's actual length is less than `length`, it returns the minimum of async_len and the current length.
+        """
+        # Wait until the underlying dataset's length is at least `length`
+        if not self.is_finite():
+            return length
 
-        # TODO: would be better to listen for cache updates
-        length = await super().wait_until_len_at_least(length)
-        self._cached_len = length
-        return length
+        if await self.dataset.final_length_is_known():
+            base_length = await self.dataset.async_len()
+        else:
+            base_length = await self.dataset.wait_until_len_at_least(length)
 
+        if base_length < length:
+            # hit epoch boundary
+            assert self.max_epochs is not None
+            return self.max_epochs * base_length
 
+        return base_length
+    
 class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
     A dataset that yields sequences of tokens of fixed length from an underlying TreeCache.
@@ -709,10 +734,10 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         epochs: bool = False,
     ) -> AsyncDataset[np.ndarray]:
 
+        ds = self.token_seq_dataset("train", seq_len, monitors)
         if epochs:
-            ds = self.token_epoch_dataset("train", seq_len, monitors)
-        else:
-            ds = self.token_seq_dataset("train", seq_len, monitors)
+            logger.info("Wrapping dataset in epoch dataset")
+            ds = EpochDataset(ds)
 
         # add epoch flag here.
         if ds is None:
@@ -765,14 +790,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         if cache is None:
             return None
         return TokenSeqDataset(cache, seq_len)
-
-    def token_epoch_dataset(
-        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        cache = self.build_or_load_cache(split, monitors=monitors)
-        if cache is None:
-            return None
-        return TokenSeqEpochDataset(cache, seq_len)
 
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
