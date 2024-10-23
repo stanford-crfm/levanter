@@ -152,6 +152,13 @@ def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, n
                     except Exception:
                         logger.exception("Failed to kill job after primary failure")
                 return _handle_ray_error(info, e)
+            except Exception as e:
+                for f in futures:
+                    try:
+                        ray.cancel(f)
+                    except Exception:
+                        logger.exception("Failed to kill job after primary failure")
+                return TpuFailed(info, e)
 
     actors = [MultisliceActor.remote() for _ in range(num_slices)]  # type: ignore
     info = _TpuInfo("get_slice_info", "ACTIVE", "TPU")
@@ -296,12 +303,12 @@ def run_on_pod_multislice_resumable(
             outs = ray.get(run_on_pod_multislice(remote_fn, tpu_type, num_slices))
         except ray.exceptions.RayTaskError as e:
             problem = e
-            if "preempted" in str(e):
+            if "preempted" in str(e).lower():
                 num_preemptions += 1
                 logger.warning(f"Preempted {num_preemptions} times, {e}")
             else:
                 num_failures += 1
-                logger.warning(f"Failed {num_failures} times")
+                logger.warning(f"Failed {num_failures} times", exc_info=e)
             continue
         except Exception as e:
             problem = e
