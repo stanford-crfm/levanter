@@ -18,8 +18,7 @@ from tqdm_loggable import tqdm_logging
 from tqdm_loggable.auto import tqdm
 
 import levanter.tracker
-from levanter.data import DataLoader
-from levanter.data.text import TokenSeqEpochDataset
+from levanter.data import DataLoader, AsyncDataset
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
@@ -55,7 +54,7 @@ def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size):
     return log_epoch
 
 
-def get_total_dataset_tokens(ds: TokenSeqEpochDataset, seq_length: int):
+def get_total_dataset_tokens(ds: AsyncDataset, seq_length: int):
     if not ds.is_finite():
        raise ValueError("Epochs don't make sense with an infinite dataset.")
 
