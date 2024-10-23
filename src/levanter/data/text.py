@@ -729,7 +729,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray] = None,
-        epochs: bool = False,
+        epochs: int = 0,
     ) -> AsyncDataset[np.ndarray]:
 
         ds = self.token_seq_dataset("train", seq_len, monitors)
