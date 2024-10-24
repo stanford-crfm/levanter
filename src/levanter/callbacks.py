@@ -27,11 +27,9 @@ from levanter.utils import flop_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
-
 logger = pylogging.getLogger(__name__)
 
-
-def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size):
+def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size, max_epochs: Optional[int] = None):
     total_tokens = None
 
     def log_epoch(step_info: StepInfo):
@@ -45,10 +43,11 @@ def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size):
 
         # Get the total processed tokens from the metrics logged by log_performance_stats
         processed_tokens = tokens_per_example * batch_size * step_info.step
-        if processed_tokens is None:
-            return  # No token count available yet
-
-        current_epoch = processed_tokens / total_tokens
+        
+        # If we're doing multiple epochs, adjust the denominator
+        total_tokens_for_epochs = total_tokens * max_epochs if max_epochs else total_tokens
+        current_epoch = processed_tokens / total_tokens_for_epochs
+        
         levanter.tracker.log_metrics({"train/current_epoch": current_epoch}, step=step_info.step)
 
     return log_epoch

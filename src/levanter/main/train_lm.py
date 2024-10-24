@@ -14,7 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
-from levanter.checkpoint import load_checkpoint
+from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, LMSupervisedDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
@@ -132,8 +132,17 @@ def main(config: TrainLmConfig):
         if config.epoch > 0:
             total_tokens_future = callbacks.get_total_dataset_tokens(train_dataset.dataset, config.model.seq_len)
             trainer.add_hook(
-                callbacks.log_epoch_progress(total_tokens_future, Pos.size, trainer.config.train_batch_size), every=1
+                callbacks.log_epoch_progress(total_tokens_future, Pos.size, trainer.config.train_batch_size, max_epochs=config.epoch), every=1
             )
+
+            # Add epoch checkpoint callback
+            epoch_checkpointer = EpochCheckpointer(
+                checkpointer=trainer.config.checkpointer.create(trainer.run_id),
+                every_n_epochs=1,  # Or configure as needed
+                total_dataset_size=total_tokens_future.result(),
+                batch_size=trainer.config.train_batch_size
+            )
+            trainer.add_hook(epoch_checkpointer, every=1)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
