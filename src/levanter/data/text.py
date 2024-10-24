@@ -104,7 +104,7 @@ class EpochDataset(AsyncDataset[T_co]):
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         # Use self.wait_until_len_at_least to ensure we have enough data for the batch.
         max_index = max(indices)
-        ds_len = await self.wait_until_len_at_least(max_index + 1)
+        ds_len = await self.dataset.wait_until_len_at_least(max_index + 1)
 
         # Determine the epoch based on the largest index
         epoch = max_index // ds_len
