@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import gc
 import logging
 import os
@@ -13,10 +14,11 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
+from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, LMSupervisedDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig
+from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
+    supervised_data: Optional[LMSupervisedDatasetConfig] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -41,12 +44,16 @@ class TrainLmConfig:
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
+    z_loss_weight: float = 0.0
 
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
     update_hessian_steps: int = 10
+    data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
+    initialize_from_checkpoint_path: Optional[str] = None
+    # if provided, will initialize from this checkpoint, used for llama style data mixture
 
 
 def main(config: TrainLmConfig):
@@ -59,7 +66,7 @@ def main(config: TrainLmConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
@@ -73,7 +80,7 @@ def main(config: TrainLmConfig):
             # NB: gross mutability
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(tokenizer=tokenizer)
     else:
         converter = None
@@ -81,15 +88,21 @@ def main(config: TrainLmConfig):
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
+    loss_function = functools.partial(compute_next_token_loss, logsumexp_weight=config.z_loss_weight)
+
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_function) as trainer:
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
         data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
+
+        if config.data_seed is not None:
+            logger.info(f"Overriding data seed with {config.data_seed}")
+            data_key = jrandom.PRNGKey(config.data_seed)
 
         # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
         # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
@@ -102,9 +115,10 @@ def main(config: TrainLmConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        eval_datasets = config.data.validation_sets(Pos.size)
+        # TODO: fix this
+        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
         )
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
@@ -129,6 +143,11 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
+        seek_dataloader = True
+        if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
+            state = load_checkpoint(state, config.initialize_from_checkpoint_path)
+            seek_dataloader = False
+
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
@@ -141,7 +160,10 @@ def main(config: TrainLmConfig):
                 state = dataclasses.replace(state, model=None)
                 gc.collect()
                 model = converter.load_pretrained(
-                    config.model, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+                    config.model.model_type,
+                    config=config.model if not config.use_hf_model_config else None,
+                    axis_mapping=parameter_axis_mapping,
+                    dtype=trainer.mp.compute_dtype,
                 )
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
@@ -150,13 +172,60 @@ def main(config: TrainLmConfig):
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
-        if len(eval_datasets) == 0:
+        if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
+        else:
+            max_eval_examples_per_ds = config.trainer.max_eval_batches
+            if max_eval_examples_per_ds is not None:
+                max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
-        for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
-            trainer.add_eval_hook(eval_dataset, name=name)
+            causal_datasets = [
+                (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
+                for ds, tags in tagged_eval_datasets
+            ]
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                EvalBatch,
+                causal_datasets,
+                tokenizer,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                mp=config.trainer.mp,
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
+        if config.supervised_data is not None:
+            logger.info("Using supervised data")
+            supervised_eval = [(levanter.data.text.mk_supervised_dataset(config.supervised_data, tokenizer), "")]
+            # TODO Add tags
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                EvalBatch,
+                supervised_eval,
+                tokenizer,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                prefix="internal_eval",
+                mp=config.trainer.mp,
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
+
+        flops_per_token = config.model.flops_per_token(vocab_size)
+        flops_per_example = 3 * flops_per_token * Pos.size if flops_per_token is not None else None
+        trainer.add_hook(
+            callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
+        )
+        if config.hf_save_path is not None:
+            # bit gross to reach this far into the config, but it's fine
+            if config.trainer.checkpointer.append_run_id_to_base_path:
+                full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+            else:
+                full_save_path = config.hf_save_path
+
+            trainer.add_hook(
+                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
+                every=config.hf_save_steps,
+            )
 
         # visualize log probs
         @named_jit(
@@ -171,23 +240,11 @@ def main(config: TrainLmConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # engine.add_hook(
-        #     callbacks.compute_and_visualize_log_probs(
-        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-        #     ),
-        #     every=config.trainer.steps_per_eval,
-        # )
-        #
-        # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
-
-        if int(state.step) > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader)
+        train_loader = trainer.data_loader(train_dataset, Batch)
+        if seek_dataloader:
+            train_loader = train_loader.iter_from_step(state.step)
+        else:
+            train_loader = iter(train_loader)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

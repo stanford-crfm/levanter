@@ -52,10 +52,12 @@ def log(metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[in
 
 def _do_jit_log(metrics, *, step=None):
     try:
-        log(metrics, step=step, commit=False)
-    except Exception as e:
-        logger.exception("Error logging metrics from jit", exc_info=e)
-        raise e
+        if _global_tracker is None:
+            warnings.warn("No global tracker set")
+        else:
+            _global_tracker.log(metrics, step=step, commit=False)
+    except Exception:
+        logger.exception("Error logging metrics")
 
 
 def jit_log(metrics, *, step=None):
@@ -75,7 +77,9 @@ def log_summary(metrics: dict[str, Any]):
     """
     global _global_tracker
     if _global_tracker is None:
-        raise RuntimeError("No global tracker set")
+        warnings.warn("No global tracker set")
+        return
+
     _global_tracker.log_summary(metrics)
 
 
@@ -88,7 +92,8 @@ def log_hyperparameters(hparams: dict[str, Any]):
     """
     global _global_tracker
     if _global_tracker is None:
-        raise RuntimeError("No global tracker set")
+        warnings.warn("No global tracker set")
+        return
 
     _global_tracker.log_hyperparameters(hparams)
 
@@ -103,7 +108,8 @@ def log_configuration(hparams: Any, config_name: Optional[str] = None):
     """
     global _global_tracker
     if _global_tracker is None:
-        raise RuntimeError("No global tracker set")
+        warnings.warn("No global tracker set")
+        return
 
     hparams_dict = hparams_to_dict(hparams)
     _global_tracker.log_hyperparameters(hparams_dict)

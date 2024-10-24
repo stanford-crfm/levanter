@@ -406,7 +406,7 @@ def _get_data_source(path_or_id):
     if fsspec_utils.exists(path_or_id):
         return JsonDataset([path_or_id])
     else:
-        return levanter.data.dataset_from_hf(path_or_id, split="train")
+        return levanter.data.datasource_from_hf(path_or_id, split="train")
 ```
 
 Preprocessing in Levanter typically happens in two phases:
@@ -445,7 +445,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
         }
 
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
-    dataset = dataset.build_cache(config.data_cache_dir, await_finished=True)
+    dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)
 
     dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)
 

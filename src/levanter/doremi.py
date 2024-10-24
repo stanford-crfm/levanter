@@ -1,6 +1,6 @@
 import dataclasses
 import logging
-from typing import Iterator, Optional, Tuple, TypeVar
+from typing import Optional, Tuple, TypeVar
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -14,11 +14,11 @@ from haliax.types import IntScalar
 import levanter.tracker
 from levanter.callbacks import eval_loss_loop
 from levanter.checkpoint import load_checkpoint_or_initialize
-from levanter.data import ShardableDataset
+from levanter.data import AsyncDataset, MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset
-from levanter.logging import capture_time
+from levanter.tracker import capture_time
 from levanter.trainer import M, StepInfo, Trainer, TrainerConfig, TrainerState
-from levanter.types import ComputeLossFunction, ModuleComputeLoss
+from levanter.types import ComputeLossFunction
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -53,15 +53,15 @@ DEFAULT_DOREMI_TRAINER_CONFIG = TrainerConfig(
 
 
 def estimate_mixture_weights(
+    loss_fn: ComputeLossFunction[M, T],
     initial_proxy: M,
     ref: M,
-    data_sources: dict[str, ShardableDataset[T]],
+    data_sources: dict[str, AsyncDataset[T]],
     sampling_weights: Optional[dict[str, float]] = None,
     *,
-    validation_sets: Optional[dict[str, ShardableDataset[T]]] = None,
+    validation_sets: Optional[dict[str, AsyncDataset[T]]] = None,
     trainer_config: TrainerConfig = DEFAULT_DOREMI_TRAINER_CONFIG,
     optimizer: optax.GradientTransformation = optax.adamw(1e-3),
-    loss_fn: ComputeLossFunction[M, T] = ModuleComputeLoss(),
     domain_weight_step_size: float = 1.0,
     smoothing: float = 1e-3,
     key: PRNGKeyArray,
@@ -92,7 +92,7 @@ def estimate_mixture_weights(
     Domain = hax.Axis("domain", len(domain_indices))
     initial_alpha = hax.ones(Domain) / Domain.size
 
-    trainer = Trainer(trainer_config, optimizer)
+    trainer = Trainer(trainer_config, optimizer, loss_fn)
     with trainer:
         ref = _prepare_ref_model(ref, trainer_config)
 
@@ -107,7 +107,7 @@ def estimate_mixture_weights(
                 loss = eval_loss_loop(
                     eval_loss,
                     ref,
-                    trainer.replicated_loader(dataset, trainer.EvalBatch),
+                    trainer.data_loader(dataset, trainer.EvalBatch),
                     name=f"ref {domain}",
                     max_batches=trainer_config.max_eval_batches,
                 )
@@ -201,7 +201,7 @@ def estimate_mixture_weights(
             average_alpha=initial_alpha,
         )
         del initial_proxy
-        train_loader = iter(trainer.sharded_loader(tagged_mixture, trainer.TrainBatch))
+        train_loader = iter(trainer.data_loader(tagged_mixture, trainer.TrainBatch))
 
         if state.step > 0:
             # step is after the batch, so we need to seek to step
@@ -263,7 +263,7 @@ def _prepare_ref_model(ref, trainer):
 
 
 def domain_tagged_mixture(
-    data_sources: dict[str, ShardableDataset[T]],
+    data_sources: dict[str, AsyncDataset[T]],
     weights: dict[str, float],
     domain_to_index: dict[str, int],
     *,
@@ -278,13 +278,13 @@ def domain_tagged_mixture(
         for domain, domain_index in domain_to_index.items()
     }
 
-    return MixtureDataset(tagged_datasets, weights, key=key)
+    return MixtureDataset(tagged_datasets, weights, key=key, block_size=2048)
 
 
-class DomainTaggedDataset(ShardableDataset[Tuple[T, hax.NamedArray]]):  # named array is a scalar int
+class DomainTaggedDataset(MappedAsyncDataset[T, Tuple[T, hax.NamedArray]]):  # named array is a scalar int
     def __init__(
         self,
-        dataset: ShardableDataset[T],
+        dataset: AsyncDataset[T],
         domain_index: int | hax.NamedArray,
     ):
         self.dataset = dataset
@@ -294,9 +294,7 @@ class DomainTaggedDataset(ShardableDataset[Tuple[T, hax.NamedArray]]):  # named 
         else:
             self.domain_index = domain_index
 
-    def shard(self, shard_id: int, num_shards: int) -> "DomainTaggedDataset[T]":
-        return DomainTaggedDataset(self.dataset.shard(shard_id, num_shards), self.domain_index)
+        def _transform(item):
+            return item, self.domain_index
 
-    def __iter__(self) -> Iterator[Tuple[T, hax.NamedArray]]:
-        for item in self.dataset:
-            yield item, self.domain_index
+        super().__init__(dataset, _transform)

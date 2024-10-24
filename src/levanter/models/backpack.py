@@ -25,7 +25,6 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -43,11 +42,12 @@ class BackpackConfig(Gpt2Config):
     def model_type(self) -> Type["BackpackLMHeadModel"]:
         return BackpackLMHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
         # We trust this code because it's in our hub repo
         return HFCheckpointConverter(
-            cls, "stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079", trust_remote_code=True
+            self,
+            reference_checkpoint="stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079",
+            trust_remote_code=True,
         )
 
     # Axes
@@ -116,8 +116,8 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
         use_bias: bool = True,
     ) -> "BackpackMlp":
         k_fc, k_proj = jrandom.split(key, 2)
-        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias)
+        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
+        c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -176,7 +176,10 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
 
         k_c, _ = jrandom.split(key, 2)
-        c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
+        # NB: out_first=True b/c the torch implementation uses Linear
+        c_attn = hnn.Linear.init(
+            In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias, out_first=True
+        )
         dropout = hnn.Dropout(config.attn_pdrop)
 
         return WeightsOnlyAttention(config, c_attn, dropout)
@@ -342,7 +345,7 @@ class BackpackGpt2Embeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings)
+        return hax.dot(x, self.token_embeddings, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
@@ -416,7 +419,9 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum
-        hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
+        hidden_states = hax.dot(
+            contextualization_weights, sense_vectors, axis=self.config.KeyPos
+        )  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
 
         # Rescale - this is important for large num_senses

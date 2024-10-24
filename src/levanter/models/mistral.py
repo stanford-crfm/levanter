@@ -19,10 +19,10 @@ from levanter.compat.torch_serialization import (
     unflatten_linear_layers,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.attention import AttentionMask
+from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.utils.py_utils import cached_classproperty
+from levanter.utils.flop_utils import lm_flops_per_token
 
 
 silence_transformer_nag()
@@ -61,7 +61,8 @@ class MistralConfig(LlamaConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: bool = True
+    use_flash_attention: Optional[bool] = True
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
@@ -80,10 +81,9 @@ class MistralConfig(LlamaConfig):
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            cls,  # type: ignore
+            self,
             "mistralai/Mistral-7B-v0.1",
             trust_remote_code=True,
             tokenizer="mistralai/Mistral-7B-v0.1",
@@ -136,6 +136,18 @@ class MistralConfig(LlamaConfig):
     @property
     def model_type(cls) -> Type["MistralLMHeadModel"]:
         return MistralLMHeadModel
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
+        )
 
 
 class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerializationMixin):

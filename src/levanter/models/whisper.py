@@ -27,9 +27,8 @@ from levanter.compat.torch_serialization import (
 )
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRConfig, ASRMixin
-from levanter.models.attention import AttentionMask, dot_product_attention
+from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -63,6 +62,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     # Attention-related config
     upcast_attn: bool = True
     use_flash_attention: bool = False
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     @property
@@ -73,9 +73,8 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     def asr_model_type(self) -> Type["WhisperASRModel"]:
         return WhisperASRModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
-        return HFCheckpointConverter(cls, "openai/whisper-base", ignore_prefix="model")
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
+        return HFCheckpointConverter(self, "openai/whisper-base", ignore_prefix="model")
 
     # Axis
     MelPos = property(lambda self: Axis(name="position", size=self.max_source_positions * 2))
@@ -137,8 +136,8 @@ class WhisperMlp(eqx.Module, StateDictSerializationMixin):
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "WhisperMlp":
         k_fc, k_proj = haliax.jax_utils.maybe_rng_split(key, 2)
-        fc1 = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        fc2 = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
+        fc1 = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
+        fc2 = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -191,10 +190,10 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
 
         k_q, k_k, k_v, k_out = haliax.jax_utils.maybe_rng_split(key, 4)
-        q_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_q, use_bias=use_bias)
-        k_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_k, use_bias=False)
-        v_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_v, use_bias=use_bias)
-        out_proj = hnn.Linear.init(In=(Heads, HeadSize), Out=Embed, key=k_out, use_bias=use_bias)
+        q_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_q, use_bias=use_bias, out_first=False)
+        k_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_k, use_bias=False, out_first=False)
+        v_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_v, use_bias=use_bias, out_first=False)
+        out_proj = hnn.Linear.init(In=(Heads, HeadSize), Out=Embed, key=k_out, use_bias=use_bias, out_first=False)
 
         return WhisperAttention(config, q_proj, k_proj, v_proj, out_proj, inference=False)
 
@@ -224,10 +223,9 @@ class WhisperAttention(StateDictSerializationMixin, eqx.Module):
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
-        attn_output = self.out_proj(attn_output, key=k_out)
 
-        if self.config.upcast_attn:
-            attn_output = attn_output.astype(x.dtype)
+        attn_output = attn_output.astype(x.dtype)
+        attn_output = self.out_proj(attn_output, key=k_out)
 
         return attn_output
 
@@ -448,7 +446,7 @@ class WhisperDecoderEmbeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed_dim", x, self.token_embeddings.weight)
+        return hax.dot(x, self.token_embeddings.weight, axis="embed_dim")
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_token_embeddings = self.token_embeddings.resize_embeddings(new_size, key=key)

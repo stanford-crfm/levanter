@@ -18,10 +18,10 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
+from levanter.models.lm_model import compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
-from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ def main(config: LoraLmConfig):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -85,13 +85,13 @@ def main(config: LoraLmConfig):
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
-        train_loader = trainer.sharded_loader(train_dataset, Batch)
+        train_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=data_key), Pos, KeyPos)
+        train_loader = trainer.data_loader(train_dataset, Batch)
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model = converter.load_pretrained(
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+            model_config.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
         )
 
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
@@ -149,16 +149,7 @@ def main(config: LoraLmConfig):
                 every=config.hf_save_steps,
             )
 
-        # data loader. may need to seek to the right place if we're resuming
-        iter_data = non_caching_cycle(train_loader)
-
-        if int(state.step) > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(iter_data)
+        iter_data = train_loader.iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, iter_data)

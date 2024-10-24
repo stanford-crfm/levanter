@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import equinox as eqx
@@ -16,10 +16,10 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
-from levanter.data import ReplicatedBatchLoader
+from levanter.data import DataLoader
 from levanter.data.text import CausalLmDataset, LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 class EvalLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
-    trainer: TrainerConfig = TrainerConfig()
-    data: LMDatasetConfig = LMDatasetConfig()
-    model: LmConfig = Gpt2Config()
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    model: LmConfig = field(default_factory=Gpt2Config)
 
     compare_torch: bool = False
     eval_on_train: bool = False
@@ -49,7 +49,7 @@ def main(config: EvalLmConfig):
     KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=jax.random.PRNGKey(0)), Pos, KeyPos)
     else:
         validation_set = config.data.validation_set(Pos.size)
         if validation_set is None:
@@ -57,7 +57,9 @@ def main(config: EvalLmConfig):
 
         raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
 
-    eval_loader = ReplicatedBatchLoader(raw_dataset, config.trainer.device_mesh, Batch)
+    eval_loader = DataLoader(
+        Batch, raw_dataset, None, config.trainer.device_mesh, config.trainer.parameter_axis_mapping
+    )
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -75,7 +77,7 @@ def main(config: EvalLmConfig):
         def compute_loss(model: LmHeadModel, example: LmExample):
             model = inference_mode(model, True)
             model = mp.cast_to_compute(model)
-            return model.compute_loss(example, key=None)
+            return compute_next_token_loss(model, example, key=None)
 
         total = config.trainer.max_eval_batches
 
@@ -99,10 +101,10 @@ def main(config: EvalLmConfig):
             model_config = config.model
             if not hasattr(model_config, "hf_checkpoint_converter"):
                 raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
-            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter
+            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
             model_from_hf_checkpoint = converter.load_pretrained(
-                model_config.model_type, config.hf_checkpoint, dtype=mp.compute_dtype
+                model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
             )
             loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 

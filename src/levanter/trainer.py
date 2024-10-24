@@ -51,14 +51,14 @@ import levanter.tracker.wandb
 from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
-from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
+from levanter.data import AsyncDataset, DataLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
-from levanter.logging import capture_time
-from levanter.tracker import TrackerConfig
+from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
-from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
+from levanter.types import ComputeLossFunction, FilterSpec
 from levanter.utils import cloud_utils, fsspec_utils
+from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -230,7 +230,7 @@ class Trainer:
         self,
         config: "TrainerConfig",
         optimizer: GradientTransformation,
-        loss_fn: Optional[ComputeLossFunction] = None,
+        loss_fn: ComputeLossFunction,
         *,
         add_default_hooks: bool = True,
     ):
@@ -245,13 +245,7 @@ class Trainer:
         self.hooks = TrainerHooks()
         self.config = config
         self.optimizer = optimizer
-        self._raw_loss_function = loss_fn or ModuleComputeLoss()
-        if isinstance(config.tracker, Sequence):
-            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
-        else:
-            self.tracker = config.tracker.init(self.run_id)
-
-        self._raw_loss_function = loss_fn or ModuleComputeLoss()
+        self._raw_loss_function = loss_fn
         if isinstance(config.tracker, Sequence):
             self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
         else:
@@ -499,7 +493,7 @@ class Trainer:
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_step_info, every=1)
+        self.add_hook(callbacks.log_step_info(self.config.num_train_steps), every=1)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -525,7 +519,7 @@ class Trainer:
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
 
-        eval_loader = self.replicated_loader(eval_dataset, self.EvalBatch)
+        eval_loader = self.data_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
@@ -542,31 +536,24 @@ class Trainer:
                 every=self.config.steps_per_eval,
             )
 
-    def replicated_loader(self, dataset: Dataset[X], batch_axis: Axis) -> ReplicatedBatchLoader[X]:
-        """Creates a replicated batch loader for the given dataset. Generally you should use this
-        if you either be able to make a single pass over the dataset.
+    def data_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
+        """Creates a data loader for the given dataset and batch axis.
 
         Args:
-            dataset (Dataset): the dataset to load
+            dataset (AsyncDataset): the dataset to load
             batch_axis (Axis): the batch axis
 
         Returns:
-            ReplicatedBatchLoader: the batch loader
+            DataLoader: the data loader
         """
-        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
-
-    def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
-        """Creates a sharded batch loader for the given dataset. Generally you should use this
-        for training and you don't care about epoch boundaries.
-
-        Args:
-            dataset (Dataset): the dataset to load
-            batch_axis (Axis): the batch axis
-
-        Returns:
-            ShardedBatchLoader: the batch loader
-        """
-        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+        return DataLoader(
+            batch_axis,
+            dataset,
+            max_buffered_batches=128,
+            mesh=self.device_mesh,
+            axis_resources=self.compute_axis_mapping,
+            prefetch_size=32,
+        )
 
     @cached_property
     def _jit_train_step_fn(self):
@@ -593,7 +580,7 @@ class Trainer:
         new_hook_states = self.hooks.run_jit_hooks(state, batch, grads)
 
         new_state = state.take_step(grads, obj_fun=obj_fun)
-        new_state = dataclasses.replace(cb_states=new_hook_states)
+        new_state = dataclasses.replace(new_state, cb_states=new_hook_states)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)
         return loss, new_state
 
@@ -621,7 +608,6 @@ class TrainerConfig:
 
     wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")
-    run_base_dir: Path = Path("runs/")
     id: Optional[str] = None  # run id. if None, will be set to a random string
 
     tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
@@ -638,12 +624,19 @@ class TrainerConfig:
     fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
     tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
-    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
-    axis_resources: Mapping[str, str] = field(default_factory=dict)
+    axis_resources: Mapping[str, Union[Tuple[str], str]] = field(default_factory=dict)
     """mapping from logical axis to physical axis. batch_axis, fsdp_axis, and tensor_parallel_axes are preferred"""
-    parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
+    parameter_axis_resources: Mapping[str, Union[Tuple[str], str]] = field(
+        default_factory=dict
+    )  # overrides axis_mapping for parameter
     """logical->physical mapping for parameter/optimizer sharding. fsdp_axis and tensor_parallel_axes are preferred"""
-    model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
+
+    """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction"""
+    replica_ici_axis_size: int = 1
+    model_axis_size: int = 1
+    """how many devices within each slice for sharding with DP. Fix TP=1, the rest of the devices is for FSDP."""
+    replica_dcn_axis_size: int = 1
+    """how many slices in the multislice scheme for sharding with DP and TP. The rest of the devices is for FSDP."""
 
     # Config related to batch sizes
     train_batch_size: int = 512
@@ -725,19 +718,51 @@ class TrainerConfig:
 
     @cached_property
     def device_mesh(self) -> Mesh:
-        devices = jax.devices()
-        devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
-        return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
+        return create_fsdp_mesh(
+            self.replica_ici_axis_size,
+            self.data_ici_axis_size,
+            self.model_axis_size,
+            self.replica_dcn_axis_size,
+            self.data_dcn_axis_size,
+        )
 
     @property
     def eval_batch_size(self):
         return self.per_device_eval_parallelism * self.data_axis_size
 
+    @cached_property
+    def num_slices(self):
+        """number of nodes"""
+        return max(getattr(device, "slice_index", 0) for device in jax.devices()) + 1
+
+    @property
+    def num_devices_per_slice(self):
+        """number of devices within a slice"""
+        return jax.device_count() // self.num_slices
+
+    @property
+    def data_ici_axis_size(self):
+        """size of the FSDP axis within slices"""
+        assert self.num_devices_per_slice % (self.replica_ici_axis_size * self.model_axis_size) == 0
+        return self.num_devices_per_slice // (self.replica_ici_axis_size * self.model_axis_size)
+
+    @property
+    def data_dcn_axis_size(self):
+        """size of the FSDP axis across slices"""
+        assert self.num_slices % self.replica_dcn_axis_size == 0
+        return self.num_slices // self.replica_dcn_axis_size
+
     @property
     def data_axis_size(self):
         """size of the data parallel/batch parallel axis."""
-        assert jax.device_count() % self.model_axis_size == 0
-        return jax.device_count() // self.model_axis_size
+        return (
+            self.data_dcn_axis_size * self.data_ici_axis_size * self.replica_dcn_axis_size * self.replica_ici_axis_size
+        )
+
+    @property
+    def replica_axis_size(self):
+        """size of the data parallel/batch parallel axis."""
+        return self.replica_dcn_axis_size * self.replica_ici_axis_size
 
     @cached_property
     def compute_axis_mapping(self) -> ResourceMapping:
@@ -751,7 +776,7 @@ class TrainerConfig:
             axes_to_return[axis] = ResourceAxis.MODEL
 
         if self.batch_axis is not None:
-            axes_to_return[self.batch_axis] = ResourceAxis.DATA
+            axes_to_return[self.batch_axis] = (ResourceAxis.REPLICA, ResourceAxis.DATA)  # type: ignore
 
         return axes_to_return
 

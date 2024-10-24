@@ -26,9 +26,9 @@ from levanter.compat.torch_serialization import (
     unstack_state_dict,
 )
 from levanter.logging import silence_transformer_nag
-from levanter.models.attention import AttentionMask, dot_product_attention
+from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
+from levanter.utils.flop_utils import lm_flops_per_token
 
 
 silence_transformer_nag()
@@ -39,7 +39,7 @@ from transformers import PretrainedConfig as HfConfig  # noqa: E402
 @LmConfig.register_subclass("gpt2")
 @dataclass(frozen=True)
 class Gpt2Config(HFCompatConfig):
-    seq_len: int = 512
+    seq_len: int = 1024
     hidden_dim: int = 768
     num_layers: int = 12
     num_heads: int = 12
@@ -64,7 +64,8 @@ class Gpt2Config(HFCompatConfig):
 
     use_bias: bool = True
 
-    use_flash_attention: bool = True  # use flash attention. This is a pure jax impl, and is not faster than normal, but it scales to long sequence lengths
+    use_flash_attention: Optional[bool] = None
+    attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
     # Axes
@@ -80,10 +81,9 @@ class Gpt2Config(HFCompatConfig):
     def model_type(self) -> Type["Gpt2LMHeadModel"]:
         return Gpt2LMHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
         # We trust this code because it's in our hub repo
-        return HFCheckpointConverter(cls, "gpt2", ignore_prefix="transformer")
+        return HFCheckpointConverter(self.__class__, reference_checkpoint="gpt2", ignore_prefix="transformer")
 
     def to_hf_config(self, vocab_size, config_overrides=None) -> HfGpt2Config:
         if config_overrides is None:
@@ -122,6 +122,18 @@ class Gpt2Config(HFCompatConfig):
             upcast_attn=hf_config.reorder_and_upcast_attn,
         )
 
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.hidden_dim * self.mlp_scale,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
+        )
+
 
 class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
@@ -131,8 +143,8 @@ class Gpt2Mlp(eqx.Module):
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "Gpt2Mlp":
         k_fc, k_proj = jrandom.split(key, 2)
-        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        c_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
+        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
+        c_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -162,8 +174,12 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
 
         k_c, k_proj = jrandom.split(key, 2)
-        c_attn = hnn.Linear.init(In=Embed, Out=(Qkv, config.Heads, config.HeadSize), key=k_c, use_bias=use_bias)
-        c_proj = hnn.Linear.init(In=(config.Heads, config.HeadSize), Out=Embed, key=k_proj, use_bias=use_bias)
+        c_attn = hnn.Linear.init(
+            In=Embed, Out=(Qkv, config.Heads, config.HeadSize), key=k_c, use_bias=use_bias, out_first=False
+        )
+        c_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize), Out=Embed, key=k_proj, use_bias=use_bias, out_first=False
+        )
 
         return Gpt2Attention(config, c_attn, c_proj, inference=False)
 
@@ -191,14 +207,14 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
             mask=mask,
             inference=self.inference,
             use_flash=self.config.use_flash_attention,
+            attn_backend=self.config.attn_backend,
             flash_block_size=self.config.flash_attention_block_size,
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
         )
-        attn_output = self.c_proj(attn_output, key=k_out)
 
-        if self.config.upcast_attn:
-            attn_output = attn_output.astype(x.dtype)
+        attn_output = attn_output.astype(x.dtype)
+        attn_output = self.c_proj(attn_output, key=k_out)
 
         return attn_output
 
@@ -341,7 +357,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings.weight)
+        return hax.dot(x, self.token_embeddings.weight, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte", "position_embeddings": "wpe"}

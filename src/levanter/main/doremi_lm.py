@@ -13,7 +13,7 @@ from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data.text import CausalLmDataset, LMMixtureDatasetConfig
 from levanter.doremi import DoReMiConfig, estimate_mixture_weights
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig
+from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import TrainerConfig
 from levanter.utils.tree_utils import inference_mode
@@ -54,7 +54,7 @@ def main(config: TrainLmConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
@@ -68,7 +68,7 @@ def main(config: TrainLmConfig):
             # NB: gross mutability
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(tokenizer=tokenizer)
     else:
         converter = None
@@ -76,6 +76,8 @@ def main(config: TrainLmConfig):
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+    loss_function = compute_next_token_loss
 
     with config.trainer.device_mesh:
         vocab_size = len(tokenizer)
@@ -86,7 +88,7 @@ def main(config: TrainLmConfig):
         # initialize the ref model
         if config.ref_model_from_hf:
             assert converter is not None
-            ref_model = converter.load_pretrained(type(config.model), dtype=config.trainer.mp.compute_dtype)
+            ref_model = converter.load_pretrained(config.model.model_type, dtype=config.trainer.mp.compute_dtype)
         else:
             ref_model_shape = eqx.filter_eval_shape(config.model.build, Vocab, key=jrandom.PRNGKey(0))
             ref_model = levanter.checkpoint.load_checkpoint(
@@ -94,6 +96,7 @@ def main(config: TrainLmConfig):
             )
 
         ref_model = inference_mode(ref_model, True)
+        assert isinstance(ref_model, LmHeadModel)
 
         training_key, model_key = jrandom.split(jrandom.PRNGKey(config.trainer.seed), 2)
 
@@ -116,6 +119,7 @@ def main(config: TrainLmConfig):
         }
 
         mixture_weights = estimate_mixture_weights(
+            loss_function,
             proxy_model,
             ref=ref_model,
             data_sources=train_datasets,
