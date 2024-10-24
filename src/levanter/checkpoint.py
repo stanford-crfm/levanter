@@ -292,7 +292,7 @@ class EpochCheckpointer:
             # Use existing checkpointer's save_checkpoint method
             self.checkpointer.save_checkpoint(
                 step_info,
-                f"epoch-{current_epoch}"
+                f"epoch-{current_epoch}",
             )
             self._last_saved_epoch = current_epoch
 

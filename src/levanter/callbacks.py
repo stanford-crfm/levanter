@@ -60,7 +60,7 @@ def get_total_dataset_tokens(ds: AsyncDataset, seq_length: int):
         import asyncio
 
         async def compute_length():
-            length = await ds.async_len()
+            length = await ds.dataset.async_len()
             return length
 
         # Run the async function synchronously in this thread
