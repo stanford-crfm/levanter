@@ -638,18 +638,23 @@ class LMTaskConfig(abc.ABC):
 
 @dataclass
 class LMSupervisedDatasetConfig:
-    """This class represents a dataset source with URLs or hf name/id."""
-
+    """Config for supervised fine-tuning datasets"""
     cache_dir: str = "cache/"
-
+    
+    # HF dataset config
+    hf_dataset_name: Optional[str] = None  # e.g. "tatsu-lab/alpaca" or "OpenAssistant/oasst1"
+    hf_dataset_split: str = "train"  # which split to use
+    
+    # Local files config
+    validation_urls: List[str] = field(default_factory=list)  # paths to jsonl/json files
+    
+    # Field names in the data
+    input_field: str = "prompt"  # name of the input field
+    output_field: str = "response"  # name of output field
+    
+    # Optional metadata
     tags: Optional[List[str]] = None
-    """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
-    name: Optional[str] = None  # name for hf dataset
-
-    input_field: str = "prompt"  # name of the input field in the jsonl file
-    output_field: str = "response"  # name of the output field in the jsonl file
-
-    validation_urls: List[str] = ()  # type:ignore
+    name: Optional[str] = None
 
 
 def preprocess_supervised_example(
@@ -700,22 +705,37 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
 
 def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
     import levanter.data
-
-    validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
-    dataset = levanter.data.datasource_from_jsonl(validation_urls)
+    
+    # Choose data source based on config
+    if config.hf_dataset_name is not None:
+        # Using HF dataset
+        dataset = levanter.data.datasource_from_hf(config.hf_dataset_name, split=config.hf_dataset_split)
+    else:
+        # Using local files
+        validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
+        if not validation_urls:
+            raise ValueError("Must specify either hf_dataset_name or validation_urls")
+        dataset = levanter.data.datasource_from_jsonl(validation_urls)
 
     input_field = config.input_field
     output_field = config.output_field
 
     output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((), dtype=np.int32)}
 
-    dataset = dataset.map_batches(lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field), batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
-    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore
+    # Use the same preprocessing as before
+    dataset = dataset.map_batches(
+        lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field),
+        batch_size=128, 
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar
+    )
+    
+    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
-
 
 @dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
