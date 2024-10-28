@@ -258,9 +258,15 @@ def main(config: TrainLmConfig):
             train_loader = iter(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, train_loader)
+        last_info = trainer.train(state, train_loader)
 
-        # checkpointer.on_step(last_step, force=True)
+        
+
+        # If running EpochDataset save latest checkpoint by default
+        if trainer.config.checkpointer is not None and config.epoch > 0:
+            trainer.run_hooks(last_info, force=True)
+            checkpointer = trainer.config.checkpointer.create(trainer.run_id)
+            checkpointer.wait_until_finished()
 
 
 if __name__ == "__main__":
