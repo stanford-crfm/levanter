@@ -54,7 +54,7 @@ class TrainLmConfig:
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
-    epoch: int = 0 
+    epoch: int = 0
 
 
 def main(config: TrainLmConfig):
@@ -127,12 +127,14 @@ def main(config: TrainLmConfig):
             ignore_index=config.data.ignore_token_id,
         )
 
-        
         # add epoch logging if epochs specified
         if config.epoch > 0:
             total_tokens_future = callbacks.get_total_dataset_tokens(train_dataset.dataset, config.model.seq_len)
             trainer.add_hook(
-                callbacks.log_epoch_progress(total_tokens_future, Pos.size, trainer.config.train_batch_size, max_epochs=config.epoch), every=1
+                callbacks.log_epoch_progress(
+                    total_tokens_future, Pos.size, trainer.config.train_batch_size, max_epochs=config.epoch
+                ),
+                every=1,
             )
 
             # Add epoch checkpoint callback
@@ -140,7 +142,7 @@ def main(config: TrainLmConfig):
                 checkpointer=trainer.config.checkpointer.create(trainer.run_id),
                 every_n_epochs=1,  # Or configure as needed
                 total_dataset_size=total_tokens_future.result(),
-                batch_size=trainer.config.train_batch_size
+                batch_size=trainer.config.train_batch_size,
             )
             trainer.add_hook(epoch_checkpointer, every=1)
 
@@ -259,8 +261,6 @@ def main(config: TrainLmConfig):
 
         ## OK, actually run training!
         last_info = trainer.train(state, train_loader)
-
-        
 
         # If running EpochDataset save latest checkpoint by default
         if trainer.config.checkpointer is not None and config.epoch > 0:
