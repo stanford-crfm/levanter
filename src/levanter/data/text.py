@@ -72,6 +72,7 @@ class EpochDataset(AsyncDataset[T_co]):
     :param dataset: The dataset to wrap.
     :param max_epochs: The maximum number of epochs to cycle through. If None, cycle indefinitely.
     """
+
     def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
         self.dataset = dataset
         self.max_epochs = max_epochs
@@ -111,7 +112,9 @@ class EpochDataset(AsyncDataset[T_co]):
 
         # If max_epochs is specified, raise an error if the epoch exceeds the allowed number of epochs
         if self.max_epochs is not None and epoch >= self.max_epochs:
-            raise StopIteration(f"Reached maximum number of epochs: epoch {epoch} exceeds the maximum allowed {self.max_epochs}")
+            raise StopIteration(
+                f"Reached maximum number of epochs: epoch {epoch} exceeds the maximum allowed {self.max_epochs}"
+            )
 
         # Wrap the indices within the bounds of the dataset length
         wrapped_indices = [idx % ds_len for idx in indices]
@@ -139,7 +142,8 @@ class EpochDataset(AsyncDataset[T_co]):
             return self.max_epochs * base_length
 
         return base_length
-    
+
+
 class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
     A dataset that yields sequences of tokens of fixed length from an underlying TreeCache.
@@ -639,19 +643,20 @@ class LMTaskConfig(abc.ABC):
 @dataclass
 class LMSupervisedDatasetConfig:
     """Config for supervised fine-tuning datasets"""
+
     cache_dir: str = "cache/"
-    
+
     # HF dataset config
     hf_dataset_name: Optional[str] = None  # e.g. "tatsu-lab/alpaca" or "OpenAssistant/oasst1"
     hf_dataset_split: str = "train"  # which split to use
-    
+
     # Local files config
     validation_urls: List[str] = field(default_factory=list)  # paths to jsonl/json files
-    
+
     # Field names in the data
     input_field: str = "prompt"  # name of the input field
     output_field: str = "response"  # name of output field
-    
+
     # Optional metadata
     tags: Optional[List[str]] = None
     name: Optional[str] = None
@@ -705,7 +710,7 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
 
 def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
     import levanter.data
-    
+
     # Choose data source based on config
     if config.hf_dataset_name is not None:
         # Using HF dataset
@@ -725,17 +730,18 @@ def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrain
     # Use the same preprocessing as before
     dataset = dataset.map_batches(
         lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field),
-        batch_size=128, 
+        batch_size=128,
         num_cpus=num_cpus_used_by_tokenizer(tokenizer),
-        output_exemplar=output_exemplar
+        output_exemplar=output_exemplar,
     )
-    
+
     dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
-    
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+
 
 @dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):

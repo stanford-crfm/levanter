@@ -18,7 +18,7 @@ from tqdm_loggable import tqdm_logging
 from tqdm_loggable.auto import tqdm
 
 import levanter.tracker
-from levanter.data import DataLoader, AsyncDataset
+from levanter.data import AsyncDataset, DataLoader
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.wandb import WandbConfig
@@ -27,7 +27,9 @@ from levanter.utils import flop_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
+
 logger = pylogging.getLogger(__name__)
+
 
 def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size, max_epochs: Optional[int] = None):
     total_tokens = None
@@ -43,18 +45,17 @@ def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size, max_
 
         # Get the total processed tokens from the metrics logged by log_performance_stats
         processed_tokens = tokens_per_example * batch_size * step_info.step
-        
+
         # If we're doing multiple epochs, adjust the denominator
         total_tokens_for_epochs = total_tokens * max_epochs if max_epochs else total_tokens
         current_epoch = processed_tokens / total_tokens_for_epochs
-        
+
         levanter.tracker.log_metrics({"train/current_epoch": current_epoch}, step=step_info.step)
 
     return log_epoch
 
 
 def get_total_dataset_tokens(ds: AsyncDataset, seq_length: int):
-
     def log_length():
         # If ds.async_len() is the only option, run it in an event loop inside the thread
         import asyncio
