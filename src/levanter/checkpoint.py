@@ -27,7 +27,6 @@ from haliax.jax_utils import is_in_jit, is_jax_array_like
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.types import FilterSpec
-# from levanter.trainer import StepInfo
 
 
 logger = logging.getLogger(__name__)
