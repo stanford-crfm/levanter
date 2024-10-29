@@ -139,6 +139,19 @@ available_node_types:
       schedulingConfig:
         preemptible: true
 
+  tpu_slice_v5e_64:
+    min_workers: 0
+    max_workers: 1024
+    resources: { "CPU": 120, "TPU": 4 }
+
+    node_config:
+      acceleratorType: v5litepod-64
+      runtimeVersion: tpu-ubuntu2204-base
+
+      # [IMPORTANT] Configure all TPU Workers to be Preemptible!
+      schedulingConfig:
+        preemptible: true
+
   tpu_slice_v5e_256:
     min_workers: 0
     max_workers: 1024
