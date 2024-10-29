@@ -305,8 +305,10 @@ def run_on_pod_multislice_resumable(
             outs = ray.get(futures)
         except ray.exceptions.RayTaskError as e:
             for f in futures:
-                ray.cancel(f)
-                logger.info(f"Cancelling {f}")
+                try:
+                    ray.cancel(f)
+                except Exception:
+                    logger.exception("Failed to kill job after primary failure")
             problem = e
             if "preempted" in str(e).lower():
                 num_preemptions += 1
@@ -317,8 +319,10 @@ def run_on_pod_multislice_resumable(
             continue
         except Exception as e:
             for f in futures:
-                ray.cancel(f)
-                logger.info(f"Cancelling {f}")
+                try:
+                    ray.cancel(f)
+                except Exception:
+                    logger.exception("Failed to kill job after primary failure")
             problem = e
             num_failures += 1
             if num_failures >= max_retries_failure:

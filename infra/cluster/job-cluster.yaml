@@ -129,7 +129,7 @@ available_node_types:
   tpu_slice_v5e_16:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 8 }
+    resources: { "CPU": 120, "TPU": 4 }
 
     node_config:
       acceleratorType: v5litepod-16
@@ -142,7 +142,7 @@ available_node_types:
   tpu_slice_v5e_256:
     min_workers: 0
     max_workers: 1024
-    resources: { "CPU": 120, "TPU": 8 }
+    resources: { "CPU": 120, "TPU": 4 }
 
     node_config:
       acceleratorType: v5litepod-256
