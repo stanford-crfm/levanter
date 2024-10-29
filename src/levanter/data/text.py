@@ -725,7 +725,6 @@ def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrain
     input_field = config.input_field
     output_field = config.output_field
 
-
     output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
 
     # Use the same preprocessing as before

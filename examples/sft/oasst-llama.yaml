@@ -6,9 +6,9 @@ trainer:
   wandb:
     project: "levanter-sft"
     tags: ["llama2", "oasst"]
-  num_train_steps: 1218  
+  num_train_steps: 1218
   train_batch_size: 128
-  
+
   # If using model parallelism
   tensor_parallel_axes: ["mlp", "heads"]
 
@@ -25,7 +25,7 @@ supervised_data:
   output_field: "response"  # adjust based on dataset
   cache_dir: "cache/dolly"
 
-# Model configuration  
+# Model configuration
 max_tune_length: 2048
 trust_remote_code: false
 model_cache_dir: null

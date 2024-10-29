@@ -6,7 +6,7 @@ trainer:
   wandb:
     project: "levanter-sft"
     tags: ["llama2", "alpaca"]
-  num_train_steps: 1218  
+  num_train_steps: 1218
   train_batch_size: 64
   # If using model parallelism
   tensor_parallel_axes: ["mlp", "heads"]

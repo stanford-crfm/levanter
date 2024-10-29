@@ -1,11 +1,8 @@
-import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional, Union
+from typing import Optional, Union
 
-import fsspec
-import jax
 import jax.random as jrandom
 import transformers
 
@@ -14,13 +11,11 @@ import haliax as hax
 import levanter
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, save_hf_checkpoint_callback
 from levanter.data import PermutationDataset
+from levanter.data.text import EpochDataset, LMSupervisedDatasetConfig, mk_supervised_dataset
 from levanter.models.lm_model import LmHeadModel, compute_next_token_loss
 from levanter.optim import OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
-from levanter.utils import fsspec_utils
-from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 from levanter.utils.py_utils import non_caching_cycle
-from levanter.data.text import mk_supervised_dataset, LMSupervisedDatasetConfig, EpochDataset
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +33,7 @@ class TrainArgs:
     trainer: TrainerConfig
 
     max_tune_length: int = 2048  # maximum length of the input to the model during tuning
-    
+
     # Supervision config
     supervised_data: LMSupervisedDatasetConfig = LMSupervisedDatasetConfig()
     input_field: str = "instruction"  # field name for input in dataset
@@ -81,7 +76,7 @@ def train(config: TrainArgs):
 
     # modify converter to use our tokenizer
     converter = converter.replaced(tokenizer=tokenizer)
-    
+
     # Configure supervised dataset
     supervised_config = config.supervised_data
 
