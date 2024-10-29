@@ -606,6 +606,7 @@ def main(args: RunDockerOnPodConfig):
         tpu_type=args.tpu_type,
         env=args.env,
         name=args.name,
+        retries=args.retries,
         num_slices=args.node_count,
     )
 
