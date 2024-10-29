@@ -12,7 +12,7 @@ model:
   use_bias: false
   use_layer_norm_weight: false
 
-# Training configuration  
+# Training configuration
 trainer:
   mp: p=f32,c=bfloat16
   tracker:
@@ -21,7 +21,7 @@ trainer:
     tags: ["llama", "sft"]
   num_train_steps: 1218
   train_batch_size: 64
-  tensor_parallel_axes: ["mlp", "heads"] 
+  tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
   steps_per_eval: 1000
@@ -33,7 +33,7 @@ optimizer:
   min_lr_ratio: 0.1
   warmup: 100
 
-# Supervised data configuration  
+# Supervised data configuration
 supervised_data:
   cache_dir: "gs://levanter-checkpoints/marin/sft_cache/alpaca-olmo"
   input_field: "instruction"
