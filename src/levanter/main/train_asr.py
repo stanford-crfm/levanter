@@ -124,7 +124,7 @@ def main(config: TrainASRConfig):
         train_dataset = AudioTextDataset(
             config.data.train_set(key=data_key),
             Pos,
-            [config.model.Mels, config.model.MelPos],
+            config.model.AudioPos,
             KeyPos,
             ignore_index=config.data.pad_token_id,
         )
