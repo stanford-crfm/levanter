@@ -4,7 +4,7 @@ data:
   processor: "openai/whisper-large-v3"
   configs:
     cv:
-      id: mozilla-foundation/common_voice_17_0  
+      id: mozilla-foundation/common_voice_17_0
       cache_dir: "gs://diva-flash/processed/llama/cv"
       name: "en"
       text_key: "sentence"

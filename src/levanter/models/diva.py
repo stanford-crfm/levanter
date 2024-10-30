@@ -30,8 +30,8 @@ from levanter.models.whisper import WhisperConfig, WhisperDecoder, WhisperEncode
 
 
 silence_transformer_nag()
+from transformers import AutoTokenizer  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
-from transformers import AutoTokenizer
 
 
 class DivaHFCheckpointer(HFCheckpointConverter["DivaModel"]):
