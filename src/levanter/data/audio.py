@@ -81,7 +81,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         padding=True,
     ):
         self.feature_extractor: SequenceFeatureExtractor = processor.feature_extractor
-        if tokenizer.pad_token_id == None:
+        if tokenizer.pad_token_id is None:
             override_token = list(tokenizer.added_tokens_decoder.items())[-1]
             tokenizer.pad_token_id = override_token[0]
             tokenizer.pad_tokn = str(override_token[1])
@@ -276,6 +276,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
     def __init__(self, cache: TreeCache[AudioTextDict]):
         super().__init__()
         self.cache = cache
+        self._cached_len: Optional[int] = None
 
     async def async_len(self) -> int:
         return await self.cache.async_len()
