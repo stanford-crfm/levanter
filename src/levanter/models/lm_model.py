@@ -103,7 +103,23 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
     def __call__(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
+        """
+        Compute the logits for the next token in a sequence.
+        Args:
+            input_ids: token IDs with shape [..., Pos]
+            attn_mask: attention mask with shape [..., Pos, KeyPos]
+            key: PRNGKey for random number generation
+
+        Returns:
+            NamedArray: logits with shape [..., Pos, Vocab]
+
+        """
         pass
+
+    @property
+    @abc.abstractmethod
+    def lm_head(self) -> hax.nn.Linear:
+        raise NotImplementedError("lm_head property not implemented")
 
     @abc.abstractmethod
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "LmHeadModel[LmConfigT]":

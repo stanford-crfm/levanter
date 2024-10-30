@@ -910,7 +910,7 @@ A message that can be sent from a reader task to the writer task.
 _TIME_BETWEEN_WRITES = 20.0  # seconds
 
 
-@ray.remote(num_cpus=1, runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORM_NAME": "cpu", "TPU_VISIBLE_DEVICES": "", "ALLOW_MULTIPLE_LIBTPU_LOAD": "1"}))
+@ray.remote(num_cpus=1, runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORMS": "cpu"}))
 def _core_writer_task(
     parent,
     cache_dir,
