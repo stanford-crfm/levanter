@@ -1,93 +1,9 @@
-from typing import Optional
-
-import jax.numpy as jnp
-
-import haliax as hax
-from haliax import NamedArray
-from haliax.nn import cross_entropy_loss_and_log_normalizers
-
-
-def next_token_loss(
-    Pos: hax.AxisSelector,
-    Vocab: hax.AxisSelector,
-    pred_ids: NamedArray,
-    true_ids: NamedArray,
-    loss_mask: Optional[NamedArray] = None,
-    reduction: Optional[hax.ReductionFunction] = hax.mean,
-    reduction_axis: Optional[hax.AxisSelection] = None,
-    logsumexp_weight: Optional[float] = None,
-):
-    Pos, Vocab = pred_ids.resolve_axis((Pos, Vocab))
-    # need to roll the target tokens back by one so that each token is predicting the next token
-    target_y = hax.roll(true_ids, -1, Pos)
-    target_y = hax.nn.one_hot(target_y, Vocab, dtype=pred_ids.dtype)  # type: ignore
-
-    # one everywhere except the last token
-    not_last_loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)  # type: ignore
-    if loss_mask is not None:
-        loss_mask = loss_mask * not_last_loss_mask
-    else:
-        loss_mask = not_last_loss_mask
-
-    return cross_entropy_and_logsumexp_penalty(
-        pred_ids,
-        Vocab,
-        target_y,
-        reduction=reduction,
-        reduction_axis=reduction_axis,
-        where=loss_mask,
-        logsumexp_weight=logsumexp_weight,
-    )
-
-
-
-def cross_entropy_and_logsumexp_penalty(
-    pred_y: NamedArray,
-    Vocab: hax.Axis,
-    target_y: NamedArray,
-    *,
-    reduction: Optional[hax.ReductionFunction] = hax.mean,
-    reduction_axis: Optional[hax.AxisSelection] = None,
-    where: Optional[NamedArray] = None,
-    logsumexp_weight=0.0,
-) -> NamedArray:
-    """A loss function that combines cross entropy loss with a logsumexp penalty."""
-
-    loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
-
-    if logsumexp_weight is not None and logsumexp_weight != 0.0:
-        loss = loss + logsumexp_weight * (log_normalizers**2)
-
-    return hax.nn.loss.maybe_reduce_loss(loss, reduction, reduction_axis, where)
-
-
-
-def fused_cross_entropy_and_logsumexp_penalty(
-        Vocab: hax.Axis,
-        Embed: hax.AxisSelector,
-        pred_embeddings: NamedArray,
-        pred_lm_head: NamedArray,
-        target_y: NamedArray,
-        *,
-        reduction: Optional[hax.ReductionFunction] = hax.mean,
-        reduction_axis: Optional[hax.AxisSelection] = None,
-        where: Optional[NamedArray] = None,
-        logsumexp_weight=0.0,
-) -> NamedArray:
-    """A loss function that combines cross entropy loss with a logsumexp penalty."""
-
-    loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
-
-    if logsumexp_weight is not None and logsumexp_weight != 0.0:
-        loss = loss + logsumexp_weight * (log_normalizers**2)
-
-    return hax.nn.loss.maybe_reduce_loss(loss, reduction, reduction_axis, where)
-
-
+import functools
 from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+
 import haliax as hax
 from haliax import NamedArray
 from haliax.nn import cross_entropy_loss_and_log_normalizers
@@ -152,6 +68,26 @@ def next_token_loss(
         logsumexp_weight=logsumexp_weight,
         block_size=block_size,  # Pass block_size
     )
+
+
+def cross_entropy_and_logsumexp_penalty(
+    pred_y: NamedArray,
+    Vocab: hax.Axis,
+    target_y: NamedArray,
+    *,
+    reduction: Optional[hax.ReductionFunction] = hax.mean,
+    reduction_axis: Optional[hax.AxisSelection] = None,
+    where: Optional[NamedArray] = None,
+    logsumexp_weight=0.0,
+) -> NamedArray:
+    """A loss function that combines cross entropy loss with a logsumexp penalty."""
+
+    loss, log_normalizers = cross_entropy_loss_and_log_normalizers(pred_y, Vocab, target_y)
+
+    if logsumexp_weight is not None and logsumexp_weight != 0.0:
+        loss = loss + logsumexp_weight * (log_normalizers**2)
+
+    return hax.nn.loss.maybe_reduce_loss(loss, reduction, reduction_axis, where)
 
 
 def fused_cross_entropy_loss_and_logsumexp_penalty(
@@ -237,8 +173,6 @@ def block_wise_cross_entropy_loss(
     #
     # ensure block size divides vocab size
     if vocab_size % block_size != 0:
-        todo handle stragglers
-        # raise ValueError("Vocab size must be a multiple of block size")
         has_stragglers = True
     else:
         has_stragglers = False
@@ -252,13 +186,14 @@ def block_wise_cross_entropy_loss(
     # We don't need this b/c we're using one-hot targets
     # initial_sumV = hax.full(labels_y.axes, 0.0)
 
-    def process_block(block_idx, acc):
+    def process_block(block_idx, acc, current_block_size):
         """
         Process a single block of the Vocab dimension.
 
         Args:
             block_idx (int): Index of the current block.
             acc (Tuple[NamedArray, NamedArray, jnp.ndarray]): Accumulators for loss, logsumexp, and max logits.
+            current_block_size (int): Size of the current block (used for stragglers).
 
         Returns:
             Tuple[NamedArray, NamedArray, jnp.ndarray]: Updated accumulators
@@ -266,10 +201,10 @@ def block_wise_cross_entropy_loss(
         O_prev, logsumexp_prev, max_prev = acc
 
         start = block_idx * block_size
-        Block = Label.resize(block_size)
+        Block = Label.resize(current_block_size)
 
         # Materialize the logits for the current block
-        lm_head_b = pred_lm_head[Label, hax.dslice(start, block_size)]  # [Contract, Block]
+        lm_head_b = pred_lm_head[Label, hax.dslice(start, Block)]  # [Contract, Block]
         logits_b = hax.dot(pred_embeddings, lm_head_b, axis=Contract)
 
         # Update max and logsumexp
@@ -288,14 +223,18 @@ def block_wise_cross_entropy_loss(
     (o, log_z, max_logits) = jax.lax.fori_loop(
         lower=0,
         upper=num_blocks,
-        body_fun=process_block,
+        body_fun=functools.partial(process_block, current_block_size=block_size),
         init_val=(initial_O, initial_logsumexp, initial_max),  # , initial_sumV
     )
 
+    if has_stragglers:
+        # Handle the stragglers
+        remainder_size = vocab_size - num_blocks * block_size
+        o, log_z, _ = process_block(num_blocks, (o, log_z, max_logits), remainder_size)
+
     # unnecessary if we're using one-hot targets
     # logz_outer = hax.einsum("->...", log_z, sum_v)
-    logz_outer = log_z
-    o = logz_outer - o
+    o = log_z - o
 
     return o, log_z
 

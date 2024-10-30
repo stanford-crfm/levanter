@@ -24,6 +24,7 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 from ray.actor import ActorHandle
+from ray.runtime_env import RuntimeEnv
 
 from levanter.data.dataset import AsyncDataset
 from levanter.store._prefetch_actor import QueueEmpty, RayPrefetchQueue
@@ -32,6 +33,7 @@ from levanter.utils.py_utils import Stopwatch
 from ..data._preprocessor import BatchProcessor, BatchProcessorPool, BatchResult, dict_from_record_batch
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_datasource import ShardedDataSource
+from ..utils.jax_utils import local_cpu_mesh
 from ..utils.ray_utils import (
     ExceptionInfo,
     RefBox,
@@ -908,7 +910,7 @@ A message that can be sent from a reader task to the writer task.
 _TIME_BETWEEN_WRITES = 20.0  # seconds
 
 
-@ray.remote(num_cpus=1)
+@ray.remote(num_cpus=1, runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORM_NAME": "cpu", "TPU_VISIBLE_DEVICES": "", "ALLOW_MULTIPLE_LIBTPU_LOAD": "1"}))
 def _core_writer_task(
     parent,
     cache_dir,
@@ -938,9 +940,10 @@ def _core_writer_task(
         def on_write(ledger):
             ray.get(parent._notify_updated_ledger.remote(ledger))
 
-        sharded_cache_writer = ShardedCacheWriter(
-            cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
-        )
+        with local_cpu_mesh():
+            sharded_cache_writer = ShardedCacheWriter(
+                cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
+            )
 
         options = initial_ledger.metadata.options
         num_groups = min(options.num_shard_groups or 1000000, len(source.shard_names))

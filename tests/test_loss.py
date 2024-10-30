@@ -132,21 +132,32 @@ def test_multiple_blocks(axes, test_data):
 
 
 def test_block_size_not_dividing_vocab(axes, test_data):
-    """
-    Test that a ValueError is raised when block_size does not divide vocab_size.
-    """
     Batch, Seq, Embed, Vocab = axes
     pred_embeddings, pred_lm_head, true_ids = test_data
 
-    with pytest.raises(ValueError, match="Vocab size must be a multiple of block size"):
-        block_wise_cross_entropy_loss(
-            pred_embeddings=pred_embeddings,
-            pred_lm_head=pred_lm_head,
-            Contract=Embed,
-            Label=Vocab,
-            labels_y=true_ids,
-            block_size=3,  # 4 is not divisible by 3
-        )
+    # Set block_size that does not divide vocab_size
+    block_size = 3  # vocab_size=4
+
+    # should be fine now
+    loss_block, logz_block = block_wise_cross_entropy_loss(
+        pred_embeddings=pred_embeddings,
+        pred_lm_head=pred_lm_head,
+        Contract=Embed,
+        Label=Vocab,
+        labels_y=true_ids,
+        block_size=block_size,
+    )
+
+    # Compute full loss
+    loss_full, logz_full = cross_entropy_loss_and_log_normalizers(
+        pred_y=hax.dot(pred_embeddings, pred_lm_head, axis="embed"),
+        Label=Vocab,
+        target_y=hax.nn.one_hot(true_ids, Vocab, dtype=pred_embeddings.dtype),
+    )
+
+    # Assert that the losses are close
+    assert hax.all(hax.isclose(loss_full, loss_block, atol=1e-6)), "Block-wise loss does not match full loss."
+    assert hax.all(hax.isclose(logz_full, logz_block, atol=1e-6)), "Block-wise logz does not match full logz."
 
 
 def test_vocab_size_less_than_block_size(axes, test_data):
@@ -159,15 +170,26 @@ def test_vocab_size_less_than_block_size(axes, test_data):
     # Set block_size greater than vocab_size
     block_size = 5  # vocab_size=4
 
-    with pytest.raises(ValueError, match="Vocab size must be a multiple of block size"):
-        block_wise_cross_entropy_loss(
-            pred_embeddings=pred_embeddings,
-            pred_lm_head=pred_lm_head,
-            Contract=Embed,
-            Label=Vocab,
-            labels_y=true_ids,
-            block_size=block_size,
-        )
+    # should be fine now
+    loss_block, logz_block = block_wise_cross_entropy_loss(
+        pred_embeddings=pred_embeddings,
+        pred_lm_head=pred_lm_head,
+        Contract=Embed,
+        Label=Vocab,
+        labels_y=true_ids,
+        block_size=block_size,
+    )
+
+    # Compute full loss
+    loss_full, logz_full = cross_entropy_loss_and_log_normalizers(
+        pred_y=hax.dot(pred_embeddings, pred_lm_head, axis="embed"),
+        Label=Vocab,
+        target_y=hax.nn.one_hot(true_ids, Vocab, dtype=pred_embeddings.dtype),
+    )
+
+    # Assert that the losses are close
+    assert hax.all(hax.isclose(loss_full, loss_block, atol=1e-6)), "loss does not match full loss."
+    assert hax.all(hax.isclose(logz_full, logz_block, atol=1e-6)), "logz does not match full logz."
 
 
 def test_large_vocab(axes):
