@@ -1,14 +1,17 @@
 # Model configuration
 model:
-  type: llama
-  seq_len: 2048
+  activation_function: silu
+  gradient_checkpointing: true
   hidden_dim: 4096
+  initializer_range: 0.02
   intermediate_dim: 11008
-  num_layers: 32
+  layer_norm_epsilon: 1.0e-05
   num_heads: 32
   num_kv_heads: 32
-  use_flash_attention: true
-  flash_attention_block_size: 512
+  num_layers: 32
+  reference_checkpoint: meta-llama/Llama-2-7b-hf
+  seq_len: 4096
+  type: llama
   use_bias: false
   use_layer_norm_weight: false
 
@@ -19,7 +22,7 @@ trainer:
     type: wandb
     project: "levanter-sft"
     tags: ["llama", "sft"]
-  num_train_steps: 750000
+  num_train_steps: 1218
   train_batch_size: 64
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
