@@ -17,6 +17,7 @@ from levanter.compat.hf_checkpoints import HFCompatConfig, ModelWithHfSerializat
 from levanter.data.audio import AudioIODatasetConfig, AudioMixtureDatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig, AudioTextExample
 from levanter.models.whisper import WhisperConfig
+from levanter.models.diva import diva_connector_only
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -45,6 +46,7 @@ class TrainASRConfig:
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
+    diva_training: bool = False
 
 
 def main(config: TrainASRConfig):
@@ -136,9 +138,14 @@ def main(config: TrainASRConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(training_key, model_init=lambda: config.model.build_asr(Vocab, key=model_key))
+        state = trainer.initial_state(training_key, model_init=lambda: config.model.build_asr(Vocab, key=model_key), )
 
         if int(state.step) == 0:
+            if config.diva_training:
+                state = dataclasses.replace(state, model=None)
+                model = config.model.asr_model_type.init(Vocab, config.model, key=model_key, init_from_submodels=True)
+                model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
+                state = dataclasses.replace(state, model=model, is_trainable=diva_connector_only(model))
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model
@@ -164,7 +171,7 @@ def main(config: TrainASRConfig):
             hax_eval_dataset = AudioTextDataset(
                 eval_dataset,
                 Pos,
-                [config.model.Mels, config.model.MelPos],
+                config.model.AudioPos,
                 KeyPos,
                 ignore_index=config.data.pad_token_id,
             )
