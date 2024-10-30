@@ -233,32 +233,59 @@ class TextUrlDataSource(ShardedDataSource[str]):
         compression = "infer"
         if url.endswith(".zstd"):  # hacky way to detect zstd
             compression = "zstd"
-        with fsspec.open(url, "r", compression=compression) as f:
-            format = _sniff_format_for_dataset(url)
-            match format:
-                case ".jsonl":
+
+        format = _sniff_format_for_dataset(url)
+        match format:
+            case ".jsonl":
+                with fsspec.open(url, "r", compression=compression) as f:
                     # TODO: would be nice if we could seek faster than this. Right now, all we do is skip json parsing
                     # which is not nothing, but not ideal.
                     for line in f:
                         if i >= row:
                             yield json.loads(line)[self.text_key]
                         i += 1
-                case ".txt":
+            case ".txt":
+                with fsspec.open(url, "r", compression=compression) as f:
                     for line in f:
                         if i >= row:
                             yield line
                         i += 1
-                case ".json":
+            case ".json":
+                with fsspec.open(url, "r", compression=compression) as f:
                     data = json.load(f)
                     for doc in data[row:]:
                         yield doc[self.text_key]
-                case ".parquet":
-                    table = pq.read_table(f)
-                    sliced_table = table.slice(row)
-                    for record in sliced_table.to_pylist():
-                        yield record[self.text_key]  # assumes text_key is in record
-                case _:
-                    raise ValueError(f"Unknown format {format}")
+            case ".parquet":
+                with fsspec.open(url, "rb", compression=compression) as f:
+                    parquet_file = pq.ParquetFile(f)
+                    total_rows = parquet_file.metadata.num_rows
+                    if row >= total_rows:
+                        return iter([])
+
+                    num_row_groups = parquet_file.metadata.num_row_groups
+
+                    # Compute cumulative row counts
+                    row_counts = [parquet_file.metadata.row_group(i).num_rows for i in range(num_row_groups)]
+                    cumulative_rows = [0]
+                    for count in row_counts:
+                        cumulative_rows.append(cumulative_rows[-1] + count)
+
+                    # Find the starting row group and row within it
+                    for idx, cum_row in enumerate(cumulative_rows):
+                        if cum_row > row:
+                            row_group_index = idx - 1
+                            start_row_in_group = row - cumulative_rows[row_group_index]
+                            break
+
+                    # Read from the starting row group onwards
+                    for rg_idx in range(row_group_index, parquet_file.num_row_groups):
+                        table = parquet_file.read_row_group(rg_idx, columns=[self.text_key])
+                        if rg_idx == row_group_index:
+                            table = table.slice(start_row_in_group)
+                        for record in table.to_pylist():
+                            yield record[self.text_key]
+            case _:
+                raise ValueError(f"Unknown format {format}")
 
 
 class AudioTextUrlDataSource(ShardedDataSource[Tuple[np.ndarray, int, str]]):
@@ -448,10 +475,35 @@ class ParquetDataSource(ShardedDataSource[dict]):
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
         with fsspec.open(url, "rb", compression="infer") as f:
-            table = pq.read_table(f)
-            sliced_table = table.slice(row)  # zero-copy slicing
-            for record in sliced_table.to_pylist():
-                yield record
+            parquet_file = pq.ParquetFile(f)
+            total_rows = parquet_file.metadata.num_rows
+            if row >= total_rows:
+                return iter([])
+
+            num_row_groups = parquet_file.metadata.num_row_groups
+
+            # Compute cumulative row counts
+            row_counts = [parquet_file.metadata.row_group(i).num_rows for i in range(num_row_groups)]
+            cumulative_rows = [0]
+            for count in row_counts:
+                cumulative_rows.append(cumulative_rows[-1] + count)
+
+            # find starting row group and also find the row within it
+            for idx, cum_row in enumerate(cumulative_rows):
+                if cum_row > row:
+                    row_group_index = idx - 1
+                    start_row_in_group = row - cumulative_rows[row_group_index]
+                    break
+
+            # read from the starting row group onwards
+            for rg_idx in range(row_group_index, parquet_file.num_row_groups):
+                table = parquet_file.read_row_group(rg_idx)
+
+                # if we're in the row group we want, slice the table at/from the row we want
+                if rg_idx == row_group_index:
+                    table = table.slice(start_row_in_group)
+
+                yield from table.to_pylist()
 
 
 def _mk_shard_name_mapping(urls):
