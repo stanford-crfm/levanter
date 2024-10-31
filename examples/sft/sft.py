@@ -89,9 +89,9 @@ def train(config: SFTConfig):
     train_dataset = PermutationDataset(train_dataset, data_key)
 
     # Then wrap for epochs
-    if config.epoch > 0:
-        logger.info(f"Wrapping dataset for {config.epoch} epochs")
-        train_dataset = EpochDataset(train_dataset, max_epochs=config.epoch)
+    # if config.epoch > 0:
+    #     logger.info(f"Wrapping dataset for {config.epoch} epochs")
+    #     train_dataset = EpochDataset(train_dataset, max_epochs=config.epoch)
 
     logger.info("Creating optimizer")
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
