@@ -13,11 +13,10 @@ from asyncio import InvalidStateError
 from concurrent.futures import Future as threading_Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar, Union
 
 import deepdiff
 import fsspec.core
-import humanfriendly
 import jax
 import numpy as np
 import pyarrow as pa
@@ -37,6 +36,7 @@ from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_b
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_datasource import ShardedDataSource
 from ..utils.fsspec_utils import async_remove
+from ..utils.fsspec_utils import exists as fsspec_exists
 from ..utils.ray_utils import (
     ExceptionInfo,
     RefBox,
@@ -83,6 +83,10 @@ class CacheOptions:
 
     @property
     def target_bytes_per_flush(self):
+        if isinstance(self.target_size_per_flush, int):
+            return self.target_size_per_flush
+        import humanfriendly
+
         return humanfriendly.parse_size(self.target_size_per_flush)
 
     @staticmethod
@@ -667,6 +671,9 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
                 # TODO: measure.
                 memory=2 * self._options.target_bytes_per_flush,
             ).remote(current_actor_handle(), cache_dir, self._ledger, source, options, processor)
+
+            self._tokenize_pbar = tqdm(total=len(source.shard_names), desc="Tokenizing", unit="shard")
+
         except Exception:
             # Ray behaves poorly if the constructor of an actor fails, so we catch and log here
             # this also propagates to the finished promise, so we can handle it there
@@ -753,6 +760,19 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
 
         asyncio.create_task(_do_notify_async())
 
+    def _report_progress(self, report: "_ProgressReport"):
+        import humanfriendly
+
+        self._tokenize_pbar.update(report.total_shards_completed)
+        mb_str = humanfriendly.format_size(report.total_bytes)
+        self._tokenize_pbar.set_postfix(
+            {
+                "rows": report.total_rows,
+                "shards": report.total_shards_completed,
+                "mb": mb_str,
+            }
+        )
+
 
 def _get_builder_actor(split, cache_dir, shard_source, processor, options=CacheOptions.default()):
     name = f"lev_cache_manager::{split}::{cache_dir}"
@@ -816,14 +836,22 @@ def _core_writer_task(
     # 1. write the 0th shard group to the output cache directly, updating metrics as we go
     # 2. in the background, start processing other shard groups to temporary caches
     # 3. once (1) is done, we start copying the temporary caches to the output cache (in order)
-    # for now we're going to punt on (1)
+
+    # We notify the parent actor of progress and updates to the ledger.
+    # We special-case the 0'th ledger because we commit it to the output cache directly.
+    def report_fn(report: _ProgressReport, ledger: CacheLedger):
+        parent._report_progress.remote(report)
+
+    def report_fn_first_group(report: _ProgressReport, ledger: CacheLedger):
+        parent._report_progress.remote(report)
+        parent._notify_updated_ledger.remote(ledger)
+
     with log_failures_to(parent):
         temporary_cache_path = os.path.join(cache_dir, "___temp")
 
         paths: dict[str, str] = {}
         ledgers: dict[str, CacheLedger | None] = {}
-        already_finished_paths: list[str] = []
-        refs: dict[str, ray.ObjectRef] = {}
+        write_refs: dict[str, ray.ObjectRef] = {}
 
         shard_groups = _assign_shards_to_groups(source, options.num_shard_groups)
 
@@ -832,22 +860,31 @@ def _core_writer_task(
         )
 
         unit = "shard" if len(shard_groups) == len(source.shard_names) else "shard group"
-        pbar = tqdm(total=len(shard_groups), desc="Tokenizing", unit=unit)
 
         processor_ref = ray.put(processor)
         source_ref = ray.put(source)
 
-        for group_name, shards in shard_groups.items():
-            path = os.path.join(temporary_cache_path, group_name)
-            paths[group_name] = path
+        # We treat the first group specially: we tokenize it directly to the output cache (since it comes first)
+        # This enables us to expose data quickly
+        first_group = next(iter(shard_groups), None)
 
-            ledger = _try_load(path)
+        for group_name, shards in shard_groups.items():
+            if group_name == first_group:
+                group_out_path = cache_dir
+            else:
+                group_out_path = os.path.join(temporary_cache_path, group_name)
+
+            paths[group_name] = group_out_path
+
+            ledger = _try_load(group_out_path)
             ledgers[group_name] = ledger
 
             if ledger is not None:
-                already_finished_paths.append(path)
-                pbar.update(1)
+                if group_name == first_group:
+                    parent._notify_updated_ledger.remote(ledger)
                 continue
+
+            report_fn = report_fn_first_group if group_name == first_group else report_fn
 
             ref = (
                 ray.remote(_tokenize_one_shard_group)
@@ -860,10 +897,10 @@ def _core_writer_task(
                     retry_exceptions=True,
                     max_retries=10,
                 )
-                .remote(os.path.join(temporary_cache_path, group_name), source_ref, shards, processor_ref, options)
+                .remote(group_out_path, source_ref, shards, processor_ref, options, report_fn, parent)
             )
 
-            refs[group_name] = ref
+            write_refs[group_name] = ref
 
         # now we start copying the temporary caches to the output cache, in order. (essentially concatenating them)
         # This logic is a bit hairy thanks to resumes.
@@ -891,11 +928,13 @@ def _core_writer_task(
 
         copy_refs: dict[str, ray.ObjectRef] = {}
         last_ref: ray.ObjectRef | None = None
+        copying_pbar = tqdm(total=len(shard_groups), desc="Copying", unit=unit, leave=False, position=1)
 
         for group in shard_groups:
             # first make sure it's either done this run or already done
-            if refs.get(group) is not None:
-                this_ledger = ray.get(refs[group])
+            if write_refs.get(group) is not None:
+                this_ledger = ray.get(write_refs[group])
+
                 ledgers[group] = ledger
             else:
                 this_ledger = ledgers[group]
@@ -903,8 +942,10 @@ def _core_writer_task(
             assert this_ledger is not None
             # see if we already copied this group, meaning all the shards are in the permanent cache
             shards_copied = sum(1 if shard in initial_ledger.finished_shards else 0 for shard in shard_groups[group])
-            if shards_copied == len(shard_groups[group]):
+            if shards_copied == len(shard_groups[group]) or group == first_group:
                 assert initial_ledger.total_num_rows >= total_rows_from_caches
+                copying_pbar.update(1)
+
             elif shards_copied > 0:
                 # In theory we can handle this, but it's a bit tricky, so we're going to punt for now
                 raise RuntimeError("Some shards were copied but not all. This should never happen.")
@@ -922,30 +963,49 @@ def _core_writer_task(
                 )
                 copy_refs[group] = last_ref
 
-            # update the data offset tree
+            # update the offset information: data offsets and total rows
             this_cache = TreeStore.open(processor.output_exemplar, paths[group], mode="r", cache_metadata=True)
             data_offset_tree = jax.tree.map(
                 operator.add, data_offset_tree, jax.tree.map(lambda x: x.data_size, this_cache.tree)
             )
             total_rows_from_caches += this_ledger.total_num_rows
 
+        # this little bit is totally unnecessary but nice logging
+        for group in shard_groups:
+            if group == first_group:
+                continue
+
+            if copy_refs.get(group) is not None:
+                ray.wait([copy_refs[group]], fetch_local=False)
+                copying_pbar.update(1)
+
+        # refs form a linked list implicitly, so we can just wait on the last one
         if last_ref is not None:
             ledger = ray.get(last_ref)
         else:
             ledger = initial_ledger
 
         ledger.is_finished = True
+        ledger._serialize_and_commit(cache_dir)
         parent._notify_updated_ledger.remote(ledger)
 
         # clean up the temporary caches
-        async def cleanup():
-            futures = []
-            for path in already_finished_paths:
+        _clean_up_temp_caches(paths, first_group)
+
+
+def _clean_up_temp_caches(paths, first_group):
+    async def cleanup():
+        futures = []
+        for group, path in paths.items():
+            if group == first_group:
+                continue
+
+            if fsspec_exists(path):
                 futures.append(async_remove(path, recursive=True))
 
-            await asyncio.gather(*futures)
+        await asyncio.gather(*futures)
 
-        asyncio.run(cleanup())
+    asyncio.run(cleanup())
 
 
 def _assign_shards_to_groups(source: ShardedDataSource, num_groups: int | None) -> dict[str, Sequence[str]]:
@@ -1117,12 +1177,22 @@ async def _copy_data_from_one_shard_to_permanent_memory(
     return
 
 
+@dataclass
+class _ProgressReport:
+    total_rows: int
+    total_bytes: float
+    total_shards_completed: int
+    # TODO: other counts
+
+
 def _tokenize_one_shard_group(
     temporary_cache_path: str,
     source: ShardedDataSource,
     shards: list[str],
     processor: BatchProcessor,
     options: CacheOptions,
+    report_fn: Callable[[_ProgressReport, CacheLedger], None],
+    force_unfinalized: bool,
 ) -> CacheLedger:
     # ray breaks if this is top level
     import humanfriendly
@@ -1146,9 +1216,13 @@ def _tokenize_one_shard_group(
     total_rows = ledger.total_num_rows
     found_shard_with_rows = False
 
+    report = _ProgressReport(total_rows, 0, 0)
+
     for shard_name in shards:
         if shard_name in ledger.finished_shards:
             logger.info(f"Shard {shard_name} already processed.")
+            report.total_shards_completed += 1
+            report_fn(report, ledger)
             continue
 
         logger.debug(f"Processing {shard_name}.")
@@ -1185,16 +1259,27 @@ def _tokenize_one_shard_group(
 
             if batch_byte_size > options.target_bytes_per_flush:
                 writer.write_prepared_batch(shard_name, this_batch_size, prepared_batch)
+                report.total_rows += this_batch_size
+                report.total_bytes += batch_byte_size
+
+                report_fn(report, writer.ledger)
+
                 nice_bytes = humanfriendly.format_size(batch_byte_size)
                 logger.debug(
                     f"Processed {rows_this_shard} rows. Wrote {this_batch_size} rows to {shard_name}. ({nice_bytes})"
                 )
+                # print(f"Processed {rows_this_shard} rows. Wrote {this_batch_size} rows to {shard_name}. ({nice_bytes})", flush=True)
                 this_batch_size = 0
                 prepared_batch = None
 
         if prepared_batch is not None:
             batch_byte_size = sum(prepared_batch.byte_size for prepared_batch in jax.tree.leaves(prepared_batch))
             nice_bytes = humanfriendly.format_size(batch_byte_size)
+
+            report.total_rows += this_batch_size
+            report.total_bytes += batch_byte_size
+            report_fn(report, writer.ledger)
+
             writer.write_prepared_batch(shard_name, this_batch_size, prepared_batch)
             logger.debug(
                 f"Processed {rows_this_shard} rows. Wrote {this_batch_size} rows to {shard_name}. ({nice_bytes})"
@@ -1202,11 +1287,13 @@ def _tokenize_one_shard_group(
             this_batch_size = 0
             prepared_batch = None
 
-        total_rows += rows_this_shard
-
+        report.total_shards_completed += 1
         writer.finish_shard(shard_name, rows_this_shard)
 
-    writer.finish()
+        report_fn(report, writer.ledger)
+
+    if not force_unfinalized:
+        writer.finish()
 
     logger.info(f"Finished processing {len(shards)} shards. Wrote {total_rows} rows.")
 
