@@ -3,6 +3,7 @@ import concurrent
 import copy
 import dataclasses
 import logging as pylogging
+import operator
 import os
 import pprint
 import random
@@ -12,24 +13,26 @@ from asyncio import InvalidStateError
 from concurrent.futures import Future as threading_Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, TypeVar, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, TypeVar, Union
 
 import deepdiff
 import fsspec.core
 import humanfriendly
 import jax
+import numpy as np
 import pyarrow as pa
 import ray
+import tensorstore as ts
 from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 from ray.actor import ActorHandle
+from tqdm_loggable.auto import tqdm
 
+from levanter.data import batched
 from levanter.data.dataset import AsyncDataset
-from levanter.store._prefetch_actor import QueueEmpty, RayPrefetchQueue
-from levanter.utils.py_utils import Stopwatch
 
-from ..data._preprocessor import BatchProcessor, BatchProcessorPool, BatchResult, dict_from_record_batch
+from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_datasource import ShardedDataSource
 from ..utils.ray_utils import (
@@ -40,8 +43,7 @@ from ..utils.ray_utils import (
     log_failures_to,
     ser_exc_info,
 )
-from ..utils.thread_utils import ExceptionTrackingThread
-from .jagged_array import PreparedBatch
+from .jagged_array import JaggedArrayStore, PreparedBatch
 from .tree_store import TreeStore
 
 
@@ -69,20 +71,13 @@ class CacheOptions:
     """
 
     num_shard_groups: Optional[int] = 128
-    """Number of groups to divide the shards into. This is used to parallelize the cache building process without
-    overloading Ray. If None, all shards will be in their own group."""
-    shard_order_randomization_key: Optional[int] = 0
-    """A key used to randomize the order of the shards before building and grouping."""
-    batch_size: int = 128
-    """The batch size to use when processing the data. This is used to control the memory usage of the cache building
-    process. Lower values will use less memory but take somewhat longer to build the cache."""
 
     # the below options don't actually impact the cache's result, but do impact construction
     target_size_per_flush: int | str = "512MB"
     """The number of bytes to buffer before flushing to disk. This is used to control the memory usage of the cache
     building process. Lower values will use less memory but could take somewhat longer to build the cache."""
-    prefetch_per_group: int = 4
-    """The number of batches to prefetch per group. This is used to keep the processors busy and to reduce the time"""
+
+    batch_size: int = 128
 
     @property
     def target_bytes_per_flush(self):
@@ -99,14 +94,14 @@ class CacheOptions:
         """
         if batch_size is None:
             batch_size = 128
-        return CacheOptions(num_shard_groups=None, shard_order_randomization_key=None, batch_size=batch_size)
+        return CacheOptions(num_shard_groups=None, batch_size=batch_size)
 
     @staticmethod
     def one_group():
         """
         For testing, disables all the fancy features of the cache. This makes it easier to predict the behavior
         """
-        return CacheOptions(num_shard_groups=1, shard_order_randomization_key=None, batch_size=128)
+        return CacheOptions(num_shard_groups=1, batch_size=128)
 
 
 def build_or_load_cache(
@@ -116,7 +111,6 @@ def build_or_load_cache(
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     options: CacheOptions = CacheOptions.default(),
-    force_flush: bool = False,
     split: str = "test",
 ) -> "TreeCache[U]":
     """
@@ -144,8 +138,6 @@ def build_or_load_cache(
 
         options: Configuration for the cache. This is used to configure a few parts of the cache creation process
 
-        force_flush: for testing, forces the cache to flush after every batch. This is useful for testing.
-
     Returns:
        (TreeCache) A TreeCache object that can be used to read the cache.
 
@@ -156,7 +148,6 @@ def build_or_load_cache(
         shard_source=input_shards,
         processor=processor,
         options=options,
-        force_flush=force_flush,
         split=split,
     )
 
@@ -320,12 +311,11 @@ class TreeCache(AsyncDataset[T_co]):
         shard_source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         options: Optional["CacheOptions"] = None,
-        force_flush: bool = False,
         split: str = "test",
     ) -> "TreeCache[U]":
         if options is None:
             options = CacheOptions.default()
-        metadata = CacheMetadata(options=options, preprocessor_metadata=processor.metadata)
+        metadata = CacheMetadata(preprocessor_metadata=processor.metadata)
         try:
             return TreeCache.load(cache_dir, processor.output_exemplar, metadata)
         except FileNotFoundError:
@@ -334,7 +324,6 @@ class TreeCache(AsyncDataset[T_co]):
                 shard_source=shard_source,
                 processor=processor,
                 options=options,
-                force_flush=force_flush,
                 split=split,
             )
             return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
@@ -489,13 +478,11 @@ class CacheLedger:
     is_finished: bool = False
     finished_shards: List[str] = dataclasses.field(default_factory=list)
     field_counts: Dict[str, int] = dataclasses.field(default_factory=dict)
-    metadata: "CacheMetadata" = dataclasses.field(default_factory=lambda: CacheMetadata(CacheOptions(), {}))
+    metadata: "CacheMetadata" = dataclasses.field(default_factory=lambda: CacheMetadata({}))
 
     @staticmethod
-    def load_or_initialize(
-        cache_dir: str, source: ShardedDataSource, processor: BatchProcessor, config: "CacheOptions"
-    ):
-        metadata = CacheMetadata(options=config, preprocessor_metadata=processor.metadata)
+    def load_or_initialize(cache_dir: str, source: ShardedDataSource, processor: BatchProcessor):
+        metadata = CacheMetadata(preprocessor_metadata=processor.metadata)
         try:
             return CacheLedger.load(cache_dir, metadata)
         except FileNotFoundError:
@@ -531,7 +518,6 @@ class CacheLedger:
 @dataclass_json
 @dataclass(frozen=True)
 class CacheMetadata:
-    options: CacheOptions = CacheOptions.default()
     preprocessor_metadata: Optional[dict[str, Any]] = None
 
     def compare_to(self, other: "CacheMetadata") -> deepdiff.DeepDiff:
@@ -711,11 +697,10 @@ def _serialize_json_and_commit(path, obj):
         fs.copy(path, f"{path}.bak")
 
     for i in range(10):
-        with fsspec.open(f"{path}.tmp", "w") as file:
-            file.write(obj.to_json())
 
         try:
-            fs.rename(f"{path}.tmp", path)
+            with fsspec.open(path, "w") as file:
+                file.write(obj.to_json())
             break
         except FileNotFoundError:
             # this happens for some reason sometimes. It makes no sense.
@@ -740,7 +725,6 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         options: CacheOptions,
-        force_flush: bool,
     ):
         pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
@@ -751,7 +735,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             self._options = options
             self._updated_ledger_condition = asyncio.Condition()  # used to subscribe to metrics updates
 
-            self._ledger = CacheLedger.load_or_initialize(cache_dir, source, processor, options)
+            self._ledger = CacheLedger.load_or_initialize(cache_dir, source, processor)
 
             if self._ledger.is_finished:
                 self._finished_promise.set_result(None)
@@ -770,7 +754,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
                 # (we get twice from we need to concatenate prepared batches into the accumulator)
                 # TODO: measure.
                 memory=2 * self._options.target_bytes_per_flush,
-            ).remote(current_actor_handle(), cache_dir, self._ledger, source, processor, force_flush)
+            ).remote(current_actor_handle(), cache_dir, self._ledger, source, options, processor)
         except Exception:
             # Ray behaves poorly if the constructor of an actor fails, so we catch and log here
             # this also propagates to the finished promise, so we can handle it there
@@ -827,6 +811,9 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             pass
         self._do_notify()
 
+    def _child_failed(self, child: ray.actor.ActorHandle | str | None, exception: ExceptionInfo):
+        self._writer_exception(str(child), exception)
+
     def _notify_updated_ledger(self, ledger: CacheLedger):
         """
         Called by the cache writer when it has updated the ledger.
@@ -855,7 +842,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         asyncio.create_task(_do_notify_async())
 
 
-def _get_builder_actor(split, cache_dir, shard_source, processor, options=CacheOptions.default(), force_flush=False):
+def _get_builder_actor(split, cache_dir, shard_source, processor, options=CacheOptions.default()):
     name = f"lev_cache_manager::{split}::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
@@ -867,27 +854,13 @@ def _get_builder_actor(split, cache_dir, shard_source, processor, options=CacheO
         source=shard_source,
         processor=processor,
         options=options,
-        force_flush=force_flush,
     )
 
 
 #####
 # Core implementation starts below.
 #####
-# The main idea is to have a bunch of reader tasks that read batches, dispatch tokenization tasks, producing
-# a stream of tokenized batches. We then interleave these tokenized batches and write them to the cache.
-# The reader tasks are given a group of shards, which are implicitly concatenated together.
-
-
-@dataclass
-class _Batch:
-    """
-    A batch of data that has either been read or tokenized.
-    """
-
-    shard_name: str
-    row_indices: List[int]
-    payload: ray.ObjectRef
+# The main idea is to tokenize each shard group in parallel, and then write the results to the cache in order.
 
 
 @dataclass
@@ -898,14 +871,7 @@ class _ShardFinished:
 
     shard_name: str
     total_rows: int
-
-
-_Message = _Batch | _ShardFinished
-"""
-A message that can be sent from a reader task to the writer task.
-"""
-
-_TIME_BETWEEN_WRITES = 20.0  # seconds
+    path_to_shard: str
 
 
 @ray.remote(num_cpus=1)
@@ -914,17 +880,15 @@ def _core_writer_task(
     cache_dir,
     initial_ledger: CacheLedger,
     source: ShardedDataSource,
+    options: CacheOptions,
     processor,
-    force_flush: bool,
 ):
     """
     This is the main task that processes the data and writes it to the cache.
 
-    It chains together:
-        * 1 generator per shard group
-        * interleaving of the generators
-        * processing of the batches
-        * writing of the batches to the cache
+    It receives "finished shards" messages from the reader tasks, and copies the data from temporary files
+    to the cache directory.
+
     """
     pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
     logger.info("Starting writer task")
@@ -933,213 +897,482 @@ def _core_writer_task(
     # append a small random number to the name to avoid collisions
     name += f"::{random.randint(0, 1000)}"
 
+    # We want to make sure it's there
+    initial_ledger._serialize_and_commit(cache_dir)
+
+    # we want to do the following:
+    # 1. write the 0th shard group to the output cache directly, updating metrics as we go
+    # 2. in the background, start processing other shard groups to temporary caches
+    # 3. once (1) is done, we start copying the temporary caches to the output cache (in order)
+    # for now we're going to punt on (1)
     with log_failures_to(parent):
+        temporary_cache_path = os.path.join(cache_dir, "___temp")
 
-        def on_write(ledger):
-            ray.get(parent._notify_updated_ledger.remote(ledger))
+        paths: dict[str, str] = {}
+        ledgers: dict[str, CacheLedger | None] = {}
+        already_finished_paths: list[str] = []
+        refs: dict[str, ray.ObjectRef] = {}
 
-        sharded_cache_writer = ShardedCacheWriter(
-            cache_dir, initial_ledger, processor.output_exemplar, on_write=on_write
+        shard_groups = _assign_shards_to_groups(source, options.num_shard_groups)
+
+        logger.info(
+            f"Tokenizing {len(source.shard_names)} shards in {len(shard_groups)} groups to {temporary_cache_path}."
         )
 
-        options = initial_ledger.metadata.options
-        num_groups = min(options.num_shard_groups or 1000000, len(source.shard_names))
+        unit = "shard" if len(shard_groups) == len(source.shard_names) else "shard group"
+        pbar = tqdm(total=len(shard_groups), desc="Tokenizing", unit=unit)
 
-        processor_pool = _mk_processor_pool(processor, 0, num_groups * 4)
+        processor_ref = ray.put(processor)
+        source_ref = ray.put(source)
 
-        interleave: RayPrefetchQueue = RayPrefetchQueue(
-            lambda: _make_interleave(name, source, initial_ledger, processor_pool),
-            64,
-            producer_options={"num_cpus": 1, "name": f"{name}::interleave"},
-        )
+        for group_name, shards in shard_groups.items():
+            path = os.path.join(temporary_cache_path, group_name)
+            paths[group_name] = path
 
-        total_time = Stopwatch()
-        loading_time = Stopwatch()
-        append_time = Stopwatch()
-        flush_time = Stopwatch()
-        flush_amortized_time = Stopwatch()
+            ledger = _try_load(path)
+            ledgers[group_name] = ledger
 
-        current_prepared_batch: Optional[PyTree[PreparedBatch]] = None
-        current_shard_rows: dict[str, int] = {}
-        time_of_last_write = time.time()
-        batches_total = 0.0
-        flush_thread = None
-        finished_shards_last_flush: list = []
+            if ledger is not None:
+                already_finished_paths.append(path)
+                pbar.update(1)
+                continue
 
-        while True:
-            with total_time:  # 0.0051
-                try:
-                    cur_time = time.time()
-                    time_since_last_write = cur_time - time_of_last_write
-                    remaining_time = _TIME_BETWEEN_WRITES - time_since_last_write
-
-                    if current_prepared_batch is not None:
-                        with flush_amortized_time:  # 6e-4
-                            current_byte_size = sum(
-                                b.byte_size for b in jax.tree_util.tree_flatten(current_prepared_batch)[0]
-                            )
-                            should_flush = (
-                                force_flush
-                                or remaining_time <= 0
-                                or (current_byte_size >= options.target_bytes_per_flush)
-                            )
-                            if should_flush:
-                                with flush_time:  # 0.613s
-                                    if flush_thread is not None:
-                                        flush_thread.join()
-
-                                    flush_thread = ExceptionTrackingThread(
-                                        target=_write_batches,
-                                        args=(
-                                            sharded_cache_writer,
-                                            current_shard_rows,
-                                            current_prepared_batch,
-                                            finished_shards_last_flush,
-                                        ),
-                                    )
-                                    flush_thread.start()
-
-                                    current_prepared_batch = None
-                                    current_shard_rows = {}
-                                    finished_shards_last_flush = []
-
-                                    time_of_last_write = time.time()
-                                    continue
-                    else:
-                        remaining_time = _TIME_BETWEEN_WRITES
-
-                    with loading_time:
-                        try:
-                            message = interleave.get_next(timeout=max(remaining_time, 0.1))
-                        except QueueEmpty:
-                            logger.info("Writer running ahead of reader.")
-                            continue
-
-                    with append_time:
-                        match message:
-                            case _Batch(shard, row_indices, payload):
-                                batches_total += 1
-                                this_prepared_batch = ray.get(payload)
-                                if current_prepared_batch is None:
-                                    # TODO: actually check row indices
-                                    current_shard_rows = {shard: len(row_indices)}
-                                    current_prepared_batch = this_prepared_batch
-                                else:
-                                    current_shard_rows[shard] = current_shard_rows.get(shard, 0) + len(row_indices)
-                                    current_prepared_batch = _concat_prepared_batches(
-                                        current_prepared_batch, this_prepared_batch
-                                    )
-                                    del this_prepared_batch
-
-                                if force_flush:
-                                    _write_batches(
-                                        sharded_cache_writer,
-                                        current_shard_rows,
-                                        current_prepared_batch,
-                                        finished_shards_last_flush,
-                                    )
-                                    finished_shards_last_flush = []
-                                    current_prepared_batch = None
-                                    current_shard_rows = {}
-
-                            case _ShardFinished(shard, total_rows):
-                                finished_shards_last_flush.append((shard, total_rows))
-                            case _:
-                                raise AssertionError(f"Unexpected message type {type(message)}")
-
-                    # if batches_total % 1000 == 0:
-                    #     print(
-                    #         f"Processed {batches_total} batches: {loading_time.average()}s load,"
-                    #         f" {append_time.average()}s append, {flush_time.average()}s flush blocked, "
-                    #         f"{flush_amortized_time.average()}s amortized flush, "
-                    #         f"{total_time.average()}s total"
-                    #     )
-                except StopIteration:
-                    logger.info("Finished all shards")
-                    break
-                except Exception as e:
-                    logger.exception("Error while processing batch")
-                    raise e
-
-        # force a flush
-        if current_prepared_batch is not None or finished_shards_last_flush:
-            if flush_thread is not None:
-                flush_thread.join()
-            _write_batches(
-                sharded_cache_writer, current_shard_rows, current_prepared_batch, finished_shards_last_flush
+            ref = (
+                ray.remote(_tokenize_one_shard_group)
+                .options(  # type: ignore
+                    num_cpus=processor.num_cpus,
+                    num_gpus=processor.num_gpus,
+                    resources=processor.resources,
+                    memory=3 * 1024 * 1024 * 1024,  # made this up
+                    name=f"tokenize::{temporary_cache_path}::{group_name}",
+                    retry_exceptions=True,
+                    max_retries=10,
+                )
+                .remote(os.path.join(temporary_cache_path, group_name), source_ref, shards, processor_ref, options)
             )
 
-        sharded_cache_writer.finish()
+            refs[group_name] = ref
 
-        out = sharded_cache_writer.get_ledger()
+        # now we start copying the temporary caches to the output cache, in order. (essentially concatenating them)
+        # This logic is a bit hairy thanks to resumes.
+        # First, note that each TreeCache is a tree of JaggedArrayStores, and we need to copy each of these
+        # separately. We also need to update the ledger as we go.
+        # Second, note that JaggedArrayStores have two notions of length: the number of rows, and the data size.
+        # We store the number of rows in offsets[0], and the data size in offsets[offsets[0]], which is just the final offset.
+        # So we can keep a cache "locked" to a particular read size until we're ready by controlling the offsets.
+
+        # * When we load the permanent cache, we have already written some number of groups to it.
+        #   (We check this invariant with an assert)
+        # * We need to copy the remaining groups to the permanent cache, and update the ledger as we go.
+        # * To copy a group, we need to know the total number of rows in that group, as well as the "data offsets"
+        #   for the data in the cache. We can get the total number of rows from the ledger, and we also calculate
+        #   the data offsets for where the group goes in the permanent cache. This is just a running sum of the
+        #   data sizes of the previous groups. Because we have multiple JaggedArrayStores, this can be a pytree
+        #   of integers, one for each array.
+        # * Once we have finished the i'th cache and all caches < 1, we can "unlock" the data for the i'th cache
+        #   by updating the offset[0] of the permanent cache to the total number of rows through the i'th cache.
+        # * We also need to update the ledger with the total number of rows
+        permanent_cache = TreeStore.open(processor.output_exemplar, cache_dir, mode="a", cache_metadata=False)
+        # initialize the data offset tree
+        data_offset_tree = jax.tree_map(lambda x: 0, permanent_cache.tree)
+        total_rows_from_caches = 0
+
+        copy_refs: dict[str, ray.ObjectRef] = {}
+        last_ref: ray.ObjectRef | None = None
+
+        for group in shard_groups:
+            # first make sure it's either done this run or already done
+            if refs.get(group) is not None:
+                this_ledger = ray.get(refs[group])
+                ledgers[group] = ledger
+            else:
+                this_ledger = ledgers[group]
+
+            assert this_ledger is not None
+            # see if we already copied this group, meaning all the shards are in the permanent cache
+            shards_copied = sum(1 if shard in initial_ledger.finished_shards else 0 for shard in shard_groups[group])
+            if shards_copied == len(shard_groups[group]):
+                assert initial_ledger.total_num_rows >= total_rows_from_caches
+            elif shards_copied > 0:
+                # In theory we can handle this, but it's a bit tricky, so we're going to punt for now
+                raise RuntimeError("Some shards were copied but not all. This should never happen.")
+            else:
+                # we need to copy this group
+                ref_to_send = None if last_ref is None else RefBox(last_ref)
+                last_ref = _copy_cache.remote(
+                    cache_dir,
+                    paths[group],
+                    processor_ref,
+                    data_offset_tree,
+                    ref_to_send,
+                    total_rows_from_caches,
+                    parent,
+                )
+                copy_refs[group] = last_ref
+
+            # update the data offset tree
+            this_cache = TreeStore.open(processor.output_exemplar, paths[group], mode="r", cache_metadata=True)
+            data_offset_tree = jax.tree.map(
+                operator.add, data_offset_tree, jax.tree_map(lambda x: x.data_size, this_cache.tree)
+            )
+            total_rows_from_caches += this_ledger.total_num_rows
+
+        if last_ref is not None:
+            ledger = ray.get(last_ref)
+        else:
+            ledger = initial_ledger
+
+        ledger.is_finished = True
+        parent._notify_updated_ledger.remote(ledger)
+
+
+def _assign_shards_to_groups(source: ShardedDataSource, num_groups: int | None) -> dict[str, Sequence[str]]:
+    if num_groups is None or num_groups >= len(source.shard_names):
+        return {shard_name: [shard_name] for shard_name in source.shard_names}
+
+    shard_names = source.shard_names
+    num_shards_per_group = len(shard_names) // num_groups
+    # if we have a remainder, we'll just add it to the last group
+    out_groups = {
+        f"group_{i}": list(shard_names[i * num_shards_per_group : (i + 1) * num_shards_per_group])
+        for i in range(num_groups)
+    }
+    if len(shard_names) % num_shards_per_group != 0:
+        out_groups[f"group_{num_groups - 1}"].extend(shard_names[num_groups * num_shards_per_group :])
+
+    return out_groups  # type: ignore
+
+
+def _merge_ledgers(dest, source):
+    dest.total_num_rows += source.total_num_rows
+    for shard, rows in source.shard_rows.items():
+        current_value = dest.shard_rows.get(shard, 0)
+        assert current_value == 0, f"Shard {shard} already has {current_value} rows"
+        dest.shard_rows[shard] = rows
+
+    dest.finished_shards.extend(source.finished_shards)
+    dest.field_counts.update(source.field_counts)
+    return dest
+
+
+@ray.remote(num_cpus=4, memory=4 * 1024 * 1024 * 1024)
+def _copy_cache(dest_path, source_path, processor, data_offset_tree, last_ref: RefBox, rows_so_far, parent):
+    """
+    Copies the data from one cache to another, appending it to the end of the destination cache.
+
+    Once the copy is done and the last_ref is set, the data is "unlocked" in the destination cache by updating the
+    offsets[0] of the destination cache to the total number of rows in the cache.
+    Args:
+        dest_path:  The path to the destination cache.
+        source_path: The path to the source cache.
+        processor: The processor used to create the cache.
+        data_offset_tree: The data offset tree for the destination cache.
+        last_ref: The ref to wait on before updating the ledger.
+        rows_so_far: The total number of rows in the destination cache before this copy.
+
+    Returns:
+
+    """
+    with log_failures_to(parent):
+        asyncio.run(_extend_cache_with_other_cache(dest_path, source_path, processor, data_offset_tree, rows_so_far))
+        print("done copying", flush=True)
+        if last_ref is not None:
+            ray.wait([last_ref.ref], fetch_local=False)
+        print("done waiting", flush=True)
+        permanent_cache = TreeStore.open(processor.output_exemplar, dest_path, mode="a", cache_metadata=False)
+        dest_ledger = CacheLedger.load(dest_path)
+        source_ledger = CacheLedger.load(source_path)
+
+        new_num_rows = source_ledger.total_num_rows + rows_so_far
+
+        futures = jax.tree.leaves(jax.tree.map(lambda x: x.offsets[0].write(new_num_rows), permanent_cache.tree))
+        for future in futures:
+            future.result()
+
+        print("wrote rows", flush=True)
+
+        _merge_ledgers(dest_ledger, source_ledger)
+        dest_ledger._serialize_and_commit(dest_path)
+        assert not dest_ledger.is_finished
+        parent._notify_updated_ledger.remote(dest_ledger)
+        print("done", flush=True)
+        return dest_ledger
+
+
+async def _extend_cache_with_other_cache(
+    dest_path: str, source_path: str, processor: BatchProcessor, data_offset_tree: PyTree[int], row_offset
+) -> int:
+    """
+    Copies the data from one cache to another, appending it to the end of the destination cache.
+
+    Returns:
+        The number of rows in the source cache.
+    """
+    logger.info(f"Copying data from {source_path} to {dest_path}.")
+    dest = TreeStore.open(processor.output_exemplar, dest_path, mode="a", cache_metadata=False)
+    source = TreeStore.open(processor.output_exemplar, source_path, mode="r", cache_metadata=True)
+
+    source_num_rows = await source.async_len()
+
+    async def _copy_one_array(dest_array: JaggedArrayStore, source_array: JaggedArrayStore, data_offset: int):
+        """Copies **just the data array** from one shard to the permanent cache at a given offset."""
+        # TODO: it'd be good if we just didn't expose the full data array (but only the used part)
+        data_size = source_array.data_size
+        data = source_array.data[0:data_size]
+        print(f"starting to write data. {data.read().result()=}", flush=True)
+        print(f"{row_offset=}", flush=True)
+        futures: list[ts.Future] = []
+
+        # write_future = dest_array.data[data_offset : data_offset + source_array.data_size].write(data)
+        async with ts.Transaction() as txn:
+            dest = dest_array.data
+            out_end = data_offset + data_size
+            write_future = dest.with_transaction(txn)[data_offset:out_end].write(data)
+            futures.append(write_future)
+
+        if source_array.shapes is not None:
+            source_shapes = source_array.shapes[0:source_num_rows]
+            async with ts.Transaction() as txn:
+                dest = dest_array.shapes
+                out_end = row_offset + source_num_rows
+                shape_future = dest.with_transaction(txn)[row_offset:out_end].write(source_shapes)
+                futures.append(shape_future)
+            print("done writing shapes", flush=True)
+
+        source_offsets = source_array.offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
+        source_offsets = _virtual_offset(source_offsets, data_offset)
+
+        async with ts.Transaction() as txn:
+            dest = dest_array.offsets
+            out_end = row_offset + 1 + source_num_rows
+            offset_future = dest.with_transaction(txn)[row_offset + 1 : out_end].write(source_offsets)
+
+        print("hi", flush=True)
+        print(f"done writing offsets {source_offsets.domain}", flush=True)
+        print(f"done writing offsets {dest[row_offset+1:out_end].read().result()}", flush=True)
+
+        futures.append(offset_future)
+
+        out = await asyncio.gather(*futures)
+        print("done writing", flush=True)
         return out
 
+    futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
 
-def _concat_prepared_batches(
-    current_prepared_batch: PyTree[PreparedBatch], this_prepared_batch: PyTree[PreparedBatch]
+    await asyncio.gather(*jax.tree.leaves(futures))
+    logger.info(f"Finished copying data from {source_path} to {dest_path}.")
+
+    return source_num_rows
+
+
+def _virtual_offset(base: ts.TensorStore, offset_amount):
+    """
+    This function creates a new tensorstore that is a virtual offset of another tensorstore.
+    That is, it's y[i] = x[i] + offset_amount.
+    """
+
+    async def do_read(domain: ts.IndexDomain, array: np.ndarray, read_params: ts.VirtualChunkedReadParameters):
+        array[...] = (await base[domain].read()) + offset_amount
+
+    return ts.virtual_chunked(do_read, dtype=base.dtype, domain=base.domain, shape=base.shape)
+
+
+async def _copy_data_from_one_shard_to_permanent_memory(
+    dest_path: str,
+    source_path: str,
+    processor: BatchProcessor,
+    data_offset_tree: PyTree[int],
 ):
-    return jax.tree.map(lambda *bs: PreparedBatch.concat(bs), current_prepared_batch, this_prepared_batch)
+    """Copies from one tree store to the permanent cache at a given offset (for each leaf)"""
+    logger.info(f"Copying data from {source_path} to {dest_path}.")
+    dest = TreeStore.open(processor.output_exemplar, dest_path, mode="a", cache_metadata=False)
+    source = TreeStore.open(processor.output_exemplar, source_path, mode="r", cache_metadata=True)
+
+    def _copy_one_array(dest_array: JaggedArrayStore, source_array: JaggedArrayStore, data_offset: int):
+        # TODO: it'd be good if we just didn't expose the full data array (but only the used part)
+        data = source_array.data[0 : source_array.data_size]
+        # write_future = dest_array.data[data_offset : data_offset + source_array.data_size].write(data)
+        with ts.Transaction() as txn:
+            dest = dest_array.data
+            out_end = data_offset + source_array.data_size
+            write_future = dest.with_transaction(txn)[data_offset:out_end].write(data)
+
+        return write_future
+
+    futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
+
+    await asyncio.gather(*jax.tree.leaves(futures))
+    logger.info(f"Finished copying data from {source_path} to {dest_path}.")
+    return
 
 
-def _write_batches(writer: ShardedCacheWriter, shard_totals, batch: Optional[PyTree[PreparedBatch]], finished_shards):
-    # concatenate the payloads
-    if batch is not None:
-        writer.write_prepared_batch(shard_totals, batch)
+def _tokenize_one_shard_group(
+    temporary_cache_path: str,
+    source: ShardedDataSource,
+    shards: list[str],
+    processor: BatchProcessor,
+    options: CacheOptions,
+) -> CacheLedger:
+    # ray breaks if this is top level
+    import humanfriendly
 
-    for shard, total_rows in finished_shards:
-        writer.finish_shard(shard, total_rows)
+    logger = pylogging.getLogger("tokenize")
+    pylogging.basicConfig(level=pylogging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+    # restrict shards to the ones we're supposed to process
+    # this is a bit hacky but when there are a lot of shards (e.g. SlimPajama 122K),
+    # we encounter significant overhead just parsing the shard names from the json
+    source = _RestrictedShardedDataSource(source, shards)
+
+    ledger = CacheLedger.load_or_initialize(temporary_cache_path, source, processor)
+
+    if ledger.is_finished:
+        logger.info("Shard group already processed.")
+        return ledger
+
+    writer = ShardGroupCacheWriter(temporary_cache_path, ledger, shards, processor.output_exemplar)
+
+    total_rows = ledger.total_num_rows
+    found_shard_with_rows = False
+
+    for shard_name in shards:
+        if shard_name in ledger.finished_shards:
+            logger.info(f"Shard {shard_name} already processed.")
+            continue
+
+        logger.debug(f"Processing {shard_name}.")
+
+        rows_this_shard = ledger.shard_rows.get(shard_name, 0)
+
+        if found_shard_with_rows and rows_this_shard != 0:
+            raise ValueError("Found more than one shard with rows to process.")
+
+        if rows_this_shard != 0:
+            found_shard_with_rows = True
+
+        shard_iterator = source.open_shard_at_row(shard_name, rows_this_shard)
+
+        prepared_batch: PyTree[PreparedBatch] | None = None
+        this_batch_size = 0
+
+        for batch in batched(shard_iterator, options.batch_size):
+            tokenized = processor(batch)
+            tokenized = _canonicalize_batch(tokenized)  # type: ignore
+            this_prepared = writer._tree_store.batch_preparer(tokenized)
+
+            this_batch_size += len(batch)
+            rows_this_shard += len(batch)
+
+            if prepared_batch is None:
+                prepared_batch = this_prepared
+            else:
+                prepared_batch = jax.tree.map(
+                    lambda *trees: PreparedBatch.concat(trees), prepared_batch, this_prepared
+                )
+
+            batch_byte_size = sum(prepared_batch.byte_size for prepared_batch in jax.tree.leaves(prepared_batch))
+
+            if batch_byte_size > options.target_bytes_per_flush:
+                writer.write_prepared_batch(shard_name, this_batch_size, prepared_batch)
+                nice_bytes = humanfriendly.format_size(batch_byte_size)
+                logger.debug(
+                    f"Processed {rows_this_shard} rows. Wrote {this_batch_size} rows to {shard_name}. ({nice_bytes})"
+                )
+                this_batch_size = 0
+                prepared_batch = None
+
+        if prepared_batch is not None:
+            batch_byte_size = sum(prepared_batch.byte_size for prepared_batch in jax.tree.leaves(prepared_batch))
+            nice_bytes = humanfriendly.format_size(batch_byte_size)
+            writer.write_prepared_batch(shard_name, this_batch_size, prepared_batch)
+            logger.debug(
+                f"Processed {rows_this_shard} rows. Wrote {this_batch_size} rows to {shard_name}. ({nice_bytes})"
+            )
+            this_batch_size = 0
+            prepared_batch = None
+
+        total_rows += rows_this_shard
+
+        writer.finish_shard(shard_name, rows_this_shard)
+
+    writer.finish()
+
+    logger.info(f"Finished processing {len(shards)} shards. Wrote {total_rows} rows.")
+
+    return writer.ledger
 
 
-def _fetch_batches(batches) -> tuple[dict[str, int], list[PreparedBatch]]:
-    shards_for_batches, payloads_for_batches = zip(*batches)
-    payloads_for_batches = ray.get(list(payloads_for_batches))
-
-    shard_row_totals: dict[str, int] = {}
-    for shard, payload in zip(shards_for_batches, payloads_for_batches):
-        shard_row_totals[shard] = shard_row_totals.get(shard, 0) + jax.tree.leaves(payload)[0].num_rows
-
-    return shard_row_totals, payloads_for_batches
-
-
-def _interleave_shards(readers: Sequence[RayPrefetchQueue], first_index: int) -> Iterator[T]:  # _Message
+class ShardGroupCacheWriter:
     """
-    Interleaves the results of multiple iterators. To support resume,
-    we need to be able to start from not the "first" iterator.
-
-    Args:
-        readers: A list of iterators
-        first_index: The index of the first iterator to start from. We use this to support resuming.
+    Similar to SerialCacheWriter, but tracks shard metadata for one shard.
     """
 
-    finished: set[int] = set()
-    total = 0
-    while len(finished) < len(readers):
-        for i in range(first_index, len(readers)):
-            reader = readers[i]
-            if i not in finished:
-                try:
-                    message = reader.get_next()
-                    total += 1
-                    yield message
-                except StopIteration:
-                    finished.add(i)
-                except Exception as e:
-                    logger.exception(f"Error while processing group {i}")
-                    raise e
+    def __init__(self, cache_dir: str, initial_ledger: CacheLedger, shards: list[str], exemplar: T):
+        self.cache_dir = cache_dir
 
-        first_index = 0
+        self._ledger = copy.deepcopy(initial_ledger)
+        self.shards = shards
 
-    logger.info(f"Finished all shards, got {total} batches")
+        self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")  # type: ignore
+        self._tree_store.trim_to_size(self._ledger.total_num_rows)
+
+    @property
+    def ledger(self):
+        return self._ledger
+
+    # we have both versions b/c we need this one for actors
+    def get_ledger(self):
+        return self._ledger
+
+    @property
+    def is_finished(self):
+        return self._ledger.is_finished
+
+    def finish_shard(self, shard_name: str, num_rows: int):
+        if shard_name not in self.shards:
+            raise ValueError(f"Shard {shard_name} not in tracked shards")
+
+        current_rows = self._ledger.shard_rows.get(shard_name, 0)
+        if current_rows != num_rows:
+            raise ValueError(f"Expected {num_rows} rows in finished shard {shard_name}, but found {current_rows}")
+
+        self._ledger.finished_shards.append(shard_name)
+        self._ledger._serialize_and_commit(self.cache_dir)
+
+    def write_prepared_batch(self, shard_name: str, row_count: int, batch: PyTree[PreparedBatch]):
+        if self.is_finished:
+            raise RuntimeError("Cannot write to a finished cache")
+        self._tree_store.extend_with_batch(batch)
+
+        if shard_name not in self.shards:
+            raise ValueError(f"Shard {shard_name} not in tracked shards")
+        self._ledger.shard_rows[shard_name] += row_count
+        self._ledger.total_num_rows += row_count
+
+        self._ledger._serialize_and_commit(self.cache_dir)
+
+    def finish(self):
+        if len(self._ledger.finished_shards) != len(self.shards):
+            raise ValueError("Not all shards are finished")
+
+        self._ledger.is_finished = True
+        self._ledger._serialize_and_commit(self.cache_dir)
+        # ensure all tracked shards are finished
+
+        return self._tree_store
 
 
-def _assign_shards_to_groups(shards: Sequence[_ShardStatus], num_groups: int) -> list["_ShardGroup"]:
-    """
-    Assigns shards to groups in a round-robin fashion.
-    """
-    groups: list[list] = [[] for _ in range(num_groups)]
-    for i, shard in enumerate(shards):
-        groups[i % num_groups].append(shard)
-    return [_ShardGroup(group) for group in groups]
+class _RestrictedShardedDataSource(ShardedDataSource):
+    def __init__(self, source: ShardedDataSource, shards: list[str]):
+        self._source = source
+        self._shards = shards
+
+    @property
+    def shard_names(self):
+        return self._shards
+
+    def open_shard_at_row(self, shard_name, row):
+        return self._source.open_shard_at_row(shard_name, row)
 
 
 def _randomize_shards(shards: Sequence[T], seed: int) -> list[T]:
@@ -1147,186 +1380,6 @@ def _randomize_shards(shards: Sequence[T], seed: int) -> list[T]:
     shuffled = list(shards)
     prng.shuffle(shuffled)
     return shuffled
-
-
-class _ShardGroup:
-    """
-    Given a group of shards and a list of statuses, implicitly concatenates the shards and reads from them.
-
-    This class mostly exists for resuming: we want to be able to start from the last shard we were working on.
-    """
-
-    def __init__(self, group: list[_ShardStatus]):
-        self.shards = group
-        self.total_rows_committed, _all_finished = self._impute_total_rows_committed_and_check_invariants()
-
-    def _impute_total_rows_committed_and_check_invariants(self):
-        # we also want to ensure that we haven't started any shards until we've finished the previous ones
-        total_committed = 0
-        last_shard_name = None
-        last_was_finished = True
-        all_finished = True
-
-        for status in self.shards:
-            shard_name = status.shard_name
-            if not last_was_finished and status.num_rows_committed > 0:
-                raise ValueError(
-                    f"Shard {shard_name} has rows committed but previous shard in group {last_shard_name} "
-                    "is not finished. Something about the cache configuration has changed: either the "
-                    "number/order of shards, the shard shuffle random seed, or the number of groups."
-                )
-            total_committed += status.num_rows_committed
-            if not status.is_finished:
-                all_finished = False
-            last_was_finished = status.is_finished
-            last_shard_name = shard_name
-
-        return total_committed, all_finished
-
-
-def _make_interleave(name: str, source: ShardedDataSource, initial_ledger: CacheLedger, processor_pool: ActorHandle):
-    """
-    Given a list of ShardStatus objects and sources, creates an interleaving generator
-    that reads from shards and tokenizes them in parallel.
-
-    We use ShardStatus objects to track the progress of each shard. If we're preempted, we can resume
-    from the last shard we were working on. This function starts each shard at the last committed row
-    and starts interleaving from the next shard (i.e. the one with the fewest rows that isn't finished).
-    """
-    logger.setLevel(DEFAULT_LOG_LEVEL)
-    statuses = _get_shard_statuses(initial_ledger, source)
-
-    options = initial_ledger.metadata.options
-
-    unfinished_shards = _check_current_shard_progress(statuses)
-
-    if not unfinished_shards:
-        logger.info("All shards finished. Nothing to do.")
-        return
-
-    group_names, groups = _randomize_and_group_shards(name, options, statuses)
-
-    logger.warning(f"Starting cache build with {len(statuses)} shards, in {len(groups)} groups")
-
-    def _make_generator_fn(group: _ShardGroup):
-        def generator():
-            pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
-            for message in _shard_reader_generator(source, group, options.batch_size):
-                match message:
-                    case _Batch():
-                        # processed = ray.put(process_task(ray.get(message.payload)))
-                        # processed = process_task.remote(processor_ref, message.payload)
-                        processed = processor_pool.process_batch.remote(RefBox(message.payload))
-                        yield dataclasses.replace(message, payload=processed)
-                    case _ShardFinished():
-                        yield message
-                    case _:
-                        raise AssertionError(f"Unexpected message type {type(message)}")
-
-        return generator
-
-    generator_fns = [_make_generator_fn(group) for group in groups]
-
-    readers = [
-        RayPrefetchQueue(
-            fn,
-            options.prefetch_per_group,
-            producer_options=dict(num_cpus=0.1, name=name, scheduling_strategy="SPREAD"),
-        )
-        for name, fn in zip(group_names, generator_fns)
-    ]
-
-    # then figure out the first shard to start from. This is the first unfinished shard with the minimum number of rows
-    first_group_to_start = min(
-        range(len(groups)),
-        key=lambda i: groups[i].total_rows_committed,
-    )
-
-    yield from _interleave_shards(readers, first_group_to_start)
-
-
-def _mk_processor_pool(processor, min_size, max_size):
-    import hashlib
-
-    metadata_hash = hashlib.md5(str(processor.metadata).encode()).hexdigest()
-    processor_pool_name = f"processor_pool::{metadata_hash}"
-    processor_pool = BatchProcessorPool.options(  # type: ignore
-        name=processor_pool_name, get_if_exists=True, lifetime="detached"
-    ).remote(  # type: ignore
-        processor, min_size, max_size
-    )
-
-    ray.get(processor_pool.ensure_max_at_least.remote(max_size))
-
-    return processor_pool
-
-
-def _check_current_shard_progress(statuses):
-    unfinished_shards: list[_ShardStatus] = []
-    shards_with_progress: dict[str, int] = {}
-    for status in statuses:
-        if not status.is_finished:
-            unfinished_shards.append(status)
-        if status.num_rows_committed > 0:
-            shards_with_progress[status.shard_name] = status.num_rows_committed
-    if unfinished_shards and shards_with_progress:
-        formatted = ", ".join(f"{k}: {v}" for k, v in shards_with_progress.items())
-        logger.info(f"Resuming from shards with progress: {formatted}")
-    return unfinished_shards
-
-
-def _randomize_and_group_shards(name, options, statuses):
-    if options.shard_order_randomization_key is not None:
-        seed = options.shard_order_randomization_key
-        logger.info(f"Randomizing shard order with seed {seed}")
-        statuses = _randomize_shards(statuses, seed)
-
-    num_groups = min(
-        options.num_shard_groups if options.num_shard_groups is not None else len(statuses), len(statuses)
-    )
-    if num_groups == 1:
-        group_names = [f"generator::{name}::all_shards"]
-    elif len(statuses) == num_groups:
-        group_names = [f"generator::{name}::{status.shard_name}" for status in statuses]
-    else:
-        group_names = [f"generator::{name}::group_{i}" for i in range(num_groups)]
-
-    groups = _assign_shards_to_groups(statuses, num_groups)
-    return group_names, groups
-
-
-def _shard_reader_generator(
-    shard_source: ShardedDataSource[T], group: _ShardGroup, batch_size: int
-) -> Iterator[_Message]:
-    """
-    Given a group of shards, implicitly concatenates the shards and reads from them.
-    """
-    for status in group.shards:
-        if status.is_finished:
-            logger.info(f"Skipping finished shard {status.shard_name}")
-            continue
-        start_row = status.num_rows_committed
-        logger.info(f"Opening shard {status.shard_name} at row {start_row}")
-        shard_iter = shard_source.open_shard_at_row(status.shard_name, start_row)
-
-        batch = []
-        batch_idxes = []
-        row_idx = start_row
-        for row in shard_iter:
-            batch.append(row)
-            batch_idxes.append(row_idx)
-            row_idx += 1
-
-            if len(batch) == batch_size:
-                yield _Batch(status.shard_name, batch_idxes, ray.put(batch))
-                batch = []
-                batch_idxes = []
-
-        if len(batch) > 0:
-            yield _Batch(status.shard_name, batch_idxes, ray.put(batch))
-
-        logger.info(f"Finished generating shard {status.shard_name} with {row_idx} rows")
-        yield _ShardFinished(status.shard_name, row_idx)
 
 
 def _canonicalize_batch(batch: Union[dict, List[dict]]) -> List[dict]:
@@ -1360,8 +1413,13 @@ def _ledger_to_metrics(ledger: CacheLedger) -> InProgressCacheMetrics:
     )
 
 
-def _get_shard_statuses(ledger: CacheLedger, source: ShardedDataSource):
-    return [
-        _ShardStatus(name, ledger.shard_rows.get(name, 0), name in ledger.finished_shards)
-        for name in source.shard_names
-    ]
+def _try_load(path):
+    try:
+        ledger = CacheLedger.load(path)
+        if ledger.is_finished:
+            return ledger
+        else:
+            logger.debug(f"Cache exists but is not finished at {path}.")
+            return None
+    except FileNotFoundError:
+        return None
