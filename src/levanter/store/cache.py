@@ -13,7 +13,7 @@ from asyncio import InvalidStateError
 from concurrent.futures import Future as threading_Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, TypeVar, Union
+from typing import Any, Dict, List, Optional, Sequence, TypeVar, Union
 
 import deepdiff
 import fsspec.core
@@ -27,6 +27,7 @@ from dataclasses_json import dataclass_json
 from fsspec import AbstractFileSystem
 from jaxtyping import PyTree
 from ray.actor import ActorHandle
+from ray.runtime_env import RuntimeEnv
 from tqdm_loggable.auto import tqdm
 
 from levanter.data import batched
@@ -35,6 +36,7 @@ from levanter.data.dataset import AsyncDataset
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
 from ..data.sharded_datasource import ShardedDataSource
+from ..utils.fsspec_utils import async_remove
 from ..utils.ray_utils import (
     ExceptionInfo,
     RefBox,
@@ -538,13 +540,6 @@ class CacheMetadata:
         return CacheMetadata()
 
 
-@dataclass
-class _ShardStatus:
-    shard_name: str
-    num_rows_committed: int
-    is_finished: bool
-
-
 class SerialCacheWriter(AbstractContextManager):
     """
     Writes TreeCache-compatible caches to disk. This is a serial version of TreeCacheWriter that doesn't use Ray.
@@ -602,91 +597,6 @@ class SerialCacheWriter(AbstractContextManager):
         self._tree_store.extend(cbatch)
 
 
-class ShardedCacheWriter:
-    """
-    Similar to SerialCacheWriter, but tracks shard metadata.
-
-    Similar to _OrderedCacheWriter, it also supports resuming, and it
-    groups together batches before writing (at some interval) in order to improve performance.
-    """
-
-    def __init__(
-        self,
-        cache_dir: str,
-        initial_ledger: CacheLedger,
-        exemplar: T,
-        on_write: Optional[Callable[[CacheLedger], None]] = None,
-    ):
-        self.cache_dir = cache_dir
-        self._on_write = on_write
-
-        self._ledger = copy.deepcopy(initial_ledger)
-
-        self._tree_store = TreeStore.open(exemplar, self.cache_dir, mode="a")  # type: ignore
-        self._tree_store.trim_to_size(self._ledger.total_num_rows)
-
-    @property
-    def ledger(self):
-        return self._ledger
-
-    # we have both versions b/c we need this one for actors
-    def get_ledger(self):
-        return self._ledger
-
-    @property
-    def is_finished(self):
-        return self._ledger.is_finished
-
-    def finish_shard(self, shard_name: str, num_rows: int):
-        current_rows = self._ledger.shard_rows.get(shard_name, 0)
-        if current_rows != num_rows:
-            raise ValueError(f"Expected {num_rows} rows in finished shard {shard_name}, but found {current_rows}")
-
-        self._ledger.finished_shards.append(shard_name)
-        self._ledger._serialize_and_commit(self.cache_dir)
-
-    def write_prepared_batch(self, shard_counts: Mapping[str, int], batch: PyTree[PreparedBatch]):
-        if self.is_finished:
-            raise RuntimeError("Cannot write to a finished cache")
-        self._tree_store.extend_with_batch(batch)
-
-        for shard, num_rows in shard_counts.items():
-            self._ledger.shard_rows[shard] = self._ledger.shard_rows.get(shard, 0) + num_rows
-
-        total_rows = self._ledger.total_num_rows + sum(shard_counts.values())
-        self._ledger.total_num_rows = total_rows
-        self._ledger._serialize_and_commit(self.cache_dir)
-
-        if self._on_write:
-            self._on_write(self._ledger)
-
-    def write_batch(self, shard_name: str, batch: BatchResult):
-        if self.is_finished:
-            raise RuntimeError("Cannot write to a finished cache")
-
-        if isinstance(batch, pa.RecordBatch):
-            raise NotImplementedError("Only non-RecordBatch batches are supported for now")
-
-        batch = _canonicalize_batch(batch)  # type: ignore
-        prepared = self._tree_store.batch_preparer(batch)
-
-        return self.write_prepared_batch({shard_name: len(batch)}, prepared)
-
-    def finish(self):
-        # if successful, write the ledger
-        logger.info("Finished writing cache")
-        # check that all shards are finished
-        if set(self._ledger.shard_rows.keys()) != set(self._ledger.finished_shards):
-            raise ValueError("Not all shards are finished")
-
-        self._ledger.is_finished = True
-        self._ledger._serialize_and_commit(self.cache_dir)
-        if self._on_write:
-            self._on_write(self._ledger)
-
-        return self._tree_store
-
-
 def _serialize_json_and_commit(path, obj):
     # just to be paranoid, we write to a temp file and then rename it
     # TODO: probably we could do better here
@@ -709,7 +619,9 @@ def _serialize_json_and_commit(path, obj):
             pass
 
 
-@ray.remote(num_cpus=0.1)  # keep this small b/c it doesn't do a lot
+@ray.remote(
+    num_cpus=0.1, runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORMS": "cpu"})
+)  # keep this small b/c it doesn't do a lot
 class _TreeStoreCacheBuilder(SnitchRecipient):
     """
     Actor that coordinates the building of a cache. It spins up a bunch of workers to read from each shard
@@ -1013,7 +925,7 @@ def _core_writer_task(
             # update the data offset tree
             this_cache = TreeStore.open(processor.output_exemplar, paths[group], mode="r", cache_metadata=True)
             data_offset_tree = jax.tree.map(
-                operator.add, data_offset_tree, jax.tree_map(lambda x: x.data_size, this_cache.tree)
+                operator.add, data_offset_tree, jax.tree.map(lambda x: x.data_size, this_cache.tree)
             )
             total_rows_from_caches += this_ledger.total_num_rows
 
@@ -1024,6 +936,16 @@ def _core_writer_task(
 
         ledger.is_finished = True
         parent._notify_updated_ledger.remote(ledger)
+
+        # clean up the temporary caches
+        async def cleanup():
+            futures = []
+            for path in already_finished_paths:
+                futures.append(async_remove(path, recursive=True))
+
+            await asyncio.gather(*futures)
+
+        asyncio.run(cleanup())
 
 
 def _assign_shards_to_groups(source: ShardedDataSource, num_groups: int | None) -> dict[str, Sequence[str]]:
@@ -1075,10 +997,8 @@ def _copy_cache(dest_path, source_path, processor, data_offset_tree, last_ref: R
     """
     with log_failures_to(parent):
         asyncio.run(_extend_cache_with_other_cache(dest_path, source_path, processor, data_offset_tree, rows_so_far))
-        print("done copying", flush=True)
         if last_ref is not None:
             ray.wait([last_ref.ref], fetch_local=False)
-        print("done waiting", flush=True)
         permanent_cache = TreeStore.open(processor.output_exemplar, dest_path, mode="a", cache_metadata=False)
         dest_ledger = CacheLedger.load(dest_path)
         source_ledger = CacheLedger.load(source_path)
@@ -1089,13 +1009,12 @@ def _copy_cache(dest_path, source_path, processor, data_offset_tree, last_ref: R
         for future in futures:
             future.result()
 
-        print("wrote rows", flush=True)
-
         _merge_ledgers(dest_ledger, source_ledger)
         dest_ledger._serialize_and_commit(dest_path)
         assert not dest_ledger.is_finished
+
         parent._notify_updated_ledger.remote(dest_ledger)
-        print("done", flush=True)
+
         return dest_ledger
 
 

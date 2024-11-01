@@ -35,7 +35,7 @@ from levanter.models.lm_model import LmExample
 from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
-from levanter.utils.fsspec_utils import fsspec_expand_glob
+from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
@@ -508,7 +508,7 @@ class LMDatasetSourceConfig:
         else:
             raise ValueError(f"Unknown split {split}")
 
-        urls = [globbed for url in urls for globbed in fsspec_expand_glob(url)]
+        urls = [globbed for url in urls for globbed in expand_glob(url)]
         return urls
 
 
@@ -625,7 +625,7 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
 def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
     import levanter.data
 
-    validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
+    validation_urls = [url for url_pat in config.validation_urls for url in expand_glob(url_pat)]
     dataset = levanter.data.datasource_from_jsonl(validation_urls)
 
     input_field = config.input_field
