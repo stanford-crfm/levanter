@@ -1038,8 +1038,6 @@ async def _extend_cache_with_other_cache(
         # TODO: it'd be good if we just didn't expose the full data array (but only the used part)
         data_size = source_array.data_size
         data = source_array.data[0:data_size]
-        print(f"starting to write data. {data.read().result()=}", flush=True)
-        print(f"{row_offset=}", flush=True)
         futures: list[ts.Future] = []
 
         # write_future = dest_array.data[data_offset : data_offset + source_array.data_size].write(data)
@@ -1056,7 +1054,6 @@ async def _extend_cache_with_other_cache(
                 out_end = row_offset + source_num_rows
                 shape_future = dest.with_transaction(txn)[row_offset:out_end].write(source_shapes)
                 futures.append(shape_future)
-            print("done writing shapes", flush=True)
 
         source_offsets = source_array.offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
         source_offsets = _virtual_offset(source_offsets, data_offset)
@@ -1066,14 +1063,9 @@ async def _extend_cache_with_other_cache(
             out_end = row_offset + 1 + source_num_rows
             offset_future = dest.with_transaction(txn)[row_offset + 1 : out_end].write(source_offsets)
 
-        print("hi", flush=True)
-        print(f"done writing offsets {source_offsets.domain}", flush=True)
-        print(f"done writing offsets {dest[row_offset+1:out_end].read().result()}", flush=True)
-
         futures.append(offset_future)
 
         out = await asyncio.gather(*futures)
-        print("done writing", flush=True)
         return out
 
     futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
