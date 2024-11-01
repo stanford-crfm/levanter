@@ -326,7 +326,7 @@ async def test_can_get_elems_before_finished():
 
         # read the first 10 elements
         # ensure the first 10 elements are [{"test": np.array([i] * 10)} for i in range(10)]
-        first_10 = list(await cache.get_batch(range(0, 10)))
+        first_10 = list(await asyncio.wait_for(cache.get_batch(range(0, 10)), timeout=10.0))
 
         for i, x in enumerate(first_10):
             np.testing.assert_array_equal(x["test"], np.array([i] * 10))
@@ -339,7 +339,7 @@ async def test_can_get_elems_before_finished():
 
         # now ensure we can get the next 10 elements, which will be
         # [{"test": np.array([i] * 10)} for i in range(10, 20)]
-        batch = await asyncio.wait_for(cache.get_batch(range(10, 20)), timeout=10)
+        batch = await asyncio.wait_for(cache.get_batch(range(10, 20)), timeout=10.0)
 
         for i, x in enumerate(batch):
             np.testing.assert_array_equal(x["test"], np.array([i + 10] * 10))
