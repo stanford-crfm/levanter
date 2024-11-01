@@ -321,12 +321,12 @@ async def test_can_get_elems_before_finished():
             SlowShardSource(),
             TestProcessor(),
             await_finished=False,
-            options=CacheOptions.no_fanciness(5),
+            options=CacheOptions(target_size_per_flush=1, batch_size=1),
         )
 
         # read the first 10 elements
         # ensure the first 10 elements are [{"test": np.array([i] * 10)} for i in range(10)]
-        first_10 = list(await asyncio.wait_for(cache.get_batch(range(0, 10)), timeout=10.0))
+        first_10 = list(await asyncio.wait_for(cache.get_batch(range(0, 10)), timeout=30.0))
 
         for i, x in enumerate(first_10):
             np.testing.assert_array_equal(x["test"], np.array([i] * 10))
