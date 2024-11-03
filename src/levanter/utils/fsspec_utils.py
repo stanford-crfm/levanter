@@ -1,10 +1,6 @@
-import asyncio
-
 import braceexpand
 import fsspec
 from fsspec.asyn import AsyncFileSystem
-
-from levanter.utils.thread_utils import _executor, blocking_wait
 
 
 def exists(url, **kwargs) -> bool:
@@ -40,10 +36,7 @@ def remove(url, *, recursive=False, **kwargs):
     # TODO: better to use a STS deletion policy or job for this one.
     fs, path = fsspec.core.url_to_fs(url, **kwargs)
 
-    if isinstance(fs, AsyncFileSystem):
-        blocking_wait(fs._rm(path, recursive=recursive))
-    else:
-        fs.rm(path, recursive=recursive)
+    fs.rm(path, recursive=recursive)
 
 
 async def async_remove(url, *, recursive=False, **kwargs):
@@ -53,4 +46,4 @@ async def async_remove(url, *, recursive=False, **kwargs):
     if isinstance(fs, AsyncFileSystem):
         return await fs._rm(path, recursive=recursive)
     else:
-        return await asyncio.wrap_future(_executor.submit(fs.rm, path, recursive=recursive))
+        fs.rm(path, recursive=recursive)
