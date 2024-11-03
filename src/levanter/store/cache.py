@@ -670,7 +670,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
                 # (we get twice from we need to concatenate prepared batches into the accumulator)
                 # TODO: measure.
                 memory=2 * self._options.target_bytes_per_flush,
-            ).remote(current_actor_handle(), cache_dir, self._ledger, source, options, processor)
+            ).remote(current_actor_handle(), cache_dir, source, options, processor)
 
             self._tokenize_pbar = tqdm(
                 total=len(source.shard_names), desc=f"{path_for_name}: tokenizing", unit="shard"
@@ -787,7 +787,6 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             )
 
     def _report_copy_progress(self, report: "_ProgressReport"):
-        # TODO: log bytes copied
         self._copy_pbar.update(report.new_shards)
         self._copy_report_totals.new_shards += report.new_shards
         self._copy_report_totals.new_rows += report.new_rows
@@ -840,7 +839,6 @@ class _ShardFinished:
 def _core_writer_task(
     parent,
     cache_dir,
-    initial_ledger: CacheLedger,
     source: ShardedDataSource,
     options: CacheOptions,
     processor,
@@ -859,9 +857,6 @@ def _core_writer_task(
     # append a small random number to the name to avoid collisions
     name += f"::{random.randint(0, 1000)}"
 
-    # We want to make sure it's there
-    initial_ledger._serialize_and_commit(cache_dir)
-
     # we want to do the following:
     # 1. write the 0th shard group to the output cache directly, updating metrics as we go
     # 2. in the background, start processing other shard groups to temporary caches
@@ -879,8 +874,8 @@ def _core_writer_task(
     with log_failures_to(parent):
         temporary_cache_path = os.path.join(cache_dir, "___temp")
 
-        paths: dict[str, str] = {}
-        ledgers: dict[str, CacheLedger | None] = {}
+        group_cache_paths: dict[str, str] = {}
+        group_ledgers: dict[str, CacheLedger | None] = {}
         write_refs: dict[str, ray.ObjectRef] = {}
 
         shard_groups = _assign_shards_to_groups(source, options.num_shard_groups)
@@ -902,10 +897,10 @@ def _core_writer_task(
             else:
                 group_out_path = os.path.join(temporary_cache_path, group_name)
 
-            paths[group_name] = group_out_path
+            group_cache_paths[group_name] = group_out_path
 
             ledger = _try_load(group_out_path)
-            ledgers[group_name] = ledger
+            group_ledgers[group_name] = ledger
 
             if ledger is not None:
                 if group_name == first_group:
@@ -931,109 +926,145 @@ def _core_writer_task(
             write_refs[group_name] = ref
 
         # now we start copying the temporary caches to the output cache, in order. (essentially concatenating them)
-        # This logic is a bit hairy thanks to resumes.
-        # First, note that each TreeCache is a tree of JaggedArrayStores, and we need to copy each of these
-        # separately. We also need to update the ledger as we go.
-        # Second, note that JaggedArrayStores have two notions of length: the number of rows, and the data size.
-        # We store the number of rows in offsets[0], and the data size in offsets[offsets[0]], which is just the final offset.
-        # So we can keep a cache "locked" to a particular read size until we're ready by controlling the offsets.
 
-        # * When we load the permanent cache, we have already written some number of groups to it.
-        #   (We check this invariant with an assert)
-        # * We need to copy the remaining groups to the permanent cache, and update the ledger as we go.
-        # * To copy a group, we need to know the total number of rows in that group, as well as the "data offsets"
-        #   for the data in the cache. We can get the total number of rows from the ledger, and we also calculate
-        #   the data offsets for where the group goes in the permanent cache. This is just a running sum of the
-        #   data sizes of the previous groups. Because we have multiple JaggedArrayStores, this can be a pytree
-        #   of integers, one for each array.
-        # * Once we have finished the i'th cache and all caches < 1, we can "unlock" the data for the i'th cache
-        #   by updating the offset[0] of the permanent cache to the total number of rows through the i'th cache.
-        # * We also need to update the ledger with the total number of rows
-        permanent_cache = TreeStore.open(processor.output_exemplar, cache_dir, mode="a", cache_metadata=False)
-        # initialize the data offset tree
-        data_offset_tree = jax.tree_map(lambda x: 0, permanent_cache.tree)
-        total_rows_from_caches = 0
-
-        copy_refs: dict[str, ray.ObjectRef] = {}
-        last_ref: ray.ObjectRef | None = None
-
-        for group in shard_groups:
-            # first make sure it's either done this run or already done
-            if write_refs.get(group) is not None:
-                this_ledger = ray.get(write_refs[group])
-
-                ledgers[group] = ledger
-            else:
-                this_ledger = ledgers[group]
-
-            assert this_ledger is not None
-            # see if we already copied this group, meaning all the shards are in the permanent cache
-            shards_copied = sum(1 if shard in initial_ledger.finished_shards else 0 for shard in shard_groups[group])
-            if shards_copied == len(shard_groups[group]) or group == first_group:
-                assert initial_ledger.total_num_rows >= total_rows_from_caches
-                parent._report_copy_progress.remote(
-                    _ProgressReport(new_shards=shards_copied, new_rows=initial_ledger.total_num_rows)
-                )
-
-            elif shards_copied > 0:
-                # In theory we can handle this, but it's a bit tricky, so we're going to punt for now
-                raise RuntimeError("Some shards were copied but not all. This should never happen.")
-            else:
-                # we need to copy this group
-                ref_to_send = None if last_ref is None else RefBox(last_ref)
-                last_ref = _copy_cache.remote(
-                    cache_dir,
-                    paths[group],
-                    processor_ref,
-                    data_offset_tree,
-                    ref_to_send,
-                    total_rows_from_caches,
-                    parent,
-                )
-                copy_refs[group] = last_ref
-
-            if group == first_group:
-                # this is the first group, so it's already in the cache and we don't need to
-                # increment the data offset tree etc.
-                continue
-
-            # update the offset information: data offsets and total rows
-            this_cache = TreeStore.open(processor.output_exemplar, paths[group], mode="r", cache_metadata=True)
-            data_offset_tree = jax.tree.map(
-                operator.add, data_offset_tree, jax.tree.map(lambda x: x.data_size, this_cache.tree)
-            )
-            total_rows_from_caches += this_ledger.total_num_rows
-
-        # this little bit is totally unnecessary but nice logging
-        for group in shard_groups:
-            if group == first_group:
-                continue
-
-            if copy_refs.get(group) is not None:
-                ledger = ray.get(copy_refs[group])
-                ledgers[group] = ledger
-                parent._report_copy_progress.remote(
-                    _ProgressReport(new_shards=len(ledger.finished_shards), new_rows=ledger.total_num_rows)
-                )
-
-        # refs form a linked list implicitly, so we can just wait on the last one
-        if last_ref is not None:
-            ledger = ray.get(last_ref)
-        else:
-            ledger = initial_ledger
+        ledger = _start_copies(parent, cache_dir, shard_groups, first_group, write_refs, group_ledgers,
+                               group_cache_paths, processor, processor_ref)
 
         ledger.is_finished = True
         ledger._serialize_and_commit(cache_dir)
         parent._notify_updated_ledger.remote(ledger)
 
-        _clean_up_temp_caches(paths, first_group)
+        temporary_cache_paths = set(group_cache_paths.values()) - {cache_dir}
+        _clean_up_temp_caches(temporary_cache_paths)
 
 
-def _clean_up_temp_caches(paths, first_group):
-    for group, path in paths.items():
+def _start_copies(parent, cache_dir, shard_groups, first_group, write_refs, group_ledgers, group_cache_paths, processor,
+                  processor_ref):
+    """
+    Copy the temporary caches to the output cache, in order. (essentially concatenating them)
+
+    Args:
+        parent: the parent actor handle (_TreeStoreCacheBuilder)
+        cache_dir: the output cache directory
+        shard_groups: a dict mapping group names to lists of shard names
+        first_group: the privileged group that is written directly to the output cache
+        write_refs: a dict mapping group names to ray.ObjectRefs of the cache building tasks
+        group_ledgers: a dict mapping group names to the ledgers for the groups. Mutated in place.
+        group_cache_paths: a dict mapping group names to the paths of the temporary caches
+        processor: the processor object
+        processor_ref: a ray.ObjectRef of the processor object
+    """
+    # This logic is a bit hairy thanks to resumes.
+    # First, note that each TreeCache is a tree of JaggedArrayStores, and we need to copy each of these
+    # separately. We also need to update the ledger as we go.
+    # Second, note that JaggedArrayStores have two notions of length: the number of rows, and the data size.
+    # We store the number of rows in offsets[0], and the data size in offsets[offsets[0]], which is just the final offset.
+    # So we can keep a cache "locked" to a particular read size until we're ready by controlling the offsets.
+
+    # * When we load the permanent cache, we have already written some number of groups to it. In
+    #   particular, we have written the 0'th group to the permanent cache.
+    # * We enforce that we only commit a whole group to the ledger at a time.
+    # * We need to copy the remaining groups to the permanent cache, and update the ledger as we go.
+    # * To copy a group, we need to know the total number of rows in that group, as well as the "data offsets"
+    #   for the data in the cache. We can get the total number of rows from the ledger, and we also calculate
+    #   the data offsets for where the group goes in the permanent cache. This is just a running sum of the
+    #   data sizes of the previous groups. Because we have multiple JaggedArrayStores, this can be a pytree
+    #   of integers, one for each array.
+    # * Once we have finished the i'th cache and all caches < 1, we can "unlock" the data for the i'th cache
+    #   by updating the offset[0] of the permanent cache to the total number of rows through the i'th cache.
+    # * We also need to update the ledger with the total number of rows
+
+    # reload the ledger for the first group, which will be the sink for the other groups
+    assert first_group in write_refs
+
+    group_ledgers[first_group] = ray.get(write_refs[first_group])
+    overall_ledger = group_ledgers[first_group]
+
+    # initialize the data offset tree
+    permanent_cache = TreeStore.open(processor.output_exemplar, cache_dir, mode="a", cache_metadata=False)
+    data_offset_tree = jax.tree_map(lambda x: x.data_size, permanent_cache.tree)
+    total_rows_from_caches = overall_ledger.total_num_rows
+    copy_refs: dict[str, ray.ObjectRef] = {}
+    last_ref: ray.ObjectRef | None = None
+
+    found_one_to_copy = False
+
+    for group in shard_groups:
+        # first make sure it's either done this run or already done
+        if write_refs.get(group) is not None:
+            this_ledger = ray.get(write_refs[group])
+            group_ledgers[group] = this_ledger
+        else:
+            this_ledger = group_ledgers[group]
+
+        if group == first_group:
+            # this is the first group, so it's already in the cache and we don't need to
+            # increment the data offset tree etc.
+            parent._report_copy_progress.remote(
+                _ProgressReport(new_shards=len(overall_ledger.finished_shards), new_rows=overall_ledger.total_num_rows)
+            )
+            continue
+
+        assert this_ledger is not None
+        # see if we already copied this group, meaning all the shards are in the permanent cache
+        shards_copied = sum(1 if shard in overall_ledger.finished_shards else 0 for shard in shard_groups[group])
+
+        if found_one_to_copy and shards_copied > 0:
+            raise RuntimeError("A previous group was copied, but this group was not. This should never happen.")
+        elif shards_copied == len(shard_groups[group]):
+            assert overall_ledger.total_num_rows >= total_rows_from_caches, f"{overall_ledger.total_num_rows} < {total_rows_from_caches}. {group}"
+            continue  # nothing to do
+        elif shards_copied > 0:
+            # In theory we can handle this, but it's a bit tricky, so we're going to punt for now
+            raise RuntimeError("Some shards were copied but not all. This should never happen.")
+
+        found_one_to_copy = True
+        # we need to copy this group
+
+        # we can't "commit" the group to the ledger (or the number of rows)
+        # until we've updated the ledger for all previous groups, so we block on the last ref
+        ref_to_send = None if last_ref is None else RefBox(last_ref)
+
+        last_ref = _copy_cache.remote(
+            cache_dir,
+            group_cache_paths[group],
+            processor_ref,
+            data_offset_tree,
+            ref_to_send,
+            total_rows_from_caches,
+            parent,
+        )
+        copy_refs[group] = last_ref
+
+        # update the offset information: data offsets and total rows
+        this_cache = TreeStore.open(processor.output_exemplar, group_cache_paths[group], mode="r", cache_metadata=True)
+        data_offset_tree = jax.tree.map(
+            operator.add, data_offset_tree, jax.tree.map(lambda x: x.data_size, this_cache.tree)
+        )
+        total_rows_from_caches += this_ledger.total_num_rows
+
+    # this little bit is totally unnecessary but nice logging
+    for group in shard_groups:
         if group == first_group:
             continue
 
+        if copy_refs.get(group) is not None:
+            ledger = ray.get(copy_refs[group])
+            group_ledgers[group] = ledger
+            parent._report_copy_progress.remote(
+                _ProgressReport(new_shards=len(ledger.finished_shards), new_rows=ledger.total_num_rows)
+            )
+
+    # refs form a linked list implicitly, so we can just wait on the last one
+    if last_ref is not None:
+        ledger = ray.get(last_ref)
+    else:
+        ledger = overall_ledger
+    return ledger
+
+
+def _clean_up_temp_caches(paths):
+    for path in paths:
         if fsspec_exists(path):
             for i in range(10):
                 # this is crashy for some reason
