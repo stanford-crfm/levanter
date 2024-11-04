@@ -128,13 +128,13 @@ def test_full_end_to_end_cache():
     with td as tmpdir:
         ray_ds = build_or_load_cache(
             tmpdir,
-            SimpleShardSource(num_shards=2),
+            SimpleShardSource(num_shards=15),
             TestProcessor(),
             await_finished=True,
-            options=CacheOptions.no_fanciness(8),
+            options=CacheOptions(num_shard_groups=3, batch_size=8),
         )
 
-        expected = simple_process(TestProcessor(), SimpleShardSource(num_shards=2))
+        expected = simple_process(TestProcessor(), SimpleShardSource(num_shards=15))
 
         all_data = ray_ds[:]
 
@@ -191,7 +191,6 @@ class _CustomException(Exception):
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataSource[list[int]]):
         def __init__(self, crash_point: int):
@@ -205,7 +204,7 @@ def test_cache_recover_from_crash():
             # parse the shard name to get the shard number
             shard_num = int(shard_name.split("_")[1])
             for i in range(10):
-                if shard_num * 10 + i == self.crash_point:
+                if i == self.crash_point:
                     raise _CustomException(f"Crashing at {shard_num} {i} {self.crash_point}")
                 if i >= row:
                     yield [shard_num * 10 + i] * 10
@@ -213,7 +212,7 @@ def test_cache_recover_from_crash():
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
         with pytest.raises(_CustomException):
-            build_or_load_cache(tmpdir, source, TestProcessor())
+            build_or_load_cache(tmpdir, source, TestProcessor(), CacheOptions(target_size_per_flush=1))
 
         # kill the broker actor so that we can test recovery
         ray.kill(
@@ -231,11 +230,11 @@ def test_cache_recover_from_crash():
         )
 
         # testing this doesn't throw
-        source = CrashingShardSource(1000)
+        source = CrashingShardSource(100000)
         reader1 = build_or_load_cache(tmpdir, source, TestProcessor(), await_finished=True)
 
         # compare to the original with no crash
-        reader2 = build_or_load_cache(tmpdir2, SimpleShardSource(), TestProcessor(), await_finished=True)
+        reader2 = build_or_load_cache(tmpdir2, SimpleShardSource(num_shards=4), TestProcessor(), await_finished=True)
 
         check_datasets_equal(reader1, reader2)
 

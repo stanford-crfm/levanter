@@ -330,7 +330,6 @@ class TreeCache(AsyncDataset[T_co]):
                 shard_source=shard_source,
                 processor=processor,
                 options=options,
-                split=split,
             )
             return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
 
@@ -637,7 +636,6 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         self,
         cache_dir: str,
         name: str,
-        split: str,  # to workaround https://github.com/ray-project/ray/issues/44083
         source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         options: CacheOptions,
@@ -803,14 +801,13 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             )
 
 
-def _get_builder_actor(split, cache_dir, shard_source, processor, options=CacheOptions.default()):
-    name = f"lev_cache_manager::{split}::{cache_dir}"
+def _get_builder_actor(cache_dir, shard_source, processor, options=CacheOptions.default()):
+    name = f"lev_cache_manager::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
 
     return _TreeStoreCacheBuilder.options(name=name, get_if_exists=True).remote(  # type: ignore
         name=name_for_display,
-        split=split,
         cache_dir=cache_dir,
         source=shard_source,
         processor=processor,
