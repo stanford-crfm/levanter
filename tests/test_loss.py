@@ -1,16 +1,15 @@
 # test_cross_entropy.py
+import equinox
+import jax.numpy as jnp
 import jax.random
 import pytest
-import jax.numpy as jnp
+
 import haliax as hax
 from haliax import NamedArray
 
 # Import the functions from your module
 # Replace 'your_module' with the actual module name where your functions are defined
-from levanter.models.loss import (
-    block_wise_cross_entropy_loss,
-    cross_entropy_loss_and_log_normalizers,
-)
+from levanter.models.loss import block_wise_cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 from levanter.utils.jax_utils import key_iterator
 
 
@@ -60,12 +59,12 @@ def test_basic_equivalence(axes, test_data):
     loss_full, norm_full = cross_entropy_loss_and_log_normalizers(logits_full, Vocab, target_y_full)
 
     loss_block, norm_this = block_wise_cross_entropy_loss(
-        pred_embeddings=pred_embeddings,
-        pred_lm_head=pred_lm_head,
+        (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
         labels_y=true_ids,
         block_size=2,
+        dtype=pred_embeddings.dtype,
     )
 
     # Assert that the losses are close
@@ -85,16 +84,18 @@ def test_single_block(axes, test_data):
     # Compute block-wise loss with block_size=4 (vocab_size=4)
     with jax.disable_jit():
         loss_block, sumexp_block = block_wise_cross_entropy_loss(
-            pred_embeddings=pred_embeddings,
-            pred_lm_head=pred_lm_head,
+            (pred_embeddings, pred_lm_head),
             Contract=Embed,
             Label=Vocab,
             labels_y=true_ids,
             block_size=Vocab.size,
+            dtype=pred_embeddings.dtype,
         )
 
     # Assert that the losses are close
-    assert hax.all(hax.isclose(sumexp_full, sumexp_block, atol=1e-6)), "Single block-wise sumexp does not match full sumexp."
+    assert hax.all(
+        hax.isclose(sumexp_full, sumexp_block, atol=1e-6)
+    ), "Single block-wise sumexp does not match full sumexp."
     assert hax.all(hax.isclose(loss_full, loss_block, atol=1e-6)), "Single block-wise loss does not match full loss."
 
 
@@ -117,18 +118,17 @@ def test_multiple_blocks(axes, test_data):
 
     # Compute block-wise loss with block_size=1 (vocab_size=4)
     loss_block, logz_block = block_wise_cross_entropy_loss(
-        pred_embeddings=pred_embeddings,
-        pred_lm_head=pred_lm_head,
+        (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
         labels_y=true_ids,
         block_size=1,
+        dtype=pred_embeddings.dtype,
     )
 
     # Assert that the losses are close
     assert hax.all(hax.isclose(logz_full, logz_block, atol=1e-6)), "Multiple block-wise logz does not match full logz."
     assert hax.all(hax.isclose(loss_full, loss_block, atol=1e-6)), "Multiple block-wise loss does not match full loss."
-
 
 
 def test_block_size_not_dividing_vocab(axes, test_data):
@@ -140,12 +140,12 @@ def test_block_size_not_dividing_vocab(axes, test_data):
 
     # should be fine now
     loss_block, logz_block = block_wise_cross_entropy_loss(
-        pred_embeddings=pred_embeddings,
-        pred_lm_head=pred_lm_head,
+        (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
         labels_y=true_ids,
         block_size=block_size,
+        dtype=pred_embeddings.dtype,
     )
 
     # Compute full loss
@@ -172,12 +172,12 @@ def test_vocab_size_less_than_block_size(axes, test_data):
 
     # should be fine now
     loss_block, logz_block = block_wise_cross_entropy_loss(
-        pred_embeddings=pred_embeddings,
-        pred_lm_head=pred_lm_head,
+        (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
         labels_y=true_ids,
         block_size=block_size,
+        dtype=pred_embeddings.dtype,
     )
 
     # Compute full loss
@@ -223,15 +223,117 @@ def test_large_vocab(axes):
 
     # Compute block-wise loss with block_size=3 (vocab_size=12 is divisible by 3)
     loss_block, logz_block = block_wise_cross_entropy_loss(
-        pred_embeddings=pred_embeddings,
-        pred_lm_head=pred_lm_head,
+        (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
         labels_y=true_ids,
         block_size=3,
+        dtype=pred_embeddings.dtype,
     )
 
     # Assert that the losses are close
-    assert hax.all(hax.isclose(loss_full, loss_block, atol=1e-6)), "Large vocab block-wise loss does not match full loss."
-    assert hax.all(hax.isclose(logz_full, logz_block, atol=1e-6)), "Large vocab block-wise logz does not match full logz."
+    assert hax.all(
+        hax.isclose(loss_full, loss_block, atol=1e-6)
+    ), "Large vocab block-wise loss does not match full loss."
+    assert hax.all(
+        hax.isclose(logz_full, logz_block, atol=1e-6)
+    ), "Large vocab block-wise logz does not match full logz."
 
+
+@pytest.mark.parametrize("block_size", [1, 2, 3, 4, 5])
+def test_gradient_block_cross_entropy(block_size):
+    """
+    Test the gradient of block-wise cross-entropy loss.
+    """
+    # Define axes
+    Batch = hax.Axis("batch", size=2)
+    Seq = hax.Axis("seq", size=3)
+    Embed = hax.Axis("embed", size=8)
+    Vocab = hax.Axis("vocab", size=16)
+
+    # Define test data
+    key = jax.random.PRNGKey(0)
+    pred_embeddings = hax.random.normal(key, (Batch, Seq, Embed))
+    pred_lm_head = hax.random.normal(key, (Embed, Vocab))
+    true_ids = hax.random.randint(key, (Batch, Seq), 0, Vocab.size)
+
+    # Compute block-wise loss
+    def custom_fn(pred):
+        pred_embeddings, pred_lm_head = pred
+        a, b = block_wise_cross_entropy_loss(
+            (pred_embeddings, pred_lm_head),
+            Contract=Embed,
+            Label=Vocab,
+            labels_y=true_ids,
+            block_size=block_size,
+            dtype=pred_embeddings.dtype,
+        )
+
+        return (a.mean() + b.mean()).scalar()
+
+    g_embed, g_head, = equinox.filter_grad(
+        custom_fn
+    )((pred_embeddings, pred_lm_head))
+
+    # compute directly
+
+    def direct_fn(pred):
+        pred_embeddings, pred_lm_head = pred
+        logits = hax.dot(pred_embeddings, pred_lm_head, axis="embed")
+        target_y = hax.nn.one_hot(true_ids, Vocab, dtype=pred_embeddings.dtype)
+        loss, logz = cross_entropy_loss_and_log_normalizers(logits, Vocab, target_y)
+        return (loss.mean() + logz.mean()).scalar()
+
+    g_embed_direct, g_head_direct = equinox.filter_grad(direct_fn)((pred_embeddings, pred_lm_head))
+
+    assert hax.all(hax.isclose(g_embed, g_embed_direct, atol=1e-6)), "Gradient of embeddings does not match."
+    assert hax.all(hax.isclose(g_head, g_head_direct, atol=1e-6)), "Gradient of lm_head does not match."
+
+
+def test_grad_loss_without_logz():
+    """
+    Test the gradient of block-wise cross-entropy loss without logz.
+    """
+    # Define axes
+    Batch = hax.Axis("batch", size=2)
+    Seq = hax.Axis("seq", size=3)
+    Embed = hax.Axis("embed", size=8)
+    Vocab = hax.Axis("vocab", size=16)
+
+    # Define test data
+    key = jax.random.PRNGKey(0)
+    pred_embeddings = hax.random.normal(key, (Batch, Seq, Embed))
+    pred_lm_head = hax.random.normal(key, (Embed, Vocab))
+    true_ids = hax.random.randint(key, (Batch, Seq), 0, Vocab.size)
+
+    # Compute block-wise loss
+    def custom_fn(pred):
+        pred_embeddings, pred_lm_head = pred
+        a, b = block_wise_cross_entropy_loss(
+            (pred_embeddings, pred_lm_head),
+            Contract=Embed,
+            Label=Vocab,
+            labels_y=true_ids,
+            block_size=2,
+            dtype=pred_embeddings.dtype,
+        )
+
+        return a.mean().scalar()
+
+    g_embed, g_head, = equinox.filter_grad(
+        custom_fn
+    )((pred_embeddings, pred_lm_head))
+
+    # compute directly
+
+    def direct_fn(pred):
+        pred_embeddings, pred_lm_head = pred
+        logits = hax.dot(pred_embeddings, pred_lm_head, axis="embed")
+        target_y = hax.nn.one_hot(true_ids, Vocab, dtype=pred_embeddings.dtype)
+        loss, _ = cross_entropy_loss_and_log_normalizers(logits, Vocab, target_y)
+        return loss.mean().scalar()
+
+    g_embed_direct, g_head_direct = equinox.filter_grad(direct_fn)((pred_embeddings, pred_lm_head))
+
+    assert hax.all(hax.isclose(g_embed, g_embed_direct, atol=1e-6)), "Gradient of embeddings does not match."
+    assert hax.all(hax.isclose(g_head, g_head_direct, atol=1e-6)), "Gradient of lm_head does not match."

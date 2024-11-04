@@ -64,6 +64,11 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def Pos(self) -> Axis:
         pass
 
+    @property
+    @abc.abstractmethod
+    def Embed(self) -> Axis:
+        pass
+
     def flops_per_token(self, vocab_size: int) -> Optional[float]:
         return None
 
@@ -94,12 +99,15 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
     def KeyPos(self) -> Axis:
         return self.config.KeyPos
 
+    @property
+    def Embed(self) -> Axis:
+        return self.config.Embed
+
     @classmethod
     @abc.abstractmethod
     def init(cls, Vocab: Axis, config: LmConfigT, *, key: PRNGKey) -> "LmHeadModel[LmConfigT]":
         pass
 
-    @abc.abstractmethod
     def __call__(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
@@ -114,11 +122,34 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
             NamedArray: logits with shape [..., Pos, Vocab]
 
         """
+        x = self.activations(input_ids, attn_mask, key=key)
+        lm_logits = hax.dot(x, self.lm_head, axis=self.Embed)
+
+        return lm_logits
+
+    @abc.abstractmethod
+    def activations(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
+        """
+        Compute the activations for the next token in a sequence.
+        Args:
+            input_ids: token IDs with shape {Pos}
+            attn_mask: attention mask with shape {Pos, KeyPos}
+            key: PRNGKey for random number generation
+
+        Returns:
+            NamedArray: activations with shape {Pos, Embed}
+
+        """
         pass
 
     @property
     @abc.abstractmethod
-    def lm_head(self) -> hax.nn.Linear:
+    def lm_head(self) -> hax.NamedArray:
+        """
+        The language modeling head of the model. Should have shape {Embed, Vocab}.
+        """
         raise NotImplementedError("lm_head property not implemented")
 
     @abc.abstractmethod
@@ -149,19 +180,21 @@ def compute_next_token_loss(
     across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
     reduced, and the result is a named array with axes (*batch axes, sequence_length).
     """
-    logits = model(example.tokens, example.attn_mask, key=key)
-    if loss_dtype is not None:
-        logits = logits.astype(loss_dtype)
+    activations = model.activations(example.tokens, example.attn_mask, key=key)
 
     loss = next_token_loss(
         model.Pos,
+        model.Embed,
         model.Vocab,
-        logits,
+        activations,
+        model.lm_head,
         example.tokens,
         loss_mask=example.loss_mask,
         reduction=reduction,
         reduction_axis=reduction_axis,
         logsumexp_weight=logsumexp_weight,
+        dtype=loss_dtype,
+        block_size=None,
     )
 
     return loss

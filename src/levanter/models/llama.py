@@ -507,7 +507,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
 class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializationMixin):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
-    lm_head: Optional[hnn.Linear]
+    _lm_head: Optional[hnn.Linear]
 
     @property
     def config(self):
@@ -551,19 +551,45 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
-        if self.lm_head:
-            lm_logits = self.lm_head(x, key=k_head)
+        if self._lm_head:
+            lm_logits = self._lm_head(x, key=k_head)
         else:
             lm_logits = self.embeddings.unembed(x)
         return lm_logits
+
+    def activations(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
+        """
+        Compute the activations for the next token in a sequence.
+        Args:
+            input_ids: token IDs with shape {Pos}
+            attn_mask: attention mask with shape {Pos, KeyPos}
+            key: PRNGKey for random number generation
+
+        Returns:
+            NamedArray: activations with shape {Pos, Embed}
+
+        """
+        x = self.embeddings.embed(input_ids)
+        x = self.transformer(x, attn_mask=attn_mask, key=key)
+
+        return x
+
+    @property
+    def lm_head(self) -> hax.NamedArray:
+        if self._lm_head is None:
+            return self.embeddings.token_embeddings.weight
+        else:
+            return self._lm_head.weight
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
         new_Vocab = self.Vocab.resize(new_size)
         k1, k2 = maybe_rng_split(key, 2)
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
-        if self.lm_head is not None:
-            new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
-            new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
+        if self._lm_head is not None:
+            new_lm_matrix = hax.tree_util.resize_axis(self._lm_head.weight, self.Vocab, new_size, key=k2)
+            new_lm_head = dataclasses.replace(self._lm_head, Out=new_Vocab, weight=new_lm_matrix)
             return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
         else:
             return dataclasses.replace(self, embeddings=new_embeddings)
@@ -574,10 +600,10 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
         d = state_dict.copy()
-        if self.lm_head is not None:
+        if self._lm_head is not None:
             d.update(
                 unflatten_linear_layers(
-                    apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
+                    apply_prefix(prefix, "lm_head"), state_dict, self._lm_head, out_dims_first_in_dict=True
                 )
             )
         return super().from_state_dict(d, prefix)
@@ -586,9 +612,9 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix=prefix)
 
-        if self.lm_head is not None:
+        if self._lm_head is not None:
             my_dict.update(
-                flatten_linear_layers(apply_prefix(prefix, "lm_head"), self.lm_head, out_dims_first_in_dict=True)
+                flatten_linear_layers(apply_prefix(prefix, "lm_head"), self._lm_head, out_dims_first_in_dict=True)
             )
 
         state_dict.update(my_dict)
