@@ -589,16 +589,6 @@ def _make_unique_job_id(client, run_id):
     return job_id
 
 
-def _deep_merge_envs(env1, env2):
-    """
-    Merge two environment dictionaries, deeply.
-    """
-
-    merged = mergedeep.merge({}, env1, env2, strategy=mergedeep.Strategy.ADDITIVE)
-
-    return merged
-
-
 @draccus.wrap()
 def main(args: RunDockerOnPodConfig):
     """
