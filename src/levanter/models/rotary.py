@@ -157,6 +157,7 @@ class Llama3RotaryEmbeddingsConfig(RotaryEmbeddingsConfig):
             "low_freq_factor": self.low_freq_factor,
             "high_freq_factor": self.high_freq_factor,
             "original_max_position_embeddings": self.original_max_position_embeddings,
+            "rope_type": "llama3",
         }
 
 
