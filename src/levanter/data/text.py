@@ -575,6 +575,7 @@ class LMSupervisedDatasetConfig:
 
     validation_urls: List[str] = ()  # type:ignore
 
+
 def preprocess_supervised_example(
     batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
 ) -> dict:
