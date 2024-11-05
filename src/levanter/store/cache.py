@@ -742,11 +742,18 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         Called by the cache writer when it has updated the ledger.
         """
         was_finished = self._ledger.is_finished
-        self._ledger = ledger
+        # ensure the ledger is "monotonic" meaning that we only expect it to grow
+        if ledger.total_num_rows < self._ledger.total_num_rows:
+            raise RuntimeError(f"Ledger went backwards: {ledger.total_num_rows} < {self._ledger.total_num_rows}")
+
+        for shard, rows in ledger.shard_rows.items():
+            if rows < self._ledger.shard_rows.get(shard, 0):
+                raise RuntimeError(f"Shard {shard} went backwards: {rows} < {self._ledger.shard_rows.get(shard, 0)}")
 
         if was_finished:
             raise RuntimeError("Ledger was already finished")
 
+        self._ledger = ledger
         if self._ledger.is_finished:
             logger.info(f"Finalizing cache {self._cache_dir}...")
             # guard against invalid state errors
@@ -767,7 +774,8 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
     def _report_progress(self, report: "_ProgressReport"):
         import humanfriendly
 
-        self._tokenize_pbar.update(report.new_shards)
+        if report.new_shards > 0:
+            self._tokenize_pbar.update(report.new_shards)
         self._report_totals.new_shards += report.new_shards
         self._report_totals.new_rows += report.new_rows
         self._report_totals.new_bytes += report.new_bytes
@@ -866,7 +874,7 @@ def _core_writer_task(
 
     def report_fn_first_group(report: _ProgressReport, ledger: CacheLedger):
         parent._report_progress.remote(report)
-        parent._notify_updated_ledger.remote(ledger)
+        ray.get(parent._notify_updated_ledger.remote(ledger))
 
     with log_failures_to(parent):
         temporary_cache_path = os.path.join(cache_dir, "___temp")
@@ -876,6 +884,9 @@ def _core_writer_task(
         write_refs: dict[str, ray.ObjectRef] = {}
 
         shard_groups = _assign_shards_to_groups(source, options.num_shard_groups)
+
+        for name, group in shard_groups.items():
+            assert len(group) > 0
 
         logger.debug(
             f"Tokenizing {len(source.shard_names)} shards in {len(shard_groups)} groups to {temporary_cache_path}."
@@ -901,10 +912,10 @@ def _core_writer_task(
 
             if ledger is not None:
                 if group_name == first_group:
-                    parent._notify_updated_ledger.remote(ledger)
+                    ray.get(parent._notify_updated_ledger.remote(ledger))
                 continue
 
-            report_fn = report_fn_first_group if group_name == first_group else report_fn
+            report_fn_to_use = report_fn_first_group if group_name == first_group else report_fn
 
             ref = (
                 ray.remote(_tokenize_one_shard_group)
@@ -917,7 +928,7 @@ def _core_writer_task(
                     retry_exceptions=True,
                     max_retries=10,
                 )
-                .remote(group_out_path, source_ref, shards, processor_ref, options, report_fn, parent)
+                .remote(group_out_path, source_ref, shards, processor_ref, options, report_fn_to_use, parent)
             )
 
             write_refs[group_name] = ref
@@ -929,7 +940,7 @@ def _core_writer_task(
 
         ledger.is_finished = True
         ledger._serialize_and_commit(cache_dir)
-        parent._notify_updated_ledger.remote(ledger)
+        ray.get(parent._notify_updated_ledger.remote(ledger))
 
         temporary_cache_paths = set(group_cache_paths.values()) - {cache_dir}
         _clean_up_temp_caches(temporary_cache_paths)
@@ -1078,12 +1089,16 @@ def _assign_shards_to_groups(source: ShardedDataSource, num_groups: int | None) 
         return {shard_name: [shard_name] for shard_name in source.shard_names}
 
     shard_names = source.shard_names
-    num_shards_per_group = (len(shard_names) + num_groups - 1) // num_groups
-    # if we have a remainder, we'll just add it to the last group
-    out_groups = {
-        f"group_{i}": list(shard_names[i * num_shards_per_group : (i + 1) * num_shards_per_group])
-        for i in range(num_groups)
-    }
+    num_shards_per_group = (len(shard_names)) // num_groups
+    num_groups_with_extra = len(shard_names) % num_groups
+
+    # if we have a remainder, we want to distribute the extra shards evenly
+    out_groups: dict[str, list[str]] = {}
+    start = 0
+    for i in range(num_groups):
+        num_shards = num_shards_per_group + (1 if i < num_groups_with_extra else 0)
+        out_groups[f"group_{i}"] = list(shard_names[start : start + num_shards])
+        start += num_shards
 
     # make sure we got all the shards
     assert sum(len(shards) for shards in out_groups.values()) == len(shard_names)
@@ -1099,7 +1114,9 @@ def _merge_ledgers(dest, source):
         dest.shard_rows[shard] = rows
 
     dest.finished_shards.extend(source.finished_shards)
-    dest.field_counts.update(source.field_counts)
+    for field, count in source.field_counts.items():
+        dest.field_counts[field] = dest.field_counts.get(field, 0) + count
+
     return dest
 
 
@@ -1126,7 +1143,6 @@ def _copy_cache(dest_path, source_path, processor, data_offset_tree, last_ref: R
         if last_ref is not None:
             ray.wait([last_ref.ref], fetch_local=False)
         permanent_cache = TreeStore.open(processor.output_exemplar, dest_path, mode="a", cache_metadata=False)
-        dest_ledger = CacheLedger.load(dest_path)
         source_ledger = CacheLedger.load(source_path)
 
         new_num_rows = source_ledger.total_num_rows + rows_so_far
@@ -1135,11 +1151,12 @@ def _copy_cache(dest_path, source_path, processor, data_offset_tree, last_ref: R
         for future in futures:
             future.result()
 
+        dest_ledger = CacheLedger.load(dest_path)
         _merge_ledgers(dest_ledger, source_ledger)
         dest_ledger._serialize_and_commit(dest_path)
         assert not dest_ledger.is_finished
 
-        parent._notify_updated_ledger.remote(dest_ledger)
+        ray.get(parent._notify_updated_ledger.remote(dest_ledger))
         parent._report_copy_progress.remote(
             _ProgressReport(new_shards=len(source_ledger.shard_rows), new_rows=source_ledger.total_num_rows)
         )
