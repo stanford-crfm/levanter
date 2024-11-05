@@ -933,10 +933,17 @@ def _core_writer_task(
 
             write_refs[group_name] = ref
 
-        # now we start copying the temporary caches to the output cache, in order. (essentially concatenating them)
-
-        ledger = _start_copies(parent, cache_dir, shard_groups, first_group, write_refs, group_ledgers,
-                               group_cache_paths, processor, processor_ref)
+        ledger = _start_copies(
+            parent,
+            cache_dir,
+            shard_groups,
+            first_group,
+            write_refs,
+            group_ledgers,
+            group_cache_paths,
+            processor,
+            processor_ref,
+        )
 
         ledger.is_finished = True
         ledger._serialize_and_commit(cache_dir)
@@ -946,8 +953,17 @@ def _core_writer_task(
         _clean_up_temp_caches(temporary_cache_paths)
 
 
-def _start_copies(parent, cache_dir, shard_groups, first_group, write_refs, group_ledgers, group_cache_paths, processor,
-                  processor_ref):
+def _start_copies(
+    parent,
+    cache_dir,
+    shard_groups,
+    first_group,
+    write_refs,
+    group_ledgers,
+    group_cache_paths,
+    processor,
+    processor_ref,
+):
     """
     Copy the temporary caches to the output cache, in order. (essentially concatenating them)
 
@@ -961,6 +977,9 @@ def _start_copies(parent, cache_dir, shard_groups, first_group, write_refs, grou
         group_cache_paths: a dict mapping group names to the paths of the temporary caches
         processor: the processor object
         processor_ref: a ray.ObjectRef of the processor object
+
+    Returns:
+        The final ledger
     """
     # This logic is a bit hairy thanks to resumes.
     # First, note that each TreeCache is a tree of JaggedArrayStores, and we need to copy each of these
@@ -1020,7 +1039,9 @@ def _start_copies(parent, cache_dir, shard_groups, first_group, write_refs, grou
         if found_one_to_copy and shards_copied > 0:
             raise RuntimeError("A previous group was copied, but this group was not. This should never happen.")
         elif shards_copied == len(shard_groups[group]):
-            assert overall_ledger.total_num_rows >= total_rows_from_caches, f"{overall_ledger.total_num_rows} < {total_rows_from_caches}. {group}"
+            assert (
+                overall_ledger.total_num_rows >= total_rows_from_caches
+            ), f"{overall_ledger.total_num_rows} < {total_rows_from_caches}. {group}"
             continue  # nothing to do
         elif shards_copied > 0:
             # In theory we can handle this, but it's a bit tricky, so we're going to punt for now
@@ -1050,18 +1071,6 @@ def _start_copies(parent, cache_dir, shard_groups, first_group, write_refs, grou
             operator.add, data_offset_tree, jax.tree.map(lambda x: x.data_size, this_cache.tree)
         )
         total_rows_from_caches += this_ledger.total_num_rows
-
-    # this little bit is totally unnecessary but nice logging
-    for group in shard_groups:
-        if group == first_group:
-            continue
-
-        if copy_refs.get(group) is not None:
-            ledger = ray.get(copy_refs[group])
-            group_ledgers[group] = ledger
-            parent._report_copy_progress.remote(
-                _ProgressReport(new_shards=len(ledger.finished_shards), new_rows=ledger.total_num_rows)
-            )
 
     # refs form a linked list implicitly, so we can just wait on the last one
     if last_ref is not None:
