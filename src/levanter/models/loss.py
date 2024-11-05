@@ -129,10 +129,11 @@ def fused_cross_entropy_loss_and_logsumexp_penalty(
     if block_size is None:
         # Full softmax computation
         logits = hax.dot(pred_embeddings, pred_lm_head, axis=Contract, preferred_element_type=dtype)
-        loss, log_normalizers = cross_entropy_loss_and_log_normalizers(logits, Label, target_y)
+        target_y_full = hax.nn.one_hot(target_y, Label, dtype=pred_embeddings.dtype)
+        loss, log_normalizers = cross_entropy_loss_and_log_normalizers(logits, Label, target_y_full)
     else:
         # Block-wise softmax computation
-        loss, log_normalizers = block_wise_cross_entropy_loss(
+        loss, log_normalizers = _blockwise_cross_entropy_loss(
             (pred_embeddings, pred_lm_head), Contract, Label, target_y, block_size, dtype=dtype
         )
 
@@ -143,7 +144,7 @@ def fused_cross_entropy_loss_and_logsumexp_penalty(
 
 
 @equinox.filter_custom_vjp
-def block_wise_cross_entropy_loss(
+def _blockwise_cross_entropy_loss(
     # pred_embeddings: NamedArray,
     # pred_lm_head: NamedArray,
     pred: tuple[NamedArray, NamedArray],
@@ -272,12 +273,19 @@ def _block_cross_entropy_forward(
 
         return loss, logsumexp, max_logit  # , sV
 
-    (o, log_z, max_logits) = jax.lax.fori_loop(
-        lower=0,
-        upper=num_blocks,
-        body_fun=functools.partial(process_block, current_block_size=block_size),
-        init_val=(initial_O, initial_logsumexp, initial_max),  # , initial_sumV
-    )
+    if num_blocks == 0:
+        o = initial_O
+        log_z = initial_logsumexp
+        max_logits = initial_max
+    elif num_blocks == 1:
+        o, log_z, max_logits = process_block(0, (initial_O, initial_logsumexp, initial_max), vocab_size)
+    else:
+        (o, log_z, max_logits) = jax.lax.fori_loop(
+            lower=0,
+            upper=num_blocks,
+            body_fun=functools.partial(process_block, current_block_size=block_size),
+            init_val=(initial_O, initial_logsumexp, initial_max),  # , initial_sumV
+        )
 
     if has_stragglers:
         # Handle the stragglers
@@ -396,12 +404,17 @@ def _block_cross_entropy_backward(
 
         return g_embeddings, g_lm_head
 
-    (grad_embeddings, grad_lm_head) = jax.lax.fori_loop(
-        lower=0,
-        upper=num_blocks,
-        body_fun=functools.partial(process_block, current_block_size=block_size),
-        init_val=(grad_embeddings, grad_lm_head),
-    )
+    if num_blocks == 0:
+        pass
+    elif num_blocks == 1:
+        grad_embeddings, grad_lm_head = process_block(0, (grad_embeddings, grad_lm_head), vocab_size)
+    else:
+        grad_embeddings, grad_lm_head = jax.lax.fori_loop(
+            lower=0,
+            upper=num_blocks,
+            body_fun=functools.partial(process_block, current_block_size=block_size),
+            init_val=(grad_embeddings, grad_lm_head),
+        )
 
     if has_stragglers:
         # Handle the stragglers
@@ -411,8 +424,8 @@ def _block_cross_entropy_backward(
     return grad_embeddings.astype(pred_embeddings.dtype), grad_lm_head.astype(pred_lm_head.dtype)
 
 
-block_wise_cross_entropy_loss.def_fwd(_block_cross_entropy_forward)
-block_wise_cross_entropy_loss.def_bwd(_block_cross_entropy_backward)
+_blockwise_cross_entropy_loss.def_fwd(_block_cross_entropy_forward)
+_blockwise_cross_entropy_loss.def_bwd(_block_cross_entropy_backward)
 
 
 def _block_one_hot(LBlock, block_start, labels, dtype):

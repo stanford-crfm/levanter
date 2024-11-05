@@ -194,7 +194,7 @@ def compute_next_token_loss(
         reduction_axis=reduction_axis,
         logsumexp_weight=logsumexp_weight,
         dtype=loss_dtype,
-        block_size=None,
+        block_size=4096,
     )
 
     return loss

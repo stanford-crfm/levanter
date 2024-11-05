@@ -9,7 +9,7 @@ from haliax import NamedArray
 
 # Import the functions from your module
 # Replace 'your_module' with the actual module name where your functions are defined
-from levanter.models.loss import block_wise_cross_entropy_loss, cross_entropy_loss_and_log_normalizers
+from levanter.models.loss import _blockwise_cross_entropy_loss, cross_entropy_loss_and_log_normalizers
 from levanter.utils.jax_utils import key_iterator
 
 
@@ -58,7 +58,7 @@ def test_basic_equivalence(axes, test_data):
     target_y_full = hax.nn.one_hot(true_ids, Vocab, dtype=pred_embeddings.dtype)
     loss_full, norm_full = cross_entropy_loss_and_log_normalizers(logits_full, Vocab, target_y_full)
 
-    loss_block, norm_this = block_wise_cross_entropy_loss(
+    loss_block, norm_this = _blockwise_cross_entropy_loss(
         (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
@@ -83,7 +83,7 @@ def test_single_block(axes, test_data):
 
     # Compute block-wise loss with block_size=4 (vocab_size=4)
     with jax.disable_jit():
-        loss_block, sumexp_block = block_wise_cross_entropy_loss(
+        loss_block, sumexp_block = _blockwise_cross_entropy_loss(
             (pred_embeddings, pred_lm_head),
             Contract=Embed,
             Label=Vocab,
@@ -117,7 +117,7 @@ def test_multiple_blocks(axes, test_data):
     loss_full, logz_full = _compute_full(Vocab, pred_embeddings, pred_lm_head, true_ids)
 
     # Compute block-wise loss with block_size=1 (vocab_size=4)
-    loss_block, logz_block = block_wise_cross_entropy_loss(
+    loss_block, logz_block = _blockwise_cross_entropy_loss(
         (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
@@ -139,7 +139,7 @@ def test_block_size_not_dividing_vocab(axes, test_data):
     block_size = 3  # vocab_size=4
 
     # should be fine now
-    loss_block, logz_block = block_wise_cross_entropy_loss(
+    loss_block, logz_block = _blockwise_cross_entropy_loss(
         (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
@@ -171,7 +171,7 @@ def test_vocab_size_less_than_block_size(axes, test_data):
     block_size = 5  # vocab_size=4
 
     # should be fine now
-    loss_block, logz_block = block_wise_cross_entropy_loss(
+    loss_block, logz_block = _blockwise_cross_entropy_loss(
         (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
@@ -222,7 +222,7 @@ def test_large_vocab(axes):
     )
 
     # Compute block-wise loss with block_size=3 (vocab_size=12 is divisible by 3)
-    loss_block, logz_block = block_wise_cross_entropy_loss(
+    loss_block, logz_block = _blockwise_cross_entropy_loss(
         (pred_embeddings, pred_lm_head),
         Contract=Embed,
         Label=Vocab,
@@ -260,7 +260,7 @@ def test_gradient_block_cross_entropy(block_size):
     # Compute block-wise loss
     def custom_fn(pred):
         pred_embeddings, pred_lm_head = pred
-        a, b = block_wise_cross_entropy_loss(
+        a, b = _blockwise_cross_entropy_loss(
             (pred_embeddings, pred_lm_head),
             Contract=Embed,
             Label=Vocab,
@@ -309,7 +309,7 @@ def test_grad_loss_without_logz():
     # Compute block-wise loss
     def custom_fn(pred):
         pred_embeddings, pred_lm_head = pred
-        a, b = block_wise_cross_entropy_loss(
+        a, b = _blockwise_cross_entropy_loss(
             (pred_embeddings, pred_lm_head),
             Contract=Embed,
             Label=Vocab,
