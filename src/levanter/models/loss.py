@@ -56,6 +56,18 @@ def next_token_loss(
     else:
         loss_mask = not_last_loss_mask
 
+    if block_size is None:
+        # Full softmax computation
+        logits = hax.dot(pred_embeddings, pred_lm_head, axis=Embed, preferred_element_type=dtype)
+        target_y_full = hax.nn.one_hot(target_y, Vocab, dtype=pred_embeddings.dtype)
+        return cross_entropy_and_logsumexp_penalty(
+            logits, Vocab, target_y_full,
+            reduction=reduction,
+            reduction_axis=reduction_axis,
+            where=loss_mask,
+            logsumexp_weight=logsumexp_weight
+        )
+
     # Compute the loss with optional block-wise processing
     return fused_cross_entropy_loss_and_logsumexp_penalty(
         pred_embeddings,
@@ -103,7 +115,7 @@ def fused_cross_entropy_loss_and_logsumexp_penalty(
     reduction_axis: Optional[hax.AxisSelection] = None,
     where: Optional[NamedArray] = None,
     logsumexp_weight: float | None = 0.0,
-    block_size: Optional[int] = None,
+    block_size: int,
     dtype: Optional[jnp.dtype] = jnp.float32,
 ) -> NamedArray:
     """
@@ -120,22 +132,17 @@ def fused_cross_entropy_loss_and_logsumexp_penalty(
         reduction_axis (Optional[hax.AxisSelection]): Axis to apply reduction.
         where (Optional[NamedArray]): Mask to apply to the loss.
         logsumexp_weight (float): Weight for logsumexp penalty.
-        block_size (Optional[int]): Size of each block for processing.
+        block_size (int): Size of each block for processing.
         dtype (Optional[jnp.dtype]): Data type for the loss.
 
     Returns:
         NamedArray: Computed loss.
     """
-    if block_size is None:
-        # Full softmax computation
-        logits = hax.dot(pred_embeddings, pred_lm_head, axis=Contract, preferred_element_type=dtype)
-        target_y_full = hax.nn.one_hot(target_y, Label, dtype=pred_embeddings.dtype)
-        loss, log_normalizers = cross_entropy_loss_and_log_normalizers(logits, Label, target_y_full)
-    else:
-        # Block-wise softmax computation
-        loss, log_normalizers = _blockwise_cross_entropy_loss(
-            (pred_embeddings, pred_lm_head), Contract, Label, target_y, block_size, dtype=dtype
-        )
+
+    # Block-wise softmax computation
+    loss, log_normalizers = _blockwise_cross_entropy_loss(
+        (pred_embeddings, pred_lm_head), Contract, Label, target_y, block_size, dtype=dtype
+    )
 
     if logsumexp_weight is not None and (not isinstance(logsumexp_weight, (int, float)) or logsumexp_weight != 0.0):
         loss = loss + logsumexp_weight * (log_normalizers**2)
@@ -341,8 +348,8 @@ def _block_cross_entropy_backward(
 
     num_blocks = vocab_size // block_size
 
-    grad_embeddings = hax.zeros(pred_embeddings.axes, dtype=dtype)
-    grad_lm_head = hax.zeros(pred_lm_head.axes, dtype=dtype)
+    grad_embeddings = hax.zeros(pred_embeddings.axes, dtype=pred_embeddings.dtype)
+    grad_lm_head = hax.zeros(pred_lm_head.axes, dtype=pred_embeddings.dtype)
 
     def process_block(block_idx, acc, current_block_size):
         """
@@ -391,12 +398,12 @@ def _block_cross_entropy_backward(
 
         # Compute gradients for the current block
         # embeddings has shape [Batch, Seq, Embed], so we need to eliminate Block
-        g_embeddings_b = hax.dot(dLoss, lm_head_b, axis=Block, preferred_element_type=dtype)  # [Batch, Seq, Embed]
+        g_embeddings_b = hax.dot(dLoss, lm_head_b, axis=Block, preferred_element_type=grad_embeddings.dtype)  # [Batch, Seq, Embed]
 
         # lm_head has shape [Block, Embed], so we need to eliminate Batch, Seq, etc.
         eliminated_axes_W = hax.axis.without_axes(pred_embeddings.axes, lm_head_b.axes)
         g_lm_head_b = hax.dot(
-            dLoss, pred_embeddings, axis=eliminated_axes_W, preferred_element_type=dtype
+            dLoss, pred_embeddings, axis=eliminated_axes_W, preferred_element_type=grad_lm_head_prev.dtype
         )  # [Block, Embed]
 
         g_lm_head = grad_lm_head_prev.at[Label, hax.dslice(start, Block)].set(g_lm_head_b)
