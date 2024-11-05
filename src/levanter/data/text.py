@@ -575,7 +575,6 @@ class LMSupervisedDatasetConfig:
 
     validation_urls: List[str] = ()  # type:ignore
 
-
 def preprocess_supervised_example(
     batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
 ) -> dict:
@@ -631,7 +630,7 @@ def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrain
     input_field = config.input_field
     output_field = config.output_field
 
-    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((), dtype=np.int32)}
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
 
     dataset = dataset.map_batches(lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field), batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
     dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore
