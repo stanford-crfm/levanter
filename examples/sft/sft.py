@@ -1,6 +1,8 @@
 import logging
 import os
 from dataclasses import dataclass
+from enum import Enum
+from typing import List, Optional
 
 import jax.random as jrandom
 import transformers
@@ -13,11 +15,10 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data import PermutationDataset
-from levanter.data.text import EpochDataset, mk_supervised_dataset
+from levanter.data.text import ChatSFTDatasetConfig, EpochDataset, mk_chat_sft_dataset, mk_supervised_dataset
 from levanter.main.train_lm import TrainLmConfig
 from levanter.models.lm_model import LmHeadModel, compute_next_token_loss
 from levanter.trainer import Trainer
-from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -29,12 +30,26 @@ DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
 
+class DatasetType(str, Enum):
+    """Type of dataset to use"""
+
+    HUGGINGFACE = "huggingface"  # Use HF dataset
+    CHAT_JSONL = "chat_jsonl"  # Use JSONL files with chat format
+
+
 @dataclass
 class SFTConfig(TrainLmConfig):
     # inherit most of the config from TrainLmConfig
-    max_tune_length: int = 2048  # maximum length of the input to the model during tuning
+    max_tune_length: int = 2048
     model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
-    tokenizer: str = "meta-llama/Llama-2-7b-hf"  # Tokenizer to use
+    tokenizer: str = "meta-llama/Llama-2-7b-hf"
+
+    # Add dataset type and chat-specific fields
+    dataset_type: DatasetType = DatasetType.HUGGINGFACE
+    chat_train_urls: Optional[List[str]] = None
+    messages_field: str = "messages"
+    input_role: str = "user"
+    output_role: str = "assistant"
 
 
 def train(config: SFTConfig):
@@ -79,19 +94,26 @@ def train(config: SFTConfig):
         logger.info(f"Overriding data seed with {config.data_seed}")
         data_key = jrandom.PRNGKey(config.data_seed)
 
-    # Configure supervised dataset
-    supervised_config = config.supervised_data
-
     # Create supervised dataset using generic machinery
     logger.info("Creating supervised dataset")
-    train_dataset = mk_supervised_dataset(supervised_config, tokenizer)
+    if config.dataset_type == DatasetType.CHAT_JSONL:
+        chat_config = ChatSFTDatasetConfig(
+            cache_dir=config.supervised_data.cache_dir,
+            train_urls=config.chat_train_urls,  # No validation in this config
+            messages_field=config.messages_field,
+            input_role=config.input_role,
+            output_role=config.output_role,
+        )
+        train_dataset = mk_chat_sft_dataset(chat_config, tokenizer)
+    else:
+        train_dataset = mk_supervised_dataset(config.supervised_data, tokenizer)
     logger.info("Supervised dataset created")
     train_dataset = PermutationDataset(train_dataset, data_key)
 
     # Then wrap for epochs
-    # if config.epoch > 0:
-    #     logger.info(f"Wrapping dataset for {config.epoch} epochs")
-    #     train_dataset = EpochDataset(train_dataset, max_epochs=config.epoch)
+    if config.epoch > 0:
+        logger.info(f"Wrapping dataset for {config.epoch} epochs")
+        train_dataset = EpochDataset(train_dataset, max_epochs=config.epoch)
 
     logger.info("Creating optimizer")
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
@@ -134,7 +156,6 @@ def train(config: SFTConfig):
         )
 
         loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
-        loader = non_caching_cycle(loader)
 
         if int(state.step) != 0:
             logger.info(f"Resuming training from step {state.step}")

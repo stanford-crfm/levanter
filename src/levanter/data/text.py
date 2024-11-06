@@ -744,6 +744,84 @@ def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrain
 
 
 @dataclass
+class ChatSFTDatasetConfig(LMSupervisedDatasetConfig):
+    """Config for loading JSONL files in OpenAI chat format for supervised fine-tuning."""
+
+    # Chat format specific fields
+    messages_field: str = "messages"
+    input_role: str = "user"
+    output_role: str = "assistant"
+    train_urls: List[str] = field(default_factory=list)  # Add this line
+
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        import levanter.data
+
+        """Gets ShardedDataSource for either training or validation data."""
+        urls = self.validation_urls if split == "validation" else self.train_urls
+
+        if not urls:
+            return None
+
+        # Use the datasource_from_chat_jsonl function from sharded_datasource
+        return levanter.data.sharded_datasource.datasource_from_chat_jsonl(
+            urls, messages_field=self.messages_field, input_role=self.input_role, output_role=self.output_role
+        )
+
+
+def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase) -> dict:
+    """
+    Preprocess chat examples to match the format of preprocess_supervised_example.
+    Returns a dict with input_ids and sources_len like the supervised case.
+    """
+    # Get sources (inputs) and targets (outputs) from the batch
+    sources = [example["input"] for example in batch]
+    targets = [example["output"] for example in batch]
+
+    # Tokenize sources alone first to get the source lengths
+    sources_tokenized = tokenizer(sources, padding=False, truncation=True)
+
+    # Combine source and target for full examples
+    full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
+    examples_tokenized = tokenizer(full_examples, padding=False, truncation=True)
+
+    # Get source lengths to mask loss appropriately
+    source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
+    return {
+        "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
+        "sources_len": np.array(source_lens, dtype=np.int32),
+    }
+
+
+def mk_chat_sft_dataset(config: ChatSFTDatasetConfig, tokenizer: PreTrainedTokenizerBase) -> AsyncDataset[LmExample]:
+    """Creates a dataset from JSONL files containing chat format data for SFT."""
+    source = config.get_shard_source("train")
+    if source is None:
+        raise ValueError("No training data source found")
+
+    # Set up example structure matching supervised case
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+
+    # Process the dataset
+    dataset = source.map_batches(
+        lambda ex: preprocess_chat_example(ex, tokenizer),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    # Cache the processed data
+    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+
+    # Ensure padding token is set (needed by _prepare_supervised_example)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Reuse the supervised prepare function directly
+    return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+
+
+@dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
