@@ -498,7 +498,8 @@ class Trainer:
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
         mbs = self.config.microbatch_size
         grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
-        return grad_fn(model, *batch, **batch_kwargs)
+        with hax.axis_mapping(self.compute_axis_mapping):
+            return grad_fn(model, *batch, **batch_kwargs)
 
 
 def _initialize_global_tracker(config, run_id):

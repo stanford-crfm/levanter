@@ -175,7 +175,11 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
         lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
         return MistralLMHeadModel(transformer, embeddings, lm_head)
 
-    def __call__(
+    def get_lm_head(self) -> hax.NamedArray:
+        assert self.lm_head.bias is None
+        return self.lm_head.weight
+
+    def activations(
         self,
         input_ids: NamedArray,
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
@@ -193,8 +197,7 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
-        lm_logits = self.lm_head(x, key=k_head)
-        return lm_logits
+        return x
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[MistralConfig]":
         new_Vocab = self.Vocab.resize(new_size)
