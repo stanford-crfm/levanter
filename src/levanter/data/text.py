@@ -35,7 +35,7 @@ from levanter.models.lm_model import LmExample
 from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
-from levanter.utils.fsspec_utils import fsspec_expand_glob
+from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 
@@ -508,7 +508,7 @@ class LMDatasetSourceConfig:
         else:
             raise ValueError(f"Unknown split {split}")
 
-        urls = [globbed for url in urls for globbed in fsspec_expand_glob(url)]
+        urls = [globbed for url in urls for globbed in expand_glob(url)]
         return urls
 
 
@@ -625,13 +625,13 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
 def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
     import levanter.data
 
-    validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
+    validation_urls = [url for url_pat in config.validation_urls for url in expand_glob(url_pat)]
     dataset = levanter.data.datasource_from_jsonl(validation_urls)
 
     input_field = config.input_field
     output_field = config.output_field
 
-    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((), dtype=np.int32)}
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
 
     dataset = dataset.map_batches(lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field), batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
     dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore

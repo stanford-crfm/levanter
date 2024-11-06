@@ -197,7 +197,10 @@ class WrappedHFDataSource(ShardedDataSource[dict]):
         dataset = self._load_dataset()
         if isinstance(dataset, datasets.IterableDataset) and shard_name != "data":
             # ex_iterable has a key that gets discarded typically
-            shard = map(lambda t: t[1], dataset._ex_iterable.shard_data_sources(int(shard_name), dataset.n_shards))
+            shard = map(
+                lambda t: t[1],
+                dataset._ex_iterable.shard_data_sources(index=int(shard_name), num_shards=dataset.n_shards),
+            )
         else:
             shard = dataset
 

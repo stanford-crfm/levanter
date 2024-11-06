@@ -3,6 +3,7 @@ import functools
 import logging
 import multiprocessing
 import os
+import socket
 import subprocess
 import tempfile
 import time
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 import draccus
+import mergedeep
 import ray
 from ray._private.accelerators import TPUAcceleratorManager
 from ray.dashboard.modules.job.sdk import JobSubmissionClient
@@ -104,7 +106,83 @@ def run_on_pod(remote_fn: RemoteFunction | Callable, tpu_type: str) -> ray.Objec
     return do_run.remote(remote_fn)
 
 
-def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts):
+def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: int) -> ray.ObjectRef:
+    """
+    Run a remote function on multiple TPU slices.
+
+    Args:
+        remote_fn: A remote function that takes no arguments
+        tpu_type: The type of TPU to run on, e.g. "v4-32"
+        num_slices: The number of slices to run
+
+    Returns:
+        A Ray ObjectRef that represents the result of the function
+    """
+
+    @ray.remote(resources={f"TPU-{tpu_type}-head": 1})
+    class MultisliceActor:
+        def __init__(self):
+            self.pod_name = ray.util.accelerators.tpu.get_current_pod_name()
+            self.num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
+            self.ip = socket.gethostbyname(socket.gethostname())
+
+        def get_slice_info(self):
+            return self.pod_name, self.num_hosts, self.ip
+
+        def do_run(self, remote_fn, coordinator_ip, slice_id, num_slices) -> _TpuRunResult:
+            port = 8081
+            mxla_env = {
+                "MEGASCALE_COORDINATOR_ADDRESS": f"{coordinator_ip}:{port}",
+                "MEGASCALE_NUM_SLICES": str(num_slices),
+                "MEGASCALE_PORT": f"{port}",
+                "MEGASCALE_SLICE_ID": str(slice_id),
+            }
+
+            remote_fn, tpu_name = _redecorate_remote_fn_for_tpu(remote_fn, self.num_hosts, env_vars=mxla_env)
+
+            info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
+            futures = [remote_fn.remote() for _ in range(self.num_hosts)]
+            try:
+                out = ray.get(futures)
+                logger.info("TPU job finished")
+                return TpuSuccess(info, out)
+            except RayError as e:
+                for f in futures:
+                    try:
+                        ray.cancel(f)
+                    except Exception:
+                        logger.exception("Failed to kill job after primary failure")
+                return _handle_ray_error(info, e)
+            except Exception as e:
+                for f in futures:
+                    try:
+                        ray.cancel(f)
+                    except Exception:
+                        logger.exception("Failed to kill job after primary failure")
+                return TpuFailed(info, e)
+
+    actors = [MultisliceActor.remote() for _ in range(num_slices)]  # type: ignore
+    futures = [actor.get_slice_info.remote() for actor in actors]
+    try:
+        logger.info("Getting slice infos...")
+        # also act as a sync step
+        slice_infos = ray.get(futures)
+        logger.info(f"TPU slice infos {slice_infos}")
+    except RayError as e:
+        logger.exception(e)
+        for actor in actors:
+            try:
+                ray.cancel(actor)
+            except Exception:
+                logger.exception("Failed to kill actor after primary failure")
+        return futures
+
+    coordinator_ip = slice_infos[0][2]
+
+    return [actor.do_run.remote(remote_fn, coordinator_ip, i, num_slices) for i, actor in enumerate(actors)]
+
+
+def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts, **runtime_env):
     """
     Redecorate a remote function to run on a TPU pod.
 
@@ -120,7 +198,16 @@ def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts):
 
     tpu_name = ray.util.accelerators.tpu.get_current_pod_name()  # -> my-tpu
     num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()  # -> 8
-    remote_fn = remote_fn.options(resources={tpu_name: 1, "TPU": num_tpus_per_host})
+
+    # ray doesn't merge the runtime envs properly, so we have to do it ourselves
+    # we need to do a deep merge
+    runtime_env = mergedeep.merge({}, runtime_env, remote_fn._runtime_env, strategy=mergedeep.Strategy.ADDITIVE)
+
+    remote_fn = remote_fn.options(
+        runtime_env=runtime_env,
+        resources={tpu_name: 1, "TPU": num_tpus_per_host},
+    )
+
     logger.info(f"Running on TPU {tpu_name} with {num_hosts} hosts and {num_tpus_per_host} TPUs per host")
     return remote_fn, tpu_name
 
@@ -193,11 +280,107 @@ def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_re
         raise RuntimeError("Failed too many times") from problem
 
 
+def run_on_pod_multislice_resumable(
+    remote_fn, tpu_type, num_slices, max_retries_preemption=1e6, max_retries_failure=10
+):
+    """
+    Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
+
+    Args:
+        remote_fn: A remote function that takes no arguments
+        tpu_type: The type of TPU to run on, e.g. "v4-32"
+        num_slices: The number of slices to run
+        max_retries_preemption: The maximum number of times to retry if the job is preempted
+        max_retries_failure: The maximum number of times to retry if the job fails
+
+    Returns:
+        The result of the function (not an ObjectRef)
+
+    """
+    num_failures = 0
+    num_preemptions = 0
+    attempt = 0
+    problem: Exception | None = None
+
+    while num_failures < max_retries_failure and num_preemptions < max_retries_preemption:
+        logger.info(f"Running on TPU {tpu_type}. Attempt {attempt}")
+        attempt += 1
+        problem = None
+        futures = run_on_pod_multislice(remote_fn, tpu_type, num_slices)
+        try:
+            outs = ray.get(futures)
+        except ray.exceptions.RayTaskError as e:
+            for f in futures:
+                try:
+                    ray.cancel(f)
+                except Exception:
+                    logger.exception("Failed to kill job after primary failure")
+            problem = e
+            if "preempted" in str(e).lower():
+                num_preemptions += 1
+                logger.warning(f"Preempted {num_preemptions} times, {e}")
+            else:
+                num_failures += 1
+                logger.warning(f"Failed {num_failures} times", exc_info=e)
+            continue
+        except Exception as e:
+            for f in futures:
+                try:
+                    ray.cancel(f)
+                except Exception:
+                    logger.exception("Failed to kill job after primary failure")
+            problem = e
+            num_failures += 1
+            if num_failures >= max_retries_failure:
+                logger.exception("Failed too many times", exc_info=e)
+                raise e
+            else:
+                logger.warning(f"Failed {num_failures} times", exc_info=e)
+                continue
+
+        if all(isinstance(out, TpuSuccess) for out in outs):
+            results = [out.result for out in outs]
+            logger.info("Success")
+            return results
+        elif any(isinstance(out, TpuPreempted) for out in outs):
+            out = None
+            for o in outs:
+                if isinstance(o, TpuPreempted):
+                    out = o
+            assert out is not None
+            problem = out.error
+            num_preemptions += 1
+            logger.warning(f"Preempted {num_preemptions} times. {problem}", exc_info=problem)
+        elif any(isinstance(out, TpuFailed) for out in outs):
+            num_preemptions += 1
+            logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
+        elif any(isinstance(out, TpuRunError) for out in outs):
+            out = None
+            for o in outs:
+                if isinstance(o, TpuRunError):
+                    out = o
+            assert out is not None
+            problem = out.error
+            num_preemptions += 1
+            problem = out.error
+            num_failures += 1
+            logger.warning(f"Failed {num_failures} times", exc_info=problem)
+        else:
+            raise RuntimeError(f"Unexpected result: {out}")
+
+    if num_preemptions >= max_retries_preemption:
+        raise RuntimeError("Preempted too many times") from problem
+    elif num_failures >= max_retries_failure:
+        raise RuntimeError("Failed too many times") from problem
+
+
 def _run_command(*args, **kwargs):
     return subprocess.check_call(args, **kwargs)
 
 
-def run_docker_on_pod(image_id: str, command: Sequence[str], *, tpu_type: str, env: dict, name="levanter", retries=10):
+def run_docker_on_pod(
+    image_id: str, command: Sequence[str], *, tpu_type: str, num_slices: int, env: dict, name="levanter", retries=10
+):
     env = _massage_env(env)
 
     docker_cmd = make_docker_run_command(image_id, command, env=env, foreground=True, name=name)
@@ -210,9 +393,18 @@ def run_docker_on_pod(image_id: str, command: Sequence[str], *, tpu_type: str, e
             logger.exception("Failed to run docker command")
             raise e
 
-    run_on_pod_resumable(
-        ray.remote(run_docker), tpu_type=tpu_type, max_retries_failure=retries, max_retries_preemption=10000
-    )
+    if num_slices == 1:
+        run_on_pod_resumable(
+            ray.remote(run_docker), tpu_type=tpu_type, max_retries_failure=retries, max_retries_preemption=10000
+        )
+    else:
+        run_on_pod_multislice_resumable(
+            ray.remote(run_docker),
+            tpu_type=tpu_type,
+            num_slices=num_slices,
+            max_retries_failure=retries,
+            max_retries_preemption=10000,
+        )
 
 
 def _kill_old_container(name):
@@ -351,6 +543,7 @@ class RunDockerOnPodConfig:
     env: dict = dataclasses.field(default_factory=dict)
     name: str = "levanter"
     retries: int = 10
+    node_count: int = 1
 
 
 def submit_tpu_job_on_ray(config: RunDockerOnPodConfig, ray_address: str, run_id: Optional[str] = None):
@@ -419,6 +612,8 @@ def main(args: RunDockerOnPodConfig):
         tpu_type=args.tpu_type,
         env=args.env,
         name=args.name,
+        retries=args.retries,
+        num_slices=args.node_count,
     )
 
 
