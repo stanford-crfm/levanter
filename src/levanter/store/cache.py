@@ -840,7 +840,7 @@ class _ShardFinished:
     path_to_shard: str
 
 
-@ray.remote(num_cpus=1)
+@ray.remote(num_cpus=1, runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORMS": "cpu"}))
 def _core_writer_task(
     parent,
     cache_dir,

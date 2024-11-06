@@ -201,7 +201,8 @@ def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts, **runtime_env):
 
     # ray doesn't merge the runtime envs properly, so we have to do it ourselves
     # we need to do a deep merge
-    runtime_env = mergedeep.merge({}, runtime_env, remote_fn._runtime_env, strategy=mergedeep.Strategy.ADDITIVE)
+    sources = [e for e in [remote_fn._runtime_env, runtime_env] if e is not None]
+    runtime_env = mergedeep.merge({}, *sources, strategy=mergedeep.Strategy.ADDITIVE)
 
     remote_fn = remote_fn.options(
         runtime_env=runtime_env,

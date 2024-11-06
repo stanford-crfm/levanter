@@ -391,15 +391,17 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
 
         return Gpt2LMHeadModel(transformer, embeddings)
 
-    def __call__(
+    def activations(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
         x = self.transformer(x, attn_mask, key=k_transformer)
-        lm_logits = self.embeddings.unembed(x)
 
-        return lm_logits
+        return x
+
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.embeddings.token_embeddings.weight
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "Gpt2LMHeadModel":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
