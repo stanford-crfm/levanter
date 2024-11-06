@@ -454,7 +454,6 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         hidden_states = self.transformer(hidden_states, attention_mask=attn_mask, key=key)
         return hidden_states
 
-    @property
     def get_lm_head(self) -> hax.NamedArray:
         return self.wte.weight
 

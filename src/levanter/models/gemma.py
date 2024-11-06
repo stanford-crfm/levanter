@@ -339,7 +339,6 @@ class GemmaLMHeadModel(eqx.Module, LmHeadModel[GemmaConfig], StateDictSerializat
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
 
-    @property
     def get_lm_head(self) -> hax.NamedArray:
         return self.embeddings.token_embeddings.weight
 

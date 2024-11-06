@@ -430,7 +430,6 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
 
         return hidden_states
 
-    @property
     def get_lm_head(self) -> hax.NamedArray:
         return self.embeddings.token_embeddings
 

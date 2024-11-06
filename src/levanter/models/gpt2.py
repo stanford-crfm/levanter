@@ -400,7 +400,6 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
 
         return x
 
-    @property
     def get_lm_head(self) -> hax.NamedArray:
         return self.embeddings.token_embeddings.weight
 
