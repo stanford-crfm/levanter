@@ -577,7 +577,7 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         return x
 
     @property
-    def lm_head(self) -> hax.NamedArray:
+    def get_lm_head(self) -> hax.NamedArray:
         if self._lm_head is None:
             return self.embeddings.token_embeddings.weight
         else:

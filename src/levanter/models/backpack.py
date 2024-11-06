@@ -431,7 +431,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return hidden_states
 
     @property
-    def lm_head(self) -> hax.NamedArray:
+    def get_lm_head(self) -> hax.NamedArray:
         return self.embeddings.token_embeddings
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None):

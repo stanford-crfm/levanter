@@ -130,7 +130,7 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
 
         """
         x = self.activations(input_ids, attn_mask, key=key)
-        lm_logits = hax.dot(x, self.lm_head, axis=self.Embed)
+        lm_logits = hax.dot(x, self.get_lm_head(), axis=self.Embed)
 
         return lm_logits
 
@@ -151,13 +151,12 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         """
         pass
 
-    @property
     @abc.abstractmethod
-    def lm_head(self) -> hax.NamedArray:
+    def get_lm_head(self) -> hax.NamedArray:
         """
         The language modeling head of the model. Should have shape {Embed, Vocab}.
         """
-        raise NotImplementedError("lm_head property not implemented")
+        raise NotImplementedError("get_lm_head not implemented")
 
     @abc.abstractmethod
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "LmHeadModel[LmConfigT]":
@@ -194,7 +193,7 @@ def compute_next_token_loss(
         model.Embed,
         model.Vocab,
         activations,
-        model.lm_head,
+        model.get_lm_head(),
         example.tokens,
         loss_mask=example.loss_mask,
         reduction=reduction,
