@@ -883,6 +883,14 @@ def _core_writer_task(
         group_ledgers: dict[str, CacheLedger | None] = {}
         write_refs: dict[str, ray.ObjectRef] = {}
 
+        if len(source.shard_names) == 0:
+            logger.info("No shards to process. Writing empty ledger.")
+            ledger = CacheLedger.load_or_initialize(cache_dir, source, processor)
+            ledger.is_finished = True
+            ledger._serialize_and_commit(cache_dir)
+            ray.get(parent._notify_updated_ledger.remote(ledger))
+            return
+
         shard_groups = _assign_shards_to_groups(source, options.num_shard_groups)
 
         for name, group in shard_groups.items():
