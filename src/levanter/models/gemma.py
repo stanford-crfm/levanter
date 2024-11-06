@@ -339,6 +339,9 @@ class GemmaLMHeadModel(eqx.Module, LmHeadModel[GemmaConfig], StateDictSerializat
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
 
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.embeddings.token_embeddings.weight
+
     @classmethod
     def init(cls, Vocab: Axis, config: GemmaConfig, *, key) -> "GemmaLMHeadModel":
         k_t, k_emb = jrandom.split(key, 2)
@@ -346,7 +349,7 @@ class GemmaLMHeadModel(eqx.Module, LmHeadModel[GemmaConfig], StateDictSerializat
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
         return GemmaLMHeadModel(transformer, embeddings)
 
-    def __call__(
+    def activations(
         self,
         input_ids: NamedArray,
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
@@ -363,8 +366,7 @@ class GemmaLMHeadModel(eqx.Module, LmHeadModel[GemmaConfig], StateDictSerializat
         """
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, key=key)
-        lm_logits = self.embeddings.unembed(x)
-        return lm_logits
+        return x
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[GemmaConfig]":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
