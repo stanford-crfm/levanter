@@ -185,13 +185,13 @@ def main(config: TrainLmConfig):
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
+        max_eval_examples_per_ds = config.trainer.max_eval_batches
+        if max_eval_examples_per_ds is not None:
+            max_eval_examples_per_ds *= config.trainer.eval_batch_size
+
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
-            max_eval_examples_per_ds = config.trainer.max_eval_batches
-            if max_eval_examples_per_ds is not None:
-                max_eval_examples_per_ds *= config.trainer.eval_batch_size
-
             causal_datasets = [
                 (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
                 for ds, tags in tagged_eval_datasets

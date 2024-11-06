@@ -172,6 +172,9 @@ class TreeStore(Generic[T]):
 
         return out
 
+    async def async_len(self) -> int:
+        return await jax.tree.leaves(self.tree)[0].num_rows_async()
+
 
 def _construct_builder_tree(exemplar, path, mode, cache_metadata):
     def open_builder(tree_path, item):
