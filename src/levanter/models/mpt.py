@@ -455,7 +455,7 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return hidden_states
 
     @property
-    def lm_head(self) -> hax.NamedArray:
+    def get_lm_head(self) -> hax.NamedArray:
         return self.wte.weight
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "MptLmHeadModel":

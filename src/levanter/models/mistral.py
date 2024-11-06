@@ -175,6 +175,10 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
         lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
         return MistralLMHeadModel(transformer, embeddings, lm_head)
 
+    def get_lm_head(self) -> hax.NamedArray:
+        assert self.lm_head.bias is None
+        return self.lm_head.weight
+
     def activations(
         self,
         input_ids: NamedArray,

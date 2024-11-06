@@ -401,7 +401,7 @@ class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
         return x
 
     @property
-    def lm_head(self) -> hax.NamedArray:
+    def get_lm_head(self) -> hax.NamedArray:
         return self.embeddings.token_embeddings.weight
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "Gpt2LMHeadModel":
