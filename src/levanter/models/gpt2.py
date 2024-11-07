@@ -20,7 +20,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
+from levanter.utils.flop_utils import lm_flops_per_token
 
 
 silence_transformer_nag()
@@ -31,7 +31,7 @@ from transformers import PretrainedConfig as HfConfig  # noqa: E402
 @LmConfig.register_subclass("gpt2")
 @dataclass(frozen=True)
 class Gpt2Config(HFCompatConfig):
-    seq_len: int = 512
+    seq_len: int = 1024
     hidden_dim: int = 768
     num_layers: int = 12
     num_heads: int = 12
@@ -73,10 +73,9 @@ class Gpt2Config(HFCompatConfig):
     def model_type(self) -> Type["Gpt2LMHeadModel"]:
         return Gpt2LMHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
         # We trust this code because it's in our hub repo
-        return HFCheckpointConverter(cls, "gpt2", ignore_prefix="transformer")
+        return HFCheckpointConverter(self.__class__, reference_checkpoint="gpt2", ignore_prefix="transformer")
 
     def to_hf_config(self, vocab_size, config_overrides=None) -> HfGpt2Config:
         if config_overrides is None:
@@ -113,6 +112,18 @@ class Gpt2Config(HFCompatConfig):
             activation_function=hf_config.activation_function,
             scale_attn_by_inverse_layer_idx=hf_config.scale_attn_by_inverse_layer_idx,
             upcast_attn=hf_config.reorder_and_upcast_attn,
+        )
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.hidden_dim * self.mlp_scale,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
         )
 
 
@@ -329,15 +340,17 @@ class Gpt2LMHeadModel(LmWithHfSerializationMixin[Gpt2Config]):
 
         return Gpt2LMHeadModel(transformer, embeddings)
 
-    def __call__(
+    def activations(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids, key=k_embed)
         x = self.transformer(x, attn_mask, key=k_transformer)
-        lm_logits = self.embeddings.unembed(x)
 
-        return lm_logits
+        return x
+
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.embeddings.token_embeddings.weight
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "Gpt2LMHeadModel":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)

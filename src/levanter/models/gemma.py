@@ -22,8 +22,9 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
     LlamaMlp,
 )
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.types import BlockFoldable
-from levanter.utils.py_utils import cached_classproperty
+from levanter.utils.flop_utils import lm_flops_per_token
 
 
 silence_transformer_nag()
@@ -59,7 +60,7 @@ class GemmaConfig(HFCompatConfig):
         rope_scaling (Dict, ignored): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
-    activation_function: str = "gelu"
+    activation_function: str = "gelu_new"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
 
@@ -74,7 +75,6 @@ class GemmaConfig(HFCompatConfig):
     attn_dropout = 0.0
     norm_eps = 1e-6
 
-    rope_base: int = 10_000
     norm_embeddings: bool = True
 
     # Attention-related config
@@ -88,7 +88,11 @@ class GemmaConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
-    rope_scaling: Optional[dict] = None
+    rope_theta: float = 10000.0
+
+    @property
+    def rope(self) -> RotaryEmbeddingsConfig:
+        return DefaultRotaryEmbeddingsConfig(theta=self.rope_theta)
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -105,10 +109,9 @@ class GemmaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
         return HFCheckpointConverter(
-            cls,  # type: ignore
+            self,
             reference_checkpoint="google/gemma-2b",
             trust_remote_code=True,
             HfConfigClass=HfGemmaConfig,
@@ -124,7 +127,7 @@ class GemmaConfig(HFCompatConfig):
         if hf_config.hidden_activation is None:
             activation_function = "gelu_pytorch_tanh"
         else:
-            activation_function = hf_config.hidden_activation
+            activation_function = "gelu_pytorch_tanh"
 
         if activation_function == "gelu_pytorch_tanh":
             activation_function = "gelu_new"
@@ -140,7 +143,7 @@ class GemmaConfig(HFCompatConfig):
             num_kv_heads=hf_config.num_key_value_heads,
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
-            rope_base=hf_config.rope_theta,
+            rope_theta=hf_config.rope_theta,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfGemmaConfig:
@@ -177,6 +180,18 @@ class GemmaConfig(HFCompatConfig):
     @property
     def model_type(cls) -> Type["GemmaLMHeadModel"]:
         return GemmaLMHeadModel
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return lm_flops_per_token(
+            hidden_dim=self.hidden_dim,
+            intermediate_dim=self.intermediate_dim,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            seq_len=self.seq_len,
+            vocab_size=vocab_size,
+            glu=False,
+        )
 
 
 class GemmaRMSNorm(hnn.LayerNorm):
@@ -301,6 +316,9 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
     def Vocab(self) -> Axis:
         return self.embeddings.Vocab
 
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.embeddings.token_embeddings.weight
+
     @classmethod
     def init(cls, Vocab: Axis, config: GemmaConfig, *, key) -> "GemmaLMHeadModel":
         k_t, k_emb = jrandom.split(key, 2)
@@ -308,7 +326,7 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
         return GemmaLMHeadModel(transformer, embeddings)
 
-    def __call__(
+    def activations(
         self,
         input_ids: NamedArray,
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
@@ -325,8 +343,7 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
         """
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, key=key)
-        lm_logits = self.embeddings.unembed(x)
-        return lm_logits
+        return x
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[GemmaConfig]":
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)

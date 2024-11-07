@@ -242,7 +242,8 @@ assert np.isclose(
 For the end-to-end model, you can save the model weight to disk as a checkpoint and load it into the reference model. For example, in Llama, we can do the following:
 
 ```python
-converter = LlamaConfig.default_hf_checkpoint_converter
+config = LLamaConfig()
+converter = config.default_hf_converter()
 
 # initialize the model in HF...
 hf_model = transformer.AutoModelForCausalLM(...)
@@ -252,11 +253,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     ck_path = f"{tmpdir}/hf_model"
     hf_model.save_pretrained(ck_path)
 
-    model = converter.load_pretrained(
-        LlamaLMHeadModel,
-        ck_path,
-        resize_vocab_to_match_tokenizer=False
-    )
+    model = converter.load_pretrained(config.model_type, ref=ck_path, resize_vocab_to_match_tokenizer=False)
 
 # compare the output values between Levanter and HF
 # ...

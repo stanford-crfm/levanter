@@ -12,14 +12,13 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
-from haliax.state_dict import ModuleWithStateDictSerialization, StateDict, apply_prefix
+from haliax.state_dict import ModuleWithStateDictSerialization, StateDict, with_prefix
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
 
 
 silence_transformer_nag()
@@ -37,11 +36,12 @@ class BackpackConfig(Gpt2Config):
     def model_type(self) -> Type["BackpackLMHeadModel"]:
         return BackpackLMHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
         # We trust this code because it's in our hub repo
         return HFCheckpointConverter(
-            cls, "stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079", trust_remote_code=True
+            self,
+            reference_checkpoint="stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079",
+            trust_remote_code=True,
         )
 
     # Axes
@@ -146,7 +146,10 @@ class WeightsOnlyAttention(ModuleWithStateDictSerialization):
         Embed = config.Embed
 
         k_c, _ = jrandom.split(key, 2)
-        c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias, out_first=True)
+        # NB: out_first=True b/c the torch implementation uses Linear
+        c_attn = hnn.Linear.init(
+            In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias, out_first=True
+        )
         dropout = hnn.Dropout(config.attn_pdrop)
 
         return WeightsOnlyAttention(config, c_attn, dropout)
@@ -351,7 +354,7 @@ class BackpackLMHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSeriali
         )
 
     @named_call
-    def __call__(
+    def activations(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
@@ -378,9 +381,10 @@ class BackpackLMHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSeriali
         scale = self.config.Senses.size
         hidden_states = hidden_states / scale
 
-        lm_logits = self.embeddings.unembed(hidden_states)
+        return hidden_states
 
-        return lm_logits
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.embeddings.token_embeddings
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)

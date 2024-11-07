@@ -5,7 +5,6 @@ import logging
 import os
 import pathlib
 import queue
-import sys
 import threading
 import time
 import urllib.parse
@@ -110,7 +109,7 @@ class Checkpointer:
         self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
 
         if jax.process_index() == 0:
-            self._async_checkpoint_remover_queue: queue.Queue[str] = queue.Queue()
+            self._async_checkpoint_remover_queue: queue.Queue[str] = queue.Queue(maxsize=-1)
             self._async_checkpoint_remover_thread = threading.Thread(
                 target=self._async_checkpoint_remover, daemon=True
             )
@@ -224,7 +223,7 @@ class Checkpointer:
 
     def _rm_checkpoint(self, checkpoint):
         if jax.process_index() == 0:
-            print(f"Removing checkpoint {checkpoint}", file=sys.stderr, flush=True)
+            logger.info(f"Removing checkpoint {checkpoint}")
             self._async_checkpoint_remover_queue.put(checkpoint)
 
     def _do_rm_checkpoint(self, checkpoint):
@@ -261,6 +260,43 @@ class Checkpointer:
             self._checkpoint_being_removed = checkpoint
             self._do_rm_checkpoint(checkpoint)
             self._checkpoint_being_removed = None
+
+
+# In callbacks.py - Add a new callback that handles epoch checkpointing
+class EpochCheckpointer:
+    """
+    A separate checkpointing system that saves based on epochs.
+    Works alongside the regular step-based checkpointer without modifying core state.
+    """
+
+    def __init__(
+        self,
+        checkpointer: Checkpointer,
+        every_n_epochs: int = 1,
+        total_dataset_size: Optional[int] = None,
+        batch_size: int = 1,
+    ):
+        self.checkpointer = checkpointer
+        self.every_n_epochs = every_n_epochs
+        self.total_dataset_size = total_dataset_size
+        self.batch_size = batch_size
+        self._last_saved_epoch = -1
+
+    def __call__(self, step_info):
+        if self.total_dataset_size is None:
+            return  # Can't calculate epochs without dataset size
+
+        # Calculate current epoch from steps without modifying StepInfo
+        current_epoch = (step_info.step * self.batch_size) // self.total_dataset_size
+
+        # Only save if we've moved to a new epoch and it matches our interval
+        if current_epoch > self._last_saved_epoch and current_epoch % self.every_n_epochs == 0:
+            # Use existing checkpointer's save_checkpoint method
+            self.checkpointer.save_checkpoint(
+                step_info,
+                f"epoch-{current_epoch}",
+            )
+            self._last_saved_epoch = current_epoch
 
 
 def save_checkpoint(
@@ -550,8 +586,12 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
+    append_run_id_to_base_path: bool = True
+
     def expanded_path(self, run_id) -> str:
-        return os.path.expanduser(os.path.join(self.base_path, run_id))
+        if self.append_run_id_to_base_path:
+            return os.path.expanduser(os.path.join(self.base_path, run_id))
+        return os.path.expanduser(self.base_path)
 
     def create(self, run_id) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]

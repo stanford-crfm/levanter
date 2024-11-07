@@ -1,5 +1,8 @@
+.git
+
 scratch
 cache
+new-cache
 wandb
 checkpoints
 
@@ -44,6 +47,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/figures/
 
 # PyBuilder
 target/
@@ -105,7 +109,6 @@ dmypy.json
 # JetBrains
 .idea/
 
-
 # dataset cache files
 **/*.parquet
 **/ledger.json
@@ -114,3 +117,4 @@ dmypy.json
 
 # local execution commands
 local_*.sh
+.aider*

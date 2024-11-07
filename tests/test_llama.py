@@ -2,7 +2,7 @@ import tempfile
 
 import chex
 import equinox as eqx
-import jax
+import numpy
 import numpy as np
 import pytest
 import transformers
@@ -12,9 +12,8 @@ import haliax as hax
 
 from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
-from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
-from levanter.models.llama import _rotate_half as levanter_rotate_half
-from levanter.models.llama import llama_rotary_pos_emb
+from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
+from levanter.models.rotary import _rotate_half as levanter_rotate_half
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -45,6 +44,16 @@ def test_llama_config():
         ), f"{k} {getattr(new_hf_config, k)} != {getattr(hf_config, k)}"
 
 
+def test_llama_flops():
+    # Check that the forward flops is within 10% of the naive calculation
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
+    llama_config = LlamaConfig.from_hf_config(hf_config)
+    n_params = 6.738415616e9
+    ratio = llama_config.flops_per_token(hf_config.vocab_size) / (2 * n_params)
+    assert ratio > 1.1, f"ratio {ratio} < 1.1"
+    assert ratio < 1.2, f"ratio {ratio} > 1.2"
+
+
 @skip_if_no_torch
 def test_llama_rotary_embedding():
     import torch
@@ -61,7 +70,9 @@ def test_llama_rotary_embedding():
     x = random.normal(key, (1, seq_len))
     x_torch = torch.from_numpy(np.array(x))
 
-    levanter_output = llama_rotary_pos_emb(HeadSize=HeadSize, Pos=Pos)
+    levanter_emb = DefaultRotaryEmbeddingsConfig().build(HeadSize=HeadSize, Pos=Pos)
+    levanter_output = (levanter_emb.cos, levanter_emb.sin)
+
     hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
     hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1))
 
@@ -96,8 +107,8 @@ def test_apply_rotary_pos_emb():
     k = hax.random.normal(random.PRNGKey(1), (Batch, Pos, Heads, HeadSize))
 
     # Check the output of _rotate_half() from levanter and hf
-    levanter_out_rf_q = levanter_rotate_half(q)
-    levanter_out_rf_k = levanter_rotate_half(k)
+    levanter_out_rf_q = levanter_rotate_half(q, HeadSize)
+    levanter_out_rf_k = levanter_rotate_half(k, HeadSize)
 
     q_tensor = named_array_to_tensor(q).transpose(1, 2)  # needed for HF
     k_tensor = named_array_to_tensor(k).transpose(1, 2)
@@ -111,7 +122,9 @@ def test_apply_rotary_pos_emb():
     cos = hax.random.normal(random.PRNGKey(2), (Pos, HeadSize))
     sin = hax.random.normal(random.PRNGKey(3), (Pos, HeadSize))
 
-    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin)
+    rot = RotaryEmbeddings(cos=cos, sin=sin)
+
+    levanter_out_rope_q, levanter_out_rope_k = rot(HeadSize, q, k)
     cos_tensor = named_array_to_tensor(cos)[None, :, :]
     sin_tensor = named_array_to_tensor(sin)[None, :, :]
 
@@ -255,7 +268,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
-    converter = LlamaConfig.default_hf_checkpoint_converter
+    converter = LlamaConfig().hf_checkpoint_converter()
 
     config = LlamaConfig(
         seq_len=128,
@@ -280,24 +293,27 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
 
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
-    torch_out = jax.nn.softmax(torch_out, axis=-1)
+    # torch_out = jax.nn.softmax(torch_out, axis=-1)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            LlamaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            LlamaLMHeadModel, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
-        def compute(input):
+        @hax.named_jit
+        def compute(model, input):
             model_output = model(input, attn_mask=attn_mask)
-            return hax.nn.softmax(model_output, axis=model.Vocab)
+            return model_output
 
-        compute = jax.jit(compute)
-        jax_out = compute(input).array
+        jax_out = compute(model, input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
         assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
+
+        # now we're going to magnify the model parameters enough that differences should actualy show up
+        jax_out = compute(model, input).array
 
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
@@ -305,9 +321,8 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
 
         torch_out2 = torch_model2(input_torch)
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-        torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out2} != {jax_out}"
+        numpy.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
 
 
 def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConfig:
@@ -316,7 +331,6 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
         hidden_dim=16,
         num_heads=4,
         num_kv_heads=num_kv_heads,
-        rope_scaling=None,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,
@@ -352,3 +366,25 @@ def test_pass_different_length_seq(num_kv_heads):
         use_flash_attention=True,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [2, 4])
+def test_state_dict_consistency(scan_layers, num_kv_heads):
+    from transformers import LlamaForCausalLM
+
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_layers=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+        scan_layers=scan_layers,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+    hf_config = config.to_hf_config(Vocab.size)
+    hf_model = LlamaForCausalLM(hf_config)
+    assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())

@@ -2,10 +2,11 @@ import json
 import os
 
 import numpy
+import numpy as np
 
 from levanter.data.audio import AudioIODatasetConfig
-from levanter.data.shard_cache import ShardCache
 from levanter.data.text import LMDatasetConfig
+from levanter.store.cache import TreeCache
 
 
 def _write_tiny_corpus(path):
@@ -43,17 +44,24 @@ def tiny_asr_corpus_config(path):
 
 def construct_small_data_cache(
     path, num_shards=8, chunk_size=512, doc_len=128, vocab_size=1024
-) -> tuple[LMDatasetConfig, dict[str, ShardCache]]:
-    from levanter.data.shard_cache import SerialCacheWriter
+) -> tuple[LMDatasetConfig, dict[str, TreeCache]]:
+    from levanter.store.cache import SerialCacheWriter
 
     rng = numpy.random.default_rng(0)
 
-    caches = {}
+    caches: dict[str, TreeCache] = {}
+
+    exemplar = {"input_ids": numpy.zeros((doc_len,), dtype=numpy.int32)}
 
     for split in ["train", "validation"]:
-        with SerialCacheWriter(f"{path}/cache/{split}", chunk_size) as writer:
+        with SerialCacheWriter(f"{path}/cache/{split}", exemplar) as writer:
             for shard in range(num_shards):
-                writer.write_batch({"input_ids": rng.integers(0, vocab_size, size=(chunk_size, doc_len))})
+                writer.write_batch(
+                    [
+                        {"input_ids": rng.integers(0, vocab_size, size=(doc_len,), dtype=np.int32)}
+                        for _ in range(chunk_size)
+                    ]
+                )
         caches[split] = writer.result()
 
     config = LMDatasetConfig(
@@ -61,7 +69,7 @@ def construct_small_data_cache(
         validation_urls=[f"file://{path}/validation/docs.jsonl"],
         cache_dir=f"{path}/cache",
         vocab_size=vocab_size,
-        tokenizer="passthrough",
+        tokenizer="gpt2",
     )
 
     return config, caches

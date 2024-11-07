@@ -1,4 +1,4 @@
-data: !include data/pile_source_old.yaml
+data: !include data/pile_mixture.yaml
 model:
   type: gpt2
   hidden_dim: 768

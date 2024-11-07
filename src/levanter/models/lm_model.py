@@ -8,9 +8,9 @@ from jax.random import PRNGKey
 
 import haliax as hax
 from haliax import Axis, NamedArray
-from haliax.nn import cross_entropy_loss
 
 from levanter.models.attention import AttentionMask
+from levanter.models.loss import next_token_loss
 
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
@@ -64,6 +64,21 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def Pos(self) -> Axis:
         pass
 
+    @property
+    @abc.abstractmethod
+    def Embed(self) -> Axis:
+        pass
+
+    cross_entropy_block_size: Optional[int] = 64000
+    """
+    The block size for computing cross-entropy loss. This is the number of tokens that are processed together
+    in a single block. This can be adjusted to fit within memory constraints. It's deliberately set to a large
+    value because it usually faster to compute the loss in larger blocks.
+    """
+
+    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+        return None
+
     def build(self, Vocab: Axis, *, key: PRNGKey) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 
@@ -91,16 +106,57 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
     def KeyPos(self) -> Axis:
         return self.config.KeyPos
 
+    @property
+    def Embed(self) -> Axis:
+        return self.config.Embed
+
     @classmethod
     @abc.abstractmethod
     def init(cls, Vocab: Axis, config: LmConfigT, *, key: PRNGKey) -> "LmHeadModel[LmConfigT]":
         pass
 
-    @abc.abstractmethod
     def __call__(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
+        """
+        Compute the logits for the next token in a sequence.
+        Args:
+            input_ids: token IDs with shape [..., Pos]
+            attn_mask: attention mask with shape [..., Pos, KeyPos]
+            key: PRNGKey for random number generation
+
+        Returns:
+            NamedArray: logits with shape [..., Pos, Vocab]
+
+        """
+        x = self.activations(input_ids, attn_mask, key=key)
+        lm_logits = hax.dot(x, self.get_lm_head(), axis=self.Embed)
+
+        return lm_logits
+
+    @abc.abstractmethod
+    def activations(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
+        """
+        Compute the activations for the next token in a sequence.
+        Args:
+            input_ids: token IDs with shape {Pos}
+            attn_mask: attention mask with shape {Pos, KeyPos}
+            key: PRNGKey for random number generation
+
+        Returns:
+            NamedArray: activations with shape {Pos, Embed}
+
+        """
         pass
+
+    @abc.abstractmethod
+    def get_lm_head(self) -> hax.NamedArray:
+        """
+        The language modeling head of the model. Should have shape {Embed, Vocab}.
+        """
+        raise NotImplementedError("get_lm_head not implemented")
 
     @abc.abstractmethod
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "LmHeadModel[LmConfigT]":
@@ -110,30 +166,41 @@ class LmHeadModel(Generic[LmConfigT], abc.ABC):
         """
         pass
 
-    def compute_loss(
-        self,
-        example: LmExample,
-        *,
-        key=None,
-        reduction: Optional[hax.ReductionFunction] = hax.mean,
-        reduction_axis: Optional[hax.AxisSelection] = None,
-    ) -> jnp.ndarray | NamedArray:
-        """
-        Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
-        across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
-        reduced, and the result is a named array with axes (*batch axes, sequence_length).
-        """
-        logits = self(example.tokens, example.attn_mask, key=key)
-        # TODO: would be nice if we made the dtype configurable
-        logits = logits.astype(jnp.float32)
-        targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
-        target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
-        loss = cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        )
-
-        return loss
-
     @property
     def vocab_size(self) -> int:
         return self.Vocab.size
+
+
+def compute_next_token_loss(
+    model: LmHeadModel,
+    example: LmExample,
+    *,
+    key=None,
+    reduction: Optional[hax.ReductionFunction] = hax.mean,
+    reduction_axis: Optional[hax.AxisSelection] = None,
+    logsumexp_weight: Optional[float] = None,
+    loss_dtype: Optional[Type[jnp.dtype]] = jnp.float32,
+) -> jnp.ndarray | NamedArray:
+    """
+    Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
+    across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
+    reduced, and the result is a named array with axes (*batch axes, sequence_length).
+    """
+    activations = model.activations(example.tokens, example.attn_mask, key=key)
+
+    loss = next_token_loss(
+        model.Pos,
+        model.Embed,
+        model.Vocab,
+        activations,
+        model.get_lm_head(),
+        example.tokens,
+        loss_mask=example.loss_mask,
+        reduction=reduction,
+        reduction_axis=reduction_axis,
+        logsumexp_weight=logsumexp_weight,
+        dtype=loss_dtype,
+        block_size=model.config.cross_entropy_block_size,
+    )
+
+    return loss

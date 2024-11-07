@@ -106,10 +106,6 @@ data:
 
 ### Mixture of Sources
 
-!!! warning
-
-    This feature is experimental and may change in the future.
-
 If you have multiple sources of data (e.g., multiple domains, or distinct subsets of data), you can use the `data` section of your training configuration to specify them:
 
 ```yaml
@@ -145,13 +141,13 @@ validation data.
 ## Data Preprocessing
 
 Levanter supports both online and offline preprocessing. Online preprocessing is done on-the-fly
-during training. With online preprocessing, you don't need to think about preprocessing your data.
+during training. With online preprocessing, you don't need to think about preprocessing your data
+except to make sure it's in the right format and where you'd like to store the cached preprocessing
+results.
 
 Our data loading pipeline will automatically break and concatenate documents into chunks equal
 to the model's `seq_len` parameter. It will also automatically add special tokens to the
 end of documents.
-
-We don't yet handle sequence-to-sequence tasks, but we plan to.
 
 ### Online Preprocessing
 
@@ -160,8 +156,7 @@ that builds a cache of preprocessed data on the fly. Online caching happens tran
 in the background, using the mostly-idle CPU-cores of the machine(s) you are training on.
 
 The cache that is built is fully reproducible, and can be used for future training runs.
-Training will start as soon as each training machine has its first shard of data cached
-and once the validation data is cached.
+Training will start as soon as the system has the data it needs.
 
 ### Offline Preprocessing
 
@@ -190,19 +185,28 @@ python -m levanter.main.cache_dataset \
 ### Direct Cache Construction
 
 As a final option, you can directly construct a cache of preprocessed data without using Ray. This is useful if you
-have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.data.SerialCacheWriter][]
+have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.store.SerialCacheWriter][]
 to write batches directly. Here's an example:
 
 ```python
-from levanter.data import SerialCacheWriter
+import numpy as np
 
-with SerialCacheWriter(cache_dir, rows_per_chunk=1024) as writer:
+from levanter.store import SerialCacheWriter
+
+exemplar = {
+    "input_ids": np.zeros((0), dtype=np.int32),
+    "attention_mask": np.zeros((0), dtype=np.int32),
+    "labels": np.zeros((0), dtype=np.int32),
+}
+
+with SerialCacheWriter(cache_dir, exemplar) as writer:
     for batch in process_batches():
+        # batch should be a list of dicts, each with keys "input_ids", "attention_mask", and "labels"
         writer.write_batch(batch)
 ```
 
-`batch` can be a `list[dict]`, `dict[list]`, or `pyarrow.RecordBatch`. To work with `train_lm`, it should have an
-`input_ids` key that is a list of `int`s.
+In this case, `batch` should be a list of dicts, each with keys `"input_ids"`, `"attention_mask"`, and `"labels"`.
+To work with `train_lm`, it should have an `input_ids` key that is a list of `int`s.
 
 To use a cache like this, you can use the `passthrough` tokenizer:
 
@@ -395,8 +399,31 @@ bash infra/spin-up-tpu-vm.sh my-tpu -z us-east1-d -t v3-128
 
 This will spin up a TPU VM instance and install Levanter on it. You can then run a command like so:
 
+
+```
+cat > .config <<EOF
+env:
+    WANDB_API_KEY:
+    WANDB_ENTITY:
+    WANDB_PROJECT:
+    HF_TOKEN:
+    TPU_STDERR_LOG_LEVEL: 0
+    TPU_MIN_LOG_LEVEL: 0
+    LIBTPU_INIT_ARGS: <extra args to libtpu>
+
+docker_repository: levanter
+zone: us-west4-a
+tpu_type: "v5litepod-16"
+vm_image: "tpu-ubuntu2204-base"
+preemptible: true
+autodelete: false
+subnetwork: "default"
+
+EOF
+```
+
 ```bash
-gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
+python infra/launch.py --tpu_name=my_tpu -- python src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
 ```
 
 ## Monitoring
