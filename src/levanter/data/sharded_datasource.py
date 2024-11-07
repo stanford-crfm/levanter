@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import warnings
 from typing import (
     TYPE_CHECKING,
@@ -16,11 +17,13 @@ from typing import (
     Tuple,
     TypeVar,
 )
+from urllib.parse import urlparse
 
 import datasets
 import fsspec
 import numpy as np
 import pyarrow.parquet as pq
+from google.cloud import storage
 
 from levanter.utils import fsspec_utils
 
@@ -142,6 +145,68 @@ class ShardedDataSource(Generic[T_co]):
         return _BatchMappedShardedDataSource(
             self, fn, batch_size, num_cpus=num_cpus, num_gpus=num_gpus, output_exemplar=output_exemplar, **resources
         )
+
+
+def gcs_glob(pattern: str) -> list[str]:
+    """Glob files in Google Cloud Storage.
+
+    Args:
+        pattern: GCS path pattern (gs://bucket/path/*)
+
+    Returns:
+        List of matching GCS URLs
+    """
+    if not pattern.startswith("gs://"):
+        # Handle local files
+        import glob
+
+        return glob.glob(pattern)
+
+    # Parse bucket and prefix from gs:// URL
+    parsed = urlparse(pattern)
+    bucket_name = parsed.netloc
+    prefix = parsed.path.lstrip("/")
+
+    # Convert glob pattern to regex
+    prefix_no_glob = prefix.split("*")[0]
+    pattern_as_regex = re.compile(re.escape(prefix).replace("\\*", ".*"))
+
+    # Initialize GCS client
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+
+    # List matching blobs
+    matching_urls = []
+    for blob in bucket.list_blobs(prefix=prefix_no_glob):
+        if pattern_as_regex.match(blob.name):
+            matching_urls.append(f"gs://{bucket_name}/{blob.name}")
+
+    return matching_urls
+
+
+def datasource_from_chat_jsonl(
+    urls: Sequence[str], messages_field: str = "messages", input_role: str = "user", output_role: str = "assistant"
+) -> "ShardedDataSource[dict]":
+    """Creates a ShardedDataSource from JSONL files containing chat messages.
+
+    Args:
+        urls: Sequence of URLs or glob patterns pointing to JSONL files
+        messages_field: Field name containing the messages in each JSON object
+        input_role: Role identifier for input messages
+        output_role: Role identifier for output messages
+
+    Returns:
+        ShardedDataSource configured for chat data
+    """
+    # Expand any glob patterns in the URLs
+    expanded_urls = []
+    for url in urls:
+        if any(c in url for c in "*?[]"):
+            expanded_urls.extend(gcs_glob(url))
+        else:
+            expanded_urls.append(url)
+
+    return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
 
 
 def datasource_from_hf(id: str, *, split, **kwargs) -> ShardedDataSource[dict]:
@@ -464,6 +529,32 @@ class JsonDataSource(ShardedDataSource[dict]):
             # TODO: would be nice if we could seek faster than this. Can't even skip json parsing
             data = json.load(f)
             return iter(data[row:])
+
+
+class ChatJsonlDataSource(JsonlDataSource):
+    """DataSource that reads JSONL files containing OpenAI chat format messages."""
+
+    def __init__(self, urls: Sequence[str], messages_field: str, input_role: str, output_role: str):
+        super().__init__(urls)
+        self.messages_field = messages_field
+        self.input_role = input_role
+        self.output_role = output_role
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            for line in f:
+                if i >= row:
+                    data = json.loads(line)
+                    messages = data[self.messages_field]
+
+                    # Extract input/output from messages
+                    input_msg = next(m["content"] for m in messages if m["role"] == self.input_role)
+                    output_msg = next(m["content"] for m in messages if m["role"] == self.output_role)
+
+                    yield {"input": input_msg, "output": output_msg}
+                i += 1
 
 
 class ParquetDataSource(ShardedDataSource[dict]):

@@ -376,7 +376,6 @@ class Trainer:
         while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
-
             info = self.train_step(state, example)
             state = info.state
 

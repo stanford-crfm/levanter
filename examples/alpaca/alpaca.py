@@ -162,11 +162,13 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
         # mask out padding and anything before the start of the target
         Pos = input_ids.resolve_axis("position")
         if config.mask_inputs:
-            loss_mask = hax.arange(Pos) >= ex["source_lens"]
+            loss_mask = hax.arange(Pos) >= ex["source_lens"] - 1  # should be minus 1?
 
             # don't predict the padding
             targets = hax.roll(input_ids, -1, Pos)
             loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+            # to not predict EOS token since we don't have target!
+            loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
         else:
             loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
         lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)

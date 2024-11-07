@@ -64,6 +64,86 @@ LEDGER_FILE = "ledger.json"
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
 
+class EpochDataset(AsyncDataset[T_co]):
+    """
+    A dataset that wraps another dataset, providing infinite epochs by recycling indices.
+    If `max_epochs` is specified, it limits the number of cycles before raising StopIteration.
+
+    :param dataset: The dataset to wrap.
+    :param max_epochs: The maximum number of epochs to cycle through. If None, cycle indefinitely.
+    """
+
+    def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
+        self.dataset = dataset
+        self.max_epochs = max_epochs
+
+    async def async_len(self) -> int:
+        if self.max_epochs is None:
+            raise ValueError("Cannot determine length of an infinite dataset without max_epochs.")
+        # Return the total number of samples: max_epochs * length of the dataset
+        return self.max_epochs * await self.dataset.async_len()
+
+    async def final_length_is_known(self) -> bool:
+        return await self.dataset.final_length_is_known()
+
+    def is_finite(self) -> bool:
+        # EpochDataset can be finite if max_epochs is set.
+        return self.max_epochs is not None
+
+    async def current_len(self) -> Optional[int]:
+        # If max_epochs is None, the dataset is effectively infinite.
+        if self.max_epochs is None:
+            return None
+
+        # If the final length of the dataset is not known, return the current length of the underlying dataset.
+        if not await self.dataset.final_length_is_known():
+            return await self.dataset.current_len()
+
+        # If the final length is known, return the max_epochs * async_len of the dataset.
+        return self.max_epochs * await self.dataset.async_len()
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+        # Use self.wait_until_len_at_least to ensure we have enough data for the batch.
+        max_index = max(indices)
+        ds_len = await self.dataset.wait_until_len_at_least(max_index + 1)
+
+        # Determine the epoch based on the largest index
+        epoch = max_index // ds_len
+
+        # If max_epochs is specified, raise an error if the epoch exceeds the allowed number of epochs
+        if self.max_epochs is not None and epoch >= self.max_epochs:
+            raise StopIteration(
+                f"Reached maximum number of epochs: epoch {epoch} exceeds the maximum allowed {self.max_epochs}"
+            )
+
+        # Wrap the indices within the bounds of the dataset length
+        wrapped_indices = [idx % ds_len for idx in indices]
+
+        # Delegate to the underlying dataset's get_batch
+        return await self.dataset.get_batch(wrapped_indices)
+
+    async def wait_until_len_at_least(self, length: int) -> int:
+        """
+        Returns the length of the dataset once it is at least `length` or if the dataset has a known (finished) length.
+        If the dataset's actual length is less than `length`, it returns the minimum of async_len and the current length.
+        """
+        # Wait until the underlying dataset's length is at least `length`
+        if not self.is_finite():
+            return length
+
+        if await self.dataset.final_length_is_known():
+            base_length = await self.dataset.async_len()
+        else:
+            base_length = await self.dataset.wait_until_len_at_least(length)
+
+        if base_length < length:
+            # hit epoch boundary
+            assert self.max_epochs is not None
+            return self.max_epochs * base_length
+
+        return base_length
+
+
 class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
     A dataset that yields sequences of tokens of fixed length from an underlying TreeCache.
@@ -562,18 +642,24 @@ class LMTaskConfig(abc.ABC):
 
 @dataclass
 class LMSupervisedDatasetConfig:
-    """This class represents a dataset source with URLs or hf name/id."""
+    """Config for supervised fine-tuning datasets"""
 
     cache_dir: str = "cache/"
 
+    # HF dataset config
+    hf_dataset_name: Optional[str] = None  # e.g. "tatsu-lab/alpaca" or "OpenAssistant/oasst1"
+    hf_dataset_split: str = "train"  # which split to use
+
+    # Local files config
+    validation_urls: List[str] = field(default_factory=list)  # paths to jsonl/json files
+
+    # Field names in the data
+    input_field: str = "prompt"  # name of the input field
+    output_field: str = "response"  # name of output field
+
+    # Optional metadata
     tags: Optional[List[str]] = None
-    """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
-    name: Optional[str] = None  # name for hf dataset
-
-    input_field: str = "prompt"  # name of the input field in the jsonl file
-    output_field: str = "response"  # name of the output field in the jsonl file
-
-    validation_urls: List[str] = ()  # type:ignore
+    name: Optional[str] = None
 
 
 def preprocess_supervised_example(
@@ -625,19 +711,113 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
 def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
     import levanter.data
 
-    validation_urls = [url for url_pat in config.validation_urls for url in expand_glob(url_pat)]
-    dataset = levanter.data.datasource_from_jsonl(validation_urls)
+    # Choose data source based on config
+    if config.hf_dataset_name is not None:
+        # Using HF dataset
+        dataset = levanter.data.datasource_from_hf(config.hf_dataset_name, split=config.hf_dataset_split)
+    else:
+        # Using local files
+        validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
+        if not validation_urls:
+            raise ValueError("Must specify either hf_dataset_name or validation_urls")
+        dataset = levanter.data.datasource_from_jsonl(validation_urls)
 
     input_field = config.input_field
     output_field = config.output_field
 
     output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
 
-    dataset = dataset.map_batches(lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field), batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
-    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore
+    # Use the same preprocessing as before
+    dataset = dataset.map_batches(
+        lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+
+
+@dataclass
+class ChatSFTDatasetConfig(LMSupervisedDatasetConfig):
+    """Config for loading JSONL files in OpenAI chat format for supervised fine-tuning."""
+
+    # Chat format specific fields
+    messages_field: str = "messages"
+    input_role: str = "user"
+    output_role: str = "assistant"
+    train_urls: List[str] = field(default_factory=list)  # Add this line
+
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        import levanter.data
+
+        """Gets ShardedDataSource for either training or validation data."""
+        urls = self.validation_urls if split == "validation" else self.train_urls
+
+        if not urls:
+            return None
+
+        # Use the datasource_from_chat_jsonl function from sharded_datasource
+        return levanter.data.sharded_datasource.datasource_from_chat_jsonl(
+            urls, messages_field=self.messages_field, input_role=self.input_role, output_role=self.output_role
+        )
+
+
+def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase) -> dict:
+    """
+    Preprocess chat examples to match the format of preprocess_supervised_example.
+    Returns a dict with input_ids and sources_len like the supervised case.
+    """
+    # Get sources (inputs) and targets (outputs) from the batch
+    sources = [example["input"] for example in batch]
+    targets = [example["output"] for example in batch]
+
+    # Tokenize sources alone first to get the source lengths
+    sources_tokenized = tokenizer(sources, padding=False, truncation=True)
+
+    # Combine source and target for full examples
+    full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
+    examples_tokenized = tokenizer(full_examples, padding=False, truncation=True)
+
+    # Get source lengths to mask loss appropriately
+    source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
+    return {
+        "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
+        "sources_len": np.array(source_lens, dtype=np.int32),
+    }
+
+
+def mk_chat_sft_dataset(config: ChatSFTDatasetConfig, tokenizer: PreTrainedTokenizerBase) -> AsyncDataset[LmExample]:
+    """Creates a dataset from JSONL files containing chat format data for SFT."""
+    source = config.get_shard_source("train")
+    if source is None:
+        raise ValueError("No training data source found")
+
+    # Set up example structure matching supervised case
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+
+    # Process the dataset
+    dataset = source.map_batches(
+        lambda ex: preprocess_chat_example(ex, tokenizer),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    # Cache the processed data
+    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+
+    # Ensure padding token is set (needed by _prepare_supervised_example)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Reuse the supervised prepare function directly
     return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
 
 
@@ -648,9 +828,20 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     cache_dir: Optional[str] = "cache/"
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+        epochs: int = 0,
     ) -> AsyncDataset[np.ndarray]:
+
         ds = self.token_seq_dataset("train", seq_len, monitors)
+        if epochs:
+            logger.info("Wrapping dataset in epoch dataset")
+            ds = EpochDataset(ds, max_epochs=epochs)
+
+        # add epoch flag here.
         if ds is None:
             raise ValueError("No training set!")
 
