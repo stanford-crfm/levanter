@@ -14,7 +14,7 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
-from levanter.checkpoint import load_checkpoint
+from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, LMSupervisedDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
@@ -54,6 +54,7 @@ class TrainLmConfig:
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
+    epoch: int = 0
 
 
 def main(config: TrainLmConfig):
@@ -117,9 +118,33 @@ def main(config: TrainLmConfig):
 
         # TODO: fix this
         tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
+        # TokenSeqDataset is config.data.train_set(Pos.size, key=data_key)
+
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key, epochs=config.epoch),
+            Pos,
+            KeyPos,
+            ignore_index=config.data.ignore_token_id,
         )
+
+        # add epoch logging if epochs specified
+        if config.epoch > 0:
+            total_tokens_future = callbacks.get_total_dataset_tokens(train_dataset.dataset, config.model.seq_len)
+            trainer.add_hook(
+                callbacks.log_epoch_progress(
+                    total_tokens_future, Pos.size, trainer.config.train_batch_size, max_epochs=config.epoch
+                ),
+                every=1,
+            )
+
+            # Add epoch checkpoint callback
+            epoch_checkpointer = EpochCheckpointer(
+                checkpointer=trainer.config.checkpointer.create(trainer.run_id),
+                every_n_epochs=1,  # Or configure as needed
+                total_dataset_size=total_tokens_future.result(),
+                batch_size=trainer.config.train_batch_size,
+            )
+            trainer.add_hook(epoch_checkpointer, every=1)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
@@ -235,8 +260,13 @@ def main(config: TrainLmConfig):
             train_loader = iter(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, train_loader)
-        # checkpointer.on_step(last_step, force=True)
+        last_info = trainer.train(state, train_loader)
+
+        # If running EpochDataset save latest checkpoint by default
+        if trainer.config.checkpointer is not None and config.epoch > 0:
+            trainer.run_hooks(last_info, force=True)
+            checkpointer = trainer.config.checkpointer.create(trainer.run_id)
+            checkpointer.wait_until_finished()
 
 
 if __name__ == "__main__":
