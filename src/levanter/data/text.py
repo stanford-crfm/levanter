@@ -75,6 +75,7 @@ class EpochDataset(AsyncDataset[T_co]):
     """
 
     def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
+        super().__init__()
         self.dataset = dataset
         self.max_epochs = max_epochs
 
@@ -154,6 +155,7 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
 
     def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
+        super().__init__()
         self.doc_cache = doc_cache
         self.seq_len = seq_len
         self._store: Optional[TreeStore] = None
@@ -687,7 +689,7 @@ def preprocess_supervised_example(
     }
 
 
-def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) -> LmExample:
+def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis) -> LmExample:
     """
     Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
 
@@ -699,11 +701,15 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
     """
     with local_cpu_mesh():
         # annoyingly, pad expects things to be batched so we have to prepend a batch axis
-        ex = tokenizer.pad({k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length")
+        ex = tokenizer.pad(
+            {k: np.expand_dims(v, 0) for k, v in ex.items()},
+            return_tensors="np",
+            padding="max_length",
+            max_length=Pos.size,
+        )
         ex = {k: v[0] for k, v in ex.items()}
-        input_ids = hax.named(ex["input_ids"], "position")
+        input_ids = hax.named(ex["input_ids"], Pos)
         # mask out padding and anything before the start of the target
-        Pos = input_ids.resolve_axis("position")
         loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
 
         # don't predict the padding
@@ -714,7 +720,7 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
         return lm_ex
 
 
-def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
+def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis):
     import levanter.data
 
     # Choose data source based on config
@@ -746,7 +752,7 @@ def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrain
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
 
 
 @dataclass
@@ -799,7 +805,9 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase) -> dict:
     }
 
 
-def mk_chat_sft_dataset(config: ChatSFTDatasetConfig, tokenizer: PreTrainedTokenizerBase) -> AsyncDataset[LmExample]:
+def mk_chat_sft_dataset(
+    config: ChatSFTDatasetConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+) -> AsyncDataset[LmExample]:
     """Creates a dataset from JSONL files containing chat format data for SFT."""
     source = config.get_shard_source("train")
     if source is None:
@@ -824,7 +832,7 @@ def mk_chat_sft_dataset(config: ChatSFTDatasetConfig, tokenizer: PreTrainedToken
         tokenizer.pad_token = tokenizer.eos_token
 
     # Reuse the supervised prepare function directly
-    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
 
 
 @dataclass
