@@ -191,6 +191,7 @@ class TreeCache(AsyncDataset[T_co]):
         ledger: Optional["CacheLedger"],
         _broker,  # handle of _TreeStoreCacheBuilder
     ):
+        super().__init__()
         self.cache_dir = cache_dir
         self.ledger = ledger
         self._was_already_finished = ledger is not None and ledger.is_finished

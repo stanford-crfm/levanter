@@ -270,6 +270,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
     """
 
     def __init__(self, cache: TreeCache[AudioTextDict]):
+        super().__init__()
         self.cache = cache
 
     async def async_len(self) -> int:

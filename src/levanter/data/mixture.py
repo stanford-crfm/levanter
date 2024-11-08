@@ -53,6 +53,7 @@ class MixtureDataset(AsyncDataset[T]):
         key: PRNGKeyArray | int,
         stop_strategy: str = StopStrategy.RESTART_STRATEGY,
     ):
+        super().__init__()
         self.weights = MixtureDataset._normalize_weights(weights)
         self.datasets = {name: dataset for name, dataset in datasets.items() if self.weights.get(name, 0) > 0}
         self.dataset_index = Index(self.datasets.keys())
