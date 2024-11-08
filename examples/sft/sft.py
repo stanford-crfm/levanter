@@ -80,6 +80,7 @@ def train(config: SFTConfig):
         raise ValueError("Must specify either --initialize_from_hf or --initialize_from")
     else:
         converter = None
+        model_config = config.model
 
     levanter.initialize(config)
 
@@ -106,10 +107,10 @@ def train(config: SFTConfig):
             input_role=config.input_role,
             output_role=config.output_role,
         )
-        train_dataset = mk_chat_sft_dataset(chat_config, tokenizer)
+        train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
-        train_dataset = mk_supervised_dataset(config.supervised_data, tokenizer)
+        train_dataset = mk_supervised_dataset(config.supervised_data, tokenizer, model_config.Pos)
     logger.info("Supervised dataset created")
     train_dataset = PermutationDataset(train_dataset, data_key)
 

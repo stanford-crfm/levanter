@@ -2,6 +2,7 @@ import numpy as np
 from transformers import AutoTokenizer
 
 import haliax
+from haliax import Axis
 
 from levanter.data.text import _prepare_supervised_example, preprocess_supervised_example
 
@@ -76,7 +77,7 @@ def test_supervised_eval():
         "sources_len": np.array(45, dtype=np.int32),
     }
 
-    lm_ex = _prepare_supervised_example(ex, tokenizer)
+    lm_ex = _prepare_supervised_example(ex, tokenizer, Axis("position", 128))
 
     assert lm_ex.loss_mask["position", 44]
     assert haliax.sum(lm_ex.loss_mask) == 1
