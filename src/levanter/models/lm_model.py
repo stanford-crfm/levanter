@@ -1,4 +1,5 @@
 import abc
+from dataclasses import dataclass
 from typing import Generic, Optional, Type, TypeVar
 
 import draccus
@@ -48,6 +49,7 @@ class LmExample(eqx.Module):
 
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?
+@dataclass(frozen=True)
 class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_path="levanter.models"):  # type: ignore
     @property
     @abc.abstractmethod
