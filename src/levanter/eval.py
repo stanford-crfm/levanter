@@ -60,6 +60,7 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
     def __init__(
         self, datasets: Sequence[tuple[AsyncDataset[T], Sequence[str]]], max_examples_per_dataset: Optional[int] = None
     ):
+        super().__init__()
         self.datasets = []
         tag_index: dict[str, int] = {}
         for i, (dataset, tags) in enumerate(datasets):

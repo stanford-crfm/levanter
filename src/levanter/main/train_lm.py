@@ -209,7 +209,7 @@ def main(config: TrainLmConfig):
 
         if config.supervised_data is not None:
             logger.info("Using supervised data")
-            supervised_eval = [(levanter.data.text.mk_supervised_dataset(config.supervised_data, tokenizer), "")]
+            supervised_eval = [(levanter.data.text.mk_supervised_dataset(config.supervised_data, tokenizer, Pos), "")]
             # TODO Add tags
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
