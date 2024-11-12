@@ -80,6 +80,7 @@ def train(config: SFTConfig):
         raise ValueError("Must specify either --initialize_from_hf or --initialize_from")
     else:
         converter = None
+        model_config = config.model
 
     levanter.initialize(config)
 
