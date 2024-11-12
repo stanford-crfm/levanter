@@ -72,6 +72,10 @@ class WandbTracker(Tracker):
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         self.run.log_artifact(artifact_path, name=name, type=type)
 
+    def finish(self):
+        logger.info("Finishing wandb run...")
+        self.run.finish()
+
 
 def is_wandb_available():
     try:
