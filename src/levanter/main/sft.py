@@ -45,7 +45,7 @@ class DatasetType(str, Enum):
 
 
 @dataclass
-class SFTConfig):
+class SFTConfig:
     # inherit most of the config from TrainLmConfig
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=LlamaConfig)
