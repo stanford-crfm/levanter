@@ -14,7 +14,14 @@ EMPTY_BUCKET = "levanter-empty"
 
 
 def schedule_gcs_deletion_job(project_id, gcs_bucket_name, path_to_delete):
-    """Schedules an STS job to delete all files in a GCS path and waits for completion."""
+    """
+    Schedules an STS job to delete all files in a GCS path and waits for completion.
+
+    This function uses a "trick" in STS to delete all files in a GCS path by transferring files from an empty bucket to
+    the target path with the `delete_objects_unique_in_sink` option enabled. This will delete all objects in the target
+    path that do not exist in the source path (which is empty).
+
+    """
 
     client = storage_transfer_v1.StorageTransferServiceClient()
 
