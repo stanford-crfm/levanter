@@ -387,4 +387,5 @@ def test_state_dict_consistency(scan_layers, num_kv_heads):
     model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
     hf_config = config.to_hf_config(Vocab.size)
     hf_model = LlamaForCausalLM(hf_config)
-    assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())
+    levanter_state_dict = hax.state_dict.to_torch_compatible_state_dict(model)
+    assert set(hf_model.state_dict().keys()) == set(levanter_state_dict.keys())
