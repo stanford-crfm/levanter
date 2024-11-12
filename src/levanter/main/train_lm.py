@@ -268,6 +268,9 @@ def main(config: TrainLmConfig):
             checkpointer = trainer.config.checkpointer.create(trainer.run_id)
             checkpointer.wait_until_finished()
 
+    # This isn't necessary except when Levanter is run in a subprocess (as happens w/ ray)
+    trainer.tracker.finish()
+
 
 if __name__ == "__main__":
     levanter.config.main(main)()
