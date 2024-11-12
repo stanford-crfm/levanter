@@ -71,7 +71,7 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def Embed(self) -> Axis:
         pass
 
-    cross_entropy_block_size: Optional[int] = 64000
+    cross_entropy_block_size: Optional[int] = None
     """
     The block size for computing cross-entropy loss. This is the number of tokens that are processed together
     in a single block. This can be adjusted to fit within memory constraints. It's deliberately set to a large
