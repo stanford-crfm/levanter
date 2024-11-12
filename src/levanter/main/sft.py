@@ -22,7 +22,6 @@ from levanter.data.text import (
     mk_chat_sft_dataset,
     mk_supervised_dataset,
 )
-from levanter.main.train_lm import TrainLmConfig
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -46,7 +45,7 @@ class DatasetType(str, Enum):
 
 
 @dataclass
-class SFTConfig(TrainLmConfig):
+class SFTConfig):
     # inherit most of the config from TrainLmConfig
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=LlamaConfig)
