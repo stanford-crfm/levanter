@@ -160,11 +160,6 @@ def train(config: SFTConfig):
 
         loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
 
-        if int(state.step) != 0:
-            logger.info(f"Resuming training from step {state.step}")
-            for i in range(state.step):
-                next(loader)
-
         if config.hf_save_path is not None:
             # bit gross to reach this far into the config, but it's fine
             if config.trainer.checkpointer.append_run_id_to_base_path:
