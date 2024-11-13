@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeAlias, TypeVar, Union
 
 import datasets
 import equinox as eqx
@@ -26,7 +26,7 @@ from tokenizers import normalizers
 import haliax as hax
 from haliax import Axis
 
-from levanter.data import AsyncDataset, ShardedDataSource
+from levanter.data import AsyncDataset
 from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy
 
@@ -37,9 +37,9 @@ from levanter.models.lm_model import LmExample
 from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
-from levanter.utils import fsspec_utils
 from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
+
 
 silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
@@ -47,11 +47,18 @@ from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizer
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
-from levanter.data.sharded_datasource import JsonlDataSource, ShardedDataSource, TextUrlDataSource, UrlDataSource, \
-    WrappedHFDataSource, gcs_glob  # noqa
+from levanter.data.sharded_datasource import (  # noqa
+    JsonlDataSource,
+    ShardedDataSource,
+    TextUrlDataSource,
+    UrlDataSource,
+    WrappedHFDataSource,
+    gcs_glob,
+)
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.store.cache import build_or_load_cache  # noqa
 from levanter.utils.jax_utils import key_iterator, local_cpu_mesh, use_cpu_device  # noqa
+
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -192,7 +199,7 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
         with ts.Batch():
             out = []
             for offset in offsets:
-                out.append(token_arrays.data[offset: offset + self.seq_len].read())
+                out.append(token_arrays.data[offset : offset + self.seq_len].read())
 
         out = await asyncio.gather(*out)
         return out
@@ -210,13 +217,13 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
 
 class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
     def __init__(
-            self,
-            dataset: AsyncDataset[np.ndarray],
-            QPos: Axis,
-            KPos: Axis,
-            fcm_prob: float = 0.0,
-            key: Optional[PRNGKey] = None,
-            ignore_index: Optional[int] = None,
+        self,
+        dataset: AsyncDataset[np.ndarray],
+        QPos: Axis,
+        KPos: Axis,
+        fcm_prob: float = 0.0,
+        key: Optional[PRNGKey] = None,
+        ignore_index: Optional[int] = None,
     ):
         self.dataset = dataset
         self.QPos = QPos
@@ -274,16 +281,16 @@ class BatchTokenizer(BatchProcessor[str, dict]):
     """
 
     def __init__(
-            self,
-            tokenizer: PreTrainedTokenizerBase,
-            enforce_bos=True,
-            enforce_eos=True,
-            *,
-            override_resources=None,
-            _workaround_len=LONG_STRING_WORKAROUND,
-            return_attention_mask=False,
-            padding=False,
-            max_length=None,
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        enforce_bos=True,
+        enforce_eos=True,
+        *,
+        override_resources=None,
+        _workaround_len=LONG_STRING_WORKAROUND,
+        return_attention_mask=False,
+        padding=False,
+        max_length=None,
     ):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
@@ -329,11 +336,18 @@ class BatchTokenizer(BatchProcessor[str, dict]):
             needs_merge = []
 
         if self.padding is not False:
-            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False,
-                                      padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
+            encoding = self.tokenizer(
+                batch,
+                return_attention_mask=self.return_attention_mask,
+                verbose=False,
+                padding=self.padding,
+                max_length=self.max_length,
+                truncation=True,
+            )  # type: ignore
         else:
-            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask,
-                                      verbose=False)  # type: ignore
+            encoding = self.tokenizer(
+                batch, return_attention_mask=self.return_attention_mask, verbose=False
+            )  # type: ignore
 
         if needs_merge:
             new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
@@ -464,11 +478,11 @@ class BatchTokenizer(BatchProcessor[str, dict]):
 
 
 def concatenate_and_group_texts(
-        encoding: BatchEncoding,
-        seq_len: int,
-        stride: Optional[int] = None,
-        drop_remainder: bool = True,
-        mask_stride_overlap=True,
+    encoding: BatchEncoding,
+    seq_len: int,
+    stride: Optional[int] = None,
+    drop_remainder: bool = True,
+    mask_stride_overlap=True,
 ) -> Iterator[BatchEncoding]:
     """Groups texts in a batch together. Typically, you'll want to use this with a fairly large
     set of texts, e.g. 1000 docs.
@@ -496,7 +510,7 @@ def concatenate_and_group_texts(
     # Split by Chunks of Maximum Length
     # we want to take chunks up until we've covered all "total_length" tokens with a sliding window of size "stride"
     for begin in range(0, total_length - seq_len + stride, stride):
-        data = {k: v[begin: begin + seq_len] for k, v in concatenated.items()}
+        data = {k: v[begin : begin + seq_len] for k, v in concatenated.items()}
 
         if mask_stride_overlap and stride != seq_len:
             labels = data.get("labels", data["input_ids"])
@@ -516,7 +530,7 @@ def _mask_overlap(labels, target_len, stride, sentinel=-100):
             if i < len(labels):
                 labels[i] = sentinel
     else:
-        labels[0: target_len - stride] = sentinel
+        labels[0 : target_len - stride] = sentinel
 
     return labels
 
@@ -622,18 +636,18 @@ class LMTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def train_set(
-            self,
-            seq_len: int,
-            monitors: Union[bool, List[MetricsMonitor]] = True,
-            *,
-            key: Optional[PRNGKeyArray],
-            epochs: Optional[int] = None,
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray],
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
         pass
 
     @abc.abstractmethod
     def validation_sets(
-            self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         pass
 
@@ -643,7 +657,7 @@ class LMTaskConfig(abc.ABC):
         pass
 
     def tagged_eval_sets(
-            self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> list[Tuple[AsyncDataset[np.ndarray], List[str]]]:
         tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
         eval_sets = self.validation_sets(seq_len, monitors)
@@ -676,7 +690,7 @@ class LMSupervisedDatasetConfig:
     tags: Optional[List[str]] = None
 
 
-class SupervisedSourceConfig(Protocol):
+class SupervisedSourceConfigBase(Protocol):
     def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
         raise NotImplementedError
 
@@ -687,7 +701,7 @@ class SupervisedSourceConfig(Protocol):
 
 
 @dataclass(frozen=True)
-class SupervisedHfSourceConfig(SupervisedSourceConfig):
+class SupervisedHfSourceConfig(SupervisedSourceConfigBase):
     cache_dir: str
     id: str
     name: str | None = None
@@ -700,16 +714,15 @@ class SupervisedHfSourceConfig(SupervisedSourceConfig):
 
     def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
         return WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.streaming).map(
-            lambda x: {
-                CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]
-            })
+            lambda x: {CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]}
+        )
 
 
 @dataclass(frozen=True)
-class SupervisedUrlSourceConfig(SupervisedSourceConfig):
+class SupervisedUrlSourceConfig(SupervisedSourceConfigBase):
     cache_dir: str
-    train_urls: Sequence[str] = ()
-    validation_urls: Sequence[str] = ()
+    train_urls: list[str] = dataclasses.field(default_factory=list)
+    validation_urls: list[str] = dataclasses.field(default_factory=list)
 
     input_field: str = CANONICAL_INPUT_FIELD
     output_field: str = CANONICAL_OUTPUT_FIELD
@@ -719,15 +732,20 @@ class SupervisedUrlSourceConfig(SupervisedSourceConfig):
         urls = self.train_urls if split == "train" else self.validation_urls
         if not urls:
             return None
+
+        urls = [globbed for url in urls for globbed in expand_glob(url)]
+
         source = UrlDataSource(urls, columns=[self.input_field, self.output_field])
         return source.map(
-            lambda x: {
-                CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]
-            })
+            lambda x: {CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]}
+        )
+
+
+SupervisedSourceConfig: TypeAlias = Union[SupervisedHfSourceConfig, SupervisedUrlSourceConfig]
 
 
 def _preprocess_supervised_example(
-        batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
+    batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
 ) -> dict:
     sources = [example[input_field] for example in batch]
 
@@ -779,10 +797,10 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase, Po
 
 
 def mk_supervised_datasets(
-        sources: Mapping[str, SupervisedSourceConfig] | SupervisedSourceConfig,
-        split: str,
-        tokenizer: PreTrainedTokenizerBase,
-        Pos: hax.Axis
+    sources: Mapping[str, SupervisedSourceConfigBase] | SupervisedSourceConfigBase,
+    split: str,
+    tokenizer: PreTrainedTokenizerBase,
+    Pos: hax.Axis,
 ) -> dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]]:
     """
     Create supervised datasets from a set of sources.
@@ -795,13 +813,15 @@ def mk_supervised_datasets(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if isinstance(sources, dict):
+    if isinstance(sources, Mapping):
         for name, config in sources.items():
             source = config.get_shard_source(split)
             if source is None:
                 continue
 
-            ds = _cache_supervised_set(source, config.cache_dir, tokenizer, Pos, config.input_field, config.output_field)
+            ds = _cache_supervised_set(
+                source, config.cache_dir, tokenizer, Pos, config.input_field, config.output_field
+            )
 
             if config.tags is None:
                 tags = [name]
@@ -810,9 +830,11 @@ def mk_supervised_datasets(
 
             out[name] = (ds, tags)
     else:
-        source = sources.get_shard_source(split)
+        source = sources.get_shard_source(split)  # type: ignore
         if source is not None:
-            ds = _cache_supervised_set(source, sources.cache_dir, tokenizer, Pos, sources.input_field, sources.output_field)
+            ds = _cache_supervised_set(
+                source, sources.cache_dir, tokenizer, Pos, sources.input_field, sources.output_field
+            )
             tags = sources.tags or []
             if isinstance(sources, SupervisedHfSourceConfig):
                 name = sources.id
@@ -828,17 +850,14 @@ def mk_supervised_datasets(
 
 
 def mk_supervised_dataset(
-        config: SupervisedSourceConfig,
-        split: str,
-        tokenizer: HfTokenizer,
-        Pos: hax.Axis
+    config: SupervisedSourceConfigBase, split: str, tokenizer: HfTokenizer, Pos: hax.Axis
 ) -> AsyncDataset[LmExample]:
 
     source = config.get_shard_source(split)
 
     output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
 
-    dataset = source.map_batches(
+    dataset = source.map_batches(  # type: ignore
         lambda ex: _preprocess_supervised_example(ex, tokenizer, config.input_field, config.output_field),
         batch_size=128,
         num_cpus=num_cpus_used_by_tokenizer(tokenizer),
@@ -872,6 +891,7 @@ def _cache_supervised_set(source, cache_dir, tokenizer, Pos, input_field, output
 @dataclass(frozen=True)
 class ChatUrlDataSourceConfig:
     """Config for loading JSONL files in OpenAI chat format for supervised fine-tuning."""
+
     cache_dir: str
     train_urls: List[str] = field(default_factory=list)
     validation_urls: List[str] = field(default_factory=list)
@@ -920,7 +940,7 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase) -> dict:
 
 
 def mk_chat_sft_dataset(
-        config: ChatSFTDatasetConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
 ) -> AsyncDataset[LmExample]:
     """Creates a dataset from JSONL files containing chat format data for SFT."""
     source = config.get_shard_source("train")
@@ -956,12 +976,12 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     cache_dir: Optional[str] = "cache/"
 
     def train_set(
-            self,
-            seq_len: int,
-            monitors: Union[bool, List[MetricsMonitor]] = True,
-            *,
-            key: Optional[PRNGKeyArray] = None,
-            epochs: Optional[int] = None,
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
 
         ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
@@ -982,12 +1002,12 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         return ds  # type: ignore
 
     def validation_set(
-            self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[TokenSeqDataset]:
         return self.token_seq_dataset("validation", seq_len, monitors)
 
     def validation_sets(
-            self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         validation_set = self.validation_set(seq_len, monitors)
         if validation_set is not None:
@@ -1015,7 +1035,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         return False
 
     def token_seq_dataset(
-            self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[TokenSeqDataset]:
         cache = self.build_or_load_cache(split, monitors=monitors)
         if cache is None:
@@ -1023,7 +1043,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         return TokenSeqDataset(cache, seq_len)
 
     def build_or_load_cache(
-            self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
     ) -> Optional[TreeCache[BatchEncoding]]:
         if self.cache_dir is None:
             raise ValueError("cache_dir cannot be None")
@@ -1118,12 +1138,12 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
 
     def train_set(
-            self,
-            seq_len: int,
-            monitors: Union[bool, List[MetricsMonitor]] = True,
-            *,
-            key: Optional[PRNGKeyArray],
-            epochs: Optional[int] = None,
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray],
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
@@ -1164,21 +1184,21 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         return mixture
 
     def training_sets(
-            self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, TokenSeqDataset]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
         return token_datasets
 
     def validation_sets(
-            self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
         return token_datasets
 
     def build_caches(
-            self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Dict[str, TreeCache[dict]]:
         # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
         # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the

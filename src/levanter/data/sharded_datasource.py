@@ -633,7 +633,8 @@ class _MappedShardedDataSource(ShardedDataSource[T], _TransformedDataset):
         return self.source.shard_names
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[T]:
-        return map(self.fn, self.source.open_shard_at_row(shard_name, row))
+        for doc in self.source.open_shard_at_row(shard_name, row):
+            yield self.fn(doc)
 
 
 class _BatchMappedShardedDataSource(ShardedDataSource[T], _TransformedDataset):
