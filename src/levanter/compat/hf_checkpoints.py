@@ -26,6 +26,7 @@ from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidati
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array
+from levanter.utils.hf_utils import HfTokenizer
 from tqdm import tqdm
 
 import haliax
@@ -872,7 +873,7 @@ def save_hf_checkpoint_callback(
 
 def arbitrary_load_from_hf(
     model_name_or_path, from_pretrained_lambda, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> Union[PreTrainedTokenizerBase | ProcessorMixin]:
+) -> Union[HfTokenizer | ProcessorMixin]:
     is_url_like = urlparse(model_name_or_path).scheme != ""
     if is_url_like:
         if revision is not None:
@@ -891,7 +892,7 @@ def arbitrary_load_from_hf(
 
 def load_tokenizer(
     model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> PreTrainedTokenizerBase:
+) -> HfTokenizer:
     """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
     return arbitrary_load_from_hf(
         model_name_or_path,
