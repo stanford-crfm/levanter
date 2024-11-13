@@ -16,8 +16,13 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, \
-    SupervisedSourceConfig, mk_supervised_datasets
+from levanter.data.text import (
+    CausalLmDataset,
+    LMDatasetConfig,
+    LMMixtureDatasetConfig,
+    SupervisedSourceConfig,
+    mk_supervised_datasets,
+)
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -210,11 +215,7 @@ def main(config: TrainLmConfig):
 
         if config.supervised_data is not None:
             logger.info("Using supervised data for evals")
-            supervised_eval = mk_supervised_datasets(
-                config.supervised_data,
-                "validation",
-                tokenizer,
-                Pos)
+            supervised_eval = mk_supervised_datasets(config.supervised_data, "validation", tokenizer, Pos)
 
             evals = list(supervised_eval.values())
 

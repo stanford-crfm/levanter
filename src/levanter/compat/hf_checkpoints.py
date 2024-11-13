@@ -26,7 +26,6 @@ from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidati
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array
-from levanter.utils.hf_utils import HfTokenizer
 from tqdm import tqdm
 
 import haliax
@@ -40,6 +39,7 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
+from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
@@ -890,9 +890,7 @@ def arbitrary_load_from_hf(
         return from_pretrained_lambda(model_name_or_path, revision=revision, trust_remote_code=trust_remote_code)
 
 
-def load_tokenizer(
-    model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> HfTokenizer:
+def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True) -> HfTokenizer:
     """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
     return arbitrary_load_from_hf(
         model_name_or_path,
