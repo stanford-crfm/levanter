@@ -39,6 +39,7 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
+from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
@@ -872,7 +873,7 @@ def save_hf_checkpoint_callback(
 
 def arbitrary_load_from_hf(
     model_name_or_path, from_pretrained_lambda, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> Union[PreTrainedTokenizerBase | ProcessorMixin]:
+) -> Union[HfTokenizer | ProcessorMixin]:
     is_url_like = urlparse(model_name_or_path).scheme != ""
     if is_url_like:
         if revision is not None:
@@ -889,9 +890,7 @@ def arbitrary_load_from_hf(
         return from_pretrained_lambda(model_name_or_path, revision=revision, trust_remote_code=trust_remote_code)
 
 
-def load_tokenizer(
-    model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> PreTrainedTokenizerBase:
+def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True) -> HfTokenizer:
     """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
     return arbitrary_load_from_hf(
         model_name_or_path,

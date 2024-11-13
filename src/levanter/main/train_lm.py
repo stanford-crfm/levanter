@@ -16,7 +16,13 @@ import levanter
 from levanter import callbacks
 from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, LMSupervisedDatasetConfig
+from levanter.data.text import (
+    CausalLmDataset,
+    LMDatasetConfig,
+    LMMixtureDatasetConfig,
+    SupervisedSourceConfig,
+    mk_supervised_datasets,
+)
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -30,7 +36,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
-    supervised_data: Optional[LMSupervisedDatasetConfig] = None
+    supervised_data: Optional[SupervisedSourceConfig | dict[str, SupervisedSourceConfig]] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -208,12 +214,14 @@ def main(config: TrainLmConfig):
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
         if config.supervised_data is not None:
-            logger.info("Using supervised data")
-            supervised_eval = [(levanter.data.text.mk_supervised_dataset(config.supervised_data, tokenizer, Pos), "")]
-            # TODO Add tags
+            logger.info("Using supervised data for evals")
+            supervised_eval = mk_supervised_datasets(config.supervised_data, "validation", tokenizer, Pos)
+
+            evals = list(supervised_eval.values())
+
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
-                supervised_eval,
+                evals,
                 tokenizer,
                 trainer.device_mesh,
                 compute_axis_mapping,
