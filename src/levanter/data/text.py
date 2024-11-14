@@ -3,21 +3,23 @@ import asyncio
 import copy
 import dataclasses
 import functools
+import json
 import logging
 import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeAlias, TypeVar, Union
 
 import datasets
 import equinox as eqx
+import fsspec
 import jax
 import numpy as np
 import regex
 import tensorstore as ts
 from draccus import field
-from jax._src.random import PRNGKey
+from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 from tokenizers import normalizers
 
@@ -35,8 +37,8 @@ from levanter.models.lm_model import LmExample
 from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
-from levanter.utils.fsspec_utils import fsspec_expand_glob
-from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
+from levanter.utils.fsspec_utils import expand_glob
+from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
 
 
 silence_transformer_nag()  # noqa
@@ -45,10 +47,17 @@ from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizer
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
-from levanter.data.sharded_datasource import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
+from levanter.data.sharded_datasource import (  # noqa
+    JsonlDataSource,
+    ShardedDataSource,
+    TextUrlDataSource,
+    UrlDataSource,
+    WrappedHFDataSource,
+    gcs_glob,
+)
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.store.cache import build_or_load_cache  # noqa
-from levanter.utils.jax_utils import key_iterator, local_cpu_mesh, use_cpu_device  # noqa
+from levanter.utils.jax_utils import key_iterator, use_cpu_device  # noqa
 
 
 T_co = TypeVar("T_co", covariant=True)
@@ -64,6 +73,87 @@ LEDGER_FILE = "ledger.json"
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
 
 
+class EpochDataset(AsyncDataset[T_co]):
+    """
+    A dataset that wraps another dataset, providing infinite epochs by recycling indices.
+    If `max_epochs` is specified, it limits the number of cycles before raising StopIteration.
+
+    :param dataset: The dataset to wrap.
+    :param max_epochs: The maximum number of epochs to cycle through. If None, cycle indefinitely.
+    """
+
+    def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
+        super().__init__()
+        self.dataset = dataset
+        self.max_epochs = max_epochs
+
+    async def async_len(self) -> int:
+        if self.max_epochs is None:
+            raise ValueError("Cannot determine length of an infinite dataset without max_epochs.")
+        # Return the total number of samples: max_epochs * length of the dataset
+        return self.max_epochs * await self.dataset.async_len()
+
+    async def final_length_is_known(self) -> bool:
+        return await self.dataset.final_length_is_known()
+
+    def is_finite(self) -> bool:
+        # EpochDataset can be finite if max_epochs is set.
+        return self.max_epochs is not None
+
+    async def current_len(self) -> Optional[int]:
+        # If max_epochs is None, the dataset is effectively infinite.
+        if self.max_epochs is None:
+            return None
+
+        # If the final length of the dataset is not known, return the current length of the underlying dataset.
+        if not await self.dataset.final_length_is_known():
+            return await self.dataset.current_len()
+
+        # If the final length is known, return the max_epochs * async_len of the dataset.
+        return self.max_epochs * await self.dataset.async_len()
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+        # Use self.wait_until_len_at_least to ensure we have enough data for the batch.
+        max_index = max(indices)
+        ds_len = await self.dataset.wait_until_len_at_least(max_index + 1)
+
+        # Determine the epoch based on the largest index
+        epoch = max_index // ds_len
+
+        # If max_epochs is specified, raise an error if the epoch exceeds the allowed number of epochs
+        if self.max_epochs is not None and epoch >= self.max_epochs:
+            raise StopIteration(
+                f"Reached maximum number of epochs: epoch {epoch} exceeds the maximum allowed {self.max_epochs}"
+            )
+
+        # Wrap the indices within the bounds of the dataset length
+        wrapped_indices = [idx % ds_len for idx in indices]
+
+        # Delegate to the underlying dataset's get_batch
+        return await self.dataset.get_batch(wrapped_indices)
+
+    async def wait_until_len_at_least(self, length: int) -> int:
+        """
+        Returns the length of the dataset once it is at least `length` or if the dataset has a known (finished) length.
+        If the dataset's actual length is less than `length`, it returns the minimum of async_len and the current length.
+        """
+        # Wait until the underlying dataset's length is at least `length`
+        if not self.is_finite():
+            return length
+
+        if await self.dataset.final_length_is_known():
+            base_length = await self.dataset.async_len()
+        else:
+            base_length = await self.dataset.wait_until_len_at_least(length)
+
+        if base_length < length:
+            # hit epoch boundary
+            assert self.max_epochs is not None
+            return self.max_epochs * base_length
+
+        return base_length
+
+
 class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
     A dataset that yields sequences of tokens of fixed length from an underlying TreeCache.
@@ -73,6 +163,7 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
 
     def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
+        super().__init__()
         self.doc_cache = doc_cache
         self.seq_len = seq_len
         self._store: Optional[TreeStore] = None
@@ -148,22 +239,21 @@ class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
 
         @functools.partial(eqx.filter_jit, out_shardings=sharding)
         def _create_lm_example(tokens, key):
-            with local_cpu_mesh():
-                tokens = hax.named(tokens, self.QPos)
-                example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+            tokens = hax.named(tokens, self.QPos)
+            example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
 
-                if self.fcm_prob > 0:
-                    # masks for attention
-                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-                    assert self.key is not None
-                    this_key, key = jax.random.split(key)
-                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-                    attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
-                    example = dataclasses.replace(example, attn_mask=attn_mask)
+            if self.fcm_prob > 0:
+                # masks for attention
+                # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+                # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+                # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+                assert self.key is not None
+                this_key, key = jax.random.split(key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
+                example = dataclasses.replace(example, attn_mask=attn_mask)
 
-                return example
+            return example
 
         super().__init__(self.dataset, _create_lm_example, key=key)
 
@@ -245,9 +335,18 @@ class BatchTokenizer(BatchProcessor[str, dict]):
             needs_merge = []
 
         if self.padding is not False:
-            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
+            encoding = self.tokenizer(
+                batch,
+                return_attention_mask=self.return_attention_mask,
+                verbose=False,
+                padding=self.padding,
+                max_length=self.max_length,
+                truncation=True,
+            )  # type: ignore
         else:
-            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
+            encoding = self.tokenizer(
+                batch, return_attention_mask=self.return_attention_mask, verbose=False
+            )  # type: ignore
 
         if needs_merge:
             new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
@@ -508,7 +607,7 @@ class LMDatasetSourceConfig:
         else:
             raise ValueError(f"Unknown split {split}")
 
-        urls = [globbed for url in urls for globbed in fsspec_expand_glob(url)]
+        urls = [globbed for url in urls for globbed in expand_glob(url)]
         return urls
 
 
@@ -528,7 +627,7 @@ class LMTaskConfig(abc.ABC):
     If you want to shuffle in eras, set this to the era length"""
 
     @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerBase:
+    def the_tokenizer(self) -> HfTokenizer:
         if self.tokenizer == "passthrough":
             return PassthroughTokenizer(self.vocab_size)
         else:
@@ -536,7 +635,12 @@ class LMTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray],
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
         pass
 
@@ -560,23 +664,86 @@ class LMTaskConfig(abc.ABC):
         return [(eval_sets[name], tags[name]) for name in eval_sets]
 
 
+CANONICAL_INPUT_FIELD = "prompt"
+CANONICAL_OUTPUT_FIELD = "response"
+
+
 @dataclass
 class LMSupervisedDatasetConfig:
-    """This class represents a dataset source with URLs or hf name/id."""
+    """Config for supervised fine-tuning datasets"""
 
     cache_dir: str = "cache/"
 
+    # HF dataset config
+    hf_dataset_name: Optional[str] = None  # e.g. "tatsu-lab/alpaca" or "OpenAssistant/oasst1"
+    hf_dataset_split: str = "train"  # which split to use
+
+    # Local files config
+    validation_urls: List[str] = field(default_factory=list)  # paths to jsonl/json files
+
+    # Field names in the data
+    input_field: str = CANONICAL_INPUT_FIELD  # name of the input field
+    output_field: str = CANONICAL_OUTPUT_FIELD  # name of output field
+
+    # Optional metadata
     tags: Optional[List[str]] = None
-    """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
-    name: Optional[str] = None  # name for hf dataset
-
-    input_field: str = "prompt"  # name of the input field in the jsonl file
-    output_field: str = "response"  # name of the output field in the jsonl file
-
-    validation_urls: List[str] = ()  # type:ignore
 
 
-def preprocess_supervised_example(
+class SupervisedSourceConfigBase(Protocol):
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        raise NotImplementedError
+
+    input_field: str
+    output_field: str
+    tags: Optional[List[str]]
+    cache_dir: str
+
+
+@dataclass(frozen=True)
+class SupervisedHfSourceConfig(SupervisedSourceConfigBase):
+    cache_dir: str
+    id: str
+    name: str | None = None
+
+    streaming: bool = True
+
+    input_field: str = CANONICAL_INPUT_FIELD
+    output_field: str = CANONICAL_OUTPUT_FIELD
+    tags: Optional[List[str]] = None
+
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        return WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.streaming).map(
+            lambda x: {CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]}
+        )
+
+
+@dataclass(frozen=True)
+class SupervisedUrlSourceConfig(SupervisedSourceConfigBase):
+    cache_dir: str
+    train_urls: list[str] = dataclasses.field(default_factory=list)
+    validation_urls: list[str] = dataclasses.field(default_factory=list)
+
+    input_field: str = CANONICAL_INPUT_FIELD
+    output_field: str = CANONICAL_OUTPUT_FIELD
+    tags: Optional[List[str]] = None
+
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        urls = self.train_urls if split == "train" else self.validation_urls
+        if not urls:
+            return None
+
+        urls = [globbed for url in urls for globbed in expand_glob(url)]
+
+        source = UrlDataSource(urls, columns=[self.input_field, self.output_field])
+        return source.map(
+            lambda x: {CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]}
+        )
+
+
+SupervisedSourceConfig: TypeAlias = Union[SupervisedHfSourceConfig, SupervisedUrlSourceConfig]
+
+
+def _preprocess_supervised_example(
     batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
 ) -> dict:
     sources = [example[input_field] for example in batch]
@@ -595,7 +762,7 @@ def preprocess_supervised_example(
     }
 
 
-def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) -> LmExample:
+def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis) -> LmExample:
     """
     Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
 
@@ -605,40 +772,199 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
     2. Mask out the input and prompt if requested.
     3. Create an LmExample with the input_ids as the input and the next token as the target.
     """
-    with local_cpu_mesh():
-        # annoyingly, pad expects things to be batched so we have to prepend a batch axis
-        ex = tokenizer.pad({k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length")
-        ex = {k: v[0] for k, v in ex.items()}
-        input_ids = hax.named(ex["input_ids"], "position")
-        # mask out padding and anything before the start of the target
-        Pos = input_ids.resolve_axis("position")
-        loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
+    # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+    ex = tokenizer.pad(
+        {k: np.expand_dims(v, 0) for k, v in ex.items()},
+        return_tensors="np",
+        padding="max_length",
+        max_length=Pos.size,
+    )
+    ex = {k: v[0] for k, v in ex.items()}
+    # padding doesn't do truncation, so we have to do it ourselves.
+    # Truncate from the left since we want to predict the last tokens
+    input_ids = hax.named(ex["input_ids"][-Pos.size :], Pos)
+    # mask out padding and anything before the start of the target
+    loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
 
-        # don't predict the padding
-        targets = hax.roll(input_ids, -1, Pos)
-        loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
-        loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
-        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
-        return lm_ex
+    # don't predict the padding
+    targets = hax.roll(input_ids, -1, Pos)
+    loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+    loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
+    lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
+    return lm_ex
 
 
-def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
-    import levanter.data
+def mk_supervised_datasets(
+    sources: Mapping[str, SupervisedSourceConfigBase] | SupervisedSourceConfigBase,
+    split: str,
+    tokenizer: PreTrainedTokenizerBase,
+    Pos: hax.Axis,
+) -> dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]]:
+    """
+    Create supervised datasets from a set of sources.
 
-    validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
-    dataset = levanter.data.datasource_from_jsonl(validation_urls)
+    Returns:
+        A dictionary of dataset names to tuples of the dataset and the tags associated with the dataset.
+    """
+    out: dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]] = {}
 
-    input_field = config.input_field
-    output_field = config.output_field
-
-    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((), dtype=np.int32)}
-
-    dataset = dataset.map_batches(lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field), batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer), output_exemplar=output_exemplar)  # type: ignore
-    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)  # type: ignore
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+    if isinstance(sources, Mapping):
+        for name, config in sources.items():
+            source = config.get_shard_source(split)
+            if source is None:
+                continue
+
+            ds = _cache_supervised_set(
+                source, config.cache_dir, tokenizer, Pos, config.input_field, config.output_field
+            )
+
+            if config.tags is None:
+                tags = [name]
+            else:
+                tags = config.tags + [name]
+
+            out[name] = (ds, tags)
+    else:
+        source = sources.get_shard_source(split)  # type: ignore
+        if source is not None:
+            ds = _cache_supervised_set(
+                source, sources.cache_dir, tokenizer, Pos, sources.input_field, sources.output_field
+            )
+            tags = sources.tags or []
+            if isinstance(sources, SupervisedHfSourceConfig):
+                name = sources.id
+                if sources.name is not None:
+                    name = f"{name}/{sources.name}"
+
+                tags = [name] + tags
+            else:
+                name = "default"
+            out[name] = (ds, tags)
+
+    return out
+
+
+def mk_supervised_dataset(
+    config: SupervisedSourceConfigBase, split: str, tokenizer: HfTokenizer, Pos: hax.Axis
+) -> AsyncDataset[LmExample]:
+
+    source = config.get_shard_source(split)
+
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+
+    dataset = source.map_batches(  # type: ignore
+        lambda ex: _preprocess_supervised_example(ex, tokenizer, config.input_field, config.output_field),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
+
+
+def _cache_supervised_set(source, cache_dir, tokenizer, Pos, input_field, output_field):
+    """
+    Cache a supervised dataset into input_ids and sources_len.
+    """
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+    dataset = source.map_batches(
+        lambda ex: _preprocess_supervised_example(ex, tokenizer, input_field, output_field),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(cache_dir, await_finished=True)
+    ds = cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
+    return ds
+
+
+@dataclass(frozen=True)
+class ChatUrlDataSourceConfig:
+    """Config for loading JSONL files in OpenAI chat format for supervised fine-tuning."""
+
+    cache_dir: str
+    train_urls: List[str] = field(default_factory=list)
+    validation_urls: List[str] = field(default_factory=list)
+
+    # Chat format specific fields
+    messages_field: str = "messages"
+    input_role: str = "user"
+    output_role: str = "assistant"
+
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        """Gets ShardedDataSource for either training or validation data."""
+        urls = self.validation_urls if split == "validation" else self.train_urls
+
+        if not urls:
+            return None
+
+        # Use the datasource_from_chat_jsonl function from sharded_datasource
+        return datasource_from_chat_jsonl(
+            urls, messages_field=self.messages_field, input_role=self.input_role, output_role=self.output_role
+        )
+
+
+def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase) -> dict:
+    """
+    Preprocess chat examples to match the format of preprocess_supervised_example.
+    Returns a dict with input_ids and sources_len like the supervised case.
+    """
+    # Get sources (inputs) and targets (outputs) from the batch
+    sources = [example["input"] for example in batch]
+    targets = [example["output"] for example in batch]
+
+    # Tokenize sources alone first to get the source lengths
+    sources_tokenized = tokenizer(sources, padding=False, truncation=True)
+
+    # Combine source and target for full examples
+    full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
+    examples_tokenized = tokenizer(full_examples, padding=False, truncation=True)
+
+    # Get source lengths to mask loss appropriately
+    source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
+    return {
+        "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
+        "sources_len": np.array(source_lens, dtype=np.int32),
+    }
+
+
+def mk_chat_sft_dataset(
+    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+) -> AsyncDataset[LmExample]:
+    """Creates a dataset from JSONL files containing chat format data for SFT."""
+    source = config.get_shard_source("train")
+    if source is None:
+        raise ValueError("No training data source found")
+
+    # Set up example structure matching supervised case
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+
+    # Process the dataset
+    dataset = source.map_batches(
+        lambda ex: preprocess_chat_example(ex, tokenizer),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    # Cache the processed data
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+
+    # Ensure padding token is set (needed by _prepare_supervised_example)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Reuse the supervised prepare function directly
+    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
 
 
 @dataclass
@@ -648,11 +974,23 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     cache_dir: Optional[str] = "cache/"
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray] = None
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
-        ds = self.token_seq_dataset("train", seq_len, monitors)
+
+        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
+
+        # add epoch flag here.
         if ds is None:
             raise ValueError("No training set!")
+
+        if epochs:
+            logger.info("Wrapping dataset in epoch dataset")
+            ds = EpochDataset(ds, max_epochs=epochs)
 
         if self.shuffle is True:
             ds = ds.shuffle(key)
@@ -798,10 +1136,18 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray],
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+
+        if epochs:
+            raise ValueError("Epochs are not supported for mixture datasets")
 
         if key is None:
             key = jax.random.PRNGKey(0)
@@ -901,3 +1247,55 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     @property
     def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         return self.configs
+
+
+def datasource_from_chat_jsonl(
+    urls: Sequence[str], messages_field: str = "messages", input_role: str = "user", output_role: str = "assistant"
+) -> "ShardedDataSource[dict]":
+    """Creates a ShardedDataSource from JSONL files containing chat messages.
+
+    Args:
+        urls: Sequence of URLs or glob patterns pointing to JSONL files
+        messages_field: Field name containing the messages in each JSON object
+        input_role: Role identifier for input messages
+        output_role: Role identifier for output messages
+
+    Returns:
+        ShardedDataSource configured for chat data
+    """
+    # Expand any glob patterns in the URLs
+    expanded_urls = []
+    for url in urls:
+        if any(c in url for c in "*?[]"):
+            expanded_urls.extend(gcs_glob(url))
+        else:
+            expanded_urls.append(url)
+
+    return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
+
+
+# TODO: switch to actual multi-turn
+class ChatJsonlDataSource(JsonlDataSource):
+    """DataSource that reads JSONL files containing OpenAI chat format messages."""
+
+    def __init__(self, urls: Sequence[str], messages_field: str, input_role: str, output_role: str):
+        super().__init__(urls)
+        self.messages_field = messages_field
+        self.input_role = input_role
+        self.output_role = output_role
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            for line in f:
+                if i >= row:
+                    data = json.loads(line)
+                    messages = data[self.messages_field]
+
+                    # Extract input/output from messages
+                    input_msg = next(m["content"] for m in messages if m["role"] == self.input_role)
+                    output_msg = next(m["content"] for m in messages if m["role"] == self.output_role)
+
+                    yield {"input": input_msg, "output": output_msg}
+                i += 1

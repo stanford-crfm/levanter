@@ -401,7 +401,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         )
 
     @named_call
-    def __call__(
+    def activations(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
@@ -428,9 +428,10 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         scale = self.config.Senses.size
         hidden_states = hidden_states / scale
 
-        lm_logits = self.embeddings.unembed(hidden_states)
+        return hidden_states
 
-        return lm_logits
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.embeddings.token_embeddings
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)

@@ -107,7 +107,7 @@ class MptAttentionConfig:
 
 
 @LmConfig.register_subclass("mpt")
-@dataclass
+@dataclass(frozen=True)
 class MptConfig(HFCompatConfig):
     d_model: int = 768
     n_heads: int = 12
@@ -447,14 +447,15 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(
+    def activations(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray], *, key=None
     ) -> NamedArray:
         hidden_states = self.wte.embed(input_ids)
         hidden_states = self.transformer(hidden_states, attention_mask=attn_mask, key=key)
-        output_logits = self.wte.unembed(hidden_states)
+        return hidden_states
 
-        return output_logits
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.wte.weight
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "MptLmHeadModel":
         if new_size == self.vocab_size:

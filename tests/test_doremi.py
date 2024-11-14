@@ -38,6 +38,7 @@ def platform_of_array(x):
 
 class LogitDataset(AsyncDataset[Example]):
     def __init__(self, W, noise, x_mask, x_bias, *, key):
+        super().__init__()
         self.W = W
         self.noise = noise
         self.x_mask = x_mask
