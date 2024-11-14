@@ -143,12 +143,12 @@ def main(config: TrainASRConfig):
             model_init=lambda: config.model.build_asr(Vocab, key=model_key),
         )
 
+        if config.diva_training and config.model.asr_model_type == DivaASRModel:
+            state = dataclasses.replace(state, model=None)
+            model = DivaASRModel.init(Vocab, config.model, key=model_key, init_from_submodels=True)
+            model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
+            state = dataclasses.replace(state, model=model, is_trainable=diva_connector_only(model))
         if int(state.step) == 0:
-            if config.diva_training and config.model.asr_model_type == DivaASRModel:
-                state = dataclasses.replace(state, model=None)
-                model = DivaASRModel.init(Vocab, config.model, key=model_key, init_from_submodels=True)
-                model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
-                state = dataclasses.replace(state, model=model, is_trainable=diva_connector_only(model))
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model

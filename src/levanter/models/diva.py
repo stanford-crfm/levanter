@@ -103,6 +103,7 @@ class DivaConfig(HFCompatConfig, ASRConfig):
     reference_encoder: str = "openai/whisper-large-v3-turbo"
     reference_decoder: str = "meta-llama/Llama-3.1-8B-Instruct"
     reference_checkpoint: str = "WillHeld/DiVA-llama-3-v0-8b"
+    max_length: int = 448
     init_from_submodel: bool = True
 
     # Connector Config
@@ -118,7 +119,7 @@ class DivaConfig(HFCompatConfig, ASRConfig):
     )
     prefix = property(lambda self: hax.named(self.pre_audio_prompt, axis="position"))
     suffix = property(lambda self: hax.named(self.pre_text_prompt, axis="position"))
-    Pos = property(lambda self: Axis(name="position", size=448))
+    Pos = property(lambda self: Axis(name="position", size=self.max_length))
     AudioPos = property(lambda self: self.enc_config.AudioPos)
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
 
@@ -138,6 +139,7 @@ class DivaConfig(HFCompatConfig, ASRConfig):
             "vocab_size": vocab_size,
             "reference_encoder": self.reference_encoder,
             "reference_decoder": self.reference_decoder,
+            "max_length": self.max_length,
         }
         return HfConfig.from_dict(merged_config)
 
@@ -146,7 +148,7 @@ class DivaConfig(HFCompatConfig, ASRConfig):
         config_dict = hf_config.to_dict()
         reference_encoder = config_dict["encoder_reference"]
         reference_decoder = config_dict["decoder_reference"]
-        return DivaConfig(reference_encoder, reference_decoder)
+        return DivaConfig(reference_encoder, reference_decoder, max_length=config_dict["max_length"])
 
     def hf_checkpoint_converter(cls) -> HFCheckpointConverter["DivaModel"]:  # type: ignore
         return DivaHFCheckpointer(cls, cls.reference_checkpoint, trust_remote_code=True)
@@ -198,7 +200,7 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
 
         query_tokens = hax.random.normal(k_query, (config.Pos, config.enc_config.Embed)) * 0.02
         projection = hnn.Linear.init(
-            In=config.enc_config.Embed.alias("whisp_embed"), Out=config.dec_config.Embed, key=key
+            In=config.enc_config.Embed.alias("whisp_embed"), Out=config.dec_config.Embed, init_scale=0.01, key=key
         )
 
         if init_from_submodels:
@@ -217,8 +219,15 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
                 config.enc_config,
             )  # type: ignore[assignment]
             encoder = whisper.encoder
-            connector = whisper.decoder
+            # connector = whisper.decoder
+            connector = WhisperDecoder.init(config.enc_config, key=k_connector)
             decoder = llm
+            mean_embedding = hax.mean(llm.embeddings.token_embeddings.weight, llm.embeddings.Vocab)
+            projection = dataclasses.replace(
+                projection,
+                weight=hax.rearrange(mean_embedding.broadcast_axis(projection.In), (projection.Out, projection.In)),
+            )
+
         else:
             encoder = WhisperEncoder.init(config.enc_config, key=k_enc)
             connector = WhisperDecoder.init(config.enc_config, key=k_connector)
@@ -235,7 +244,7 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
         mel: NamedArray,
         input_ids: NamedArray,
         attn_mask: Optional[AttentionMask | NamedArray] = None,
-        pad_token_id: int = 128002,
+        pad_token_id: int = 128255,
         *,
         key=None,
     ) -> NamedArray:
@@ -273,7 +282,6 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
                 suffix.broadcast_axis(OtherAxes),
             ],
         )
-
         text_tokens = hax.concatenate(
             "position",
             [
@@ -283,7 +291,6 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
             ],
         )
         push_back_padding = hax.argsort(text_tokens == pad_token_id, "position")
-
         text_tokens_left_pad = text_tokens[{"batch": hax.arange(Batch), "position": push_back_padding}]
 
         text_embeds = self.decoder.embeddings.embed(text_tokens_left_pad)
@@ -292,7 +299,7 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
         text = self.decoder.transformer(text_embeds, attn_mask=causal_mask, key=k_decoder)
 
         push_forward_padding = hax.argsort(input_ids != pad_token_id, "position")
-        input_ids_right_pad = text_tokens[{"batch": hax.arange(Batch), "position": push_forward_padding}]
+        input_ids_right_pad = input_ids[{"batch": hax.arange(Batch), "position": push_forward_padding}]
         return (
             audio["position", -1],
             text[
@@ -332,11 +339,12 @@ class DivaASRModel(DivaModel, ASRMixin):
         # Mask Final Tokens So That Initial Tokens can be used for extra computation
         reversed_loss_mask = corrected_loss_mask["position", -1::-1]
         diff_contrast = virtual_embeds - real_embeds
-        loss2 = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
+        tal_loss = hax.dot(diff_contrast, diff_contrast, axis="embed") ** 0.5
 
         if reduction is None:
             return kl_proxy_loss
         else:
-            return reduction(kl_proxy_loss, axis=reduction_axis) + reduction(
-                loss2, axis=reduction_axis, where=reversed_loss_mask
-            )
+            loss1 = reduction(kl_proxy_loss, axis=reduction_axis)
+            loss2 = reduction(tal_loss, axis=reduction_axis, where=reversed_loss_mask)
+            loss = loss1 + loss2
+            return loss

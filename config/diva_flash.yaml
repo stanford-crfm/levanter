@@ -31,6 +31,8 @@ optimizer:
   #learning_rate: 5E-5
   learning_rate: 5e-4
   weight_decay: 0.1
+  weight_decay_modules: None
+  default_weight_decay_mask: False
   warmup: 0.01
 hf_save_path: gs://diva-flash/librispeech-hf-checkpoints
 diva_training: true
