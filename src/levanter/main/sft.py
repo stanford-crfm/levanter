@@ -16,7 +16,6 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data import PermutationDataset
 from levanter.data.text import (
-    ChatSFTDatasetConfig,
     EpochDataset,
     LMSupervisedDatasetConfig,
     mk_chat_sft_dataset,
@@ -26,6 +25,9 @@ from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
+from levanter.data.text import ChatUrlDataSourceConfig, EpochDataset, mk_chat_sft_dataset, mk_supervised_dataset
+from levanter.models.lm_model import LmHeadModel, compute_next_token_loss
+from levanter.trainer import Trainer
 
 
 logger = logging.getLogger(__name__)
@@ -127,7 +129,7 @@ def train(config: SFTConfig):
     if config.dataset_type == DatasetType.CHAT_JSONL:
         assert config.chat_train_urls is not None
         assert config.supervised_data is not None
-        chat_config = ChatSFTDatasetConfig(
+        chat_config = ChatUrlDataSourceConfig(
             cache_dir=config.supervised_data.cache_dir,
             train_urls=config.chat_train_urls,  # No validation in this config
             messages_field=config.messages_field,
@@ -137,7 +139,7 @@ def train(config: SFTConfig):
         train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
-        train_dataset = mk_supervised_dataset(config.supervised_data, tokenizer, model_config.Pos)
+        train_dataset = mk_supervised_dataset(config.supervised_data, "train", tokenizer, model_config.Pos)
     logger.info("Supervised dataset created")
     train_dataset = PermutationDataset(train_dataset, data_key)
 
