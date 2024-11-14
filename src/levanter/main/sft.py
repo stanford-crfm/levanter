@@ -56,7 +56,7 @@ class SFTConfig:
     initialize_from_hf: Union[bool, str] = False
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
-    hf_save_steps: int = 10000
+    hf_save_steps: int = 0
 
     max_seq_len: int = 2048
     model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
@@ -102,7 +102,11 @@ def train(config: SFTConfig):
     elif config.trainer.initialize_from is None:
         raise ValueError("Must specify either --initialize_from_hf or --initialize_from")
     else:
-        converter = None
+        if config.hf_save_steps:
+            converter = HFCheckpointConverter.from_hf(config.model_name_or_path, trust_remote_code=True)
+            converter = converter.replaced(tokenizer=tokenizer)
+        else:
+            converter = None
         model_config = config.model
 
     levanter.initialize(config)
