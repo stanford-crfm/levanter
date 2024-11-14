@@ -33,7 +33,7 @@ from levanter.data.text import BatchTokenizer
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
 from levanter.store.cache import CacheOptions, TreeCache, build_or_load_cache
-from levanter.utils.jax_utils import key_iterator, local_cpu_mesh
+from levanter.utils.jax_utils import key_iterator
 
 
 silence_transformer_nag()  # noqa
@@ -460,10 +460,9 @@ class AudioTextDataset(MappedAsyncDataset[AudioTextDict, AudioTextExample]):
 
         @functools.partial(eqx.filter_jit, out_shardings=sharding)
         def _convert_example(inputs: AudioTextDict) -> "AudioTextExample":
-            with local_cpu_mesh():
-                tokens = hax.named(inputs["input_ids"], self.TextPos)
-                audio_features = hax.named(inputs["input_features"], self.AudioPos)
-                return AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
+            tokens = hax.named(inputs["input_ids"], self.TextPos)
+            audio_features = hax.named(inputs["input_features"], self.AudioPos)
+            return AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
 
         super().__init__(self.dataset, _convert_example)
 
