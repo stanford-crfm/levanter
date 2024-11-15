@@ -57,19 +57,3 @@ class ComputeLossFunction(Protocol[M_con, X]):
         **kwargs,
     ) -> Scalar | hax.NamedArray:
         ...
-
-
-class ModuleComputeLoss(ComputeLossFunction[M, X]):
-    """
-    Loss that just delegates to the model's compute_loss method.
-    """
-
-    def __call__(
-        self,
-        model,
-        *inputs: X,
-        reduction: Optional[hax.ReductionFunction] = hax.mean,
-        reduction_axis: Optional[hax.AxisSelection] = None,
-        **kwargs,
-    ) -> Scalar | hax.NamedArray:
-        return model.compute_loss(*inputs, reduction=reduction, reduction_axis=reduction_axis, **kwargs)

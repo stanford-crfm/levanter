@@ -30,7 +30,6 @@ except ImportError:
     evaluator = object
     # tasks = object
 
-from jax_sourceror import sourcerize
 from tqdm import tqdm
 
 import haliax as hax
@@ -142,8 +141,6 @@ class LevanterHarnessLM(LM):
             logger.info("Processing batch")
             batch_example = self._stack_batch(batch)
             # batch_example = jax.device_put(batch_example, jax.local_devices()[0])
-            source = sourcerize(self._jit_loglikelihood)(self.model, batch_example)
-            print(source, flush=True)
             out_lls, out_correct = self._jit_loglikelihood(self.model, batch_example)
             result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
 
@@ -259,11 +256,6 @@ def run_eval_harness_main(config: EvalHarnessConfig):
             model = hax.shard(model, parameter_axis_mapping)
 
         model = typing.cast(LmHeadModel, inference_mode(model, True))
-
-        ex = LmExample.from_prompt_and_completion(model.Pos, hax.zeros(model.Pos, dtype=int), 100)
-        source = sourcerize(model.compute_loss)(ex)
-
-        print(source, flush=True)
 
         logger.info("Running LM eval harness....")
         outputs = run_lm_eval_harness(

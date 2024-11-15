@@ -1,9 +1,8 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple, Type, Union
+from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
@@ -28,6 +27,7 @@ from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
 
@@ -64,6 +64,7 @@ class LlamaConfig(HFCompatConfig):
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
+    tie_word_embeddings: bool = False
 
     # Attention-related config
     upcast_attn: bool = False
@@ -77,8 +78,7 @@ class LlamaConfig(HFCompatConfig):
 
     use_bias: bool = False
     use_layer_norm_weight: bool = True
-    rope_scaling: Optional[dict] = None
-    rope_theta: float = 10000.0
+    rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
 
     reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
@@ -109,6 +109,8 @@ class LlamaConfig(HFCompatConfig):
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
+        rope_theta = hf_config.rope_theta
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
         return LlamaConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
@@ -119,8 +121,8 @@ class LlamaConfig(HFCompatConfig):
             activation_function=hf_config.hidden_act,
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
-            rope_scaling=hf_config.rope_scaling,
-            rope_theta=hf_config.rope_theta,
+            tie_word_embeddings=hf_config.tie_word_embeddings,
+            rope=rope_config,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
@@ -136,6 +138,8 @@ class LlamaConfig(HFCompatConfig):
         if config_overrides is None:
             config_overrides = {}
 
+        rope_theta, rope_scaling = self.rope.to_hf_config()
+
         return HfLlamaConfig(
             max_position_embeddings=self.seq_len,
             hidden_size=self.hidden_dim,
@@ -146,9 +150,11 @@ class LlamaConfig(HFCompatConfig):
             hidden_act=self.activation_function,
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
-            rope_scaling=self.rope_scaling,
+            tie_word_embeddings=self.tie_word_embeddings,
+            # rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
-            rope_theta=self.rope_theta,
+            rope_theta=rope_theta,
+            rope_scaling=rope_scaling,
             **config_overrides,
         )
 
@@ -274,13 +280,6 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         )
         return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
 
-    def _rope_scale_factor(self) -> float:
-        # hasattr for gemma and I'm feeling lazy
-        if hasattr(self.config, "rope_scaling") and self.config.rope_scaling is not None:
-            assert self.config.rope_scaling["type"] == "linear"
-            return self.config.rope_scaling["factor"]
-        return 1.0
-
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
@@ -290,13 +289,8 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
         v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
 
-        cos, sin = llama_rotary_pos_emb(
-            self.config.HeadSize,
-            x.resolve_axis("position"),
-            scale=self._rope_scale_factor(),
-            theta=self.config.rope_theta,
-        )
-        q, k = _apply_rotary_pos_emb(q, k, cos, sin)
+        rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
+        q, k = rot_embs(self.config.HeadSize, q, k)
 
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
@@ -513,7 +507,7 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
 class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializationMixin):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
-    lm_head: hnn.Linear
+    lm_head: Optional[hnn.Linear]
 
     @property
     def config(self):
@@ -532,7 +526,11 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         k_t, k_emb = jrandom.split(key, 2)
         transformer = LlamaTransformer.init(config, key=k_t)
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
-        lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+        if config.tie_word_embeddings:
+            lm_head = None
+        else:
+            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+
         return LlamaLMHeadModel(transformer, embeddings, lm_head)
 
     def __call__(
@@ -553,17 +551,47 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
-        lm_logits = self.lm_head(x, key=k_head)
+        if self.lm_head:
+            lm_logits = self.lm_head(x, key=k_head)
+        else:
+            lm_logits = self.embeddings.unembed(x)
         return lm_logits
+
+    def activations(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
+        """
+        Compute the activations for the next token in a sequence.
+        Args:
+            input_ids: token IDs with shape {Pos}
+            attn_mask: attention mask with shape {Pos, KeyPos}
+            key: PRNGKey for random number generation
+
+        Returns:
+            NamedArray: activations with shape {Pos, Embed}
+
+        """
+        x = self.embeddings.embed(input_ids)
+        x = self.transformer(x, attn_mask=attn_mask, key=key)
+
+        return x
+
+    def get_lm_head(self) -> hax.NamedArray:
+        if self.lm_head is None:
+            return self.embeddings.token_embeddings.weight
+        else:
+            return self.lm_head.weight
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
         new_Vocab = self.Vocab.resize(new_size)
         k1, k2 = maybe_rng_split(key, 2)
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
-        new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
-        new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
-
-        return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
+        if self.lm_head is not None:
+            new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
+            new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
+            return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
+        else:
+            return dataclasses.replace(self, embeddings=new_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
@@ -571,60 +599,22 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
         d = state_dict.copy()
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
+        if self.lm_head is not None:
+            d.update(
+                unflatten_linear_layers(
+                    apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
+                )
             )
-        )
         return super().from_state_dict(d, prefix)
 
     def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
         my_dict: StateDict = {}
         super().update_state_dict(my_dict, prefix=prefix)
 
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "lm_head"), self.lm_head, out_dims_first_in_dict=True)
-        )
+        if self.lm_head is not None:
+            my_dict.update(
+                flatten_linear_layers(apply_prefix(prefix, "lm_head"), self.lm_head, out_dims_first_in_dict=True)
+            )
 
         state_dict.update(my_dict)
         return state_dict
-
-
-def _rotate_half(x: NamedArray) -> NamedArray:
-    """Rotates half of the hidden dims of the input and concatenates them."""
-    HeadSize = x.axes[-1]
-    x1 = x[HeadSize, : HeadSize.size // 2]
-    x2 = x[HeadSize, HeadSize.size // 2 :]
-    out = hax.concatenate(HeadSize, (-x2, x1))
-    return out
-
-
-def _apply_rotary_pos_emb(
-    q: NamedArray,  # [batch, position, kv_heads, q_heads_per_group, head_size]
-    k: NamedArray,  # [batch, position, kv_heads, head_size]
-    cos: NamedArray,  # [position, head_size]
-    sin: NamedArray,  # [position, head_size]
-) -> Tuple[NamedArray, NamedArray]:
-    """Applies rotary position embedding to q and k."""
-    q_embed = q * cos + _rotate_half(q) * sin
-    k_embed = k * cos + _rotate_half(k) * sin
-    return q_embed, k_embed
-
-
-def llama_rotary_pos_emb(
-    HeadSize: Axis, Pos: Axis, theta: float = 10000, scale: float = 1.0
-) -> Tuple[NamedArray, NamedArray]:
-    with jax.ensure_compile_time_eval():
-        HeadHalfSize = HeadSize.resize(HeadSize.size // 2)
-        inv_freq: NamedArray = 1.0 / (theta ** (hax.arange(HeadHalfSize, step=2) / HeadSize.size))
-
-        position_ids: NamedArray = hax.arange(Pos) / scale
-
-        freqs = position_ids * inv_freq.broadcast_axis(Pos)
-        # This is different from the paper but aligns with HF implementation:
-        # It uses a different permutation in order to obtain the same calculation
-        emb = hax.concatenate(HeadSize, (freqs, freqs))
-        cos = hax.cos(emb)
-        sin = hax.sin(emb)
-        # This is different from the paper but aligns with HF implementation:
-        return cos, sin

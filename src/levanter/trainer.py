@@ -48,12 +48,12 @@ import levanter.tracker.wandb
 from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
-from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
+from levanter.data import AsyncDataset, DataLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
-from levanter.types import ComputeLossFunction, FilterSpec, ModuleComputeLoss
+from levanter.types import ComputeLossFunction, FilterSpec
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
@@ -65,7 +65,7 @@ M = TypeVar("M")  # Model
 X = TypeVar("X")  # Input
 S = TypeVar("S", bound=TrainerState)
 
-DEFAULT_JAX_CONFIG = {
+DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
@@ -144,7 +144,7 @@ class Trainer:
         self,
         config: "TrainerConfig",
         optimizer: GradientTransformation,
-        loss_fn: Optional[ComputeLossFunction] = None,
+        loss_fn: ComputeLossFunction,
         *,
         add_default_hooks: bool = True,
     ):
@@ -159,13 +159,7 @@ class Trainer:
         self.hooks = TrainerHooks()
         self.config = config
         self.optimizer = optimizer
-        self._raw_loss_function = loss_fn or ModuleComputeLoss()
-        if isinstance(config.tracker, Sequence):
-            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
-        else:
-            self.tracker = config.tracker.init(self.run_id)
-
-        self._raw_loss_function = loss_fn or ModuleComputeLoss()
+        self._raw_loss_function = loss_fn
         if isinstance(config.tracker, Sequence):
             self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
         else:
@@ -337,7 +331,12 @@ class Trainer:
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
             state = TrainerState.init(
-                self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp, fp8=self.fp8
+                self.optimizer,
+                model,
+                key=training_key,
+                is_trainable=is_trainable,
+                mp=self.mp,
+                fp8=self.fp8,
             )
             return state
 
@@ -382,7 +381,6 @@ class Trainer:
         while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
-
             info = self.train_step(state, example)
             state = info.state
 
@@ -413,7 +411,7 @@ class Trainer:
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_step_info, every=1)
+        self.add_hook(callbacks.log_step_info(self.config.num_train_steps), every=1)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
@@ -439,7 +437,7 @@ class Trainer:
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
 
-        eval_loader = self.replicated_loader(eval_dataset, self.EvalBatch)
+        eval_loader = self.data_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
@@ -451,36 +449,32 @@ class Trainer:
 
             self.add_hook(
                 callbacks.compute_validation_loss(
-                    eval_loss, eval_loader, max_batches=self.config.max_eval_batches, name=name
+                    eval_loss,
+                    eval_loader,
+                    max_batches=self.config.max_eval_batches,
+                    name=name,
                 ),
                 every=self.config.steps_per_eval,
             )
 
-    def replicated_loader(self, dataset: Dataset[X], batch_axis: Axis) -> ReplicatedBatchLoader[X]:
-        """Creates a replicated batch loader for the given dataset. Generally you should use this
-        if you either be able to make a single pass over the dataset.
+    def data_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
+        """Creates a data loader for the given dataset and batch axis.
 
         Args:
-            dataset (Dataset): the dataset to load
+            dataset (AsyncDataset): the dataset to load
             batch_axis (Axis): the batch axis
 
         Returns:
-            ReplicatedBatchLoader: the batch loader
+            DataLoader: the data loader
         """
-        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
-
-    def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
-        """Creates a sharded batch loader for the given dataset. Generally you should use this
-        for training and you don't care about epoch boundaries.
-
-        Args:
-            dataset (Dataset): the dataset to load
-            batch_axis (Axis): the batch axis
-
-        Returns:
-            ShardedBatchLoader: the batch loader
-        """
-        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+        return DataLoader(
+            batch_axis,
+            dataset,
+            max_buffered_batches=128,
+            mesh=self.device_mesh,
+            axis_resources=self.compute_axis_mapping,
+            prefetch_size=32,
+        )
 
     @cached_property
     def _jit_train_step_fn(self):
@@ -511,8 +505,15 @@ class Trainer:
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
         mbs = self.config.microbatch_size
-        grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
-        return grad_fn(model, *batch, **batch_kwargs)
+        grad_fn = microbatched(
+            grad_fn,
+            self.TrainBatch,
+            mbs,
+            self.parameter_axis_mapping,
+            self.compute_axis_mapping,
+        )
+        with hax.axis_mapping(self.compute_axis_mapping):
+            return grad_fn(model, *batch, **batch_kwargs)
 
 
 def _initialize_global_tracker(config, run_id):
@@ -532,7 +533,6 @@ class TrainerConfig:
 
     wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")
-    run_base_dir: Path = Path("runs/")
     id: Optional[str] = None  # run id. if None, will be set to a random string
 
     tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
@@ -583,7 +583,7 @@ class TrainerConfig:
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
     initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
 
-    jax_config: Dict[str, JsonAtom] = field(
+    jax_config: Mapping[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
     )  # config to pass to jax.config.update
 
@@ -615,7 +615,10 @@ class TrainerConfig:
 
     def __post_init__(self):
         if self.wandb is not None:
-            warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
+            warnings.warn(
+                "wandb is deprecated. use tracker with type wandb instead",
+                DeprecationWarning,
+            )
             self.tracker = self.wandb
 
     def initialize(self):
@@ -792,6 +795,10 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+        if self.replica_dcn_axis_size == -1:
+            self.replica_dcn_axis_size = self.num_slices
+            logger.info(f"Setting replica_dcn_axis_size to {self.replica_dcn_axis_size}")
 
 
 class AllConfig(Protocol):

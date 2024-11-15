@@ -43,13 +43,17 @@ you can specify the dataset name in the `data` section of your training configur
 
 ```yaml
 data:
-    id: "WillHeld/librispeech_parquet"
-    # if needed:
-    # name: "subset"
-    train_split: "train.360"
-    validation_split: "validation"
-    text_key: "text"
-    audio_key: "audio"
+  cache_dir: "gs://diva-flash/processed/mixture"
+  # The Whisper Tokenizer is way too large for Librispeech
+  tokenizer: "facebook/wav2vec2-base-960h"
+  configs:
+    librispeech:
+      id: WillHeld/librispeech_parquet
+      cache_dir: "gs://diva-flash/processed/librispeech"
+      train_split: "train.360"
+      validation_split: "validation"
+  train_weights:
+    librispeech: 1.0
 ```
 
 Levanter directly supports the HuggingFace [Audio](https://huggingface.co/docs/datasets/v2.18.0/en/package_reference/main_classes#datasets.Audio) class. Underlying this class is a simple dictionary, which fits into one of the following 3 modes. The first mode is completely pre-processed audio which provides a time-domain `array` of audio data along with a pre-defined `sampling_rate`. The second mode is data which has been loaded into memory as a sequence of `bytes`, but has not been decoded to raw audio data. Finally, if *only* the `path` of the dictionary is defined this points to where the audio file for that example is stored. Levanter will transparently handle all of these modes and process them uniformly to the `array` and `sampling_rate` which is required for downstream modeling.
@@ -101,12 +105,17 @@ Here's a configuration for a Whisper Tiny model with reasonable values for every
 
 ```yaml
 data:
-  id: WillHeld/librispeech_parquet
-  cache_dir: "gs://bucket_for_processed_data/processed/librispeech"
-  train_split: "train.360"
-  validation_split: "validation"
+  cache_dir: "gs://diva-flash/processed/mixture"
   # The Whisper Tokenizer is way too large for Librispeech
   tokenizer: "facebook/wav2vec2-base-960h"
+  configs:
+    librispeech:
+      id: WillHeld/librispeech_parquet
+      cache_dir: "gs://diva-flash/processed/librispeech"
+      train_split: "train.360"
+      validation_split: "validation"
+  train_weights:
+    librispeech: 1.0
 model:
   type: whisper
   vocab_size: 32

@@ -1,8 +1,13 @@
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Generic, Iterable, Mapping, Sequence, TypeVar, Union
 
 import numpy as np
 import pyarrow as pa
+import ray
+
+from levanter.utils.actor_pool import AutoScalingActorPool, PoolWorkerBase
+from levanter.utils.ray_utils import RefBox
 
 
 T = TypeVar("T")
@@ -17,7 +22,7 @@ The result of a batched function. This can be a RecordBatch, a list of dicts, or
 """
 
 
-class BatchProcessor(Generic[T_contra], ABC):
+class BatchProcessor(Generic[T_contra, U], ABC):
     """
     A BatchProcessor is the main interface for preprocessing data. It takes a batch of data and returns a batch of
     processed data. It can be used to tokenize data, convert it to a RecordBatch, or do any other kind of preprocessing.
@@ -25,12 +30,18 @@ class BatchProcessor(Generic[T_contra], ABC):
     """
 
     @abstractmethod
-    def __call__(self, batch: Sequence[T_contra]) -> BatchResult:
+    def __call__(self, batch: Sequence[T_contra]) -> Sequence[U] | U:  # U can be batched "structure of arrays" form
         """
-        Process a batch of data. You should return either a RecordBatch, a sequence of dicts (one per output
+        Process a batch of data. You should return a sequence of dicts (one per output
         example), or a dict of sequences (one per output field).
+        """
+        raise NotImplementedError
 
-        (We allow Mapping so that you can just return HF's BatchEncoding if you want.)
+    @property
+    @abstractmethod
+    def output_exemplar(self):
+        """
+        An exemplar of what this processor returns. This is used to determine the output schema of a dataset.
         """
         raise NotImplementedError
 
@@ -50,8 +61,10 @@ class BatchProcessor(Generic[T_contra], ABC):
         return 0
 
     @property
-    def batch_size(self) -> int:
-        return 128
+    @abstractmethod
+    def metadata(self) -> Dict[str, Any]:
+        """Any metadata that changes the behavior of this processor."""
+        raise NotImplementedError
 
 
 class _DatasetTransform(ABC):
@@ -71,13 +84,15 @@ class _BatchMapTransform(_DatasetTransform):
     num_cpus: int
     num_gpus: int
     resources: dict
+    output_exemplar: Any
 
-    def __init__(self, fn, batch_size, num_cpus, num_gpus, resources):
+    def __init__(self, fn, batch_size, num_cpus, num_gpus, resources, output_exemplar=None):
         self.fn = fn
         self.batch_size = batch_size
         self.num_cpus = num_cpus
         self.num_gpus = num_gpus
         self.resources = resources
+        self.output_exemplar = output_exemplar
 
 
 def as_record_batch(doc: BatchResult) -> pa.RecordBatch:
@@ -113,7 +128,7 @@ def _construct_composite_batch_processor(dataset):
     """
 
     def rec(dataset):
-        from levanter.data.sharded_dataset import _TransformedDataset
+        from levanter.data.sharded_datasource import _TransformedDataset
 
         if isinstance(dataset, _TransformedDataset):
             source, transforms, batch_transform = rec(dataset.source)
@@ -133,21 +148,20 @@ def _construct_composite_batch_processor(dataset):
 
     source, transforms, batch_transform = rec(dataset)
 
-    batch_size = batch_transform.batch_size if batch_transform is not None else 1024
+    # batch_size = batch_transform.batch_size if batch_transform is not None else 1024
     cpus = batch_transform.num_cpus if batch_transform is not None else 1
     gpus = batch_transform.num_gpus if batch_transform is not None else 0
     resources = batch_transform.resources if batch_transform is not None else {}
 
-    return source, _CompositeBatchProcessor(transforms, batch_size, cpus, gpus, resources)
+    return source, _CompositeBatchProcessor(transforms, cpus, gpus, resources)
 
 
 class _CompositeBatchProcessor(BatchProcessor):
-    def __init__(self, transforms, batch_size, num_cpus, num_gpus, resources):
+    def __init__(self, transforms, num_cpus, num_gpus, resources):
         self.transforms = transforms
         self._num_cpus = num_cpus
         self._num_gpus = num_gpus
         self._resources = resources
-        self._batch_size = batch_size
 
     @property
     def batch_size(self):
@@ -165,6 +179,10 @@ class _CompositeBatchProcessor(BatchProcessor):
     def resources(self):
         return self._resources
 
+    @property
+    def output_exemplar(self):
+        return self.transforms[-1].output_exemplar
+
     def __call__(self, batch):
         # batch is initially a list of elements, but after a BatchMapTransform
         # it can be a recordbatch, dict of lists, or list of dicts
@@ -179,7 +197,7 @@ class _CompositeBatchProcessor(BatchProcessor):
 
             match transform:
                 case _MapTransform(fn=fn):
-                    batch = map(fn, batch)
+                    batch = [fn(x) for x in batch]
                 case _BatchMapTransform(fn=fn):
                     batch = fn(batch)
                     is_soa_form = isinstance(batch, dict) or isinstance(batch, pa.RecordBatch)
@@ -195,8 +213,12 @@ class _CompositeBatchProcessor(BatchProcessor):
 
         return batch
 
+    @property
+    def metadata(self):
+        return {}
 
-def dict_from_record_batch(b):
+
+def dict_from_record_batch(b) -> dict:
     # we follow the convention from hf batchencoding where homogeneous-lengthed arrays are turned into nd arrays
     # while heterogeneous lists are left as lists of arrays
 
@@ -212,3 +234,71 @@ def dict_from_record_batch(b):
             return x
 
     return {b.field(i).name: to_hf_batched(b.column(i).to_numpy(zero_copy_only=False)) for i in range(b.num_columns)}
+
+
+@ray.remote(num_cpus=0.1)  # keep this low b/c it doesn't do much
+class BatchProcessorPool:
+    def __init__(self, processor: BatchProcessor, min_size: int = 1, max_size: int = 10):
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(message)s")
+        processor_ref = ray.put(processor)
+        self.actor_pool = AutoScalingActorPool(
+            lambda: _create_batch_processor_actor(processor, processor_ref), min_size, max_size
+        )
+
+    async def process_batch(self, batch_ref: RefBox):
+        return await self.actor_pool.submit(
+            lambda a, b: a.process_batch.remote(b), batch_ref.ref, obj_ref=batch_ref.ref
+        )
+
+    def num_pending_tasks(self):
+        return self.actor_pool.num_pending_tasks
+
+    def resize_pool(self, *, min_size: int | None = None, max_size: int | None = None):
+        self.actor_pool.resize_pool(min_size=min_size, max_size=max_size)
+
+    def ensure_max_at_least(self, size: int):
+        self.actor_pool.resize_pool(max_size=max(size, self.actor_pool.get_max_size()))
+
+
+def _create_batch_processor_actor(processor: BatchProcessor, processor_ref):
+    cpus = processor.num_cpus
+    gpus = processor.num_gpus
+    resources = processor.resources
+    return _BatchProcessorActor.options(  # type: ignore
+        num_cpus=cpus, num_gpus=gpus, resources=resources, scheduling_strategy="SPREAD"
+    ).remote(processor_ref)
+
+
+@ray.remote
+class _BatchProcessorActor(PoolWorkerBase):
+    def __init__(self, processor: BatchProcessor):
+        from levanter.store.tree_store import TreeBatchPreparer
+
+        self.processor = processor
+        self.preparer = TreeBatchPreparer(processor.output_exemplar)
+
+    def process_batch(self, batch):
+        result = self.processor(batch)
+        result = _canonicalize_batch(result)
+        prepared = self.preparer(result)
+        return prepared
+
+
+def _canonicalize_batch(batch: Union[dict, list[dict]]) -> list[dict]:
+    if isinstance(batch, pa.RecordBatch):
+        batch = dict_from_record_batch(batch)
+
+    if isinstance(batch, dict):
+        return _to_list_of_dicts(batch)
+    else:
+        return batch
+
+
+def _to_list_of_dicts(batch: dict) -> list[dict]:
+    """
+    Convert a batch of dictionaries to a list of dictionaries, suitable for writing to a cache.
+    """
+    keys = list(batch.keys())
+    values = list(batch.values())
+    num_rows = len(values[0])
+    return [{key: values[i][j] for i, key in enumerate(keys)} for j in range(num_rows)]

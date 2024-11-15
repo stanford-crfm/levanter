@@ -45,6 +45,8 @@ class WandbTracker(Tracker):
         else:
             self.run = run
 
+        self._last_warning_step = -500
+
     def log_hyperparameters(self, hparams: dict[str, Any]):
         self.run.config.update(hparams, allow_val_change=True)
 
@@ -53,9 +55,11 @@ class WandbTracker(Tracker):
             step = self.run.step
 
         if step < self.run.step:
-            logger.warning(
-                f"Step {step} is less than the current step {self.run.step}. Cowardly refusing to log metrics."
-            )
+            if step - self._last_warning_step > 500:
+                logger.warning(
+                    f"Step {step} is less than the current step {self.run.step}. Cowardly refusing to log metrics."
+                )
+                self._last_warning_step = step
             return
 
         step = int(step)
@@ -67,6 +71,10 @@ class WandbTracker(Tracker):
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         self.run.log_artifact(artifact_path, name=name, type=type)
+
+    def finish(self):
+        logger.info("Finishing wandb run...")
+        self.run.finish()
 
 
 def is_wandb_available():
@@ -155,7 +163,7 @@ class WandbConfig(TrackerConfig):
         if jax.process_count() > 1:
             # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
             metadata_to_share = dict(
-                entity=r.entity,
+                # entity=r.entity,
                 project=r.project,
                 name=r.name,
                 tags=r.tags,
@@ -166,10 +174,10 @@ class WandbConfig(TrackerConfig):
                 metadata_to_share, is_source=jax.process_index() == 0
             )
 
-            if jax.process_index() != 0:
-                assert r.mode == "disabled"
-                for k, v in metadata_to_share.items():
-                    setattr(r, k, v)
+            # if jax.process_index() != 0:
+            # assert r.mode == "disabled", f"Only the primary worker should be using wandb. Got {r.mode}"
+            # for k, v in metadata_to_share.items():
+            #     setattr(r, k, v)
 
             logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
 
@@ -182,9 +190,9 @@ class WandbConfig(TrackerConfig):
             if wandb.run is not None:
                 wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
 
-        wandb.summary["num_devices"] = jax.device_count()
-        wandb.summary["num_hosts"] = jax.process_count()
-        wandb.summary["backend"] = jax.default_backend()
+        wandb.summary["num_devices"] = jax.device_count()  # type: ignore
+        wandb.summary["num_hosts"] = jax.process_count()  # type: ignore
+        wandb.summary["backend"] = jax.default_backend()  # type: ignore
 
         return WandbTracker(r)
 

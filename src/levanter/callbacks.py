@@ -8,13 +8,17 @@ import tempfile
 import threading
 import time
 import warnings
-from typing import Callable, Iterable, Optional
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from typing import Callable, Optional
 
 import humanfriendly
 import jax
-from tqdm import tqdm
+from tqdm_loggable import tqdm_logging
+from tqdm_loggable.auto import tqdm
 
 import levanter.tracker
+from levanter.data import AsyncDataset, DataLoader
 from levanter.eval_harness import LmEvalHarnessConfig
 from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
@@ -29,6 +33,52 @@ from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 logger = pylogging.getLogger(__name__)
 
 
+def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size, max_epochs: Optional[int] = None):
+    total_tokens = None
+
+    def log_epoch(step_info: StepInfo):
+        nonlocal total_tokens
+        if total_tokens is None:
+            if not total_tokens_future.done():
+                if step_info.step % 1000 == 0:
+                    logger.info("Dataset not finished. Can't compute epochs.")
+                return  # We don't have the total tokens yet, so we can't calculate epoch
+            total_tokens = total_tokens_future.result()
+
+        # Get the total processed tokens from the metrics logged by log_performance_stats
+        processed_tokens = tokens_per_example * batch_size * step_info.step
+
+        # If we're doing multiple epochs, adjust the denominator
+        total_tokens_for_epochs = total_tokens * max_epochs if max_epochs else total_tokens
+        current_epoch = processed_tokens / total_tokens_for_epochs
+
+        levanter.tracker.log_metrics({"train/current_epoch": current_epoch}, step=step_info.step)
+
+    return log_epoch
+
+
+def get_total_dataset_tokens(ds: AsyncDataset, seq_length: int):
+    def log_length():
+        # If ds.async_len() is the only option, run it in an event loop inside the thread
+        import asyncio
+
+        async def compute_length():
+            length = await ds.dataset.async_len()
+            return length
+
+        # Run the async function synchronously in this thread
+        length = asyncio.run(compute_length())
+        total_tokens = length * seq_length
+        levanter.tracker.log_summary({"dataset/total_tokens": total_tokens})
+        return total_tokens
+
+    # Create a ThreadPoolExecutor with a single worker thread
+    executor = ThreadPoolExecutor(max_workers=1)
+    # Submit the log_length function to be executed in a separate thread
+    future = executor.submit(log_length)
+    return future
+
+
 def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, name: Optional[str] = None):
     total_loss = 0.0
     total_load_time = 0.0
@@ -40,7 +90,9 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
     else:
         desc = "eval"
 
+    _tqdm_logging_one_time_setup()
     pbar = tqdm(dataset, desc=desc, position=1, leave=False, total=max_batches)
+
     iter_ = iter(pbar)
     while True:
         time_in = time.time()
@@ -71,7 +123,7 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
 
 def compute_validation_loss(
     loss_fn: Callable,  # [[M, ...], jax.numpy.ndarray],
-    dataset: Iterable,
+    dataset: DataLoader,
     max_batches: Optional[int] = None,
     name: Optional[str] = None,
 ):
@@ -93,9 +145,15 @@ def compute_validation_loss(
     return compute_loss
 
 
-def log_step_info(step: StepInfo):
-    levanter.tracker.log_metrics({"train/loss": step.loss, "global_step": step.step}, step=step.step)
-    log_optimizer_hyperparams(step.opt_state, step=step.step, prefix="optim")
+def log_step_info(total_steps: Optional[int]):
+    def log_step_info_inner(step: StepInfo):
+        metrics = {"train/loss": step.loss, "global_step": step.step}
+        if total_steps:
+            metrics["run_progress"] = step.step / total_steps
+        log_optimizer_hyperparams(step.opt_state, step=step.step, prefix="optim")
+        levanter.tracker.log_metrics(metrics, step=step.step)
+
+    return log_step_info_inner
 
 
 def wandb_xla_logger(config: WandbConfig):
@@ -181,6 +239,8 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
         kwargs["desc"] = desc
     if "iterable" not in kwargs:
         kwargs["iterable"] = iterable
+
+    _tqdm_logging_one_time_setup()
     pbar = tqdm(**kwargs)
 
     def update_pbar(step: StepInfo):
@@ -354,6 +414,17 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
         wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
 
     return compute_and_viz_log_probs
+
+
+_did_tqdm_logging_one_time_setup = False
+
+
+def _tqdm_logging_one_time_setup():
+    global _did_tqdm_logging_one_time_setup
+    if _did_tqdm_logging_one_time_setup:
+        return
+    _did_tqdm_logging_one_time_setup = True
+    tqdm_logging.tqdm_logging.set_log_rate(timedelta(seconds=60))
 
 
 def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_resources):

@@ -59,9 +59,7 @@ def test_save_backpack_model_with_code():
         new_converter = converter.replaced(reference_checkpoint=tmpdir, trust_remote_code=True)
 
         assert new_converter.config_from_hf_config(config) == lev_config
-        loaded_model = new_converter.load_pretrained(
-            new_converter.default_config.model_type, new_converter.default_config
-        )
+        loaded_model = new_converter.load_pretrained(new_converter.default_config.model_type)
         loaded_model = inference_mode(loaded_model, True)
 
         assert loaded_model.config == lev_model.config
@@ -117,7 +115,9 @@ def test_save_sharded_checkpoints():
 
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
-        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, nano_model.config, ref=tmpdir, dtype=mp.param_dtype)
+        loaded_model = converter.load_pretrained(
+            Gpt2LMHeadModel, ref=tmpdir, config=nano_model.config, dtype=mp.param_dtype
+        )
 
         assert loaded_model.config == nano_model.config
         assert loaded_model.Vocab == nano_model.Vocab

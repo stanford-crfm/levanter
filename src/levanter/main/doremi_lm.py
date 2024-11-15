@@ -13,7 +13,7 @@ from levanter.compat.hf_checkpoints import HFCompatConfig
 from levanter.data.text import CausalLmDataset, LMMixtureDatasetConfig
 from levanter.doremi import DoReMiConfig, estimate_mixture_weights
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import TrainerConfig
 from levanter.utils.tree_utils import inference_mode
@@ -77,6 +77,8 @@ def main(config: TrainLmConfig):
 
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
+    loss_function = compute_next_token_loss
+
     with config.trainer.device_mesh:
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
@@ -86,9 +88,7 @@ def main(config: TrainLmConfig):
         # initialize the ref model
         if config.ref_model_from_hf:
             assert converter is not None
-            ref_model = converter.load_pretrained(
-                config.model.model_type, config.model, dtype=config.trainer.mp.compute_dtype
-            )
+            ref_model = converter.load_pretrained(config.model.model_type, dtype=config.trainer.mp.compute_dtype)
         else:
             ref_model_shape = eqx.filter_eval_shape(config.model.build, Vocab, key=jrandom.PRNGKey(0))
             ref_model = levanter.checkpoint.load_checkpoint(
@@ -109,7 +109,7 @@ def main(config: TrainLmConfig):
         train_datasets = config.data.training_sets(ref_model.Pos.size)
         valid_datasets = config.data.validation_sets(ref_model.Pos.size)
 
-        train_datasets = {
+        causal_train_datasets = {
             k: CausalLmDataset(v, config.model.Pos, config.model.KeyPos, ignore_index=config.data.ignore_token_id)
             for k, v in train_datasets.items()
         }
@@ -119,9 +119,10 @@ def main(config: TrainLmConfig):
         }
 
         mixture_weights = estimate_mixture_weights(
+            loss_function,
             proxy_model,
             ref=ref_model,
-            data_sources=train_datasets,
+            data_sources=causal_train_datasets,
             trainer_config=config.trainer,
             optimizer=optimizer,
             domain_weight_step_size=config.doremi.domain_weight_step_size,

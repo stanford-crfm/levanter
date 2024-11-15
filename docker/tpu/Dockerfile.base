@@ -5,12 +5,15 @@ RUN pip install virtualenv
 # venv binaries encode their directory, so we need to setup the venv in the final location
 RUN virtualenv -p python3.10 /opt/levanter/.venv
 ENV PATH /opt/levanter/.venv/bin:$PATH
-RUN /opt/levanter/.venv/bin/pip install -U hatch "jax[tpu]==0.4.26" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+#RUN /opt/levanter/.venv/bin/pip install -U "jax[tpu]==0.4.30" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+RUN /opt/levanter/.venv/bin/pip install -U "jax[tpu]@git+https://github.com/dlwh/jax@retry_refuse" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 # Install package dependencies to make incremental builds faster.
 WORKDIR /tmp/
 ADD pyproject.toml README.md /tmp/
-RUN pip install $(hatch dep show requirements --all)
+# work around setuptools bug
+RUN mkdir -p /tmp/src/levanter
+RUN pip install .[test]
 
 FROM python:3.10
 
