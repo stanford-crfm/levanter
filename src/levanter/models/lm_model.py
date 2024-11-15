@@ -57,7 +57,7 @@ class LmExample(eqx.Module):
         all_causal: bool = True,
     ) -> "LmExample":
         # mask out the prompt tokens
-        loss_mask = hax.arange(Pos) >= prompt_length
+        loss_mask = hax.arange(Pos) >= prompt_length - 1
         # also mask out the last token
         loss_mask *= 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
 
