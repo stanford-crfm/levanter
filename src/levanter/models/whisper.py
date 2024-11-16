@@ -447,7 +447,7 @@ class WhisperDecoder(ModuleWithStateDictSerialization):
         return {"transformer": None, "embeddings": None}
 
 
-class WhisperModel(ModelWithHfSerializationMixin[WhisperConfig]):
+class WhisperModel(eqx.Module, ModelWithHfSerializationMixin[WhisperConfig]):
     encoder: WhisperEncoder
     decoder: WhisperDecoder
 
