@@ -245,7 +245,7 @@ class Gpt2Block(eqx.Module):
         return x
 
 
-class Gpt2Transformer(ModuleWithStateDictSerialization, eqx.Module):
+class Gpt2Transformer(ModuleWithStateDictSerialization):
     config: Gpt2Config = eqx.static_field()
     blocks: Stacked[Gpt2Block]
     ln_f: hnn.LayerNorm
