@@ -64,6 +64,7 @@ def test_local_batched_data_loading_model_axis_1():
 
 class StructuredDataset(AsyncDataset):
     def __init__(self, seq_len):
+        super().__init__()
         self.seq_len = seq_len
         self.begin = 0
         self.end = 256
@@ -138,6 +139,7 @@ def test_structured_batches_model_axis_2():
 
 class StructuredDatasetWithNames(AsyncDataset):
     def __init__(self, Height: Axis, Width: Axis, begin, end, stride):
+        super().__init__()
         self.Height = Height
         self.Width = Width
         self.begin = begin

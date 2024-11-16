@@ -14,6 +14,7 @@ class PermutationDataset(AsyncDataset[T_co]):
     # TODO: add epoch reshuffling
 
     def __init__(self, dataset: AsyncDataset[T_co], key: jax.random.PRNGKey):
+        super().__init__()
         self.dataset = dataset
         self.key = key
         self._permutation: Optional[Permutation] = None
@@ -72,6 +73,7 @@ class EraShufflingDataset(AsyncDataset[T_co]):
     """
 
     def __init__(self, dataset: AsyncDataset[T_co], era_length: int, *, key: jax.random.PRNGKey):
+        super().__init__()
         self.dataset = dataset
         self.era_length = era_length
         self.key = key

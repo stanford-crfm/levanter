@@ -3,21 +3,23 @@ import asyncio
 import copy
 import dataclasses
 import functools
+import json
 import logging
 import os
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeAlias, TypeVar, Union
 
 import datasets
 import equinox as eqx
+import fsspec
 import jax
 import numpy as np
 import regex
 import tensorstore as ts
 from draccus import field
-from jax._src.random import PRNGKey
+from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 from tokenizers import normalizers
 
@@ -36,7 +38,7 @@ from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.fsspec_utils import expand_glob
-from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
+from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
 
 
 silence_transformer_nag()  # noqa
@@ -45,10 +47,17 @@ from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizer
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
 from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
-from levanter.data.sharded_datasource import ShardedDataSource, TextUrlDataSource, WrappedHFDataSource  # noqa
+from levanter.data.sharded_datasource import (  # noqa
+    JsonlDataSource,
+    ShardedDataSource,
+    TextUrlDataSource,
+    UrlDataSource,
+    WrappedHFDataSource,
+    gcs_glob,
+)
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.store.cache import build_or_load_cache  # noqa
-from levanter.utils.jax_utils import key_iterator, local_cpu_mesh, use_cpu_device  # noqa
+from levanter.utils.jax_utils import key_iterator, use_cpu_device  # noqa
 
 
 T_co = TypeVar("T_co", covariant=True)
@@ -74,6 +83,7 @@ class EpochDataset(AsyncDataset[T_co]):
     """
 
     def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
+        super().__init__()
         self.dataset = dataset
         self.max_epochs = max_epochs
 
@@ -153,6 +163,7 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
     """
 
     def __init__(self, doc_cache: TreeCache[dict], seq_len: int):
+        super().__init__()
         self.doc_cache = doc_cache
         self.seq_len = seq_len
         self._store: Optional[TreeStore] = None
@@ -228,22 +239,21 @@ class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
 
         @functools.partial(eqx.filter_jit, out_shardings=sharding)
         def _create_lm_example(tokens, key):
-            with local_cpu_mesh():
-                tokens = hax.named(tokens, self.QPos)
-                example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+            tokens = hax.named(tokens, self.QPos)
+            example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
 
-                if self.fcm_prob > 0:
-                    # masks for attention
-                    # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-                    # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-                    # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-                    assert self.key is not None
-                    this_key, key = jax.random.split(key)
-                    fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-                    attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
-                    example = dataclasses.replace(example, attn_mask=attn_mask)
+            if self.fcm_prob > 0:
+                # masks for attention
+                # We support forgetful causal masking (FCM) which is a technique that improves training speed by
+                # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
+                # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
+                assert self.key is not None
+                this_key, key = jax.random.split(key)
+                fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
+                attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
+                example = dataclasses.replace(example, attn_mask=attn_mask)
 
-                return example
+            return example
 
         super().__init__(self.dataset, _create_lm_example, key=key)
 
@@ -325,9 +335,18 @@ class BatchTokenizer(BatchProcessor[str, dict]):
             needs_merge = []
 
         if self.padding is not False:
-            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False, padding=self.padding, max_length=self.max_length, truncation=True)  # type: ignore
+            encoding = self.tokenizer(
+                batch,
+                return_attention_mask=self.return_attention_mask,
+                verbose=False,
+                padding=self.padding,
+                max_length=self.max_length,
+                truncation=True,
+            )  # type: ignore
         else:
-            encoding = self.tokenizer(batch, return_attention_mask=self.return_attention_mask, verbose=False)  # type: ignore
+            encoding = self.tokenizer(
+                batch, return_attention_mask=self.return_attention_mask, verbose=False
+            )  # type: ignore
 
         if needs_merge:
             new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
@@ -608,7 +627,7 @@ class LMTaskConfig(abc.ABC):
     If you want to shuffle in eras, set this to the era length"""
 
     @cached_property
-    def the_tokenizer(self) -> PreTrainedTokenizerBase:
+    def the_tokenizer(self) -> HfTokenizer:
         if self.tokenizer == "passthrough":
             return PassthroughTokenizer(self.vocab_size)
         else:
@@ -616,7 +635,12 @@ class LMTaskConfig(abc.ABC):
 
     @abc.abstractmethod
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray],
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
         pass
 
@@ -640,6 +664,10 @@ class LMTaskConfig(abc.ABC):
         return [(eval_sets[name], tags[name]) for name in eval_sets]
 
 
+CANONICAL_INPUT_FIELD = "prompt"
+CANONICAL_OUTPUT_FIELD = "response"
+
+
 @dataclass
 class LMSupervisedDatasetConfig:
     """Config for supervised fine-tuning datasets"""
@@ -654,15 +682,68 @@ class LMSupervisedDatasetConfig:
     validation_urls: List[str] = field(default_factory=list)  # paths to jsonl/json files
 
     # Field names in the data
-    input_field: str = "prompt"  # name of the input field
-    output_field: str = "response"  # name of output field
+    input_field: str = CANONICAL_INPUT_FIELD  # name of the input field
+    output_field: str = CANONICAL_OUTPUT_FIELD  # name of output field
 
     # Optional metadata
     tags: Optional[List[str]] = None
-    name: Optional[str] = None
 
 
-def preprocess_supervised_example(
+class SupervisedSourceConfigBase(Protocol):
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        raise NotImplementedError
+
+    input_field: str
+    output_field: str
+    tags: Optional[List[str]]
+    cache_dir: str
+
+
+@dataclass(frozen=True)
+class SupervisedHfSourceConfig(SupervisedSourceConfigBase):
+    cache_dir: str
+    id: str
+    name: str | None = None
+
+    streaming: bool = True
+
+    input_field: str = CANONICAL_INPUT_FIELD
+    output_field: str = CANONICAL_OUTPUT_FIELD
+    tags: Optional[List[str]] = None
+
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        return WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.streaming).map(
+            lambda x: {CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]}
+        )
+
+
+@dataclass(frozen=True)
+class SupervisedUrlSourceConfig(SupervisedSourceConfigBase):
+    cache_dir: str
+    train_urls: list[str] = dataclasses.field(default_factory=list)
+    validation_urls: list[str] = dataclasses.field(default_factory=list)
+
+    input_field: str = CANONICAL_INPUT_FIELD
+    output_field: str = CANONICAL_OUTPUT_FIELD
+    tags: Optional[List[str]] = None
+
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        urls = self.train_urls if split == "train" else self.validation_urls
+        if not urls:
+            return None
+
+        urls = [globbed for url in urls for globbed in expand_glob(url)]
+
+        source = UrlDataSource(urls, columns=[self.input_field, self.output_field])
+        return source.map(
+            lambda x: {CANONICAL_INPUT_FIELD: x[self.input_field], CANONICAL_OUTPUT_FIELD: x[self.output_field]}
+        )
+
+
+SupervisedSourceConfig: TypeAlias = Union[SupervisedHfSourceConfig, SupervisedUrlSourceConfig]
+
+
+def _preprocess_supervised_example(
     batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
 ) -> dict:
     sources = [example[input_field] for example in batch]
@@ -681,7 +762,7 @@ def preprocess_supervised_example(
     }
 
 
-def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) -> LmExample:
+def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis) -> LmExample:
     """
     Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
 
@@ -691,71 +772,134 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase) ->
     2. Mask out the input and prompt if requested.
     3. Create an LmExample with the input_ids as the input and the next token as the target.
     """
-    with local_cpu_mesh():
-        # annoyingly, pad expects things to be batched so we have to prepend a batch axis
-        ex = tokenizer.pad({k: np.expand_dims(v, 0) for k, v in ex.items()}, return_tensors="np", padding="max_length")
-        ex = {k: v[0] for k, v in ex.items()}
-        input_ids = hax.named(ex["input_ids"], "position")
-        # mask out padding and anything before the start of the target
-        Pos = input_ids.resolve_axis("position")
-        loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
+    # annoyingly, pad expects things to be batched so we have to prepend a batch axis
+    ex = tokenizer.pad(
+        {k: np.expand_dims(v, 0) for k, v in ex.items()},
+        return_tensors="np",
+        padding="max_length",
+        max_length=Pos.size,
+    )
+    ex = {k: v[0] for k, v in ex.items()}
+    # padding doesn't do truncation, so we have to do it ourselves.
+    # Truncate from the left since we want to predict the last tokens
+    input_ids = hax.named(ex["input_ids"][-Pos.size :], Pos)
+    # mask out padding and anything before the start of the target
+    loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
 
-        # don't predict the padding
-        targets = hax.roll(input_ids, -1, Pos)
-        loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
-        loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
-        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
-        return lm_ex
+    # don't predict the padding
+    targets = hax.roll(input_ids, -1, Pos)
+    loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+    loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
+    lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
+    return lm_ex
 
 
-def mk_supervised_dataset(config: LMSupervisedDatasetConfig, tokenizer: PreTrainedTokenizerBase):
-    import levanter.data
+def mk_supervised_datasets(
+    sources: Mapping[str, SupervisedSourceConfigBase] | SupervisedSourceConfigBase,
+    split: str,
+    tokenizer: PreTrainedTokenizerBase,
+    Pos: hax.Axis,
+) -> dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]]:
+    """
+    Create supervised datasets from a set of sources.
 
-    # Choose data source based on config
-    if config.hf_dataset_name is not None:
-        # Using HF dataset
-        dataset = levanter.data.datasource_from_hf(config.hf_dataset_name, split=config.hf_dataset_split)
+    Returns:
+        A dictionary of dataset names to tuples of the dataset and the tags associated with the dataset.
+    """
+    out: dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]] = {}
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    if isinstance(sources, Mapping):
+        for name, config in sources.items():
+            source = config.get_shard_source(split)
+            if source is None:
+                continue
+
+            ds = _cache_supervised_set(
+                source, config.cache_dir, tokenizer, Pos, config.input_field, config.output_field
+            )
+
+            if config.tags is None:
+                tags = [name]
+            else:
+                tags = config.tags + [name]
+
+            out[name] = (ds, tags)
     else:
-        # Using local files
-        validation_urls = [url for url_pat in config.validation_urls for url in fsspec_expand_glob(url_pat)]
-        if not validation_urls:
-            raise ValueError("Must specify either hf_dataset_name or validation_urls")
-        dataset = levanter.data.datasource_from_jsonl(validation_urls)
+        source = sources.get_shard_source(split)  # type: ignore
+        if source is not None:
+            ds = _cache_supervised_set(
+                source, sources.cache_dir, tokenizer, Pos, sources.input_field, sources.output_field
+            )
+            tags = sources.tags or []
+            if isinstance(sources, SupervisedHfSourceConfig):
+                name = sources.id
+                if sources.name is not None:
+                    name = f"{name}/{sources.name}"
 
-    input_field = config.input_field
-    output_field = config.output_field
+                tags = [name] + tags
+            else:
+                name = "default"
+            out[name] = (ds, tags)
+
+    return out
+
+
+def mk_supervised_dataset(
+    config: SupervisedSourceConfigBase, split: str, tokenizer: HfTokenizer, Pos: hax.Axis
+) -> AsyncDataset[LmExample]:
+
+    source = config.get_shard_source(split)
 
     output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
 
-    # Use the same preprocessing as before
-    dataset = dataset.map_batches(
-        lambda ex: preprocess_supervised_example(ex, tokenizer, input_field, output_field),
+    dataset = source.map_batches(  # type: ignore
+        lambda ex: _preprocess_supervised_example(ex, tokenizer, config.input_field, config.output_field),
         batch_size=128,
         num_cpus=num_cpus_used_by_tokenizer(tokenizer),
         output_exemplar=output_exemplar,
     )
 
-    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
 
 
-@dataclass
-class ChatSFTDatasetConfig(LMSupervisedDatasetConfig):
+def _cache_supervised_set(source, cache_dir, tokenizer, Pos, input_field, output_field):
+    """
+    Cache a supervised dataset into input_ids and sources_len.
+    """
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+    dataset = source.map_batches(
+        lambda ex: _preprocess_supervised_example(ex, tokenizer, input_field, output_field),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(cache_dir, await_finished=True)
+    ds = cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
+    return ds
+
+
+@dataclass(frozen=True)
+class ChatUrlDataSourceConfig:
     """Config for loading JSONL files in OpenAI chat format for supervised fine-tuning."""
+
+    cache_dir: str
+    train_urls: List[str] = field(default_factory=list)
+    validation_urls: List[str] = field(default_factory=list)
 
     # Chat format specific fields
     messages_field: str = "messages"
     input_role: str = "user"
     output_role: str = "assistant"
-    train_urls: List[str] = field(default_factory=list)  # Add this line
 
     def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
-        import levanter.data
-
         """Gets ShardedDataSource for either training or validation data."""
         urls = self.validation_urls if split == "validation" else self.train_urls
 
@@ -763,7 +907,7 @@ class ChatSFTDatasetConfig(LMSupervisedDatasetConfig):
             return None
 
         # Use the datasource_from_chat_jsonl function from sharded_datasource
-        return levanter.data.sharded_datasource.datasource_from_chat_jsonl(
+        return datasource_from_chat_jsonl(
             urls, messages_field=self.messages_field, input_role=self.input_role, output_role=self.output_role
         )
 
@@ -793,7 +937,9 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase) -> dict:
     }
 
 
-def mk_chat_sft_dataset(config: ChatSFTDatasetConfig, tokenizer: PreTrainedTokenizerBase) -> AsyncDataset[LmExample]:
+def mk_chat_sft_dataset(
+    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+) -> AsyncDataset[LmExample]:
     """Creates a dataset from JSONL files containing chat format data for SFT."""
     source = config.get_shard_source("train")
     if source is None:
@@ -811,14 +957,14 @@ def mk_chat_sft_dataset(config: ChatSFTDatasetConfig, tokenizer: PreTrainedToken
     )
 
     # Cache the processed data
-    dataset = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
 
     # Ensure padding token is set (needed by _prepare_supervised_example)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # Reuse the supervised prepare function directly
-    return dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer))
+    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
 
 
 @dataclass
@@ -833,17 +979,18 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray] = None,
-        epochs: int = 0,
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
 
-        ds = self.token_seq_dataset("train", seq_len, monitors)
-        if epochs:
-            logger.info("Wrapping dataset in epoch dataset")
-            ds = EpochDataset(ds, max_epochs=epochs)
+        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
 
         # add epoch flag here.
         if ds is None:
             raise ValueError("No training set!")
+
+        if epochs:
+            logger.info("Wrapping dataset in epoch dataset")
+            ds = EpochDataset(ds, max_epochs=epochs)
 
         if self.shuffle is True:
             ds = ds.shuffle(key)
@@ -989,10 +1136,18 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
 
     def train_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, key: Optional[PRNGKeyArray]
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray],
+        epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+
+        if epochs:
+            raise ValueError("Epochs are not supported for mixture datasets")
 
         if key is None:
             key = jax.random.PRNGKey(0)
@@ -1092,3 +1247,55 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     @property
     def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
         return self.configs
+
+
+def datasource_from_chat_jsonl(
+    urls: Sequence[str], messages_field: str = "messages", input_role: str = "user", output_role: str = "assistant"
+) -> "ShardedDataSource[dict]":
+    """Creates a ShardedDataSource from JSONL files containing chat messages.
+
+    Args:
+        urls: Sequence of URLs or glob patterns pointing to JSONL files
+        messages_field: Field name containing the messages in each JSON object
+        input_role: Role identifier for input messages
+        output_role: Role identifier for output messages
+
+    Returns:
+        ShardedDataSource configured for chat data
+    """
+    # Expand any glob patterns in the URLs
+    expanded_urls = []
+    for url in urls:
+        if any(c in url for c in "*?[]"):
+            expanded_urls.extend(gcs_glob(url))
+        else:
+            expanded_urls.append(url)
+
+    return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
+
+
+# TODO: switch to actual multi-turn
+class ChatJsonlDataSource(JsonlDataSource):
+    """DataSource that reads JSONL files containing OpenAI chat format messages."""
+
+    def __init__(self, urls: Sequence[str], messages_field: str, input_role: str, output_role: str):
+        super().__init__(urls)
+        self.messages_field = messages_field
+        self.input_role = input_role
+        self.output_role = output_role
+
+    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
+        url = self._shard_name_to_url_mapping[shard_name]
+        i = 0
+        with fsspec.open(url, "r", compression="infer") as f:
+            for line in f:
+                if i >= row:
+                    data = json.loads(line)
+                    messages = data[self.messages_field]
+
+                    # Extract input/output from messages
+                    input_msg = next(m["content"] for m in messages if m["role"] == self.input_role)
+                    output_msg = next(m["content"] for m in messages if m["role"] == self.output_role)
+
+                    yield {"input": input_msg, "output": output_msg}
+                i += 1

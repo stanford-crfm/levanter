@@ -58,7 +58,9 @@ def next_token_loss(
 
     if block_size is None:
         # Full softmax computation
-        logits = hax.dot(pred_embeddings, pred_lm_head, axis=Embed, preferred_element_type=dtype)
+        logits = hax.dot(pred_embeddings, pred_lm_head, axis=Embed)
+        if dtype is not None:
+            logits = logits.astype(dtype)
         target_y_full = hax.nn.one_hot(target_y, Vocab, dtype=pred_embeddings.dtype)
         return cross_entropy_and_logsumexp_penalty(
             logits,
@@ -261,9 +263,10 @@ def _block_cross_entropy_forward(
 
         # Materialize the logits for the current block
         lm_head_b = pred_lm_head[Label, hax.dslice(start, Block)]  # [Contract, Block]
-        logits_b = hax.dot(
-            pred_embeddings, lm_head_b, axis=Contract, preferred_element_type=dtype
-        )  # [Batch, Seq, Block]
+        logits_b = hax.dot(pred_embeddings, lm_head_b, axis=Contract)  # [Batch, Seq, Block]
+
+        if dtype is not None:
+            logits_b = logits_b.astype(dtype)
 
         # Update max and logsumexp
         max_logit = hax.maximum(max_logit_prev, hax.max(logits_b, axis=Block))  # [Batch, Seq]
@@ -278,7 +281,7 @@ def _block_cross_entropy_forward(
         # Update sumV. This is actually unnecessary if we're using one-hot targets
         # sV = sV_prev + hax.sum(target_y_b, axis=Label.name)
 
-        loss += hax.dot(logits_b, target_y_b, axis=Block, preferred_element_type=dtype)  # [Batch, Seq]
+        loss += hax.dot(logits_b, target_y_b, axis=Block)  # [Batch, Seq]
 
         return loss, logsumexp, max_logit  # , sV
 
@@ -351,7 +354,7 @@ def _block_cross_entropy_backward(
     num_blocks = vocab_size // block_size
 
     grad_embeddings = hax.zeros(pred_embeddings.axes, dtype=pred_embeddings.dtype)
-    grad_lm_head = hax.zeros(pred_lm_head.axes, dtype=pred_embeddings.dtype)
+    grad_lm_head = hax.zeros(pred_lm_head.axes, dtype=pred_lm_head.dtype)
 
     def process_block(block_idx, acc, current_block_size):
         """
@@ -372,14 +375,15 @@ def _block_cross_entropy_backward(
 
         # Materialize the logits for the current block
         lm_head_b = pred_lm_head[Label, hax.dslice(start, Block)]  # [Contract, Block]
-        logits_b = hax.dot(
-            pred_embeddings, lm_head_b, axis=Contract, preferred_element_type=dtype
-        )  # [Batch, Seq, Block]
+        logits_b = hax.dot(pred_embeddings, lm_head_b, axis=Contract)  # [Batch, Seq, Block]
 
         # Materialize the target for the current block (one-hot)
         target_y_block = _block_one_hot(Block, start, labels_y, logits_b.dtype)  # [Batch, Seq, Block]
 
         # materialize the softmax for the current block
+        if dtype is not None:
+            logits_b = logits_b.astype(dtype)
+
         p_b = hax.exp(logits_b - log_z)  # [Batch, Seq, Block]
 
         delta_b = p_b - target_y_block

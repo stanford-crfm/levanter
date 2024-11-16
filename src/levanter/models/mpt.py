@@ -99,7 +99,7 @@ class MptAttentionConfig:
 
 
 @LmConfig.register_subclass("mpt")
-@dataclass
+@dataclass(frozen=True)
 class MptConfig(HFCompatConfig):
     d_model: int = 768
     n_heads: int = 12

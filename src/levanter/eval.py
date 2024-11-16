@@ -60,6 +60,7 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
     def __init__(
         self, datasets: Sequence[tuple[AsyncDataset[T], Sequence[str]]], max_examples_per_dataset: Optional[int] = None
     ):
+        super().__init__()
         self.datasets = []
         tag_index: dict[str, int] = {}
         for i, (dataset, tags) in enumerate(datasets):
@@ -198,7 +199,6 @@ def cb_tagged_lm_evaluate(
         log_dict = {
             # log micro average as just "loss"
             _join_prefix(prefix, "loss"): result.micro_avg_loss,
-            _join_prefix(prefix, "macro_loss"): result.macro_avg_loss,
             _join_prefix(prefix, "loading_time"): result.total_eval_loading_time,
             _join_prefix(prefix, "total_time"): time_fn(),
         }
@@ -206,6 +206,8 @@ def cb_tagged_lm_evaluate(
         logger.info(f"{prefix} loss: {result.micro_avg_loss:.3f}")
         has_tags = len(evaluator.dataset.tag_to_index) > 1  # 1 tag means there's no difference between micro and macro
         if has_tags:
+            log_dict[_join_prefix(prefix, "macro_loss")] = result.macro_avg_loss
+
             for tag, loss in result.tag_macro_losses.items():
                 # don't log leaf tag macro losses because it doesn't mean anything different than micro loss
                 if tag in evaluator.dataset.tag_to_index:
