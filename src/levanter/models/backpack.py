@@ -402,10 +402,10 @@ class BackpackLMHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSeriali
         state_dict = super().update_state_dict(state_dict, prefix=prefix)
         # In levanter's implementation, we have a shared embedding matrix for both the word
         # embeddings and the sense embeddings
-        state_dict[apply_prefix(prefix, "backpack.word_embeddings.weight")] = state_dict[
-            apply_prefix(prefix, "backpack.gpt2_model.wte.weight")
+        state_dict[with_prefix(prefix, "backpack.word_embeddings.weight")] = state_dict[
+            with_prefix(prefix, "backpack.gpt2_model.wte.weight")
         ]
-        state_dict[apply_prefix(prefix, "backpack.position_embeddings.weight")] = state_dict[
-            apply_prefix(prefix, "backpack.gpt2_model.wpe.weight")
+        state_dict[with_prefix(prefix, "backpack.position_embeddings.weight")] = state_dict[
+            with_prefix(prefix, "backpack.gpt2_model.wpe.weight")
         ]
         return state_dict
