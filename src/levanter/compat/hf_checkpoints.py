@@ -30,6 +30,7 @@ from tqdm import tqdm
 
 import haliax
 from haliax import Axis
+from haliax._src.state_dict import ModuleWithStateDictSerialization
 from haliax.partitioning import ResourceMapping
 from haliax.state_dict import from_torch_compatible_state_dict, save_state_dict, to_torch_compatible_state_dict
 
@@ -128,7 +129,7 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
-class ModelWithHfSerializationMixin(Generic[MConfig]):
+class ModelWithHfSerializationMixin(Generic[MConfig], ModuleWithStateDictSerialization):
     def get_hf_config(self):
         return self.config.to_hf_config(self.Vocab.size)
 
