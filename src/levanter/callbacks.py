@@ -26,7 +26,7 @@ from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.histogram import Histogram
 from levanter.tracker.wandb import WandbConfig
-from levanter.trainer import FullCallback, M, StepInfo, TrainerState
+from levanter.trainer import JitCallback, M, StepInfo, TrainerState
 from levanter.utils import jax_utils
 from levanter.utils import flop_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python, join_key
@@ -430,7 +430,7 @@ def _tqdm_logging_one_time_setup():
     tqdm_logging.tqdm_logging.set_log_rate(timedelta(seconds=60))
 
 
-class GradWatchCallback(FullCallback[M, dict[str, float | Histogram]]):
+class GradWatchCallback(JitCallback[M, dict[str, float | Histogram]]):
     """
     Emulates the behavior of Wandb's PyTorch-only built-in gradient logging (wandb.watch)
 
@@ -447,7 +447,7 @@ class GradWatchCallback(FullCallback[M, dict[str, float | Histogram]]):
         split_scan_layers: bool = True,
     ):
         self.prefix = prefix
-        self.include_histogram = include_histogram
+        self.include_hi stogram = include_histogram
         self.split_scan_layers = split_scan_layers
 
     def initial_state(self, state: TrainerState[M]) -> dict[str, float | Histogram]:

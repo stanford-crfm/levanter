@@ -101,7 +101,7 @@ class Callback(ABC, Generic[M]):
         ...
 
 
-class FullCallback(ABC, Generic[M_con, CBState]):
+class JitCallback(ABC, Generic[M_con, CBState]):
     @abc.abstractmethod
     def initial_state(self, state: TrainerState[M]) -> CBState:
         ...
@@ -135,7 +135,7 @@ class _Hook(Generic[M]):
 
 @dataclass
 class _StatefulHook(Generic[M]):
-    fn: FullCallback[M, Any]
+    fn: JitCallback[M, Any]
     every: int
 
 
@@ -180,7 +180,7 @@ class TrainerHooks:
 
         return tuple(new_states)
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | FullCallback | Callback] = None, *, every: int = 1):
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | JitCallback | Callback] = None, *, every: int = 1):
         def decorator(fn):
             is_something = False
 
@@ -188,7 +188,7 @@ class TrainerHooks:
                 self.hooks.append(_Hook(fn, every))
                 is_something = True
 
-            if isinstance(fn, FullCallback):
+            if isinstance(fn, JitCallback):
                 self.stateful_hooks.append(_StatefulHook(fn, every))
                 is_something = True
 
@@ -304,7 +304,7 @@ class Trainer:
     def add_hook(self, *, every: int = 1):
         ...
 
-    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | Callback | FullCallback] = None, *, every: int = 1):
+    def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | Callback | JitCallback] = None, *, every: int = 1):
         return self.hooks.add_hook(fn, every=every)
 
     def run_hooks(self, info: StepInfo, force: bool = False):
