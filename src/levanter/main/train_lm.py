@@ -14,9 +14,15 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
-from levanter.checkpoint import load_checkpoint
+from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig, LMSupervisedDatasetConfig
+from levanter.data.text import (
+    CausalLmDataset,
+    LMDatasetConfig,
+    LMMixtureDatasetConfig,
+    SupervisedSourceConfig,
+    mk_supervised_datasets,
+)
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -30,7 +36,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
-    supervised_data: Optional[LMSupervisedDatasetConfig] = None
+    supervised_data: Optional[SupervisedSourceConfig | dict[str, SupervisedSourceConfig]] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -54,6 +60,7 @@ class TrainLmConfig:
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
+    epoch: int = 0
 
 
 def main(config: TrainLmConfig):
@@ -117,9 +124,33 @@ def main(config: TrainLmConfig):
 
         # TODO: fix this
         tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
+        # TokenSeqDataset is config.data.train_set(Pos.size, key=data_key)
+
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, ignore_index=config.data.ignore_token_id
+            config.data.train_set(Pos.size, key=data_key, epochs=config.epoch),
+            Pos,
+            KeyPos,
+            ignore_index=config.data.ignore_token_id,
         )
+
+        # add epoch logging if epochs specified
+        if config.epoch > 0:
+            total_tokens_future = callbacks.get_total_dataset_tokens(train_dataset.dataset, config.model.seq_len)
+            trainer.add_hook(
+                callbacks.log_epoch_progress(
+                    total_tokens_future, Pos.size, trainer.config.train_batch_size, max_epochs=config.epoch
+                ),
+                every=1,
+            )
+
+            # Add epoch checkpoint callback
+            epoch_checkpointer = EpochCheckpointer(
+                checkpointer=trainer.config.checkpointer.create(trainer.run_id),
+                every_n_epochs=1,  # Or configure as needed
+                total_dataset_size=total_tokens_future.result(),
+                batch_size=trainer.config.train_batch_size,
+            )
+            trainer.add_hook(epoch_checkpointer, every=1)
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
@@ -172,13 +203,13 @@ def main(config: TrainLmConfig):
 
         levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
+        max_eval_examples_per_ds = config.trainer.max_eval_batches
+        if max_eval_examples_per_ds is not None:
+            max_eval_examples_per_ds *= config.trainer.eval_batch_size
+
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
-            max_eval_examples_per_ds = config.trainer.max_eval_batches
-            if max_eval_examples_per_ds is not None:
-                max_eval_examples_per_ds *= config.trainer.eval_batch_size
-
             causal_datasets = [
                 (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
                 for ds, tags in tagged_eval_datasets
@@ -195,12 +226,14 @@ def main(config: TrainLmConfig):
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
         if config.supervised_data is not None:
-            logger.info("Using supervised data")
-            supervised_eval = [(levanter.data.text.mk_supervised_dataset(config.supervised_data, tokenizer), "")]
-            # TODO Add tags
+            logger.info("Using supervised data for evals")
+            supervised_eval = mk_supervised_datasets(config.supervised_data, "validation", tokenizer, Pos)
+
+            evals = list(supervised_eval.values())
+
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
-                supervised_eval,
+                evals,
                 tokenizer,
                 trainer.device_mesh,
                 compute_axis_mapping,
@@ -247,8 +280,16 @@ def main(config: TrainLmConfig):
             train_loader = iter(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, train_loader)
-        # checkpointer.on_step(last_step, force=True)
+        last_info = trainer.train(state, train_loader)
+
+        # If running EpochDataset save latest checkpoint by default
+        if trainer.config.checkpointer is not None and config.epoch > 0:
+            trainer.run_hooks(last_info, force=True)
+            checkpointer = trainer.config.checkpointer.create(trainer.run_id)
+            checkpointer.wait_until_finished()
+
+    # This isn't necessary except when Levanter is run in a subprocess (as happens w/ ray)
+    trainer.tracker.finish()
 
 
 if __name__ == "__main__":

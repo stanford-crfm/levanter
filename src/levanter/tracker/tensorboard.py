@@ -69,6 +69,9 @@ class TensorboardTracker(Tracker):
             pylogger.exception(f"Error logging artifact {artifact_path} to {log_path}")
             return
 
+    def finish(self):
+        self.writer.close()
+
 
 @TrackerConfig.register_subclass("tensorboard")
 @dataclass

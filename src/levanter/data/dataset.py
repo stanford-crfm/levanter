@@ -48,6 +48,9 @@ class AsyncDataset(DatasetBase[T_co]):
     * `current_len`: Returns the current length of the dataset. This may be None if no current length is known.
     """
 
+    def __init__(self):
+        self._min_known_len = 0
+
     @abc.abstractmethod
     async def async_len(self) -> int:
         raise NotImplementedError
@@ -95,7 +98,12 @@ class AsyncDataset(DatasetBase[T_co]):
         The default implementation is a naive busy-wait loop. You should override this method for more efficient
         implementations.
         """
-        return await naive_busy_wait_until_len_at_least(self, length)
+        if length <= self._min_known_len:
+            return self._min_known_len
+
+        res_len = await naive_busy_wait_until_len_at_least(self, length)
+        self._min_known_len = max(self._min_known_len, res_len)
+        return res_len
 
     def as_sync_dataset(self):
         return SyncifiedDataset(self)
@@ -206,6 +214,7 @@ class SyncifiedDataset(SyncDataset[T_co]):
 
 class AsyncifiedDataset(AsyncDataset[T_co]):
     def __init__(self, dataset: SyncDataset[T_co]):
+        super().__init__()
         self.dataset = dataset
 
     async def async_len(self) -> int:
@@ -239,6 +248,7 @@ class ListAsyncDataset(AsyncDataset[T]):
     """
 
     def __init__(self, data: list[T], is_complete: bool = False):
+        super().__init__()
         self.data = data
         self.is_complete = is_complete
         if not is_complete:
@@ -315,6 +325,7 @@ class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
         *extra_args,
         **extra_kwargs,
     ):
+        super().__init__()
         self.dataset = dataset
         self.fn = fn
         self._extra_args = extra_args

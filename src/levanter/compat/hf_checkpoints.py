@@ -31,14 +31,15 @@ from tqdm import tqdm
 import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceMapping
+from haliax.state_dict import from_torch_compatible_state_dict, save_state_dict, to_torch_compatible_state_dict
 
-from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
 from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import ASRMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import StepInfo
 from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
+from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
@@ -127,7 +128,7 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
-class ModelWithHfSerializationMixin(Generic[MConfig], StateDictSerializationMixin):
+class ModelWithHfSerializationMixin(Generic[MConfig]):
     def get_hf_config(self):
         return self.config.to_hf_config(self.Vocab.size)
 
@@ -544,9 +545,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     ignore_prefix = self.ignore_prefix
                     break
 
-        def load_from_state_dict(state_dict):
-            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-            lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+        def load_from_state_dict(template, state_dict):
+            lev_model = from_torch_compatible_state_dict(template, state_dict, prefix=ignore_prefix)
 
             # However, this might miss some buffers that don't get persisted in the state dict
             # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
@@ -573,7 +573,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if just_use_cpu:
             cpu_device = jax.local_devices(backend="cpu")[0]
             with local_cpu_mesh():
-                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
+                lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(
+                    lev_model, state_dict
+                )
 
             del state_dict
             # gotta move it to the accelerator now (assuming there is one!)
@@ -582,7 +585,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             load_from_state_dict = haliax.named_jit(
                 load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
             )
-            lev_model = load_from_state_dict(state_dict)
+            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = load_from_state_dict(lev_model, state_dict)
 
         # all_arrays: list[jax.Array] = get_backend().live_arrays()
         # total_size = sum(a.size * a.itemsize for a in all_arrays)
@@ -694,7 +698,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             json.dump(dict_config, f)
 
         # Model
-        state_dict = to_numpy_state_dict(model)
+        state_dict = to_torch_compatible_state_dict(model)
         shards, index = _shard_hf_checkpoint(state_dict, max_shard_size, SAFE_TENSORS_MODEL)
         if index is None:
             save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
@@ -872,7 +876,7 @@ def save_hf_checkpoint_callback(
 
 def arbitrary_load_from_hf(
     model_name_or_path, from_pretrained_lambda, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> Union[PreTrainedTokenizerBase | ProcessorMixin]:
+) -> Union[HfTokenizer | ProcessorMixin]:
     is_url_like = urlparse(model_name_or_path).scheme != ""
     if is_url_like:
         if revision is not None:
@@ -889,9 +893,7 @@ def arbitrary_load_from_hf(
         return from_pretrained_lambda(model_name_or_path, revision=revision, trust_remote_code=trust_remote_code)
 
 
-def load_tokenizer(
-    model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> PreTrainedTokenizerBase:
+def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True) -> HfTokenizer:
     """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
     return arbitrary_load_from_hf(
         model_name_or_path,

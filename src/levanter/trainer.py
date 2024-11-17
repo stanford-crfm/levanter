@@ -70,7 +70,7 @@ S = TypeVar("S", bound=TrainerState)
 M_con = TypeVar("M_con", bound=PyTree, contravariant=True)
 CBState = TypeVar("CBState")
 
-DEFAULT_JAX_CONFIG = {
+DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
@@ -417,7 +417,13 @@ class Trainer:
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
             bjafkjafn need to initialize cb_states, which currently requires a full state
-            state = TrainerState.init(self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp, fp8=self.fp8
+            state = TrainerState.init(
+                self.optimizer,
+                model,
+                key=training_key,
+                is_trainable=is_trainable,
+                mp=self.mp,
+                fp8=self.fp8,
             )
             return state
 
@@ -462,7 +468,6 @@ class Trainer:
         while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
-
             info = self.train_step(state, example)
             state = info.state
 
@@ -531,7 +536,10 @@ class Trainer:
 
             self.add_hook(
                 callbacks.compute_validation_loss(
-                    eval_loss, eval_loader, max_batches=self.config.max_eval_batches, name=name
+                    eval_loss,
+                    eval_loader,
+                    max_batches=self.config.max_eval_batches,
+                    name=name,
                 ),
                 every=self.config.steps_per_eval,
             )
@@ -587,8 +595,15 @@ class Trainer:
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
         mbs = self.config.microbatch_size
-        grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
-        return grad_fn(model, *batch, **batch_kwargs)
+        grad_fn = microbatched(
+            grad_fn,
+            self.TrainBatch,
+            mbs,
+            self.parameter_axis_mapping,
+            self.compute_axis_mapping,
+        )
+        with hax.axis_mapping(self.compute_axis_mapping):
+            return grad_fn(model, *batch, **batch_kwargs)
 
 
 def _initialize_global_tracker(config, run_id):
@@ -658,7 +673,7 @@ class TrainerConfig:
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
     initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
 
-    jax_config: Dict[str, JsonAtom] = field(
+    jax_config: Mapping[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
     )  # config to pass to jax.config.update
 
@@ -686,7 +701,10 @@ class TrainerConfig:
 
     def __post_init__(self):
         if self.wandb is not None:
-            warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
+            warnings.warn(
+                "wandb is deprecated. use tracker with type wandb instead",
+                DeprecationWarning,
+            )
             self.tracker = self.wandb
 
     def initialize(self):
@@ -854,6 +872,10 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+        if self.replica_dcn_axis_size == -1:
+            self.replica_dcn_axis_size = self.num_slices
+            logger.info(f"Setting replica_dcn_axis_size to {self.replica_dcn_axis_size}")
 
 
 class AllConfig(Protocol):

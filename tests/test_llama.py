@@ -146,7 +146,7 @@ def test_llama_attention(use_flash, num_kv_heads):
 
     attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
 
-    state = attention.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_attention = HFLlamaAttention(config.to_hf_config(32000))
     hf_attention.load_state_dict(state, strict=True)
@@ -206,7 +206,7 @@ def test_llama_decoder_layer(num_kv_heads):
     key = random.PRNGKey(0)
     llama_decoder_layer = LlamaDecoderLayer.init(config=llama_config, key=key)
 
-    state = llama_decoder_layer.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(llama_decoder_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config(32000), layer_idx=0)
     hf_decoder_layer.load_state_dict(state, strict=True)
@@ -387,4 +387,5 @@ def test_state_dict_consistency(scan_layers, num_kv_heads):
     model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
     hf_config = config.to_hf_config(Vocab.size)
     hf_model = LlamaForCausalLM(hf_config)
-    assert set(hf_model.state_dict().keys()) == set(model.to_state_dict().keys())
+    levanter_state_dict = hax.state_dict.to_torch_compatible_state_dict(model)
+    assert set(hf_model.state_dict().keys()) == set(levanter_state_dict.keys())

@@ -46,6 +46,14 @@ class Tracker(abc.ABC):
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         pass
 
+    @abc.abstractmethod
+    def finish(self):
+        """
+        Finish the tracker. This is called when the tracker is no longer needed. This can, e.g.,
+        force a commit of all metrics.
+        """
+        pass
+
     def __enter__(self):
         import levanter.tracker.tracker_fns as tracker_fns
 
@@ -81,6 +89,17 @@ class CompositeTracker(Tracker):
         for tracker in self.loggers:
             tracker.log_artifact(artifact_path, name=name, type=type)
 
+    def finish(self):
+        excs = []
+        for tracker in self.loggers:
+            try:
+                tracker.finish()
+            except Exception as e:
+                excs.append(e)
+
+        if excs:
+            raise RuntimeError("Errors occurred when finishing trackers") from excs[0]
+
 
 class TrackerConfig(draccus.PluginRegistry, abc.ABC):
     discover_packages_path = "levanter.tracker"
@@ -107,6 +126,9 @@ class NoopTracker(Tracker):
         pass
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
+        pass
+
+    def finish(self):
         pass
 
 

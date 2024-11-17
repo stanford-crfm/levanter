@@ -19,7 +19,7 @@ def is_dir_of_checkpoints(path):
     return any("step-" in child for child in children)
 
 
-def list_deletable_directories(base_dir):
+def list_deletable_directories(base_dir, age):
     fs = fsspec.filesystem("gcs")
     run_ids = fs.ls(base_dir)
 
@@ -58,8 +58,8 @@ def list_deletable_directories(base_dir):
                     details = fs.ls(f"{path}/{file}", detail=True)
                     if details:
                         mtime = details[0]["mtime"]
-                        age = (datetime.now(timezone.utc) - mtime).days
-                        if age < AGE:
+                        this_age = (datetime.now(timezone.utc) - mtime).days
+                        if this_age < age:
                             new = True
                             break
 
@@ -74,9 +74,15 @@ def list_deletable_directories(base_dir):
 
 # Usage example:
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="List directories that can be deleted.")
+    parser.add_argument("base_dir", help="The base directory to clean up.", type=str, nargs="+")
+    parser.add_argument("--age", help="The age in days of the checkpoints to delete.", type=int, default=30)
+    args = parser.parse_args()
     if len(sys.argv) < 2:
         print("Usage: python clean_old_checkpoints.py <base_dir>")
         sys.exit(1)
-    for base_dir in sys.argv[1:]:
-        for path in list_deletable_directories(base_dir):
+    for base_dir in args.base_dir:
+        for path in list_deletable_directories(base_dir, args.age):
             print(f"gs://{path}")
