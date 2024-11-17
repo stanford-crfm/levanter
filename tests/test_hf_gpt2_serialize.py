@@ -205,8 +205,8 @@ def test_hf_save_to_fs_spec():
 
         loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
 
-        simple_dict = simple_model.to_state_dict()
-        loaded_dict = loaded_model.to_state_dict()
+        simple_dict = hax.state_dict.to_torch_compatible_state_dict(simple_model)
+        loaded_dict = hax.state_dict.to_torch_compatible_state_dict(loaded_model)
 
         assert simple_dict.keys() == loaded_dict.keys()
 
