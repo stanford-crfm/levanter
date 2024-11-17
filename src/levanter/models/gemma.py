@@ -11,15 +11,9 @@ import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    stack_state_dict,
-    unstack_state_dict,
-)
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import (  # Gemma attention and MLP is identical to LLama
@@ -130,8 +124,8 @@ class GemmaConfig(HFCompatConfig):
     # See https://github.com/huggingface/transformers/pull/29402 for more detail.
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
-        if hf_config.hidden_activation:
-            activation_function = hf_config.hidden_activation
+        if hf_config.hidden_activation is None:
+            activation_function = "gelu_pytorch_tanh"
         else:
             activation_function = "gelu_pytorch_tanh"
 
@@ -231,7 +225,7 @@ class GemmaRMSNorm(hnn.LayerNorm):
         return out.astype(dtype)
 
 
-class GemmaDecoderLayer(StateDictSerializationMixin, eqx.Module):
+class GemmaDecoderLayer(ModuleWithStateDictSerialization):
     config: GemmaConfig = eqx.static_field()
     self_attn: LlamaAttention
     mlp: LlamaMlp
@@ -272,7 +266,7 @@ class GemmaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return output
 
 
-class GemmaTransformer(StateDictSerializationMixin, eqx.Module):
+class GemmaTransformer(ModuleWithStateDictSerialization):
     config: GemmaConfig = eqx.static_field()
     layers: BlockFoldable[GemmaDecoderLayer]
     norm: GemmaRMSNorm
@@ -301,25 +295,8 @@ class GemmaTransformer(StateDictSerializationMixin, eqx.Module):
 
         return x
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        if isinstance(self.layers, Stacked):
-            state_dict = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
 
-        out = super().from_state_dict(state_dict, prefix=prefix)
-        return out
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix=prefix)
-
-        if isinstance(self.layers, Stacked):
-            stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
-            state_dict.update(stacked_dict)
-
-        return state_dict
-
-
-class GemmaLMHeadModel(eqx.Module, LmHeadModel[GemmaConfig], StateDictSerializationMixin):
+class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerialization):
     transformer: GemmaTransformer
 
     # Gemma ties the weights of the embedding matrix and LM head.  Rather than
@@ -376,12 +353,3 @@ class GemmaLMHeadModel(eqx.Module, LmHeadModel[GemmaConfig], StateDictSerializat
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         """Map from Levanter model names to HF."""
         return {"transformer": "model", "embeddings": None}
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        return super().from_state_dict(state_dict, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix=prefix)
-        state_dict.update(my_dict)
-        return state_dict

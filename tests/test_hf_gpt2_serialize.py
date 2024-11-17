@@ -146,7 +146,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     state_dict = torch_model.transformer.state_dict(keep_vars=True)
     state_dict = {k: v.grad for k, v in state_dict.items()}
 
-    jax_grad_dict = jax_grad.to_state_dict()
+    jax_grad_dict = hax.state_dict.to_torch_compatible_state_dict(jax_grad)
 
     for jax_key, jax_g in jax_grad_dict.items():
         if jax_key not in state_dict:
@@ -176,7 +176,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     updates, state = jax_optimizer.update(updates=jax_grad, state=state, params=model)
     new_model = equinox.apply_updates(model, updates)
 
-    new_model_dict = new_model.to_state_dict()
+    new_model_dict = hax.state_dict.to_torch_compatible_state_dict(new_model)
     state_dict = torch_model.transformer.state_dict(keep_vars=True)
 
     # now compare new params
@@ -205,8 +205,8 @@ def test_hf_save_to_fs_spec():
 
         loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
 
-        simple_dict = simple_model.to_state_dict()
-        loaded_dict = loaded_model.to_state_dict()
+        simple_dict = hax.state_dict.to_torch_compatible_state_dict(simple_model)
+        loaded_dict = hax.state_dict.to_torch_compatible_state_dict(loaded_model)
 
         assert simple_dict.keys() == loaded_dict.keys()
 
