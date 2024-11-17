@@ -6,6 +6,7 @@ import functools
 import json
 import logging
 import os
+import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
@@ -668,8 +669,18 @@ CANONICAL_INPUT_FIELD = "prompt"
 CANONICAL_OUTPUT_FIELD = "response"
 
 
+class SupervisedSourceConfigBase(Protocol):
+    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
+        raise NotImplementedError
+
+    input_field: str
+    output_field: str
+    tags: Optional[List[str]]
+    cache_dir: str
+
+
 @dataclass
-class LMSupervisedDatasetConfig:
+class LMSupervisedDatasetConfig(SupervisedSourceConfigBase):
     """Config for supervised fine-tuning datasets"""
 
     cache_dir: str = "cache/"
@@ -688,15 +699,21 @@ class LMSupervisedDatasetConfig:
     # Optional metadata
     tags: Optional[List[str]] = None
 
+    def __post_init__(self):
+        warnings.warn(
+            "LMSupervisedDatasetConfig is deprecated. Use SupervisedHfSourceConfig or "
+            "SupervisedUrlSourceConfig instead.",
+            DeprecationWarning,
+        )
 
-class SupervisedSourceConfigBase(Protocol):
     def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
-        raise NotImplementedError
-
-    input_field: str
-    output_field: str
-    tags: Optional[List[str]]
-    cache_dir: str
+        if self.hf_dataset_name is not None:
+            return WrappedHFDataSource(self.hf_dataset_name, split=self.hf_dataset_split)
+        elif split != "validation":
+            raise ValueError("Only validation split is supported for local files")
+        else:
+            urls = [globbed for url in self.validation_urls for globbed in expand_glob(url)]
+            return JsonlDataSource(urls)
 
 
 @dataclass(frozen=True)
