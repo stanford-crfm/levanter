@@ -60,4 +60,9 @@ class Permutation:
             if indices < 0 or indices >= self.length:
                 raise IndexError(f"index {indices} is out of bounds for length {self.length}")
 
-        return (self._a * indices + self._b) % self.length
+            indices = np.array(indices)
+
+        old_settings = np.seterr(over="raise")
+        out = (self._a * indices + self._b) % self.length
+        np.seterr(**old_settings)
+        return out
