@@ -20,17 +20,21 @@ from levanter.utils.jax_utils import leaf_key_paths
 @dataclass
 class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     learning_rate: float = 6e-4
-    weight_decay: float = 0.0
+    weight_decay: float = 0.1
 
     min_lr_ratio: float = 0.1
-    warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
     """The lr scheduler operates on 4 stages: [warmup] - {[stable] - [decay]} x haps - [cooldown]"""
     warmup: float = 0.01
     """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
     stable: float = 0.00
-    """fraction of training steps to use as stable, or steps to use. 0.0 means no stable"""
-    cooldown: float = 0.0
     """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
+    rewarmup: float = 0.0
+    "If using a cycle, how much of the cycle to use as re-warmup. 0.0 means no re-warmup."
+    cooldown: Optional[float] = None
+    """Deprecated, as its semantics are confusing."""
+    cycles: int | None = None
+    """ Number of cycles to use. If None or 1, use a single cycle. Overriden by haps."""
+
     lr_schedule: str = "cosine"  # constant, cosine, linear
     haps: Optional[list[int]] = None
     """list of integers indicating pit stop steps. See paper https://openreview.net/pdf?id=RSsavSvAvN"""
@@ -139,27 +143,51 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             return mask_fn
 
     def lr_scheduler(self, num_train_steps):
-        warmup_steps = self._convert_warmup(num_train_steps)
-        cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
-        if self.haps is None:
-            self.haps = []
-        self.haps.insert(0, warmup_steps)
-        self.haps.append(num_train_steps - cooldown_steps)
+        warmup_steps = _convert_ratio_or_steps(self.warmup, num_train_steps)
+        if self.cooldown is not None:
+            warnings.warn("cooldown is deprecated. Just use the normal schedule.", DeprecationWarning)
+            cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
+        else:
+            cooldown_steps = 0
+
+        if self.haps is not None:
+            if self.cycles is not None:
+                warnings.warn("haps supercedes cycles. Ignoring cycles.")
+            haps = list(self.haps)
+        elif self.cycles is not None:
+            # insert a warmup then the rest of the steps
+            total_main_steps = num_train_steps - cooldown_steps
+            haps = [int(total_main_steps / self.cycles * (i + 1)) for i in range(self.cycles - 1)]
+        else:
+            haps = []
+
+        haps.insert(0, 0)
+        haps.append(num_train_steps)
 
         min_lr = self.learning_rate * self.min_lr_ratio
 
         schedules = []
         boundaries = []
 
-        if warmup_steps != 0:
-            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedules.append(warmup)
-            boundaries.append(warmup_steps)
+        previous_end = 0.0
 
-        for start, end in zip(self.haps[:-1], self.haps[1:]):
+        for cycle, (start, end) in enumerate(zip(haps[:-1], haps[1:])):
             cycle_steps = end - start
+            if cycle == 0:  # warmup
+                if warmup_steps != 0:
+                    warmup = optax.linear_schedule(previous_end, self.learning_rate, warmup_steps)
+                    schedules.append(warmup)
+                    boundaries.append(warmup_steps)
+                rewarm_steps = warmup_steps
+            else:
+                rewarm_steps = _convert_ratio_or_steps(self.rewarmup, cycle_steps)
+                if rewarm_steps != 0:
+                    rewarm = optax.linear_schedule(previous_end, self.learning_rate, rewarm_steps)
+                    schedules.append(rewarm)
+                    boundaries.append(start + rewarm_steps)
+
             stable_steps = _convert_ratio_or_steps(self.stable, cycle_steps)
-            lr_decay_steps = cycle_steps - stable_steps
+            lr_decay_steps = cycle_steps - stable_steps - rewarm_steps
 
             if stable_steps != 0:
                 stable = optax.constant_schedule(self.learning_rate)
@@ -180,6 +208,8 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 case _:
                     raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
+            previous_end = schedule(lr_decay_steps)
+
             schedules.append(schedule)
             boundaries.append(end)
 
@@ -190,15 +220,10 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
         if len(schedules) > 1:
             schedule = optax.join_schedules(schedules, boundaries)
+        else:
+            schedule = schedules[0]
 
         return schedule
-
-    def _convert_warmup(self, num_train_steps: int):
-        if self.warmup_ratio is not None:
-            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
-            return int(self.warmup_ratio * num_train_steps)
-        else:
-            return _convert_ratio_or_steps(self.warmup, num_train_steps)
 
 
 def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
@@ -233,7 +258,6 @@ class HessianOptConfig(OptimizerConfig, abc.ABC):
 @OptimizerConfig.register_subclass("adam")
 @dataclass
 class AdamConfig(OptimizerConfig):
-    weight_decay: float = 0.1
     beta1: float = 0.9
     # cf https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
     # https://x.com/giffmana/status/1692641748445438301

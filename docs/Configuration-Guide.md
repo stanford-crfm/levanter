@@ -289,19 +289,101 @@ If you're not using SLURM or TPUs, you can specify the cluster manually using th
 
 ## Optimizer
 
-[levanter.optim.OptimizerConfig][] is a dataclass that specifies the optimizer configuration. It has the following fields:
+### Standard Options
 
-| Parameter       | Description                                                       | Default  |
-|-----------------|-------------------------------------------------------------------|----------|
-| `learning_rate` | The learning rate.                                                | `1e-4`   |
-| `weight_decay`  | The weight decay.                                                 | `0.0`    |
-| `beta1`         | The beta1 parameter for Adam.                                     | `0.9`    |
-| `beta2`         | The beta2 parameter for Adam.                                     | `0.999`  |
-| `epsilon`       | The epsilon parameter for Adam.                                   | `1e-8`   |
-| `max_grad_norm` | The maximum gradient norm (for clipping).                         | `1.0`    |
-| `min_lr_ratio`  | The minimum learning rate ratio.                                  | `0.0`    |
-| `warmup_ratio`  | The warmup ratio. Fraction of total steps to warmup               | `0.01`   |
-| `lr_schedule`   | The learning rate schedule. One of `constant`, `cosine`, `linear` | `cosine` |
+All optimizers in Levanter are based on the [levanter.optim.OptimizerConfig][] dataclass. This class has the following fields,
+which are common to all optimizers (and most have to do with learning rate scheduling):
+
+
+| Parameter       | Description                                              | Default  |
+|-----------------|----------------------------------------------------------|----------|
+| `weight_decay`  | The weight decay.                                        | `0.0`    |
+| `learning_rate` | The learning rate.                                       | `1e-4`   |
+| `lr_schedule`   | The type of learning rate schedule for decay. See below. | `cosine` |
+| `min_lr_ratio`  | The minimum learning rate ratio.                         | `0.1`    |
+| `warmup`        | Warmup fraction or number of steps                       | `0.01`   |
+| `stable`        | Stable fraction or number of steps                       | `0.0`    |
+| `cycles`        | The number of cycles for the learning rate               | `None`   |
+| `haps`          | More fine-grained control over cycles                    | `None`   |
+| `rewarmup`      | The learning rate re-warmup, if using cycles.            | `0.0`    |
+
+By default, Levanter uses a cosine learning rate schedule with a warmup. The learning rate is decayed to
+`min_lr_ratio * learning_rate` over the course of the training run. This is a fairly standard default for LLM training.
+
+
+#### Learning Rate Schedules
+
+The `lr_schedule` parameter specifies the learning rate schedule. The following schedules are supported:
+
+* `constant`: Constant learning rate.
+* `linear`: Linear decay.
+* `cosine`: Cosine decay.
+* `inv_sqrt`: Inverse square root decay.
+* `inv`: Inverse decay.
+
+#### Cycles
+
+By default, there is only one cycle, and Levanter's LR schedule looks like this:
+
+```
+[warmup] -> [stable] -> [decay]
+```
+
+But you can specify more with the `cycles` parameter. If you specify `cycles`, the
+learning rate will cycle through the schedule `cycles` times. Levanter's LR schedule looks like this:
+
+```
+[warmup] -> [stable] -> [decay] -> {[rewarmup] -> [stable] -> [decay]} x (cycles - 1)
+```
+
+or more compactly:
+
+```
+{[(re)?warmup] -> [stable] -> [decay]} x cycle
+```
+
+Here's what the phases mean:
+
+* `warmup`: The first warmup in training, which is part of the first cycle. The LR will start at 0 and linearly increase to the learning rate over this period.
+* `stable`: The stable period. The LR will stay at the learning rate for this period.
+* `decay`: The decay period. The LR will decay to `min_lr_ratio * learning_rate` over this period.
+* `rewarmup`: The re-warmup period. If using cycles, the LR will be re-warmed from the final value of the previous cycle back to the peak value of the next cycle.
+
+All of these parameters can be specified in terms of a fraction of the total number of steps or as an absolute number of
+steps.
+
+**IMPORTANT**: For *stable* and *re*warmup, the fraction is relative to the cycle length, while for the other phases,
+it's relative to the total number of steps.
+
+If you want to use a learning rate schedule with cycles, you can specify the number of cycles with the `cycles`
+parameter. The LR will be decayed to `min_lr_ratio * learning_rate` at the end of each cycle.
+
+
+You can also use the `haps` parameter to specify more fine-grained control over the cycles. If you specify `haps`,
+`cycles` is ignored and the number of cycles is determined by the length of `haps`. In particular, with `haps` we
+schedule "pit stops" at specific training steps. `cycles` is equivalent to `haps` with the low points evenly spaced at
+`[num_train_steps / (c + 1)]`.
+
+Also note that if *rewarmup* is 0, there will be no rewarmup period, meaning the LR will jump
+back to the max LR. This is the default. In addition, the stable
+and decay phase of the first cycle will generally be different from the stable and decay phase of the other cycles,
+since rewarmup and warmup are typically different.
+
+See [our paper on WSD-S](https://arxiv.org/pdf/2410.05192) for more information on cyclic LR schedules for training LLMs
+with short or no rewarmup.
+
+
+### AdamConfig
+
+Additionally, [levanter.optim.AdamConfig][] has the following fields:
+
+| Parameter       | Description                                  | Default  |
+|-----------------|----------------------------------------------|----------|
+| `beta1`         | The beta1 parameter for Adam.                | `0.9`    |
+| `beta2`         | The beta2 parameter for Adam.                | `0.999`  |
+| `epsilon`       | The epsilon parameter for Adam.              | `1e-8`   |
+| `max_grad_norm` | The maximum gradient norm (for clipping).    | `1.0`    |
+
 
 
 ## LM Model Config
@@ -358,6 +440,9 @@ trainer:
 ### Optimizer
 
 ::: levanter.optim.OptimizerConfig
+
+::: levanter.optim.AdamConfig
+
 
 ### LM Model
 
