@@ -295,17 +295,16 @@ All optimizers in Levanter are based on the [levanter.optim.OptimizerConfig][] d
 which are common to all optimizers (and most have to do with learning rate scheduling):
 
 
-| Parameter       | Description                                              | Default  |
-|-----------------|----------------------------------------------------------|----------|
-| `weight_decay`  | The weight decay.                                        | `0.0`    |
-| `learning_rate` | The learning rate.                                       | `1e-4`   |
-| `lr_schedule`   | The type of learning rate schedule for decay. See below. | `cosine` |
-| `min_lr_ratio`  | The minimum learning rate ratio.                         | `0.1`    |
-| `warmup`        | Warmup fraction or number of steps                       | `0.01`   |
-| `stable`        | Stable fraction or number of steps                       | `0.0`    |
-| `cycles`        | The number of cycles for the learning rate               | `None`   |
-| `haps`          | More fine-grained control over cycles                    | `None`   |
-| `rewarmup`      | The learning rate re-warmup, if using cycles.            | `0.0`    |
+| Parameter       | Description                                                           | Default  |
+|-----------------|-----------------------------------------------------------------------|----------|
+| `weight_decay`  | The weight decay.                                                     | `0.0`    |
+| `learning_rate` | The learning rate.                                                    | `1e-4`   |
+| `lr_schedule`   | The type of learning rate schedule for decay. See below.              | `cosine` |
+| `min_lr_ratio`  | The minimum learning rate ratio.                                      | `0.1`    |
+| `warmup`        | Warmup fraction or number of steps                                    | `0.01`   |
+| `stable`        | Stable fraction or number of steps                                    | `0.0`    |
+| `cycles`        | The number of cycles for the learning rate, or steps where cycles end | `None`   |
+| `rewarmup`      | The learning rate re-warmup, if using cycles.                         | `0.0`    |
 
 By default, Levanter uses a cosine learning rate schedule with a warmup. The learning rate is decayed to
 `min_lr_ratio * learning_rate` over the course of the training run. This is a fairly standard default for LLM training.
@@ -329,7 +328,7 @@ By default, there is only one cycle, and Levanter's LR schedule looks like this:
 [warmup] -> [stable] -> [decay]
 ```
 
-But you can specify more with the `cycles` parameter. If you specify `cycles`, the
+But you can specify more with the `cycles` parameter. If you specify an int for `cycles`, the
 learning rate will cycle through the schedule `cycles` times. Levanter's LR schedule looks like this:
 
 ```
@@ -349,19 +348,16 @@ Here's what the phases mean:
 * `decay`: The decay period. The LR will decay to `min_lr_ratio * learning_rate` over this period.
 * `rewarmup`: The re-warmup period. If using cycles, the LR will be re-warmed from the final value of the previous cycle back to the peak value of the next cycle.
 
-All of these parameters can be specified in terms of a fraction of the total number of steps or as an absolute number of
+All of these parameters can be specified in terms of a fraction of the total number of steps of a cycle or as an absolute number of
 steps.
-
-**IMPORTANT**: For *stable* and *re*warmup, the fraction is relative to the cycle length, while for the other phases,
-it's relative to the total number of steps.
 
 If you want to use a learning rate schedule with cycles, you can specify the number of cycles with the `cycles`
 parameter. The LR will be decayed to `min_lr_ratio * learning_rate` at the end of each cycle.
 
 
-You can also use the `haps` parameter to specify more fine-grained control over the cycles. If you specify `haps`,
-`cycles` is ignored and the number of cycles is determined by the length of `haps`. In particular, with `haps` we
-schedule "pit stops" at specific training steps. `cycles` is equivalent to `haps` with the low points evenly spaced at
+You can also specify `cycles` as a list, e.g. `[10000, 25000, 50000]`. In this case,
+`cycles` is interpreted as the end points for cycles, with the final step implicitly being a cycle end.
+`cycles` as an int is equivalent to list `cycles` with the low points evenly spaced at
 `[num_train_steps / (c + 1)]`.
 
 Also note that if *rewarmup* is 0, there will be no rewarmup period, meaning the LR will jump

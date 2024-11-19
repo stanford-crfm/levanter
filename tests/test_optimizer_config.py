@@ -74,7 +74,7 @@ def test_linear_schedule_with_cycles():
     optimizer = AdamConfig(
         learning_rate=5e-4,
         weight_decay=0.0,
-        warmup=0.05,  # 5% of steps
+        warmup=50,
         stable=0.0,
         min_lr_ratio=0.2,
         lr_schedule="linear",
@@ -156,7 +156,7 @@ def test_rewarmup_schedule():
     optimizer = AdamConfig(
         learning_rate=1e-2,
         weight_decay=0.0,
-        warmup=0.1,  # 10% of steps
+        warmup=0.2,  # 20% of cycle
         stable=0.0,
         min_lr_ratio=0.2,
         lr_schedule="linear",
@@ -164,6 +164,7 @@ def test_rewarmup_schedule():
         rewarmup=0.05,  # 5% of steps in each cycle
     )
 
+    # cycle length is 500 steps
     sched_fn = optimizer.lr_scheduler(1000)
 
     # Warmup phase
