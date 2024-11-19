@@ -377,12 +377,12 @@ with short or no rewarmup.
 
 Additionally, [levanter.optim.AdamConfig][] has the following fields:
 
-| Parameter       | Description                                  | Default  |
-|-----------------|----------------------------------------------|----------|
-| `beta1`         | The beta1 parameter for Adam.                | `0.9`    |
-| `beta2`         | The beta2 parameter for Adam.                | `0.999`  |
-| `epsilon`       | The epsilon parameter for Adam.              | `1e-8`   |
-| `max_grad_norm` | The maximum gradient norm (for clipping).    | `1.0`    |
+| Parameter       | Description                                  | Default |
+|-----------------|----------------------------------------------|---------|
+| `beta1`         | The beta1 parameter for Adam.                | `0.9`   |
+| `beta2`         | The beta2 parameter for Adam.                | `0.95`  |
+| `epsilon`       | The epsilon parameter for Adam.              | `1e-8`  |
+| `max_grad_norm` | The maximum gradient norm (for clipping).    | `1.0`   |
 
 
 
