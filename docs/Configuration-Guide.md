@@ -356,7 +356,7 @@ parameter. The LR will be decayed to `min_lr_ratio * learning_rate` at the end o
 
 
 You can also specify `cycles` as a list, e.g. `[10000, 25000, 50000]`. In this case,
-`cycles` is interpreted as the end points for cycles, with the final step implicitly being a cycle end.
+`cycles` is interpreted as the minima for the cycles, with the first and final steps being cycle minima as well.
 `cycles` as an int is equivalent to list `cycles` with the low points evenly spaced at
 `[num_train_steps / (c + 1)]`.
 

@@ -149,17 +149,8 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         else:
             cooldown_steps = 0
 
-        if self.haps is not None:
-            warnings.warn("haps is deprecated. Use cycles instead.", DeprecationWarning)
-            cooldown_points = list(self.haps)
-        elif isinstance(self.cycles, int):
-            # insert a warmup then the rest of the steps
-            total_main_steps = num_train_steps - cooldown_steps
-            cooldown_points = [int(total_main_steps / self.cycles * (i + 1)) for i in range(self.cycles - 1)]
-        elif isinstance(self.cycles, list):
-            cooldown_points = list(self.cycles)
-        else:
-            cooldown_points = []
+        total_main_steps = num_train_steps - cooldown_steps
+        cooldown_points = self._get_cycle_minima(total_main_steps)
 
         cooldown_points.insert(0, 0)
         cooldown_points.append(num_train_steps)
@@ -181,7 +172,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             if warmup_steps != 0:
                 warmup = optax.linear_schedule(previous_end, self.learning_rate, warmup_steps)
                 schedules.append(warmup)
-                boundaries.append(start + warmup_steps)
+                boundaries.append(warmup_steps)
 
             stable_steps = _convert_ratio_or_steps(self.stable, cycle_steps)
             lr_decay_steps = cycle_steps - stable_steps - warmup_steps
@@ -221,6 +212,19 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             schedule = schedules[0]
 
         return schedule
+
+    def _get_cycle_minima(self, total_main_steps):
+        if self.haps is not None:
+            warnings.warn("haps is deprecated. Use cycles instead.", DeprecationWarning)
+            cooldown_points = list(self.haps)
+        elif isinstance(self.cycles, int):
+            # insert a warmup then the rest of the steps
+            cooldown_points = [int(total_main_steps / self.cycles * (i + 1)) for i in range(self.cycles - 1)]
+        elif isinstance(self.cycles, list):
+            cooldown_points = list(self.cycles)
+        else:
+            cooldown_points = []
+        return cooldown_points
 
 
 def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
