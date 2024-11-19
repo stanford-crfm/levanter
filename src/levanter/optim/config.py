@@ -172,7 +172,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             if warmup_steps != 0:
                 warmup = optax.linear_schedule(previous_end, self.learning_rate, warmup_steps)
                 schedules.append(warmup)
-                boundaries.append(warmup_steps)
+                boundaries.append(start + warmup_steps)
 
             stable_steps = _convert_ratio_or_steps(self.stable, cycle_steps)
             lr_decay_steps = cycle_steps - stable_steps - warmup_steps
