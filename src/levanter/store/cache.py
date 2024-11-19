@@ -1084,6 +1084,10 @@ def _copy_temp_caches_to_final_cache(
         _ProgressReport(new_shards=len(overall_ledger.finished_shards), new_rows=overall_ledger.total_num_rows)
     )
 
+    parent._report_copy_progress.remote(
+        _ProgressReport(new_shards=len(overall_ledger.finished_shards), new_rows=overall_ledger.total_num_rows)
+    )
+
     found_one_to_copy = False
 
     for group in shard_groups:
