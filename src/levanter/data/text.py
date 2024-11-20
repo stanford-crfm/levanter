@@ -933,7 +933,7 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     """
     Preprocess chat examples to match the format of preprocess_supervised_example.
     Returns a dict with input_ids and sources_len like the supervised case.
-    
+
     Args:
         batch: List of dicts with input/output pairs
         tokenizer: HuggingFace tokenizer
@@ -954,7 +954,7 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
     examples_tokenized = tokenizer(full_examples, padding=False, truncation=True)
 
-    # Get source lengths to mask loss appropriately 
+    # Get source lengths to mask loss appropriately
     source_lens = [len(s) for s in sources_tokenized["input_ids"]]
 
     return {
