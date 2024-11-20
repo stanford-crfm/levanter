@@ -172,7 +172,7 @@ def test_rewarmup_schedule():
     assert np.isclose(sched_fn(100), 1e-2)  # Warmup reaches max LR
 
     # First decay phase
-    assert np.isclose(sched_fn(300), 0.6e-2)  # Mid of first dcay
+    assert np.isclose(sched_fn(300), 0.6e-2)  # Mid of first decay
     assert np.isclose(sched_fn(500), 0.2e-2)  # End of first decay
 
     # Rewarmup at start of second cycle
