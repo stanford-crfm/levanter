@@ -779,9 +779,9 @@ def _preprocess_supervised_example(
     }
 
 
-def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis) -> LmExample:
+def _prepare_supervised_examples(ex: list[dict], tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis) -> list[LmExample]:
     """
-    Prepare an example for training. This function converts the (cached) batch encoding into an LmExample.
+    Prepare examples for training. This function converts the (cached) encodings into an LmExample.
 
     It goes through the following steps:
 
@@ -789,26 +789,35 @@ def _prepare_supervised_example(ex: dict, tokenizer: PreTrainedTokenizerBase, Po
     2. Mask out the input and prompt if requested.
     3. Create an LmExample with the input_ids as the input and the next token as the target.
     """
-    # annoyingly, pad expects things to be batched so we have to prepend a batch axis
-    ex = tokenizer.pad(
-        {k: np.expand_dims(v, 0) for k, v in ex.items()},
-        return_tensors="np",
+    lens = np.array([ex["sources_len"] for ex in ex])
+
+    ex_pad = tokenizer.pad(
+        ex,
         padding="max_length",
         max_length=Pos.size,
     )
-    ex = {k: v[0] for k, v in ex.items()}
-    # padding doesn't do truncation, so we have to do it ourselves.
-    # Truncate from the left since we want to predict the last tokens
-    input_ids = hax.named(ex["input_ids"][-Pos.size :], Pos)
-    # mask out padding and anything before the start of the target
-    loss_mask = hax.arange(Pos) >= ex["sources_len"] - 1
 
+    input_ids = ex_pad["input_ids"]
+    truncated = [ids[-Pos.size :] for ids in input_ids]
+
+    out = []
+    for ids, len in zip(truncated, lens):
+        causal = _mk_sup_example_jit(Pos, hax.named(ids, Pos), len, tokenizer.pad_token_id)
+
+        out.append(causal)
+
+    return out
+
+
+@functools.partial(jax.jit, static_argnums=(0, 3))
+def _mk_sup_example_jit(Pos, input_ids: hax.NamedArray, sources_len, pad_token_id):
+    # mask out padding and anything before the start of the target
+    loss_mask = hax.arange(Pos) >= sources_len - 1
     # don't predict the padding
     targets = hax.roll(input_ids, -1, Pos)
-    loss_mask = loss_mask & (targets != tokenizer.pad_token_id)
+    loss_mask = loss_mask & (targets != pad_token_id)
     loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
-    lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
-    return lm_ex
+    return LmExample.causal(input_ids, loss_mask=loss_mask)
 
 
 def mk_supervised_datasets(
@@ -884,7 +893,7 @@ def mk_supervised_dataset(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
+    return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
 def _cache_supervised_set(source, cache_dir, tokenizer, Pos, input_field, output_field):
@@ -899,7 +908,7 @@ def _cache_supervised_set(source, cache_dir, tokenizer, Pos, input_field, output
         output_exemplar=output_exemplar,
     )
     cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(cache_dir, await_finished=True)
-    ds = cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
+    ds = cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
     return ds
 
 
@@ -981,7 +990,7 @@ def mk_chat_sft_dataset(
         tokenizer.pad_token = tokenizer.eos_token
 
     # Reuse the supervised prepare function directly
-    return cached_dataset.map(lambda ex: _prepare_supervised_example(ex, tokenizer, Pos))
+    return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
 @dataclass
@@ -1316,3 +1325,11 @@ class ChatJsonlDataSource(JsonlDataSource):
 
                     yield {"input": input_msg, "output": output_msg}
                 i += 1
+
+
+def _batchify_list_of_dicts(batch: list[dict]) -> dict:
+    """
+    Convert a list of dictionaries to a dictionary of lists, suitable for writing to a cache.
+    """
+    keys = batch[0].keys()
+    return {key: [x[key] for x in batch] for key in keys}
