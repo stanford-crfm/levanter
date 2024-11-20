@@ -196,7 +196,7 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
         len = await self.wait_until_len_at_least(max(indices) + 1)
         if len is not None and len < max(indices) + 1:
             raise ValueError("Requested indices beyond the end of the dataset")
-        offsets = np.array(indices) * self.seq_len
+        offsets = np.array(indices, dtype=np.int64) * self.seq_len
         with ts.Batch():
             out = []
             for offset in offsets:
