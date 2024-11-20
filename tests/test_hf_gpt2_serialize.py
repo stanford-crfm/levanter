@@ -157,7 +157,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         assert onp.isclose(jax_g, torch_g.detach().cpu().numpy(), rtol=1e-2, atol=1e-2).all(), f"{jax_g} != {torch_g}"
 
     # now we also want to check that the optimizers do similar things
-    optimizer_config = AdamConfig(weight_decay=0.0, learning_rate=1e-3, warmup_ratio=0.0, lr_schedule="constant")
+    optimizer_config = AdamConfig(weight_decay=0.0, learning_rate=1e-3, warmup=0.0, lr_schedule="constant")
 
     if optimizer_config.max_grad_norm is not None:
         torch.nn.utils.clip_grad_norm_(torch_model.parameters(), optimizer_config.max_grad_norm)
