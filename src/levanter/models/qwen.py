@@ -10,26 +10,13 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    unflatten_linear_layers,
-)
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, dot_product_attention
-from levanter.models.llama import (
-    LlamaConfig,
-    LlamaEmbedding,
-    LlamaLMHeadModel,
-    LlamaMlp,
-    LlamaRMSNorm,
-    LlamaTransformer,
-)
-from levanter.models.lm_model import LmConfig
+from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaRMSNorm, LlamaTransformer
+from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import RotaryEmbeddingsConfig
 from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
@@ -128,7 +115,7 @@ class QwenConfig(LlamaConfig):
 
 
 # Modified attention class for Qwen
-class QwenAttention(eqx.Module, StateDictSerializationMixin):
+class QwenAttention(eqx.Module):
     config: QwenConfig = eqx.static_field()
     q_proj: hnn.Linear
     k_proj: hnn.Linear
@@ -210,29 +197,6 @@ class QwenAttention(eqx.Module, StateDictSerializationMixin):
         attn_output = self.o_proj(attn_output, key=key_o)
         return attn_output
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
-
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # flatten the linear layers of LlamaAttention to match the shape of HF state_dict
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
-
-        state_dict.update(my_dict)
-        return state_dict
-
 
 # Modified decoder layer for Qwen
 class QwenDecoderLayer(eqx.Module):
@@ -300,7 +264,7 @@ class QwenTransformer(LlamaTransformer):
 
 
 # Modified LM head model for Qwen
-class QwenLMHeadModel(LlamaLMHeadModel):
+class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization):
     transformer: QwenTransformer
     embeddings: LlamaEmbedding  # Can reuse Llama embeddings
     lm_head: Optional[hnn.Linear]
