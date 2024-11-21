@@ -14,17 +14,9 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    stack_state_dict,
-    unflatten_linear_layers,
-    unstack_state_dict,
-)
 from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
@@ -160,7 +152,7 @@ class Gpt2Mlp(eqx.Module):
         return x
 
 
-class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
+class Gpt2Attention(eqx.Module):
     config: Gpt2Config = eqx.static_field()
 
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
@@ -218,31 +210,8 @@ class Gpt2Attention(StateDictSerializationMixin, eqx.Module):
 
         return attn_output
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "Gpt2Attention":
-        # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
-        # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
-        # so we need to reshape the one in the dict before forwarding to the linear
-        # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, None))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, None))
 
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_state_dict
-        # reminder that everything is vectorized
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, None))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, None))
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class Gpt2Block(StateDictSerializationMixin, eqx.Module):
+class Gpt2Block(eqx.Module):
     ln_1: hnn.LayerNorm
     attn: Gpt2Attention
     ln_2: hnn.LayerNorm
@@ -276,7 +245,7 @@ class Gpt2Block(StateDictSerializationMixin, eqx.Module):
         return x
 
 
-class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
+class Gpt2Transformer(ModuleWithStateDictSerialization):
     config: Gpt2Config = eqx.static_field()
     blocks: Stacked[Gpt2Block]
     ln_f: hnn.LayerNorm
@@ -303,28 +272,8 @@ class Gpt2Transformer(StateDictSerializationMixin, eqx.Module):
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"blocks": "h"}
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # We use a vectorized set of blocks, meaning that we have 1 GptBlock,
-        # whereas in hf we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
-        # the individual blocks are named h.0.FOO, h.1.FOO, etc.
-        # we want to vectorize them to h.FOO, h.FOO, etc.
-        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "h"))
-        out = super().from_state_dict(stacked, prefix=prefix)
-        return out
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # this method needs to "devectorize" the blocks, so that we have a list of blocks h.0.FOO, h.1.FOO, etc.
-        # first just do the normal thing with our own dict, which we'll post-process
-        my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix)
-
-        stacked_dict = unstack_state_dict(my_state_dict, apply_prefix(prefix, "h"))
-        state_dict.update(stacked_dict)
-
-        return state_dict
-
-
-class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
+class Gpt2Embeddings(ModuleWithStateDictSerialization, eqx.Module):
     Vocab: Axis = eqx.static_field()
     config: Gpt2Config = eqx.static_field()
 
@@ -367,7 +316,7 @@ class Gpt2Embeddings(StateDictSerializationMixin, eqx.Module):
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_token_embeddings)
 
 
-class Gpt2LMHeadModel(eqx.Module, LmWithHfSerializationMixin[Gpt2Config]):
+class Gpt2LMHeadModel(LmWithHfSerializationMixin[Gpt2Config]):
     transformer: Gpt2Transformer
     embeddings: Gpt2Embeddings
 

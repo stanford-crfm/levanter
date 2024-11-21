@@ -48,6 +48,7 @@ class Permutation:
         ...
 
     def __call__(self, indices):
+        was_int = False
         if isinstance(indices, jnp.ndarray):
             # TODO: use error_if?
             # import equinox as eqx
@@ -60,4 +61,13 @@ class Permutation:
             if indices < 0 or indices >= self.length:
                 raise IndexError(f"index {indices} is out of bounds for length {self.length}")
 
-        return (self._a * indices + self._b) % self.length
+            indices = np.array(indices)
+            was_int = True
+
+        old_settings = np.seterr(over="raise")
+        out = (self._a * indices + self._b) % self.length
+        np.seterr(**old_settings)
+
+        if was_int:
+            return int(out)
+        return out

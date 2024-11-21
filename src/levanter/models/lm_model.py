@@ -111,7 +111,7 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 
 
-class LmHeadModel(Generic[LmConfigT], abc.ABC):
+class LmHeadModel(eqx.Module, Generic[LmConfigT]):
     """
     Superclass for models with a language modeling head.
     """
