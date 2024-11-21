@@ -1325,4 +1325,3 @@ class ChatJsonlDataSource(JsonlDataSource):
 
                     yield {"input": input_msg, "output": output_msg}
                 i += 1
-
