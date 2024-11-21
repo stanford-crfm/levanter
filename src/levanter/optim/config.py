@@ -180,7 +180,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             if stable_steps != 0:
                 stable = optax.constant_schedule(self.learning_rate)
                 schedules.append(stable)
-                boundaries.append(start + warmup_steps + stable_steps)
+                boundaries.append(start + stable_steps)
 
             match self.lr_schedule:
                 case "constant":
