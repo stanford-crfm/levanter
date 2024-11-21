@@ -1326,10 +1326,3 @@ class ChatJsonlDataSource(JsonlDataSource):
                     yield {"input": input_msg, "output": output_msg}
                 i += 1
 
-
-def _batchify_list_of_dicts(batch: list[dict]) -> dict:
-    """
-    Convert a list of dictionaries to a dictionary of lists, suitable for writing to a cache.
-    """
-    keys = batch[0].keys()
-    return {key: [x[key] for x in batch] for key in keys}
