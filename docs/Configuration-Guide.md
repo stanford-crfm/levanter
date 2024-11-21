@@ -302,7 +302,7 @@ which are common to all optimizers (and most have to do with learning rate sched
 | `lr_schedule`   | The type of learning rate schedule for decay. See below.              | `cosine` |
 | `min_lr_ratio`  | The minimum learning rate ratio.                                      | `0.1`    |
 | `warmup`        | Warmup fraction or number of steps                                    | `0.01`   |
-| `stable`        | Stable fraction or number of steps                                    | `0.0`    |
+| `decay`        | Decay fraction or number of steps                                    | `None`    |
 | `cycles`        | The number of cycles for the learning rate, or steps where cycles end | `None`   |
 | `rewarmup`      | The learning rate re-warmup, if using cycles.                         | `0.0`    |
 
