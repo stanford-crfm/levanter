@@ -226,6 +226,14 @@ class Trainer:
         ...
 
     @typing.overload
+    def add_hook(self, fn: JitCallback, *, every: int = 1):
+        ...
+
+    @typing.overload
+    def add_hook(self, fn: Callback, *, every: int = 1):
+        ...
+
+    @typing.overload
     def add_hook(self, *, every: int = 1):
         ...
 
@@ -510,7 +518,8 @@ class Trainer:
                 model = self.mp.cast_to_compute(model)
                 return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
-        hook_infos = self.hooks.run_jit_hooks(state, grads, force=False)
+        with hax.axis_mapping(self.parameter_axis_mapping):
+            hook_infos = self.hooks.run_jit_hooks(state, grads, force=False)
 
         new_state = state.take_step(grads, obj_fun=obj_fun)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)

@@ -1,7 +1,13 @@
 import equinox
 import jax
+import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Scalar
+from jax._src.partition_spec import PartitionSpec
+from jax.experimental.shard_map import shard_map
+from jaxtyping import ArrayLike, Scalar
+
+import haliax as hax
+from haliax import NamedArray
 
 
 class Histogram(equinox.Module):
@@ -28,5 +34,86 @@ class Histogram(equinox.Module):
         counts, edges = jax.numpy.histogram(array, bins=num_bins)
         return Histogram(min, max, num, sum, sum_squares, edges, counts)
 
+    @staticmethod
+    def from_named_array(array: hax.NamedArray, num_bins: int = 64) -> "Histogram":
+        raw_array = array.array
+        min = raw_array.min()
+        max = raw_array.max()
+        num = array.size
+        sum = raw_array.sum()
+        sum_squares = (raw_array**2).sum()
+        counts, edges = sharded_histogram(array, bins=num_bins)
+        return Histogram(min, max, num, sum, sum_squares, edges, counts)
+
     def to_numpy_histogram(self) -> tuple[np.ndarray, np.ndarray]:
         return np.array(self.bucket_counts), np.array(self.bucket_limits)
+
+
+def sharded_histogram(a: NamedArray, bins: int | ArrayLike = 10) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    As [jax.numpy.histogram](https://jax.readthedocs.io/en/latest/_autosummary/jax.numpy.histogram.html#jax.numpy.histogram),
+    except:
+
+    * It preserves sharding
+    * It only works with NamedArrays
+    * It is more performant on TPUs
+
+    Credit to @aphoh for the original implementation.
+    """
+    edges = jnp.histogram_bin_edges(a.array, bins=bins)
+    return _shardmap_histogram(a, edges), edges
+
+
+def _single_shard_histogram(a, bins):
+    """Modified version of jax.numpy.histogram that returns integer counts instead of using the datatype of the input.
+    Also avoids searchsorted, which is slow on TPUs.
+    Args:
+        a (Array): input array
+        bins (Array): bins to use for histogram
+    Returns:
+        Array: counts. has length len(bins) - 1
+    """
+    a = a.flatten()
+    prefix_sum = jnp.sum((a < bins[:, None]).astype(jnp.int32), axis=1)
+    last_count = jnp.sum(a <= bins[-1])
+    prefix_sum = prefix_sum.at[-1].set(last_count)
+    return jnp.expand_dims(jnp.diff(prefix_sum), 0)
+
+
+@jax.jit
+def _shardmap_histogram(a: NamedArray, bins):
+    mesh = hax.partitioning._get_mesh()
+    flattened_spec, spec = _flattened_spec(a)
+    shard_h = shard_map(
+        _single_shard_histogram,
+        mesh=mesh,
+        in_specs=(
+            spec,
+            PartitionSpec(
+                None,
+            ),
+        ),
+        out_specs=(flattened_spec),
+    )
+    res = shard_h(a.array, bins)
+    return res.sum(axis=0)
+
+
+def _flattened_spec(a):
+    spec = hax.partitioning.pspec_for_axis(a.axes)
+
+    def flatten_spec(spec):
+        # spec is a tuple None|str|tuple[str]
+        out = []
+        for s in spec:
+            if isinstance(s, tuple):
+                out.extend(s)
+            elif s is None:
+                pass
+            else:
+                out.append(s)
+
+        return tuple(out)
+
+    flattened_spec = PartitionSpec(flatten_spec(spec))
+    return flattened_spec, spec

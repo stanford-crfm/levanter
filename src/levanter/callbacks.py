@@ -23,6 +23,7 @@ from tqdm_loggable import tqdm_logging
 from tqdm_loggable.auto import tqdm
 
 import haliax.nn
+from haliax import NamedArray, is_named_array
 from haliax.jax_utils import is_jax_array_like
 
 import levanter.tracker
@@ -509,9 +510,9 @@ class GradWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
 
     def _generate_statistics_for(self, kind: str, tree: M) -> dict[str, float | Histogram]:
         if self.split_scan_layers:
-            is_leaf = lambda n: isinstance(n, haliax.nn.Stacked)  # noqa: E731
+            is_leaf = lambda n: isinstance(n, haliax.nn.Stacked) or is_named_array(n)  # noqa: E731
         else:
-            is_leaf = lambda n: False  # noqa: E731
+            is_leaf = is_named_array
 
         def _rec_log_magnitudes(norms, hists, path_prefix, tree):
             leaf_key_paths = jax_utils.leaf_key_paths(tree, prefix=path_prefix, is_leaf=is_leaf)
@@ -539,7 +540,13 @@ class GradWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
                                 lambda x: x[i] if is_jax_array_like(x) else x, v
                             )
 
-                else:
+                elif isinstance(g, NamedArray):
+                    # TODO: add linalg.norm to Haliax
+                    norms[key_path] = jnp.linalg.norm(g.array)
+                    if self.include_histogram:
+                        hist = Histogram.from_named_array(g)
+                        hists[key_path] = hist
+                elif is_jax_array_like(g):
                     norms[key_path] = jnp.linalg.norm(g)
 
                     if self.include_histogram:

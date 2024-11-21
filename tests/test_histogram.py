@@ -1,0 +1,46 @@
+import jax
+import numpy as np
+from jax.random import PRNGKey
+from jax.sharding import Mesh
+
+import haliax as hax
+from haliax.partitioning import ResourceAxis
+
+import levanter.tracker.histogram
+from test_utils import skip_if_not_enough_devices
+
+
+def test_sharded_histogram_simple():
+    mesh = Mesh((jax.devices()), (ResourceAxis.DATA))
+
+    Batch = hax.Axis("Batch", 64)
+    Feature = hax.Axis("Feature", 128)
+
+    a = hax.random.normal(PRNGKey(0), (Batch, Feature))
+
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+        hist = levanter.tracker.histogram.sharded_histogram(a, bins=10)
+
+    hist_normal = jax.numpy.histogram(a.array, bins=10)[0]
+
+    assert jax.numpy.allclose(hist, hist_normal)
+
+
+@skip_if_not_enough_devices(2)
+def test_sharded_histogram_tp():
+    mesh = Mesh(np.array(jax.devices()).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL))
+
+    Batch = hax.Axis("Batch", 64)
+    Feature = hax.Axis("Feature", 128)
+
+    a = hax.random.normal(PRNGKey(0), (Batch, Feature)) * 100
+
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA, "feature": ResourceAxis.MODEL}):
+        hist, bins = levanter.tracker.histogram.sharded_histogram(a, bins=64)
+
+    jnp_hist, jnp_bins = jax.numpy.histogram(a.array, bins=64)
+
+    print(hist, jnp_hist)
+
+    assert jax.numpy.allclose(hist, jnp_hist)
+    assert jax.numpy.allclose(bins, jnp_bins)
