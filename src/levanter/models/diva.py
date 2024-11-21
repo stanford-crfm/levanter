@@ -119,6 +119,7 @@ class DivaConfig(HFCompatConfig, ASRConfig):
     )
     prefix = property(lambda self: hax.named(self.pre_audio_prompt, axis="position"))
     suffix = property(lambda self: hax.named(self.pre_text_prompt, axis="position"))
+    Embed = property(lambda self: self.dec_config.Embed)
     Pos = property(lambda self: Axis(name="position", size=self.max_length))
     AudioPos = property(lambda self: self.enc_config.AudioPos)
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
@@ -204,12 +205,14 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
         )
 
         if init_from_submodels:
-            llm: Union[LlamaLMHeadModel | MistralLMHeadModel | GemmaLMHeadModel] = HFCheckpointConverter(
-                type(config.dec_config), config.reference_decoder
-            ).load_pretrained(
-                config.dec_config.model_type,
-                config.reference_decoder,
-                config.dec_config,
+            llm: Union[LlamaLMHeadModel | MistralLMHeadModel | GemmaLMHeadModel] = (
+                HFCheckpointConverter(type(config.dec_config), config.reference_decoder)
+                .load_pretrained(
+                    config.dec_config.model_type,
+                    config.reference_decoder,
+                    config.dec_config,
+                )
+                .resize_vocab(Vocab.size)
             )  # type: ignore[assignment]
             whisper: WhisperModel = HFCheckpointConverter(
                 WhisperConfig, config.reference_encoder, ignore_prefix="model"
@@ -219,8 +222,7 @@ class DivaModel(eqx.Module, ModelWithHfSerializationMixin[DivaConfig]):
                 config.enc_config,
             )  # type: ignore[assignment]
             encoder = whisper.encoder
-            # connector = whisper.decoder
-            connector = WhisperDecoder.init(config.enc_config, key=k_connector)
+            connector = whisper.decoder
             decoder = llm
             mean_embedding = hax.mean(llm.embeddings.token_embeddings.weight, llm.embeddings.Vocab)
             projection = dataclasses.replace(
