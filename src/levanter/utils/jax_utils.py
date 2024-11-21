@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import json
 import warnings
 from dataclasses import fields
@@ -13,11 +14,14 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec, PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
 import haliax
+import haliax as hax
+from haliax import is_named_array
 from haliax.jax_utils import is_jax_array_like
-from haliax.partitioning import ResourceAxis
+from haliax.partitioning import ResourceAxis, ResourceMapping
 
 
 X = TypeVar("X")
+T = TypeVar("T", bound=PyTree)
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -334,3 +338,29 @@ def estimated_free_device_memory(device) -> Optional[float]:
         in_use = stats.get("bytes_in_use", 0)
 
         return (limit - in_use) // (1024.0**3)
+
+
+def zeros_like_tree(tree: T, axis_mapping: Optional[ResourceMapping] = None, dtype: Optional[jnp.dtype] = None) -> T:
+    """
+    Creates a tree of zeros with the same structure as the input tree. If the input tree contains NamedArrays, then
+    those will be sharded according to the axis_mapping (or the context axis mapping if not provided).
+    """
+    _zeros = functools.partial(_zeros_like, axis_mapping, dtype)
+    acc = jax.tree_util.tree_map(_zeros, tree, is_leaf=is_named_array)
+    return acc
+
+
+def _zeros_like(mapping, dtype, n):
+    if isinstance(n, hax.NamedArray):
+        return hax.shard(hax.zeros_like(n, dtype=dtype), mapping)
+    elif is_jax_array_like(n):
+        return jnp.zeros_like(n, dtype)
+    else:
+        assert jnp.isscalar(n)
+        if dtype is None:
+            # if it's a nan, we want to go to 0
+            if n != n:
+                return 0
+            return n - n
+        else:
+            return jnp.zeros((), dtype=dtype)

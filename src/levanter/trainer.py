@@ -1,32 +1,15 @@
-import abc
 import atexit
 import copy
-import dataclasses
 import functools
 import logging as pylogging
 import os
 import sys
 import typing
 import warnings
-from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Generic,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Protocol,
-    Sequence,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 import equinox as eqx
 import jax
@@ -49,6 +32,7 @@ import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
 from levanter import tracker
+from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
@@ -58,17 +42,13 @@ from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.types import ComputeLossFunction, FilterSpec
 from levanter.utils import cloud_utils, fsspec_utils
-from levanter.utils.jax_utils import create_fsdp_mesh
+from levanter.utils.jax_utils import create_fsdp_mesh, zeros_like_tree
 from levanter.utils.tree_utils import inference_mode
 
 
 logger = pylogging.getLogger(__name__)
 
-M = TypeVar("M")  # Model
 X = TypeVar("X")  # Input
-S = TypeVar("S", bound=TrainerState)
-M_con = TypeVar("M_con", bound=PyTree, contravariant=True)
-CBState = TypeVar("CBState")
 
 DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
     "jax_threefry_partitionable": True,
@@ -79,106 +59,51 @@ DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
 # A note on the semantics of "step" vs "next_step":
 # The "step" of a TrainerState is the state after `step` steps have been taken.
 # A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
-@dataclass
-class StepInfo(Generic[S]):
-    state: S
-    loss: float
-    step_duration: float
-
-    model = property(lambda self: self.state.model)
-    opt_state = property(lambda self: self.state.opt_state)
-
-    step = property(lambda self: int(self.state.step) - 1)
-    """
-    The step that was just completed. If you want the next step, use `next_step`.
-    """
-    next_step = property(lambda self: int(self.state.step))
-
-
-class Callback(ABC, Generic[M]):
-    @abc.abstractmethod
-    def on_step(self, info: StepInfo[M], force: bool = False):
-        ...
-
-
-class JitCallback(ABC, Generic[M_con, CBState]):
-    @abc.abstractmethod
-    def initial_state(self, state: TrainerState[M]) -> CBState:
-        ...
-
-    @abc.abstractmethod
-    def inside_step(self, cb_state: CBState, state: TrainerState[M], examples, grad: M_con) -> CBState:
-        ...
-
-    # @abc.abstractmethod
-    # def inside_step(self, state: TrainerState[M], examples, grad: M_con) -> CBState:
-    #     ...
-
-    @abc.abstractmethod
-    def on_step(self, cb_state: CBState, step_info: StepInfo[M]) -> CBState:
-        ...
-
-
-class LambdaCallback(Callback[M]):
-    def __init__(self, fn: Callable[[StepInfo[M]], Any]):
-        self.fn = fn
-
-    def on_step(self, info: StepInfo[M], force: bool = False):
-        self.fn(info)
 
 
 @dataclass
-class _Hook(Generic[M]):
-    fn: Callback[M]
+class _Hook:
+    fn: Callback
     every: int
 
 
 @dataclass
-class _StatefulHook(Generic[M]):
-    fn: JitCallback[M, Any]
+class _JitHook:
+    fn: JitCallback
     every: int
 
 
 class TrainerHooks:
     hooks: List[_Hook]
-    stateful_hooks: List[_StatefulHook]
+    stateful_hooks: List[_JitHook]
 
     def __init__(self):
         self.hooks = []
         self.stateful_hooks = []
-
-    def initial_state(self, state: TrainerState[M]) -> tuple[CBState, ...]:
-        return tuple(hook.fn.initial_state(state) for hook in self.stateful_hooks)
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
             if force or info.step % hook.every == 0:
                 hook.fn.on_step(info, force=force)
 
-        new_states = []
-        assert len(self.stateful_hooks) == len(info.state.cb_states)
-        for s_hook, state in zip(self.stateful_hooks, info.state.cb_states):
-            if force or info.step % s_hook.every == 0:
-                new_state = s_hook.fn.on_step(state, info)
-            else:
-                new_state = state
-            new_states.append(new_state)
+    def run_jit_hooks_outside_step(self, info: StepInfo, cb_infos: Sequence[PyTree], force: bool = False):
+        for s_hook, cb_info in zip(self.stateful_hooks, cb_infos):
+            if force or (info.step % s_hook.every == 0):
+                s_hook.fn.on_step(info, cb_info)
 
-        return tuple(new_states)
-
-    def run_jit_hooks(self, state: TrainerState, examples, grad: M):
-        hook: _StatefulHook
-        new_states = []
-        for hook, hook_state in zip(self.stateful_hooks, state.cb_states):
+    def run_jit_hooks(self, state: TrainerState, grad: M, force: bool = False) -> tuple[PyTree, ...]:
+        hook: _JitHook
+        hook_infos = []
+        for hook in self.stateful_hooks:
+            hook_shape = eqx.filter_eval_shape(hook.fn.inside_step, state, grad)
             new_s = jax.lax.cond(
-                state._step % hook.every == 0,
-                lambda s: hook.fn.inside_step(s, state, examples, grad),
-                lambda s: hook_state,
-                hook_state,
+                force or (state.step % hook.every == 0),
+                lambda: hook.fn.inside_step(state, grad),
+                lambda: zeros_like_tree(hook_shape),
             )
-            new_states.append(new_s)
+            hook_infos.append(new_s)
 
-        return tuple(new_states)
+        return tuple(hook_infos)
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | JitCallback | Callback] = None, *, every: int = 1):
         def decorator(fn):
@@ -189,7 +114,7 @@ class TrainerHooks:
                 is_something = True
 
             if isinstance(fn, JitCallback):
-                self.stateful_hooks.append(_StatefulHook(fn, every))
+                self.stateful_hooks.append(_JitHook(fn, every))
                 is_something = True
 
             if not is_something:
@@ -416,7 +341,6 @@ class Trainer:
         def init_state_and_model(model_init, training_key):
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
-            bjafkjafn need to initialize cb_states, which currently requires a full state
             state = TrainerState.init(
                 self.optimizer,
                 model,
@@ -453,13 +377,21 @@ class Trainer:
         Performs a single training step.
         """
         with capture_time() as step_time:
-            loss, new_state = self._jit_train_step_fn(state, *batch, **batch_kwargs)
+            loss, new_state, cb_states = self._jit_train_step_fn(state, *batch, **batch_kwargs)
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
 
-        return StepInfo(new_state, loss, step_time())
+        info = StepInfo(new_state, loss, step_time())
 
-    def training_steps(self, state: S, train_loader, run_hooks: bool = True) -> typing.Iterator[StepInfo[S]]:
+        with capture_time() as hook_time:
+            self.run_hooks(info)
+            self.hooks.run_jit_hooks_outside_step(info, cb_states)
+
+        levanter.tracker.log({"throughput/hook_time": hook_time()}, step=info.step)
+
+        return info
+
+    def training_steps(self, state: S, train_loader) -> typing.Iterator[StepInfo[S]]:
         """
         Generator that yields training steps and runs hooks.
         """
@@ -471,26 +403,19 @@ class Trainer:
             info = self.train_step(state, example)
             state = info.state
 
-            if run_hooks:
-                with capture_time() as hook_time:
-                    self.run_hooks(info)
-
-                levanter.tracker.log({"throughput/hook_time": hook_time()}, step=info.step)
-
-            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=info.step)
+            levanter.tracker.log({"throughput/loading_time": loading_time()}, step=info.step)
 
             yield info
 
-    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[S]:
+    def train(self, state: S, train_loader: Iterable[X]) -> StepInfo[S]:
         """
         Performs training until the number of steps is reached.
         """
-        for info in self.training_steps(state, train_loader, run_hooks=run_hooks):
+        for info in self.training_steps(state, train_loader):
             pass
 
-        if run_hooks:
-            # force hooks to run at the end
-            self.run_hooks(info, force=True)
+        # force hooks to run at the end
+        self.run_hooks(info, force=True)
 
         return info
 
@@ -572,7 +497,7 @@ class Trainer:
             donate_args=(True,),
         )
 
-    def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
+    def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S, Sequence[CBInfo]]:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
@@ -585,12 +510,11 @@ class Trainer:
                 model = self.mp.cast_to_compute(model)
                 return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
-        new_hook_states = self.hooks.run_jit_hooks(state, batch, grads)
+        hook_infos = self.hooks.run_jit_hooks(state, grads, force=False)
 
         new_state = state.take_step(grads, obj_fun=obj_fun)
-        new_state = dataclasses.replace(new_state, cb_states=new_hook_states)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)
-        return loss, new_state
+        return loss, new_state, hook_infos
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)

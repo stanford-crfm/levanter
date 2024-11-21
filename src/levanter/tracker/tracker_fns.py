@@ -50,6 +50,17 @@ def log(metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[in
         _global_tracker.log(metrics, step=step, commit=commit)
 
 
+# deprecated in favor of log()
+def log_metrics(
+    metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[int], commit: Optional[bool] = None
+):
+    """
+    Deprecated. Use log instead.
+    """
+    warnings.warn("log_metrics is deprecated in favor of log", DeprecationWarning)
+    log(metrics, step=step, commit=commit)
+
+
 def _do_jit_log(metrics, *, step=None):
     try:
         if _global_tracker is None:

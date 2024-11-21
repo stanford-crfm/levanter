@@ -54,7 +54,6 @@ class TrainerState(eqx.Module, Generic[M]):
 
     is_trainable: FilterTree = eqx.field(static=True)
     mp: jmp.Policy = eqx.field(static=True)
-    cb_states: Tuple[typing.Any, ...]
 
     @property
     def int_step(self) -> int:
@@ -81,7 +80,6 @@ class TrainerState(eqx.Module, Generic[M]):
         is_trainable: FilterTree = True,
         mp: Optional[jmp.Policy] = None,
         fp8: Fp8Config = None,
-        cb_states: Tuple[typing.Any, ...] = (),
         **kwargs,
     ) -> "TrainerState[M]":
         if mp is not None:
@@ -93,7 +91,7 @@ class TrainerState(eqx.Module, Generic[M]):
             model = fp8_linear_layers(model, fp8)
 
         opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
-        return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, cb_states=cb_states, *args, **kwargs)
+        return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
 
     def take_step(self: S, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> S:
         assert isinstance(self, TrainerState)  # make mypy happy

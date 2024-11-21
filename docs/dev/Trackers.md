@@ -79,7 +79,7 @@ TODO: expand this section.
 
 ::: levanter.tracker.get_tracker
 
-::: levanter.tracker.jit_log_metrics
+::: levanter.tracker.jit_log
 
 ### Trackers
 
