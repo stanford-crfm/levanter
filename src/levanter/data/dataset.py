@@ -2,7 +2,7 @@ import abc
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Generic, Optional, Sequence, TypeVar
+from typing import Callable, Generic, Optional, Sequence, TypeAlias, TypeVar
 
 import jax.random
 import numpy as np
@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 T_co = TypeVar("T_co", covariant=True)
 T = TypeVar("T")
 U = TypeVar("U")
+
+# When we decide to standardize on 3.12, we can use fancier things
+# P = ParamSpec("P")
+
+MapFunction: TypeAlias = Callable[..., U]
 
 
 _executor = ThreadPoolExecutor(max_workers=10)
@@ -111,8 +116,11 @@ class AsyncDataset(DatasetBase[T_co]):
     def as_async_dataset(self) -> "AsyncDataset[T_co]":
         return self
 
-    def map(self, fn: Callable[[T_co], U], *extra_args, **extra_kwargs) -> "MappedAsyncDataset[T_co, U]":
+    def map(self, fn: MapFunction[U], *extra_args, **extra_kwargs) -> "MappedAsyncDataset[T_co, U]":
         return MappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
+
+    def map_batches(self, fn: MapFunction[Sequence[U]], *extra_args, **extra_kwargs) -> "BatchMappedAsyncDataset[U]":
+        return BatchMappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
 
     def shuffle(self, key: PRNGKey):
         import levanter.data.permutation as permutation
@@ -321,7 +329,7 @@ class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
     def __init__(
         self,
         dataset: AsyncDataset[T],
-        fn: Callable[[T], U] | Callable[[T, Optional[PRNGKey]], U],
+        fn: MapFunction[U],
         *extra_args,
         **extra_kwargs,
     ):
@@ -365,3 +373,65 @@ class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
         else:
             kwargs = self._extra_kwargs
         return self.fn(item, *self._extra_args, **kwargs)
+
+
+class BatchMappedAsyncDataset(AsyncDataset[U]):
+    """
+    A dataset that applies a function to each batch of items in the dataset.
+    You can pass extra arguments to the function using `*extra_args` and `**extra_kwargs`.
+    If a kwarg called `key` is passed, it will be treated as a PRNGKey and folded in with the index of the item
+    for each call to the function. The key will be split into a key for each item in the batch.
+    """
+
+    def __init__(
+        self,
+        dataset: AsyncDataset[T],
+        fn: MapFunction[Sequence[U]],
+        *extra_args,
+        **extra_kwargs,
+    ):
+        super().__init__()
+        self.dataset = dataset
+        self.fn = fn
+        self._extra_args = extra_args
+        self._extra_kwargs = extra_kwargs
+
+    async def async_len(self) -> int:
+        return await self.dataset.async_len()
+
+    async def final_length_is_known(self) -> bool:
+        return await self.dataset.final_length_is_known()
+
+    def is_finite(self) -> bool:
+        return self.dataset.is_finite()
+
+    async def current_len(self) -> Optional[int]:
+        return await self.dataset.current_len()
+
+    def _maybe_fold_in_key(self, key, indices: Sequence[int]):
+        if key is not None:
+            key = _fold_in_key_vmap(key, np.array(indices))
+        return key
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[U]:
+        items = await self.dataset.get_batch(indices)
+        return self._call_fn(indices, items)
+
+    async def getitem_async(self, index: int) -> U:
+        return self._call_fn([index], [await self.dataset.getitem_async(index)])[0]
+
+    async def wait_until_len_at_least(self, length: int) -> int:
+        return await self.dataset.wait_until_len_at_least(length)
+
+    def _call_fn(self, indices: Sequence[int], items):
+        if "key" in self._extra_kwargs:
+            key = self._maybe_fold_in_key(self._extra_kwargs["key"], indices)
+            kwargs = {**self._extra_kwargs, "key": key}
+        else:
+            kwargs = self._extra_kwargs
+        return self.fn(items, *self._extra_args, **kwargs)
+
+
+@jax.jit
+def _fold_in_key_vmap(key, indices):
+    return jax.vmap(lambda i: jax.random.fold_in(key, i))(indices)
