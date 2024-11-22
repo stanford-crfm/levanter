@@ -8,11 +8,10 @@ def test_no_stable_weirdness():
         learning_rate=2e-6,  # 2x10^-6
         weight_decay=0.0,
         warmup=0.03,
-        stable=0.0,
         min_lr_ratio=0.0,
         lr_schedule="linear",
         max_grad_norm=None,
-        haps=None,
+        cycles=None,
         weight_decay_modules=None,
         default_weight_decay_mask=None,
     )
@@ -33,10 +32,8 @@ def test_constant_schedule():
         learning_rate=1e-3,
         weight_decay=0.0,
         warmup=0.0,
-        stable=0.0,
         min_lr_ratio=1.0,  # No decay
         lr_schedule="constant",
-        haps=None,
         cycles=None,
     )
 
@@ -52,10 +49,8 @@ def test_warmup_and_cosine_decay():
         learning_rate=1e-2,
         weight_decay=0.0,
         warmup=0.1,  # 10% of steps
-        stable=0.0,
         min_lr_ratio=0.1,
         lr_schedule="cosine",
-        haps=None,
         cycles=None,
     )
 
@@ -75,7 +70,6 @@ def test_linear_schedule_with_cycles():
         learning_rate=5e-4,
         weight_decay=0.0,
         warmup=50,
-        stable=0.0,
         min_lr_ratio=0.2,
         lr_schedule="linear",
         cycles=2,
@@ -105,30 +99,33 @@ def test_linear_schedule_with_cycles():
     assert np.isclose(sched_fn(999), 0.2 * 5e-4, atol=1e-5)
 
 
-def test_haps_schedule():
+def test_wsds_schedule():
     optimizer = AdamConfig(
         learning_rate=1e-3,
         weight_decay=0.0,
         warmup=0.0,
-        stable=0.0,
+        decay=0.1,
         min_lr_ratio=0.1,
         lr_schedule="cosine",
-        haps=[300, 700],
+        cycles=[300, 700],
     )
 
     sched_fn = optimizer.lr_scheduler(1000)
 
-    # Before first haps
+    # First cycle
     assert np.isclose(sched_fn(0), 1e-3)
+    assert np.isclose(sched_fn(269), 1e-3)
+    assert sched_fn(271) < 1e-3
 
-    # First haps
+    # Second cycle
     assert np.isclose(sched_fn(300), 1e-3)
+    assert np.isclose(sched_fn(659), 1e-3)
+    assert sched_fn(661) < 1e-3
 
-    # After first haps
-    assert sched_fn(301) < 1e-3
-
-    # Before second haps
-    assert sched_fn(699) < sched_fn(301)
+    # Thrid cycle
+    assert np.isclose(sched_fn(701), 1e-3)
+    assert np.isclose(sched_fn(969), 1e-3)
+    assert sched_fn(971) < 1e-3
 
 
 def test_inv_sqrt_decay_schedule():
@@ -136,10 +133,9 @@ def test_inv_sqrt_decay_schedule():
         learning_rate=1e-3,
         weight_decay=0.0,
         warmup=0.1,
-        stable=0.0,
         min_lr_ratio=0.1,
         lr_schedule="inv_sqrt",
-        haps=None,
+        cycles=None,
     )
 
     sched_fn = optimizer.lr_scheduler(100_000)
@@ -157,7 +153,6 @@ def test_rewarmup_schedule():
         learning_rate=1e-2,
         weight_decay=0.0,
         warmup=0.2,  # 20% of cycle
-        stable=0.0,
         min_lr_ratio=0.2,
         lr_schedule="linear",
         cycles=2,

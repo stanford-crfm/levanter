@@ -26,8 +26,8 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     """The lr scheduler operates on 4 stages: [warmup] - {[stable] - [decay]} x haps - [cooldown]"""
     warmup: float = 0.01
     """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
-    stable: float = 0.00
-    """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
+    decay: Optional[float] = None
+    """fraction of training steps to use as decay, or steps to use. None means full decay"""
     rewarmup: float = 0.0
     "If using a cycle, how much of the cycle to use as re-warmup. 0.0 means no re-warmup."
     cooldown: Optional[float] = None
@@ -174,8 +174,12 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 schedules.append(warmup)
                 boundaries.append(start + warmup_steps)
 
-            stable_steps = _convert_ratio_or_steps(self.stable, cycle_steps)
-            lr_decay_steps = cycle_steps - stable_steps - warmup_steps
+            lr_decay_steps = (
+                _convert_ratio_or_steps(self.decay, cycle_steps)
+                if self.decay is not None
+                else cycle_steps - warmup_steps
+            )
+            stable_steps = cycle_steps - warmup_steps - lr_decay_steps
 
             if stable_steps != 0:
                 stable = optax.constant_schedule(self.learning_rate)
