@@ -11,11 +11,11 @@ from haliax.jax_utils import maybe_rng_split
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()

@@ -28,13 +28,13 @@ from haliax.jax_utils import is_jax_array_like
 
 import levanter.tracker
 from levanter.data import AsyncDataset, DataLoader
-from levanter.logging import save_xla_dumps_to_wandb
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.histogram import Histogram
 from levanter.tracker.wandb import WandbConfig
 from levanter.trainer_state import TrainerState
 from levanter.utils import flop_utils, jax_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
+from levanter.utils.logging import save_xla_dumps_to_wandb
 from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
 

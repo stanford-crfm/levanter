@@ -18,8 +18,8 @@ from levanter.data import AsyncDataset, MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset
 from levanter.tracker import capture_time
 from levanter.trainer import Trainer, TrainerConfig, TrainerState
-from levanter.types import ComputeLossFunction
 from levanter.utils.tree_utils import inference_mode
+from levanter.utils.types import ComputeLossFunction
 
 
 logger = logging.getLogger(__name__)
