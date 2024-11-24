@@ -16,9 +16,9 @@ def test_sharded_histogram_simple():
     Batch = hax.Axis("Batch", 64)
     Feature = hax.Axis("Feature", 128)
 
-    a = hax.random.normal(PRNGKey(0), (Batch, Feature))
-
     with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+        a = hax.random.normal(PRNGKey(0), (Batch, Feature))
+        a = hax.shard(a)
         hist = levanter.tracker.histogram.sharded_histogram(a, bins=10)
 
     hist_normal = jax.numpy.histogram(a.array, bins=10)[0]
@@ -33,14 +33,12 @@ def test_sharded_histogram_tp():
     Batch = hax.Axis("Batch", 64)
     Feature = hax.Axis("Feature", 128)
 
-    a = hax.random.normal(PRNGKey(0), (Batch, Feature)) * 100
-
     with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA, "feature": ResourceAxis.MODEL}):
+        a = hax.random.normal(PRNGKey(0), (Batch, Feature)) * 100
+        a = hax.shard(a)
         hist, bins = levanter.tracker.histogram.sharded_histogram(a, bins=64)
 
     jnp_hist, jnp_bins = jax.numpy.histogram(a.array, bins=64)
-
-    print(hist, jnp_hist)
 
     assert jax.numpy.allclose(hist, jnp_hist)
     assert jax.numpy.allclose(bins, jnp_bins)

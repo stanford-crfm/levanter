@@ -169,9 +169,6 @@ def eval_loss_loop(loss_fn, model, dataset, max_batches: Optional[int] = None, n
     if n > 0:
         total_loss /= n
 
-        # logger.info(f"eval loading time: {total_load_time / n:.3f} s/ba")
-        # logger.info(f"eval loss time: {total_loss_time / n:.3f} s/ba")
-
     return total_loss
 
 
@@ -523,19 +520,14 @@ class GradWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
                 strict=True,
             ):
                 if self.split_scan_layers and isinstance(g, haliax.nn.Stacked):
-                    # unstacked = g.unstacked()
-                    # for i, layer in enumerate(unstacked):
-                    #     _rec_log_magnitudes(to_log, join_key(key_path, str(i)), layer)
-                    # vmap over the layers
-                    Block = g.Block
-                    vmapped_norms, vmapped_hists = haliax.vmap(_rec_log_magnitudes, Block)({}, {}, "", g.stacked)
-                    # manual loop
+                    vmapped_norms, vmapped_hists = haliax.vmap(_rec_log_magnitudes, g.Block)({}, {}, "", g.stacked)
+
                     for k, v in vmapped_norms.items():
-                        for i in range(Block.size):
+                        for i in range(g.Block.size):
                             norms[f"{key_path}/{i}/{k}"] = v[i]
 
                     for k, v in vmapped_hists.items():
-                        for i in range(Block.size):
+                        for i in range(g.Block.size):
                             hists[f"{key_path}/{i}/{k}"] = jax.tree.map(
                                 lambda x: x[i] if is_jax_array_like(x) else x, v
                             )
