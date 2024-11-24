@@ -19,11 +19,11 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 import levanter.models.attention
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()

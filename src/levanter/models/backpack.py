@@ -15,10 +15,10 @@ from haliax.jax_utils import named_call
 from haliax.state_dict import ModuleWithStateDictSerialization, StateDict, with_prefix
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()

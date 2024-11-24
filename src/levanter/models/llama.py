@@ -15,13 +15,13 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
-from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.logging import silence_transformer_nag
+from levanter.utils.types import BlockFoldable
 
 
 silence_transformer_nag()
