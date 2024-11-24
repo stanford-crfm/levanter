@@ -4,6 +4,7 @@ from typing import Generic, Optional, Type, TypeVar
 
 import draccus
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
@@ -11,7 +12,7 @@ import haliax as hax
 from haliax import Axis, NamedArray, NamedOrNumeric
 
 from levanter.models.attention import AttentionMask
-from levanter.models.loss import next_token_loss
+from levanter.models.loss import maybe_fused_next_token_loss
 
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
@@ -58,12 +59,13 @@ class LmExample(eqx.Module):
     ) -> "LmExample":
         # mask out the prompt tokens
         loss_mask = hax.arange(Pos) >= prompt_length - 1
-        # also mask out the last token
-        loss_mask *= 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
-
+        # don't predict the padding
         if ignore_id is not None:
-            ignore_mask = tokens != ignore_id
-            loss_mask *= ignore_mask
+            targets = hax.roll(tokens, -1, Pos)
+            loss_mask = loss_mask & (targets != ignore_id)
+
+        # don't predict the last token
+        loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
 
         if all_causal:
             attn_mask = AttentionMask.causal()
@@ -216,7 +218,7 @@ def compute_next_token_loss(
     """
     activations = model.activations(example.tokens, example.attn_mask, key=key)
 
-    loss = next_token_loss(
+    loss = maybe_fused_next_token_loss(
         model.Pos,
         model.Embed,
         model.Vocab,
