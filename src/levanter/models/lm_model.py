@@ -11,7 +11,7 @@ import haliax as hax
 from haliax import Axis, NamedArray
 
 from levanter.models.attention import AttentionMask
-from levanter.models.loss import next_token_loss
+from levanter.models.loss import maybe_fused_next_token_loss
 
 
 LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
@@ -190,7 +190,7 @@ def compute_next_token_loss(
     """
     activations = model.activations(example.tokens, example.attn_mask, key=key)
 
-    loss = next_token_loss(
+    loss = maybe_fused_next_token_loss(
         model.Pos,
         model.Embed,
         model.Vocab,
