@@ -1,0 +1,27 @@
+eval_harness:
+  task_spec: ["hellaswag"]
+#  max_examples: 9984 # this is the max that ends up being divisible by 512 after expansion
+  max_examples: 8 # this is the max that ends up being divisible by 512 after expansion
+  max_eval_length: 128
+#tokenizer: gs://marin-us-central2/checkpoints/dclm_baseline_1b_1x_replication_nov12_3404462497seed-b68241/hf/step-54930
+#tokenizer: gs://levanter-checkpoints/marin/olmoish7b_v4_1024_0627/dlwh_7b0627/hf/step-715001/
+#tokenizer: gs://levanter-checkpoints/marin/olmoish7b_v4_1024_0627/dlwh_7b0627/step-510000/
+#tokenizer: "EleutherAI/gpt-neox-20b"
+tokenizer: meta-llama/Meta-Llama-3-8B
+model:
+  type: llama
+#checkpoint_path: gs://marin-us-central2/checkpoints/dclm_baseline_1b_1x_replication_nov12_3404462497seed-b68241/hf/step-54930
+checkpoint_path: meta-llama/Meta-Llama-3-8B
+checkpoint_is_hf: true
+trainer:
+  mp: f32
+  profiler: true
+
+  per_device_parallelism: -1
+  train_batch_size: 512
+
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+  ray:
+    auto_start_cluster: false
