@@ -4,7 +4,7 @@ from typing import TypeAlias
 
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
-from levanter.logging import silence_transformer_nag
+from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.py_utils import logical_cpu_core_count
 
 

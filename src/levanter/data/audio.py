@@ -30,10 +30,10 @@ from levanter.data.sharded_datasource import AudioTextUrlDataSource, ShardedData
 from levanter.data.text import BatchTokenizer
 
 # intercept the logging nonsense here
-from levanter.logging import silence_transformer_nag
 from levanter.models.asr_model import AudioTextExample
 from levanter.store.cache import CacheOptions, TreeCache, build_or_load_cache
 from levanter.utils.jax_utils import key_iterator
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()  # noqa

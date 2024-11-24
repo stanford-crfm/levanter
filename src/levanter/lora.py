@@ -64,10 +64,10 @@ from haliax.state_dict import (
 )
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
-from levanter.logging import silence_transformer_nag
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()
