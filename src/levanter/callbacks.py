@@ -48,6 +48,13 @@ CBInfo = TypeVar("CBInfo")
 
 @dataclass
 class StepInfo(Generic[S]):
+    """
+    Information about a step that was just completed. This includes the trainer state, the loss, and the duration of the
+    step.
+
+    Note that the step is 0-indexed, so if you want the next step, use `next_step`.
+    """
+
     state: S
     loss: float
     step_duration: float
@@ -64,6 +71,10 @@ class StepInfo(Generic[S]):
 
 
 class Callback(ABC, Generic[S]):
+    """
+    A callback that can be called at the end of a step. This is useful for logging, profiling, and other side effects.
+    """
+
     @abc.abstractmethod
     def on_step(self, info: StepInfo[S], force: bool = False):
         ...
@@ -78,6 +89,11 @@ class LambdaCallback(Callback[S]):
 
 
 class JitCallback(ABC, Generic[S, M, CBInfo]):
+    """
+    A callback that gets called in two phases: inside the step (inside jit), and after the step (outside jit).
+    You have access to the gradients inside the step, so you can compute statistics on them.
+    """
+
     @abc.abstractmethod
     def inside_step(self, state: S, grad: M) -> CBInfo:
         ...
