@@ -42,9 +42,9 @@ from haliax.quantization import Fp8Config
 from haliax.types import Scalar
 
 import levanter.checkpoint
-import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
+import levanter.utils.logging
 from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
@@ -53,10 +53,10 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
-from levanter.types import ComputeLossFunction, FilterSpec
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
+from levanter.utils.types import ComputeLossFunction, FilterSpec
 
 
 logger = pylogging.getLogger(__name__)
@@ -626,7 +626,7 @@ class TrainerConfig:
         self._validate_and_set_defaults()
 
         id = self._maybe_set_id()
-        levanter.logging.init_logging(self.log_dir, f"{id}.log")
+        levanter.utils.logging.init_logging(self.log_dir, f"{id}.log")
         _initialize_global_tracker(self.tracker, id)
 
         self.ray.initialize()
