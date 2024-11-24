@@ -30,9 +30,6 @@ from haliax import Axis
 from levanter.data import AsyncDataset
 from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy
-
-# intercept the logging nonsense here
-from levanter.logging import silence_transformer_nag  # noqa
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.store.cache import CacheOptions, TreeCache
@@ -40,6 +37,9 @@ from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
+
+# intercept the logging nonsense here
+from levanter.utils.logging import silence_transformer_nag  # noqa
 
 
 silence_transformer_nag()  # noqa

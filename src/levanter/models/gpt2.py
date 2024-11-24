@@ -17,10 +17,10 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()
