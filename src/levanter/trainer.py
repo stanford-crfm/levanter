@@ -394,17 +394,17 @@ class Trainer:
                 loss, new_state, cb_states = self._jit_train_step_fn(state, batch, batch_kwargs)
                 # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             else:
-                loss, new_state, cb_states = self._jit_train_step_fn_no_hook(state, batch, batch_kwargs)
+                loss, new_state = self._jit_train_step_fn_no_hook(state, batch, batch_kwargs)
             loss = loss.item()  # type: ignore
 
-        info = StepInfo(new_state, loss, step_time())
+            info = StepInfo(new_state, loss, step_time())
 
-        with capture_time() as hook_time:
-            self.run_hooks(info)
-            if hooks_this_time:
-                self.hooks.run_jit_hooks_outside_step(info, cb_states)
+            with capture_time() as hook_time:
+                self.run_hooks(info)
+                if hooks_this_time:
+                    self.hooks.run_jit_hooks_outside_step(info, cb_states)
 
-        levanter.tracker.log({"throughput/hook_time": hook_time()}, step=info.step)
+            levanter.tracker.log({"throughput/hook_time": hook_time()}, step=info.step)
 
         return info
 
