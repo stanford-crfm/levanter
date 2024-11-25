@@ -13,8 +13,8 @@ from test_utils import skip_if_not_enough_devices
 def test_sharded_histogram_simple():
     mesh = Mesh((jax.devices()), (ResourceAxis.DATA,))
 
-    Batch = hax.Axis("Batch", 64)
-    Feature = hax.Axis("Feature", 128)
+    Batch = hax.Axis("batch", 64)
+    Feature = hax.Axis("feature", 128)
 
     with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
         a = hax.random.normal(PRNGKey(0), (Batch, Feature))
@@ -31,8 +31,8 @@ def test_sharded_histogram_simple():
 def test_sharded_histogram_tp():
     mesh = Mesh(np.array(jax.devices()).reshape(-1, 2), (ResourceAxis.DATA, ResourceAxis.MODEL))
 
-    Batch = hax.Axis("Batch", 64)
-    Feature = hax.Axis("Feature", 128)
+    Batch = hax.Axis("batch", 64)
+    Feature = hax.Axis("feature", 128)
 
     with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA, "feature": ResourceAxis.MODEL}):
         a = hax.random.normal(PRNGKey(0), (Batch, Feature)) * 100

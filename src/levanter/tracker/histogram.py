@@ -1,3 +1,5 @@
+import functools
+
 import equinox
 import jax
 import jax.numpy as jnp
@@ -58,13 +60,14 @@ def sharded_histogram(a: NamedArray, bins: int | ArrayLike = 10) -> tuple[jnp.nd
     * It only works with NamedArrays
     * It is more performant on TPUs
 
-    Credit to @aphoh for the original implementation.
+    Credit to @aphoh for the original implementation, though that one crashes on TPUs due to some kind of driver bug
     """
     edges = jnp.histogram_bin_edges(a.array, bins=bins)
     return _shardmap_histogram(a, edges), edges
+    # return jnp.histogram(a.array, bins=edges)
 
 
-def _single_shard_histogram(a, bins):
+def _single_shard_histogram(a, bins, reduce_mesh):
     """Modified version of jax.numpy.histogram that returns integer counts instead of using the datatype of the input.
     Also avoids searchsorted, which is slow on TPUs.
     Args:
@@ -74,46 +77,42 @@ def _single_shard_histogram(a, bins):
         Array: counts. has length len(bins) - 1
     """
     a = a.flatten()
-    prefix_sum = jnp.sum((a < bins[:, None]).astype(jnp.int32), axis=1)
-    last_count = jnp.sum(a <= bins[-1])
-    prefix_sum = prefix_sum.at[-1].set(last_count)
-    return jnp.expand_dims(jnp.diff(prefix_sum), 0)
+
+    bin_idx = jnp.searchsorted(bins, a, side="right", method="compare_all")
+    bin_idx = jnp.where(a == bins[-1], len(bins) - 1, bin_idx)
+    weights = jnp.ones_like(a)
+    counts = jnp.zeros(len(bins), weights.dtype).at[bin_idx].add(weights)[1:]
+
+    if len(reduce_mesh):
+        counts = jax.lax.psum(counts, axis_name=reduce_mesh)
+    return counts
 
 
-@jax.jit
 def _shardmap_histogram(a: NamedArray, bins):
     mesh = hax.partitioning._get_mesh()
-    flattened_spec, spec = _flattened_spec(a)
+    spec = hax.partitioning.pspec_for_axis(a.axes)
+    flattened_spec = _flattened_spec(spec)
     shard_h = shard_map(
-        _single_shard_histogram,
+        functools.partial(_single_shard_histogram, reduce_mesh=flattened_spec),
         mesh=mesh,
-        in_specs=(
-            spec,
-            PartitionSpec(
-                None,
-            ),
+        in_specs=(spec, PartitionSpec(None)),
+        out_specs=PartitionSpec(
+            None,
         ),
-        out_specs=(flattened_spec),
     )
     res = shard_h(a.array, bins)
-    return res.sum(axis=0)
+    return res
+    # return res
 
 
-def _flattened_spec(a):
-    spec = hax.partitioning.pspec_for_axis(a.axes)
+def _flattened_spec(spec):
+    out = []
+    for s in spec:
+        if isinstance(s, tuple):
+            out.extend(s)
+        elif s is None:
+            pass
+        else:
+            out.append(s)
 
-    def flatten_spec(spec):
-        # spec is a tuple None|str|tuple[str]
-        out = []
-        for s in spec:
-            if isinstance(s, tuple):
-                out.extend(s)
-            elif s is None:
-                pass
-            else:
-                out.append(s)
-
-        return tuple(out)
-
-    flattened_spec = PartitionSpec(flatten_spec(spec))
-    return flattened_spec, spec
+    return tuple(out)
