@@ -122,7 +122,7 @@ def test_wsds_schedule():
     assert np.isclose(sched_fn(659), 1e-3)
     assert sched_fn(661) < 1e-3
 
-    # Thrid cycle
+    # Third cycle
     assert np.isclose(sched_fn(701), 1e-3)
     assert np.isclose(sched_fn(969), 1e-3)
     assert sched_fn(971) < 1e-3
@@ -182,3 +182,64 @@ def test_rewarmup_schedule():
     # Final decay phase
     assert sched_fn(999 - 1) > sched_fn(999)
     assert np.isclose(sched_fn(999), 0.2e-2, atol=1e-4)  # End of second decay
+
+
+def test_linear_schedule_with_cycle_length():
+    optimizer = AdamConfig(
+        learning_rate=5e-4,
+        weight_decay=0.0,
+        warmup=50,
+        min_lr_ratio=0.2,
+        lr_schedule="linear",
+        cycle_length=500,
+    )
+
+    sched_fn = optimizer.lr_scheduler(1000)
+
+    # Warmup phase
+    assert np.isclose(sched_fn(0), 0.0)
+    assert np.isclose(sched_fn(50), 5e-4)
+
+    num_main_steps = 1000
+
+    # First cycle decay
+    assert np.isclose(sched_fn(499), 0.2 * 5e-4, atol=1e-5)
+
+    # Second cycle starts
+    assert np.isclose(sched_fn(500), 5e-4)
+
+    # midway through second cycle
+    midpoint = 500 - 1 + num_main_steps // 4
+    assert np.isclose(sched_fn(midpoint), (5e-4 + 0.2 * 5e-4) / 2, atol=1e-5)
+
+    # Final value
+    assert np.isclose(sched_fn(999), 0.2 * 5e-4, atol=1e-5)
+
+
+def test_wsds_schedule_with_cycle_points():
+    optimizer = AdamConfig(
+        learning_rate=1e-3,
+        weight_decay=0.0,
+        warmup=0.0,
+        decay=0.1,
+        min_lr_ratio=0.1,
+        lr_schedule="cosine",
+        cycle_length=[300, 400],
+    )
+
+    sched_fn = optimizer.lr_scheduler(1000)
+
+    # First cycle
+    assert np.isclose(sched_fn(0), 1e-3)
+    assert np.isclose(sched_fn(269), 1e-3)
+    assert sched_fn(271) < 1e-3
+
+    # Second cycle
+    assert np.isclose(sched_fn(300), 1e-3)
+    assert np.isclose(sched_fn(659), 1e-3)
+    assert sched_fn(661) < 1e-3
+
+    # Third cycle
+    assert np.isclose(sched_fn(701), 1e-3)
+    assert np.isclose(sched_fn(969), 1e-3)
+    assert sched_fn(971) < 1e-3
