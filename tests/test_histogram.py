@@ -17,11 +17,11 @@ def test_sharded_histogram_simple():
     Feature = hax.Axis("feature", 128)
 
     with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
-        a = hax.random.normal(PRNGKey(0), (Batch, Feature))
+        a = hax.random.normal(PRNGKey(1), (Batch, Feature))
         a = hax.shard(a)
-        hist, bins = levanter.tracker.histogram.sharded_histogram(a, bins=10)
+        hist, bins = levanter.tracker.histogram.sharded_histogram(a, bins=32)
 
-    hist_normal, bins_normal = jax.numpy.histogram(a.array, bins=10)
+    hist_normal, bins_normal = jax.numpy.histogram(a.array, bins=32)
 
     assert jax.numpy.allclose(hist, hist_normal)
     assert jax.numpy.allclose(bins, bins_normal)

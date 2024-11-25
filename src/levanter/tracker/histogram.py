@@ -98,6 +98,10 @@ def _shardmap_histogram(a: NamedArray, bins):
         ),
     )
     res = shard_h(a.array, bins)
+
+    # the filter misses the last bin, so we need to add it
+    if res.size >= 1:
+        res = res.at[-1].add(1)
     return res
 
 
