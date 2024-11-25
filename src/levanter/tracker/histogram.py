@@ -64,7 +64,6 @@ def sharded_histogram(a: NamedArray, bins: int | ArrayLike = 10) -> tuple[jnp.nd
     """
     edges = jnp.histogram_bin_edges(a.array, bins=bins)
     return _shardmap_histogram(a, edges), edges
-    # return jnp.histogram(a.array, bins=edges)
 
 
 def _single_shard_histogram(a, bins, reduce_mesh):
@@ -78,10 +77,8 @@ def _single_shard_histogram(a, bins, reduce_mesh):
     """
     a = a.flatten()
 
-    bin_idx = jnp.searchsorted(bins, a, side="right", method="compare_all")
-    bin_idx = jnp.where(a == bins[-1], len(bins) - 1, bin_idx)
-    weights = jnp.ones_like(a)
-    counts = jnp.zeros(len(bins), weights.dtype).at[bin_idx].add(weights)[1:]
+    bin_idx = (a[..., None] >= bins[:-1]).astype(jnp.int32) & (a[..., None] < bins[1:]).astype(jnp.int32)
+    counts = bin_idx.sum(axis=0, dtype=jnp.int32)
 
     if len(reduce_mesh):
         counts = jax.lax.psum(counts, axis_name=reduce_mesh)
@@ -102,7 +99,6 @@ def _shardmap_histogram(a: NamedArray, bins):
     )
     res = shard_h(a.array, bins)
     return res
-    # return res
 
 
 def _flattened_spec(spec):
