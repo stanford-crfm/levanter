@@ -8,6 +8,7 @@ from typing import Optional
 import draccus
 import equinox as eqx
 import jax
+import numpy as np
 import optax
 from jax import numpy as jnp
 
@@ -24,16 +25,18 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
     min_lr_ratio: float = 0.1
     """The lr scheduler operates on 4 stages: [warmup] - {[stable] - [decay]} x haps - [cooldown]"""
-    warmup: float = 0.01
+    warmup: int | float = 0.01
     """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
-    decay: Optional[float] = None
+    decay: int | float | None = None
     """fraction of training steps to use as decay, or steps to use. None means full decay"""
-    rewarmup: float = 0.0
+    rewarmup: int | float = 0.0
     "If using a cycle, how much of the cycle to use as re-warmup. 0.0 means no re-warmup."
     cooldown: Optional[float] = None
     """Deprecated, as its semantics are confusing."""
-    cycles: int | None | list[int] = None
-    """ Number of cycles to use. If None or 1, use a single cycle. Overriden by haps."""
+    cycle_length: int | float | None | list[int] = None
+    """ Length of cycle. If <= 1, it is treated as a fraction of the total number of steps. None is equivalent to 1.0."""
+    cycles: int | list[int] | None = None
+    """Number of cycles or a list of cycle endpoints. Can use at most one of cycle_length, cycles, or haps."""
 
     lr_schedule: str = "cosine"  # constant, cosine, linear
     haps: Optional[list[int]] = None
@@ -145,15 +148,12 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     def lr_scheduler(self, num_train_steps):
         if self.cooldown is not None:
             warnings.warn("cooldown is deprecated. Just use the normal schedule.", DeprecationWarning)
-            cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
+            cooldown_steps = _convert_frac_or_steps(self.cooldown, num_train_steps)
         else:
             cooldown_steps = 0
 
         total_main_steps = num_train_steps - cooldown_steps
         cooldown_points = self._get_cycle_minima(total_main_steps)
-
-        cooldown_points.insert(0, 0)
-        cooldown_points.append(num_train_steps)
 
         min_lr = self.learning_rate * self.min_lr_ratio
 
@@ -165,9 +165,9 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         for cycle, (start, end) in enumerate(zip(cooldown_points[:-1], cooldown_points[1:])):
             cycle_steps = end - start
             if cycle == 0:  # warmup
-                warmup_steps = _convert_ratio_or_steps(self.warmup, cycle_steps)
+                warmup_steps = _convert_frac_or_steps(self.warmup, cycle_steps)
             else:
-                warmup_steps = _convert_ratio_or_steps(self.rewarmup, cycle_steps)
+                warmup_steps = _convert_frac_or_steps(self.rewarmup, cycle_steps)
 
             if warmup_steps != 0:
                 warmup = optax.linear_schedule(previous_end, self.learning_rate, warmup_steps)
@@ -175,7 +175,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 boundaries.append(start + warmup_steps)
 
             lr_decay_steps = (
-                _convert_ratio_or_steps(self.decay, cycle_steps)
+                _convert_frac_or_steps(self.decay, cycle_steps)
                 if self.decay is not None
                 else cycle_steps - warmup_steps
             )
@@ -218,7 +218,31 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         return schedule
 
     def _get_cycle_minima(self, total_main_steps):
-        if self.haps is not None:
+        if self.cycle_length is not None:
+            if self.cycles is not None:
+                raise ValueError("Can't use both cycle_length and cycles.")
+            if self.haps is not None:
+                warnings.warn("haps is deprecated. Use cycles instead.", DeprecationWarning)
+                raise ValueError("Can't use both cycle_length and haps.")
+
+            if isinstance(self.cycle_length, int | float):
+                cycle_length = _convert_frac_or_steps(self.cycle_length, total_main_steps)
+                cooldown_points = [i * cycle_length for i in range(1, total_main_steps // cycle_length)]
+                if total_main_steps % cycle_length != 0:
+                    warnings.warn(
+                        "Cycle length does not divide total number of steps. The last cycle will be shorter."
+                    )
+
+            elif isinstance(self.cycle_length, list):
+                lengths = np.array(self.cycle_length)
+                steps = np.cumsum(lengths)
+                if steps[-1] > total_main_steps:
+                    raise ValueError(f"Cycle lengths exceed total number of steps: {steps[-1]} > {total_main_steps}")
+                cooldown_points = steps.tolist()
+            else:
+                raise ValueError("Invalid cycle_length. Must be a fraction, number of steps, or a list of steps.")
+
+        elif self.haps is not None:
             warnings.warn("haps is deprecated. Use cycles instead.", DeprecationWarning)
             cooldown_points = list(self.haps)
         elif isinstance(self.cycles, int):
@@ -228,6 +252,9 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             cooldown_points = list(self.cycles)
         else:
             cooldown_points = []
+
+        cooldown_points.insert(0, 0)
+        cooldown_points.append(total_main_steps)
         return cooldown_points
 
 
@@ -247,11 +274,14 @@ def _inv_decay_schedule(lr: float, min_lr: float, decay_steps: int):
     return schedule
 
 
-def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
-    if ratio_or_steps < 1.0:
-        return int(ratio_or_steps * num_train_steps)
-    else:
-        return int(ratio_or_steps)
+def _convert_frac_or_steps(frac_or_steps: float | int, num_train_steps: int):
+    # if it's greater than 1, it must be a whole number of steps
+    if frac_or_steps < 0.0 or (frac_or_steps > 1.0 and frac_or_steps % 1 != 0):
+        raise ValueError(f"Invalid fraction {frac_or_steps}. Must be between 0 and 1. You can also use (whole) steps.")
+    if frac_or_steps <= 1.0:
+        return int(frac_or_steps * num_train_steps)
+
+    return int(frac_or_steps)
 
 
 @dataclass
