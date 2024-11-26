@@ -556,11 +556,11 @@ class TrainerConfig:
     )  # overrides axis_mapping for parameter
     """logical->physical mapping for parameter/optimizer sharding. fsdp_axis and tensor_parallel_axes are preferred"""
 
-    # Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction
-    replica_ici_axis_size: int = 1  # how many parameter replicas there should be "within" each slice (ICI)
-    model_axis_size: int = 1  # axis size for tensor parallelism (TP)
-    replica_dcn_axis_size: Optional[int] = None  # how many parameter replicas there should be "across" slices (DCN)
-    auto_replicas: bool = True  # whether to automatically set replica_dcn_axis_size based on num_slices
+    """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction"""
+    replica_ici_axis_size: int = 1
+    model_axis_size: int = 1
+    """how many devices within each slice for sharding with DP. Fix TP=1, the rest of the devices is for FSDP."""
+    replica_dcn_axis_size: int = 1
     """how many slices in the multislice scheme for sharding with DP and TP. The rest of the devices is for FSDP."""
 
     # Config related to batch sizes
@@ -599,14 +599,10 @@ class TrainerConfig:
 
     @property
     def TrainBatch(self):
-        if self.train_batch_size <= 0:
-            raise ValueError("batch_size must be positive. Did you call initialize?")
         return Axis("batch", self.train_batch_size)
 
     @property
     def EvalBatch(self):
-        if self.eval_batch_size <= 0:
-            raise ValueError("eval_batch_size must be positive. Did you call initialize?")
         return Axis("batch", self.eval_batch_size)
 
     @property
@@ -654,7 +650,7 @@ class TrainerConfig:
             self.replica_ici_axis_size,
             self.data_ici_axis_size,
             self.model_axis_size,
-            self.replica_dcn_axis_size,  # type: ignore
+            self.replica_dcn_axis_size,
             self.data_dcn_axis_size,
         )
 
@@ -769,15 +765,6 @@ class TrainerConfig:
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
-        # handle replica_dcn_axis_size
-        if self.replica_dcn_axis_size is None:
-            if self.auto_replicas:
-                if self.num_slices > 1:
-                    logger.info(f"Setting replica_dcn_axis_size to {self.num_slices}")
-                self.replica_dcn_axis_size = self.num_slices
-            else:
-                self.replica_dcn_axis_size = 1
-
         assert self.train_batch_size != -1 or self.per_device_parallelism != -1
 
         if self.per_device_parallelism == -1:
@@ -796,7 +783,7 @@ class TrainerConfig:
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
 
-        if self.replica_dcn_axis_size == -1 or self.replica_dcn_axis_size is None:
+        if self.replica_dcn_axis_size == -1:
             self.replica_dcn_axis_size = self.num_slices
             logger.info(f"Setting replica_dcn_axis_size to {self.replica_dcn_axis_size}")
 
