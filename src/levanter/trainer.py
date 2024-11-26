@@ -796,7 +796,7 @@ class TrainerConfig:
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
 
-        if self.replica_dcn_axis_size == -1:
+        if self.replica_dcn_axis_size == -1 or self.replica_dcn_axis_size is None:
             self.replica_dcn_axis_size = self.num_slices
             logger.info(f"Setting replica_dcn_axis_size to {self.replica_dcn_axis_size}")
 
