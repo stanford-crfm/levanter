@@ -154,6 +154,10 @@ class LevanterHarnessLM(LM):
         Downstream tasks should attempt to use loglikelihood instead of other
         LM calls whenever possible.
         """
+        # pad requests to be a multiple of the batch size
+        initial_length = len(requests)
+        dummy_instance = dataclasses.replace(requests[0], arguments=("hello", " there"), idx=len(requests))
+        requests = requests + [dummy_instance] * (len(requests) % self.EvalBatch.size)
         dataset = EvalDataset(self.EvalPos, self.tokenizer, requests)
 
         mesh = haliax.partitioning._get_mesh()
@@ -168,7 +172,7 @@ class LevanterHarnessLM(LM):
             result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
 
         # skip padding
-        result = result[: len(requests)]
+        result = result[:initial_length]
 
         return result
 
