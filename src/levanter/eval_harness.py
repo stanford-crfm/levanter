@@ -6,6 +6,7 @@ import dataclasses
 import functools
 import json
 import logging
+import tempfile
 import typing
 from dataclasses import dataclass
 from functools import cached_property
@@ -17,6 +18,7 @@ import jax.numpy as jnp
 
 import haliax
 
+import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.loss import next_token_loss
@@ -32,7 +34,7 @@ except ImportError:
     evaluator = object
     # tasks = object
 
-from tqdm import tqdm
+from tqdm_loggable.auto import tqdm
 
 import haliax as hax
 from haliax.partitioning import round_axis_for_partitioning
@@ -41,46 +43,12 @@ import levanter.config
 from levanter.checkpoint import load_checkpoint
 from levanter.data import AsyncDataset, DataLoader
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
-from levanter.trainer import TrainerConfig
+from levanter.trainer import StepInfo, TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
-
-
-# Ok this is a bit complicated to do because it's distributed systems and that's always hard.
-# The idea is that we want to pass an LM adaptor to the harness, and then the harness will call the LM adaptor
-# with a request, which we'll format, shard, and send to the model. The model will then return the result to the harness
-# which will then return the result to the user.
-
-# As we so often do, we will coordinate execution through JAX itself.
-
-# Process 0 will:
-# - Pass an adaptor to the eval harness
-# - The eval harness will call the adaptor with a request
-# - When a request comes in, it will call broadcast_one_to_all with a (REQUEST_TYPE, request) to send the request
-# - It then invokes the model with the request and returns the result to the eval harness
-# - When finished, it will call broadcast_one_to_all with a (FINISHED_TYPE, result) to send the result
-
-# Process 1..n will:
-# - Wait for a (REQUEST_TYPE, request) broadcast
-# - if FINISHED_TYPE, break
-# - Invoke the model with the request
-# - loop
-
-
-class _RequestType:
-    LOG_LIKELIHOOD = 0
-    GENERATE_UNTIL = 1
-    LOG_LIKELIHOOD_ROLLING = 2
-    FINISHED = 3
-
-
-@functools.partial(jax.jit, static_argnums=(0, 3))
-def _jit_create_example(Pos, tokens, prompt_len, pad_token_id):
-    tokens = hax.named(tokens, Pos)
-    return LmExample.from_prompt_and_completion(Pos, tokens, prompt_len, ignore_id=pad_token_id)
 
 
 class EvalDataset(AsyncDataset[LmExample]):
@@ -211,6 +179,12 @@ class LevanterHarnessLM(LM):
         raise NotImplementedError()
 
 
+@functools.partial(jax.jit, static_argnums=(0, 3))
+def _jit_create_example(Pos, tokens, prompt_len, pad_token_id):
+    tokens = hax.named(tokens, Pos)
+    return LmExample.from_prompt_and_completion(Pos, tokens, prompt_len, ignore_id=pad_token_id)
+
+
 def run_lm_eval_harness(
     model,
     task_spec: list[str],
@@ -219,11 +193,12 @@ def run_lm_eval_harness(
     axis_resources,
     max_examples: int | None = None,
     max_eval_length: int | None = None,
+    log_samples: bool = False,
 ) -> dict:
     EvalPos = model.Pos if max_eval_length is None else model.Pos.resize(max_eval_length)
     harness = LevanterHarnessLM(EvalBatch, EvalPos, model, axis_resources, tokenizer)
     tasks_to_run = tasks.get_task_dict(task_spec)
-    outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples)
+    outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples, log_samples=log_samples)
 
     return outputs
 
@@ -233,6 +208,7 @@ class LmEvalHarnessConfig:
     task_spec: list[str] | None = None
     max_examples: int | None = None
     max_eval_length: int | None = None
+    log_samples: bool = False
 
     def task_spec_or_default(self):
         return self.task_spec or [
@@ -242,9 +218,9 @@ class LmEvalHarnessConfig:
             # "winogrande",
             # "mathqa",
             # "pubmedqa",
-            # "boolq",
+            "boolq",
             # "cb",
-            # "copa",
+            "copa",
             # "multirc",
             # "record",
             # "wic",
@@ -316,6 +292,7 @@ def run_eval_harness_main(config: EvalHarnessConfig):
             axis_resources=compute_axis_mapping,
             max_examples=max_examples,
             max_eval_length=config.eval_harness.max_eval_length,
+            log_samples=config.eval_harness.log_samples,
         )
 
         logger.info("Finished running LM eval harness")
@@ -329,8 +306,56 @@ def run_eval_harness_main(config: EvalHarnessConfig):
 
         # also log the results
         levanter.tracker.current_tracker().log_artifact("lm_eval_results.json")
+        log_report_to_tracker("lm_eval", outputs, levanter.tracker.current_tracker())
 
         return outputs
+
+
+def log_report_to_tracker(prefix: str, report: dict, tracker: Optional[levanter.tracker.Tracker] = None):
+    if tracker is None:
+        tracker = levanter.tracker.current_tracker()
+
+    to_log = {}
+    for task_name, task_results in report["results"].items():
+        for metric_name, metric_value in task_results.items():
+            if metric_name.ends_with(",none"):
+                metric_name = metric_name[:-5]
+
+            if isinstance(metric_value, float | int):
+                to_log[f"{prefix}/{task_name}/{metric_name}"] = metric_value
+
+    tracker.log(to_log, step=None)
+
+
+def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_resources):
+    def lm_eval_harness(step: StepInfo, force=False):
+        if step.step == 0 and not force:
+            return  # don't run eval on the first step
+
+        model = inference_mode(step.model, True)
+        outputs = run_lm_eval_harness(
+            model,
+            config.task_spec_or_default(),
+            tokenizer,
+            EvalBatch,
+            axis_resources,
+            max_examples=config.max_examples,
+            max_eval_length=config.max_eval_length,
+            log_samples=config.log_samples,
+        )
+
+        if jax.process_index() == 0:
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as f:
+                import json
+
+                json.dump(outputs, f)
+                levanter.tracker.current_tracker().log_artifact(
+                    f.name, name=f"lm_eval_output.{step.step}", type="lm_eval_output"
+                )
+
+            log_report_to_tracker("lm_eval", outputs, levanter.tracker.current_tracker())
+
+    return lm_eval_harness
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@ from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
+import levanter.eval
+import levanter.eval_harness
 from levanter import callbacks
 from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
@@ -253,7 +255,7 @@ def main(config: TrainLmConfig):
         if config.eval_harness is not None:
             eval_harness = config.eval_harness
             trainer.add_hook(
-                callbacks.lm_eval_harness(eval_harness, tokenizer, EvalBatch, compute_axis_mapping),
+                levanter.eval_harness.lm_eval_harness(eval_harness, tokenizer, EvalBatch, compute_axis_mapping),
                 every=config.eval_harness_steps,
             )
 
