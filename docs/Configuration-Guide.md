@@ -295,20 +295,20 @@ All optimizers in Levanter are based on the [levanter.optim.OptimizerConfig][] d
 which are common to all optimizers (and most have to do with learning rate scheduling):
 
 
-| Parameter       | Description                                                           | Default  |
-|-----------------|-----------------------------------------------------------------------|----------|
-| `weight_decay`  | The weight decay.                                                     | `0.0`    |
-| `learning_rate` | The learning rate.                                                    | `1e-4`   |
-| `lr_schedule`   | The type of learning rate schedule for decay. See below.              | `cosine` |
-| `min_lr_ratio`  | The minimum learning rate ratio.                                      | `0.1`    |
-| `warmup`        | Warmup fraction or number of steps                                    | `0.01`   |
-| `decay`        | Decay fraction or number of steps                                    | `None`    |
-| `cycles`        | The number of cycles for the learning rate, or steps where cycles end | `None`   |
-| `rewarmup`      | The learning rate re-warmup, if using cycles.                         | `0.0`    |
+| Parameter       | Description                                                                   | Default  |
+|-----------------|-------------------------------------------------------------------------------|----------|
+| `weight_decay`  | The weight decay.                                                             | `0.0`    |
+| `learning_rate` | The learning rate.                                                            | `1e-4`   |
+| `lr_schedule`   | The type of learning rate schedule for decay. See below.                      | `cosine` |
+| `min_lr_ratio`  | The minimum learning rate ratio.                                              | `0.1`    |
+| `warmup`        | Warmup fraction or number of steps                                            | `0.01`   |
+| `decay`         | Decay fraction or number of steps                                             | `None`    |
+| `rewarmup`      | The learning rate re-warmup, if using cycles.                                 | `0.0`    |
+| `cycles`        | The number of cycles for the learning rate, or steps where cycles end         | `None`   |
+| `cycle_length`  | How long the cycles should be (as an int, fraction), or list of cycle lengths | `None`   |
 
-By default, Levanter uses a cosine learning rate schedule with a warmup. The learning rate is decayed to
+By default, Levanter uses a cosine learning rate decay with warmup. The learning rate is decayed to
 `min_lr_ratio * learning_rate` over the course of the training run. This is a fairly standard default for LLM training.
-
 
 #### Learning Rate Schedules
 
@@ -328,8 +328,11 @@ By default, there is only one cycle, and Levanter's LR schedule looks like this:
 [warmup] -> [stable] -> [decay]
 ```
 
-But you can specify more with the `cycles` parameter. If you specify an int for `cycles`, the
-learning rate will cycle through the schedule `cycles` times. Levanter's LR schedule looks like this:
+But you can specify more with either the `cycles` or `cycle_length` parameters.
+If you want to use a learning rate schedule with cycles, you can specify the number of cycles with the `cycles`
+or `cycle_length` parameters. The LR will be decayed to `min_lr_ratio * learning_rate` at the end of each cycle.
+With cycles, Levanter's LR schedule looks like this:
+
 
 ```
 [warmup] -> [stable] -> [decay] -> {[rewarmup] -> [stable] -> [decay]} x (cycles - 1)
@@ -348,26 +351,36 @@ Here's what the phases mean:
 * `decay`: The decay period. The LR will decay to `min_lr_ratio * learning_rate` over this period.
 * `rewarmup`: The re-warmup period. If using cycles, the LR will be re-warmed from the final value of the previous cycle back to the peak value of the next cycle.
 
+Also note that if *rewarmup* is 0, there will be no rewarmup period, meaning the LR will jump
+back to the max LR. This is the default, and works surprisingly well. In addition, the stable
+and decay phase of the first cycle will generally be different from the stable and decay phase of the other cycles,
+since rewarmup and warmup are typically different.
+
+`stable` cannot be specified directly. It is the period between `warmup` and `decay` in the first cycle, and the period
+between `rewarmup` and `decay` in subsequent cycles. By default, there is no `stable` period.
+
 All of these parameters can be specified in terms of a fraction of the total number of steps of a cycle or as an absolute number of
 steps.
 
-If you want to use a learning rate schedule with cycles, you can specify the number of cycles with the `cycles`
-parameter. The LR will be decayed to `min_lr_ratio * learning_rate` at the end of each cycle.
+Here are what the `cycles` and `cycle_length` parameters mean:
 
+* `cycle_length`: If you specify an int or float for `cycle_length`, the learning rate will cycle through the
+schedule with the specified length. This is equivalent to specifying `cycles` as `num_train_steps / cycle_length`.
+If `cycle_length` is a float < 1.0, it is interpreted as a fraction of the total number of steps.
+If you specify a list of ints, the learning rate will cycle through the schedule with the specified cycle lengths.
+* `cycles`: If you specify an int for `cycles`, the learning rate will cycle through the schedule `cycles` times.
+If you specify a list of ints, the learning rate will cycle through the schedule with the specified steps as the minima
+of the cycles.
+
+It is an error to specify both `cycles` and `cycle_length`.
 
 You can also specify `cycles` as a list, e.g. `[10000, 25000, 50000]`. In this case,
 `cycles` is interpreted as the minima for the cycles, with the first and final steps being cycle minima as well.
 `cycles` as an int is equivalent to list `cycles` with the low points evenly spaced at
 `[num_train_steps / (c + 1)]`.
 
-Also note that if *rewarmup* is 0, there will be no rewarmup period, meaning the LR will jump
-back to the max LR. This is the default. In addition, the stable
-and decay phase of the first cycle will generally be different from the stable and decay phase of the other cycles,
-since rewarmup and warmup are typically different.
-
 See [our paper on WSD-S](https://arxiv.org/pdf/2410.05192) for more information on cyclic LR schedules for training LLMs
 with short or no rewarmup.
-
 
 ### AdamConfig
 
@@ -379,7 +392,6 @@ Additionally, [levanter.optim.AdamConfig][] has the following fields:
 | `beta2`         | The beta2 parameter for Adam.                | `0.95`  |
 | `epsilon`       | The epsilon parameter for Adam.              | `1e-8`  |
 | `max_grad_norm` | The maximum gradient norm (for clipping).    | `1.0`   |
-
 
 
 ## LM Model Config
