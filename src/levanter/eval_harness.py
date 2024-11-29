@@ -25,14 +25,13 @@ from levanter.models.loss import next_token_loss
 
 
 try:
-    from lm_eval import evaluator, tasks
+    from lm_eval import evaluator
     from lm_eval.api.instance import Instance
     from lm_eval.api.model import LM
 except ImportError:
     LM = object
     Instance = object
     evaluator = object
-    # tasks = object
 
 from tqdm_loggable.auto import tqdm
 
@@ -157,7 +156,8 @@ class LevanterHarnessLM(LM):
         # pad requests to be a multiple of the batch size
         initial_length = len(requests)
         dummy_instance = dataclasses.replace(requests[0], arguments=("hello", " there"), idx=len(requests))
-        requests = requests + [dummy_instance] * (len(requests) % self.EvalBatch.size)
+        requests = requests + [dummy_instance] * (self.EvalBatch.size - len(requests) % self.EvalBatch.size)
+        assert len(requests) % self.EvalBatch.size == 0
         dataset = EvalDataset(self.EvalPos, self.tokenizer, requests)
 
         mesh = haliax.partitioning._get_mesh()
@@ -171,6 +171,7 @@ class LevanterHarnessLM(LM):
             out_lls, out_correct = self._jit_loglikelihood(self.model, batch)
             result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
 
+        assert len(result) >= initial_length
         # skip padding
         result = result[:initial_length]
 
@@ -189,51 +190,72 @@ def _jit_create_example(Pos, tokens, prompt_len, pad_token_id):
     return LmExample.from_prompt_and_completion(Pos, tokens, prompt_len, ignore_id=pad_token_id)
 
 
-def run_lm_eval_harness(
-    model,
-    task_spec: list[str],
-    tokenizer,
-    EvalBatch,
-    axis_resources,
-    max_examples: int | None = None,
-    max_eval_length: int | None = None,
-    log_samples: bool = False,
-) -> dict:
-    EvalPos = model.Pos if max_eval_length is None else model.Pos.resize(max_eval_length)
-    harness = LevanterHarnessLM(EvalBatch, EvalPos, model, axis_resources, tokenizer)
-    tasks_to_run = tasks.get_task_dict(task_spec)
-    outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples, log_samples=log_samples)
+@dataclass(frozen=True)
+class TaskConfig:
+    """
+    This is a dataclass that represents the configuration for a task in the LM Eval Harness. It is used to specify
+    the configuration for a task in the LM Eval Harness, and is used to generate the task dictionary that the LM Eval
+    Harness expects.
 
-    return outputs
+    nb that LM Eval Harness has its own TaskConfig, but its defaults are not the same as just passing in
+    a dict, and we want the behavior of passing in a dict.
+
+    See Also:
+        [LM Eval Harness TaskConfig](https://github.com/EleutherAI/lm-evaluation-harness/blob/0ef7548d7c3f01108e7c12900a5e5eb4b4a668f7/lm_eval/api/task.py#L55)
+    """
+
+    task: str
+    task_alias: str | None = None
+    num_fewshot: int | None = None
+
+    use_prompt: str | None = None
+    description: str | None = None
+    target_delimiter: str | None = None
+    fewshot_delimiter: str | None = None
+
+    def to_dict(self):
+        base_dict = dataclasses.asdict(self)
+        return {k: v for k, v in base_dict.items() if v is not None}
 
 
 @dataclass(frozen=True)
 class LmEvalHarnessConfig:
-    task_spec: list[str] | None = None
+    task_spec: list[TaskConfig | str] | None = None
     max_examples: int | None = None
     max_eval_length: int | None = None
     log_samples: bool = False
 
-    def task_spec_or_default(self):
-        return self.task_spec or [
-            # "lambada",
-            "piqa",
-            "hellaswag",
-            # "winogrande",
-            # "mathqa",
-            # "pubmedqa",
-            "boolq",
-            # "cb",
-            "copa",
-            # "multirc",
-            # "record",
-            # "wic",
-            # "wsc",
-        ]
+    def task_spec_or_default(self) -> list[str | dict]:
+        if self.task_spec is None:
+            return ["hellaswag", "piqa"]
+        return [task.to_dict() if isinstance(task, TaskConfig) else task for task in self.task_spec]
+
+    def to_task_dict(self) -> dict:
+        import lm_eval.tasks as tasks
+
+        manager = tasks.TaskManager()
+        # we need to do it this way b/c i can't figure out how to run e.g. hellaswag 0 shot and 10 shot in a single run
+        this_tasks = {}
+        for task in self.task_spec_or_default():
+            try:
+                if isinstance(task, str):
+                    this_tasks.update(tasks.get_task_dict(task, manager))
+                else:
+                    our_name = task.get("task_alias", task["task"]) if isinstance(task, dict) else task
+                    our_name = our_name.replace(" ", "_")
+                    task_dict = tasks.get_task_dict([task], manager)
+                    this_task = task_dict.popitem()[1]
+                    # hacky, but this allows us to run multiple instances of the same task with different fewshot settings
+                    this_task.config.task = our_name
+                    this_tasks[our_name] = this_task
+            except Exception:
+                logger.exception(f"Failed to load task {task}")
+                raise ValueError(f"Failed to load task {task}")
+        return this_tasks
 
 
 @dataclass(frozen=True)
-class EvalHarnessConfig:
+class EvalHarnessMainConfig:
     tokenizer: str
     checkpoint_path: str
     checkpoint_is_hf: bool = False
@@ -251,12 +273,34 @@ class EvalHarnessConfig:
         return load_tokenizer(self.tokenizer)
 
 
-def run_eval_harness_main(config: EvalHarnessConfig):
+def run_lm_eval_harness(
+    config: LmEvalHarnessConfig,
+    model,
+    tokenizer,
+    EvalBatch,
+    axis_resources,
+) -> dict:
+    # tasks_to_run = tasks.get_task_dict(config.task_spec_or_default(), tasks.TaskManager())
+    tasks_to_run = config.to_task_dict()
+
+    outputs = _actually_run_eval_harness(config, model, tasks_to_run, tokenizer, EvalBatch, axis_resources)
+
+    return outputs
+
+
+def _actually_run_eval_harness(config: LmEvalHarnessConfig, model, tasks_to_run, tokenizer, EvalBatch, axis_resources):
+    max_examples = config.max_examples
+    max_eval_length = config.max_eval_length
+
+    EvalPos = model.Pos if max_eval_length is None else model.Pos.resize(max_eval_length)
+    harness = LevanterHarnessLM(EvalBatch, EvalPos, model, axis_resources, tokenizer)
+    outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples, log_samples=config.log_samples)
+    return outputs
+
+
+def run_eval_harness_main(config: EvalHarnessMainConfig):
     config.trainer.initialize()
     tokenizer = config.the_tokenizer
-
-    task_spec = config.eval_harness.task_spec_or_default()
-    max_examples = config.eval_harness.max_examples
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
@@ -289,14 +333,11 @@ def run_eval_harness_main(config: EvalHarnessConfig):
 
         logger.info("Running LM eval harness....")
         outputs = run_lm_eval_harness(
+            config.eval_harness,
             model,
-            task_spec,
             tokenizer,
             config.EvalBatch,
             axis_resources=compute_axis_mapping,
-            max_examples=max_examples,
-            max_eval_length=config.eval_harness.max_eval_length,
-            log_samples=config.eval_harness.log_samples,
         )
 
         logger.info("Finished running LM eval harness")
@@ -322,7 +363,7 @@ def log_report_to_tracker(prefix: str, report: dict, tracker: Optional[levanter.
     to_log = {}
     for task_name, task_results in report["results"].items():
         for metric_name, metric_value in task_results.items():
-            if metric_name.ends_with(",none"):
+            if metric_name.endswith(",none"):
                 metric_name = metric_name[:-5]
 
             if isinstance(metric_value, float | int):
@@ -332,20 +373,22 @@ def log_report_to_tracker(prefix: str, report: dict, tracker: Optional[levanter.
 
 
 def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_resources):
+    tasks_to_run = config.to_task_dict()
+
     def lm_eval_harness(step: StepInfo, force=False):
-        if step.step == 0 and not force:
-            return  # don't run eval on the first step
+        # if step.step == 0 and not force:
+        #     return  # don't run eval on the first step
+
+        print(config.task_spec_or_default())
 
         model = inference_mode(step.model, True)
-        outputs = run_lm_eval_harness(
+        outputs = _actually_run_eval_harness(
+            config,
             model,
-            config.task_spec_or_default(),
+            tasks_to_run,
             tokenizer,
             EvalBatch,
             axis_resources,
-            max_examples=config.max_examples,
-            max_eval_length=config.max_eval_length,
-            log_samples=config.log_samples,
         )
 
         if jax.process_index() == 0:
@@ -364,3 +407,4 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
 
 if __name__ == "__main__":
     levanter.config.main(run_eval_harness_main)()
+    print("Done", flush=True)

@@ -7,7 +7,11 @@ name = "levanter"
 version = "1.2"
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
+    { name = "Jason Wang"},
+    { name = "Ahmed Ahmed"},
     { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
+    { name = "Will Held"},
+    { name = "Virginia Adams"}
 ]
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
@@ -101,11 +105,11 @@ markers = [
 [project.optional-dependencies]
 test = [
     "pytest",
+    "pytest-forked",
+    "pytest-asyncio",
     "flake8",
     "soundfile",
     "librosa",
-    "pytest-forked",
-    "pytest-asyncio",
 ]
 
 [tool.setuptools.packages.find]

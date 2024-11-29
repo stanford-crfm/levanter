@@ -27,6 +27,13 @@ optimizer:
   weight_decay: 0.1
   warmup: 0.01
 eval_harness:
-  task_spec: ["lambada", "piqa", "hellaswag"]
-  max_examples: 32
+  task_spec:
+    - piqa
+    - task: hellaswag
+      num_fewshot: 10
+      task_alias: hellaswag_10shot
+    - task: hellaswag
+      task_alias: hellaswag_0shot
+    - lambada
+  max_examples: 128
 eval_harness_steps: 1000
