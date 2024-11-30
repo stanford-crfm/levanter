@@ -518,6 +518,9 @@ def log_report_to_tracker(prefix: str, report: dict, tracker: Optional[levanter.
     if "averages" in report:
         for metric_name, metric_value in report["averages"].items():
             if isinstance(metric_value, float | int):
+                if metric_name.endswith(",none"):
+                    metric_name = metric_name[:-5]
+
                 to_log[f"{prefix}/averages/{metric_name}"] = metric_value
 
     tracker.log(to_log, step=None)
