@@ -15,6 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 import haliax
 
@@ -294,8 +295,153 @@ def _actually_run_eval_harness(config: LmEvalHarnessConfig, model, tasks_to_run,
 
     EvalPos = model.Pos if max_eval_length is None else model.Pos.resize(max_eval_length)
     harness = LevanterHarnessLM(EvalBatch, EvalPos, model, axis_resources, tokenizer)
-    outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples, log_samples=config.log_samples)
+    # we always log_samples here and filter out the samples later if we don't want them
+    outputs = evaluator.evaluate(harness, tasks_to_run, limit=max_examples, log_samples=True)
+
+    averages = _compute_averages(outputs)
+    outputs["averages"] = averages
+
+    if not config.log_samples:
+        del outputs["samples"]
+
     return outputs
+
+
+def _compute_averages(outputs):
+    """
+    Compute macro and micro averages of all metrics.
+
+    Args:
+        outputs: Dictionary with results and samples:
+                 - "results": Dictionary of task-level results.
+                 - "samples": Dictionary of task-level sample counts.
+
+    Returns:
+        Averages dictionary with macro and micro averages for all metrics.
+    """
+    averages = {}
+    metric_keys = set()
+
+    # Collect all possible metrics across tasks
+    for task_results in outputs["results"].values():
+        metric_keys.update(k for k in task_results.keys() if "stderr" not in k and k != "alias")
+
+    examples_per_task = [len(task_samples) for task_samples in outputs["samples"].values()]
+
+    # Compute macro and micro averages
+    for metric in metric_keys:
+        # Collect valid tasks for this metric
+        valid_tasks = [
+            (task_results.get(metric), examples_per_task[i])
+            for i, (task_name, task_results) in enumerate(outputs["results"].items())
+            if metric in task_results
+        ]
+
+        if not valid_tasks:
+            continue  # Skip metrics with no valid tasks
+
+        # Separate metric values and weights
+        metric_values, this_examples_per_task = zip(*valid_tasks)
+
+        # Compute macro and micro averages
+        averages["macro_avg_" + metric] = np.mean(metric_values)
+        averages["micro_avg_" + metric] = np.average(metric_values, weights=this_examples_per_task)
+
+    return averages
+
+
+NAT_TO_BIT = 1 / np.log(2)
+
+# eval_harness isn't consistent enough for this to actually be workable
+# def _compute_extra_metrics(samples):
+#     """
+#     Compute a few "soft" measures of accuracy for each task, based on the outputs of the eval harness.
+#
+#     Specifically, we compute:
+#        - "bpb": bits per byte of the correct completion
+#        - "logprob": log probability of the correct completion
+#        - "choice_logprob": log probability of the correct choice normalized w.r.t. the other choices
+#        - "choice_prob_norm": probability of the length-normalized correct choice normalized w.r.t. the other choices
+#
+#     Args:
+#         samples: Dictionary with task data, where each task has a list of samples. Each sample contains:
+#                  - "doc": The original task document (can include metadata such as the answer key)
+#                  - "target": Index of the correct answer (0-indexed), or
+#                              "doc.answer" for 1-indexed answers.
+#                  - "arguments": List of [input, completion] pairs
+#                  - "resps": List of [log probability, is_correct] pairs for completions
+#
+#     Returns:
+#         A dictionary with per-task aggregated metrics.
+#     """
+#     # TODO: move to eval harness and use more sane logic
+#     # uses the samples which has one of two structures (that I've seen)
+#     # { "<task>": [ {"doc": {...,}, "target": <0-indexed answer>, "arguments": [[input, completion], "resps": [[score, is_correct], ...], ...}, ...] }
+#     # { "<task>": [ {"doc": {..., "answer": "[1-indexed answer]"}, "target": "<useless string>", "arguments": [input, completion], "resps": [[score, is_correct], ...], ...}, ...] }
+#     metrics = {}
+#
+#     for task, samples in samples.items():
+#         bpb_list = []
+#         logprob_list = []
+#         choice_logprob_list = []
+#         choice_prob_norm_list = []
+#
+#         for sample in samples:
+#             # Extract the correct answer index (supporting both 0-indexed `target` and 1-indexed `doc.answer`)
+#             if "answer" in sample["doc"]:
+#                 target = int(sample["doc"]["answer"]) - 1  # Convert 1-indexed to 0-indexed
+#             elif "label" in sample["doc"]:
+#                 target = int(sample["doc"]["label"])
+#             elif "target" in sample and isinstance(sample["target"], int):
+#                 target = sample["target"]  # 0-indexed target
+#             elif "target" in sample and isinstance(sample["target"], str):
+#                 # see if it's A-Z:
+#                 if len(sample["target"]) == 1 and "A" <= sample["target"] <= "Z":
+#                     target = ord(sample["target"]) - ord("A")
+#                 else:
+#                     raise ValueError(f"Invalid target: {sample['target']}. {sample}")
+#             elif "target" in sample and isinstance(sample["target"], list):
+#                 target = sample["target"][0]
+#             else:
+#                 raise KeyError(f"Missing `target` or `doc.answer` in sample. doc id: {sample['doc_id']}. Hash: {sample['doc_hash']}\n\n{sample}")
+#
+#             resps = sample["filtered_resps"]  # List of [log probability, is_correct]
+#             arguments = sample["arguments"]  # [input, completion] pairs
+#
+#             # Compute byte lengths for each choice
+#             byte_lengths = [max(1, len(completion.encode("utf-8"))) for _, completion in arguments]
+#
+#             # Compute log probabilities for each choice
+#             log_probs = np.array([resp[0] for resp in resps])  # Extract log probabilities
+#             assert log_probs.shape == (len(arguments),), f"Log probs shape: {log_probs.shape}, arguments: {len(arguments)}. doc: {sample}"
+#             normalized_log_probs = log_probs - np.logaddexp.reduce(log_probs)
+#
+#             # Metrics for the correct answer
+#             correct_logprob = log_probs[target]
+#             correct_bpb = -correct_logprob / byte_lengths[target] * NAT_TO_BIT
+#             correct_choice_logprob = normalized_log_probs[target]
+#
+#             # Compute length-normalized weights (w_i)
+#             bpb_values = -log_probs / np.array(byte_lengths) * NAT_TO_BIT
+#             bpb_weights = np.exp(-bpb_values)
+#             bpb_weights /= max(bpb_weights.sum(), 1e-8)  # Avoid division by zero
+#             correct_choice_prob_norm = bpb_weights[target]
+#
+#             # Append metrics
+#             bpb_list.append(correct_bpb)
+#             logprob_list.append(correct_logprob)
+#             choice_logprob_list.append(correct_choice_logprob)
+#             choice_prob_norm_list.append(correct_choice_prob_norm)
+#
+#         # Aggregate metrics for the task
+#         metrics[task] = {
+#             "bpb": np.mean(bpb_list) if bpb_list else 0.0,
+#             "logprob": np.mean(logprob_list) if logprob_list else 0.0,
+#             "choice_logprob": np.mean(choice_logprob_list) if choice_logprob_list else 0.0,
+#             "choice_prob_norm": np.mean(choice_prob_norm_list)  if choice_prob_norm_list else 0.0,
+#         }
+#
+#     return metrics
 
 
 def run_eval_harness_main(config: EvalHarnessMainConfig):
@@ -368,6 +514,11 @@ def log_report_to_tracker(prefix: str, report: dict, tracker: Optional[levanter.
 
             if isinstance(metric_value, float | int):
                 to_log[f"{prefix}/{task_name}/{metric_name}"] = metric_value
+
+    if "averages" in report:
+        for metric_name, metric_value in report["averages"].items():
+            if isinstance(metric_value, float | int):
+                to_log[f"{prefix}/averages/{metric_name}"] = metric_value
 
     tracker.log(to_log, step=None)
 

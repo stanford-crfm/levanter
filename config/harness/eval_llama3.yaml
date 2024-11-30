@@ -1,19 +1,7 @@
 eval_harness:
   task_spec:
-    #    EvalTaskConfig("agieval_lsat_ar", 3),  # 3-shot tests in legal domain
-    #    EvalTaskConfig("arc_easy", 10),  # 10-shot, four-way MCQ questions involving grade 3-9 basic science
-    #    EvalTaskConfig("arc_challenge", 10),  # a (harder) version of arc_easy
-    #    EvalTaskConfig("boolq", 10),  # answer yes/no questions based on a passage
-    #    EvalTaskConfig("commonsense_qa", 10),  # 5-way multiple-choice questions based on common-sense, everyday scenarios
-    #    EvalTaskConfig("copa", 0),  # use causal reasoning to predict the correct outcome of a given scenario
-    #    EvalTaskConfig("hellaswag", 0),  # 4-way multiple choice commonsense reasoning dataset
-    #    EvalTaskConfig("hellaswag", 10),  # 4-way multiple choice commonsense reasoning dataset
-    #    EvalTaskConfig("lambada", 0),  # predict the endings of text passages
-    #    EvalTaskConfig("openbookqa", 0),  # 4-way multiple choice question answering task that requires multi-step reasoning
-    #    EvalTaskConfig("piqa", 10),  # answer questions based on a passage
-    #    EvalTaskConfig("squadv2", 10),  # reading comprehension benchmark
-    #    EvalTaskConfig("wsc273", 0),  # Winograd Schema Challenge
-    #    EvalTaskConfig("winogrande", 0),  # Winograd challenge, extended to more domains
+    - task: commonsense_qa  # 5-way multiple-choice questions based on common-sense, everyday scenarios
+      num_fewshot: 10
     - task: agieval_lsat_ar  # 3-shot tests in legal domain
       num_fewshot: 3
     - task: arc_easy  # 10-shot, four-way MCQ questions involving grade 3-9 basic science
@@ -40,15 +28,11 @@ eval_harness:
       num_fewshot: 0
     - task: winogrande  # Winograd challenge, extended to more domains
       num_fewshot: 0
-  #    - task: commonsense_qa  # 5-way multiple-choice questions based on common-sense, everyday scenarios
-  #      num_fewshot: 10
+      # requires generation
 ##    - task: squadv2  # reading comprehension benchmark
 #      num_fewshot: 10
+  max_examples: 16
   max_eval_length: 4096
-#tokenizer: gs://marin-us-central2/checkpoints/dclm_baseline_1b_1x_replication_nov12_3404462497seed-b68241/hf/step-54930
-#tokenizer: gs://levanter-checkpoints/marin/olmoish7b_v4_1024_0627/dlwh_7b0627/hf/step-715001/
-#tokenizer: gs://levanter-checkpoints/marin/olmoish7b_v4_1024_0627/dlwh_7b0627/step-510000/
-#tokenizer: "EleutherAI/gpt-neox-20b"
 tokenizer: meta-llama/Meta-Llama-3-8B
 model:
   type: llama
