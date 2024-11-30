@@ -31,7 +31,6 @@ eval_harness:
       # requires generation
 ##    - task: squadv2  # reading comprehension benchmark
 #      num_fewshot: 10
-  max_examples: 16
   max_eval_length: 4096
 tokenizer: meta-llama/Meta-Llama-3-8B
 model:
