@@ -9,6 +9,7 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.models.attention import (
+    AttentionBackend,
     AttentionMask,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
@@ -219,10 +220,11 @@ def test_tpu_splash_attention():
         assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
 
 
-def test_segment_ids_are_respected():
+@pytest.mark.parametrize("impl", ["default", "jax_flash", "vanilla"])
+def test_segment_ids_are_respected(impl):
     # test that we can't attend to something outside of the range
     D = 2
-    L = 10
+    L = 256
     Pos = Axis("Pos", L)
     Head = Axis("Head", D)
 
@@ -238,11 +240,13 @@ def test_segment_ids_are_respected():
     keys = hax.named(keys, (KPos, Head))
     values = hax.named(values, (KPos, Head))
 
-    segment_ids = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 1], dtype=np.int32)
+    segment_ids = np.array([0, 0, 0] + [1] * (L - 3), dtype=np.int32)
     segment_ids = hax.named(segment_ids, (Pos,))
     mask = AttentionMask(is_causal=True, segment_ids=segment_ids)
 
-    result = dot_product_attention(Pos, KPos, Head, query, keys, values, mask=mask)
+    result = dot_product_attention(
+        Pos, KPos, Head, query, keys, values, attn_backend=AttentionBackend(impl), mask=mask, flash_block_size=128
+    )
 
     # the first 3 positions should all have a value of 300.0
     assert_trees_all_close(result.array[0:3, 1], 300.0)

@@ -7,6 +7,7 @@ from typing import Optional, Union, overload
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
@@ -543,14 +544,15 @@ def _unflatten_bshd(attn_output, q_class, v_class):
     return attn_output
 
 
-def _make_segment_mask(segment_ids, QPos, KPos, q_slice, k_slice) -> NamedArray:
+def _materialize_segment_mask(segment_ids, QPos, KPos, q_slice, k_slice) -> NamedArray:
     """
-    Make a segment mask for the attention. This is a mask that prevents attention between different segments.
+    Make a segment mask for attention. This is a mask that prevents attention between different segments.
     """
     kv_segment_ids = segment_ids.rename({QPos: KPos})[KPos, k_slice]
     q_segment_ids = segment_ids[QPos, q_slice]
+    sub_KPos = kv_segment_ids.resolve_axis(KPos.name)
 
-    return q_segment_ids.broadcast_axis(KPos) == kv_segment_ids
+    return q_segment_ids.broadcast_axis(sub_KPos) == kv_segment_ids
 
 
 class AttentionMask(eqx.Module):
@@ -603,7 +605,7 @@ class AttentionMask(eqx.Module):
         mask = combine_masks_and(causal, explicit)
 
         if self.segment_ids is not None:
-            segment_mask = _make_segment_mask(self.segment_ids, QPos, KPos, q_slice, k_slice)
+            segment_mask = _materialize_segment_mask(self.segment_ids, QPos, KPos, q_slice, k_slice)
             mask = combine_masks_and(mask, segment_mask)
 
         return mask
@@ -619,12 +621,32 @@ class AttentionMask(eqx.Module):
     def __and__(self, other) -> "AttentionMask":
         is_causal = self.is_causal and other.is_causal
         explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask)
+        segment_ids = self._check_for_same_segment_ids(other)
+
+        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
 
     def __or__(self, other) -> "AttentionMask":
         is_causal = self.is_causal or other.is_causal
         explicit_mask = combine_masks_or(self.explicit_mask, other.explicit_mask)
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask)
+        segment_ids = self._check_for_same_segment_ids(other)
+        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
+
+    def _check_for_same_segment_ids(self, other):
+        if self.segment_ids is not None and other.segment_ids is not None:
+            # only one segment mask is allowed
+            # b/c we might do this in jit, we use eqx.error_if
+            # in theory we can do this one by just assigning unique ids to each unique pair...
+            # (but i don't really anticipate needing this)
+            segment_ids = eqx.error_if(
+                self.segment_ids,
+                not haliax.all(self.segment_ids == other.segment_ids),
+                "Only one segment mask is allowed",
+            )
+        elif self.segment_ids is not None:
+            segment_ids = self.segment_ids
+        else:
+            segment_ids = other.segment_ids
+        return segment_ids
 
 
 @overload
@@ -867,6 +889,8 @@ def _tpu_splash_attention(
             block_kv_dq=min(block_size, Sq),
         )
 
+        segment_ids = None
+
         if mask is None:
             base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
         elif isinstance(mask, AttentionMask):
@@ -878,6 +902,11 @@ def _tpu_splash_attention(
             # This is going to be a pain to support
             if mask.explicit_mask is not None:
                 raise NotImplementedError("Explicit masks are not yet supported for splash attention")
+
+            if mask.segment_ids is not None:
+                # for now only support self attention
+                segment_ids = mask.segment_ids.array
+                segment_ids = SegmentIds(segment_ids, segment_ids)
         elif isinstance(mask, NamedArray):
             raise NotImplementedError("NamedArray masks are not yet supported for splash attention")
         else:
@@ -893,7 +922,7 @@ def _tpu_splash_attention(
         q = q.astype(attention_dtype)
         k = k.astype(attention_dtype)
         v = v.astype(attention_dtype)
-        return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
+        return jax.vmap(splash_kernel)(q, k, v, segment_ids=segment_ids)
 
     attn_output = wrap_flash_attention(q_, k_, v_)
 
