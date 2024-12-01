@@ -1,16 +1,19 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+import numpy as np
 import pytest
 from chex import assert_trees_all_close
 
 import haliax as hax
+from haliax import Axis
 
 from levanter.models.attention import (
     AttentionMask,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
+    dot_product_attention,
 )
 from test_utils import skip_if_module_missing
 
@@ -214,3 +217,34 @@ def test_tpu_splash_attention():
         hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
         assert hax_out.axes == flash_out.axes
         assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
+
+
+def test_segment_ids_are_respected():
+    # test that we can't attend to something outside of the range
+    D = 2
+    L = 10
+    Pos = Axis("Pos", L)
+    Head = Axis("Head", D)
+
+    keys = np.zeros((L, D), dtype=np.float32)
+    keys[0, 0] = 100.0  # really want to attend to this
+    values = np.zeros((L, D), dtype=np.float32)
+    values[0, 1] = 300.0  # check if we did attend
+    KPos = Pos.alias("KPos")
+
+    query = np.ones((L, D), dtype=np.float32)
+
+    query = hax.named(query, (Pos, Head))
+    keys = hax.named(keys, (KPos, Head))
+    values = hax.named(values, (KPos, Head))
+
+    segment_ids = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 1], dtype=np.int32)
+    segment_ids = hax.named(segment_ids, (Pos,))
+    mask = AttentionMask(is_causal=True, segment_ids=segment_ids)
+
+    result = dot_product_attention(Pos, KPos, Head, query, keys, values, mask=mask)
+
+    # the first 3 positions should all have a value of 300.0
+    assert_trees_all_close(result.array[0:3, 1], 300.0)
+    # the rest should be 0
+    assert_trees_all_close(result.array[3:, 1], 0.0)

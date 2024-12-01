@@ -543,6 +543,16 @@ def _unflatten_bshd(attn_output, q_class, v_class):
     return attn_output
 
 
+def _make_segment_mask(segment_ids, QPos, KPos, q_slice, k_slice) -> NamedArray:
+    """
+    Make a segment mask for the attention. This is a mask that prevents attention between different segments.
+    """
+    kv_segment_ids = segment_ids.rename({QPos: KPos})[KPos, k_slice]
+    q_segment_ids = segment_ids[QPos, q_slice]
+
+    return q_segment_ids.broadcast_axis(KPos) == kv_segment_ids
+
+
 class AttentionMask(eqx.Module):
     """
 
@@ -563,7 +573,8 @@ class AttentionMask(eqx.Module):
 
     is_causal: bool = eqx.static_field()
     explicit_mask: Optional[NamedArray] = None
-    # TODO: add sequence packing
+    segment_ids: Optional[NamedArray] = None
+    # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
     # TODO: add prefixlm
     # cf https://github.com/google-research/t5x/blob/51a99bff8696c373cc03918707ada1e98cbca407/t5x/examples/decoder_only/layers.py#L978
 
@@ -589,7 +600,13 @@ class AttentionMask(eqx.Module):
         else:
             explicit = None
 
-        return combine_masks_and(causal, explicit)
+        mask = combine_masks_and(causal, explicit)
+
+        if self.segment_ids is not None:
+            segment_mask = _make_segment_mask(self.segment_ids, QPos, KPos, q_slice, k_slice)
+            mask = combine_masks_and(mask, segment_mask)
+
+        return mask
 
     @staticmethod
     def causal() -> "AttentionMask":
