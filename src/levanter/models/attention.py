@@ -618,6 +618,9 @@ class AttentionMask(eqx.Module):
     def explicit(mask: NamedArray) -> "AttentionMask":
         return AttentionMask(is_causal=False, explicit_mask=mask)
 
+    def with_segment_ids(self, segment_ids: NamedArray) -> "AttentionMask":
+        return AttentionMask(is_causal=self.is_causal, explicit_mask=self.explicit_mask, segment_ids=segment_ids)
+
     def __and__(self, other) -> "AttentionMask":
         is_causal = self.is_causal and other.is_causal
         explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
@@ -700,7 +703,6 @@ def materialize_mask(
 
 # TODO: padding mask
 # TODO: FCM mask?
-# TODO: sequence packing mask
 
 
 def _try_tpu_splash_attention(
