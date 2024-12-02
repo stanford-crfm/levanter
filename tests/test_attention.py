@@ -245,7 +245,7 @@ def test_segment_ids_are_respected(impl):
     segment_ids = hax.named(segment_ids, (Pos,))
     mask = AttentionMask(is_causal=True, segment_ids=segment_ids)
 
-    result = dot_product_attention(
+    result = hax.named_jit(dot_product_attention)(
         Pos, KPos, Head, query, keys, values, attn_backend=AttentionBackend(impl), mask=mask, flash_block_size=128
     )
 
