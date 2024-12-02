@@ -25,7 +25,11 @@ class LmExample(eqx.Module):
 
     @staticmethod
     def causal(
-        tokens: hax.NamedArray, *, loss_mask: Optional[hax.NamedArray] = None, ignore_id: Optional[int] = None
+        tokens: hax.NamedArray,
+        *,
+        loss_mask: Optional[hax.NamedArray] = None,
+        ignore_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
     ) -> "LmExample":
         if tokens.ndim != 1:
             raise ValueError("tokens must be a 1D array")
@@ -45,6 +49,15 @@ class LmExample(eqx.Module):
             loss_mask = loss_mask * ignore_mask
 
         attn_mask = AttentionMask.causal()
+
+        if eos_id is not None:
+            # the next token after an eos token is in a new segment
+            eos_mask = hax.roll(tokens, 1, Pos) == eos_id
+            # first token is always in segment 0
+            eos_mask = eos_mask.at[Pos, 0].set(False).astype(jnp.int32)
+            segment_ids = hax.cumsum(eos_mask, axis=Pos)
+            attn_mask = attn_mask.with_segment_ids(segment_ids)
+
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 

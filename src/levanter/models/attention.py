@@ -855,10 +855,13 @@ def _tpu_splash_attention(
 
         return PartitionSpec(b_out, h_out, s_out, d_out)
 
+    segment_ids = mask.segment_ids if isinstance(mask, AttentionMask) else None
+
     # BHSD
     physical_axes_q = _physical_axis_for_binning(q_class)
     physical_axes_k = _physical_axis_for_binning(k_class)
     physical_axes_v = _physical_axis_for_binning(v_class)
+    physical_axes_segments = pspec_for_axis(segment_ids.axes) if segment_ids is not None else None
 
     # MaxText uses a block size of 512
     block_size = block_size or 512
@@ -871,11 +874,12 @@ def _tpu_splash_attention(
             physical_axes_q,
             physical_axes_k,
             physical_axes_v,
+            physical_axes_segments,
         ),
         out_specs=physical_axes_q,
         check_rep=False,
     )
-    def wrap_flash_attention(q, k, v):
+    def wrap_flash_attention(q, k, v, segment_ids):
         # NB: inside the function, q, k, and v are partitioned, so in general the lengths of dims are not the same
         Sq = q.shape[2]
         Sk = k.shape[2]
@@ -891,7 +895,10 @@ def _tpu_splash_attention(
             block_kv_dq=min(block_size, Sq),
         )
 
-        segment_ids = None
+        if mask.segment_ids is not None:
+            # for now only support self attention
+            segment_ids = segment_ids.array
+            segment_ids = SegmentIds(segment_ids, segment_ids)
 
         if mask is None:
             base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
@@ -900,15 +907,10 @@ def _tpu_splash_attention(
                 base_mask = splash_attention_mask.CausalMask(shape=(Sq, Sk))
             else:
                 base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
-
             # This is going to be a pain to support
             if mask.explicit_mask is not None:
                 raise NotImplementedError("Explicit masks are not yet supported for splash attention")
 
-            if mask.segment_ids is not None:
-                # for now only support self attention
-                segment_ids = mask.segment_ids.array
-                segment_ids = SegmentIds(segment_ids, segment_ids)
         elif isinstance(mask, NamedArray):
             raise NotImplementedError("NamedArray masks are not yet supported for splash attention")
         else:
@@ -926,7 +928,7 @@ def _tpu_splash_attention(
         v = v.astype(attention_dtype)
         return jax.vmap(splash_kernel)(q, k, v, segment_ids=segment_ids)
 
-    attn_output = wrap_flash_attention(q_, k_, v_)
+    attn_output = wrap_flash_attention(q_, k_, v_, segment_ids)
 
     attn_output = haliax.named(attn_output, ("B", "H", "S", "D"))
     # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
