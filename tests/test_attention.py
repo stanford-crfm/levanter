@@ -242,6 +242,7 @@ def test_segment_ids_are_respected(impl):
     values = hax.named(values, (KPos, Head))
 
     segment_ids = np.array([0, 0, 0] + [1] * (L - 3), dtype=np.int32)
+    segment_ids = jax.device_put(segment_ids)
     segment_ids = hax.named(segment_ids, (Pos,))
     mask = AttentionMask(is_causal=True, segment_ids=segment_ids)
 
