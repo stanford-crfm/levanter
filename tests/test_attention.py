@@ -223,7 +223,8 @@ def test_tpu_splash_attention():
 @pytest.mark.parametrize("impl", ["default", "jax_flash", "vanilla"])
 def test_segment_ids_are_respected(impl):
     # test that we can't attend to something outside of the range
-    D = 2
+    # splash needs 128
+    D = 128 if impl == "default" else 2
     L = 256
     Pos = Axis("Pos", L)
     Head = Axis("Head", D)
