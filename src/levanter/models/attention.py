@@ -863,13 +863,28 @@ def _tpu_splash_attention(
 
         return PartitionSpec(b_out, h_out, s_out, d_out)
 
-    segment_ids = mask.segment_ids if isinstance(mask, AttentionMask) else None
-
     # BHSD
     physical_axes_q = _physical_axis_for_binning(q_class)
     physical_axes_k = _physical_axis_for_binning(k_class)
     physical_axes_v = _physical_axis_for_binning(v_class)
+
+    # segment_ids
+    segment_ids = mask.segment_ids if isinstance(mask, AttentionMask) else None
     physical_axes_segments = pspec_for_axis(segment_ids.axes) if segment_ids is not None else None
+    # do we have a batch axis in segment_ids? (needed for vmap below)
+    if segment_ids is not None:
+        index_of_seq_dim = segment_ids.axes.index(QPos)
+        other_indices = [i for i in range(len(segment_ids.axes)) if i != index_of_seq_dim]
+        if len(other_indices) > 1:
+            raise NotImplementedError(
+                f"Only one batch axis is supported in segment_ids right now (got {segment_ids.axes})"
+            )
+        elif len(other_indices) == 1:
+            segment_batch_axis = other_indices[0]
+        else:
+            segment_batch_axis = None
+    else:
+        segment_batch_axis = None
 
     # MaxText uses a block size of 512
     block_size = block_size or 512
@@ -934,7 +949,9 @@ def _tpu_splash_attention(
         q = q.astype(attention_dtype)
         k = k.astype(attention_dtype)
         v = v.astype(attention_dtype)
-        return jax.vmap(splash_kernel)(q, k, v, segment_ids=segment_ids)
+        return jax.vmap(
+            lambda q, k, v, si: splash_kernel(q, k, v, segment_ids=si), in_axes=(0, 0, 0, segment_batch_axis)
+        )(q, k, v, segment_ids)
 
     attn_output = wrap_flash_attention(q_, k_, v_, segment_ids)
 
