@@ -564,13 +564,21 @@ class AttentionMask(eqx.Module):
     Represents an attention mask in a structured way to make it easier to optimize attention for particular use cases
     (causal, prefix, etc.). It is anticipated that this will be extended with new types of masks as needed.
 
+    The abstraction is based on two concepts:
+
+    1) Materialization: An AttentionMask can be materialized for a particular slice of the query and key position axes.
+       Most naively, you can just get the whole mask as a NamedArray. However, in some cases, you might want to
+       only get a particular chunk (e.g. for flash attention).
+    2) Combination: AttentionMasks are represented as an implicit conjunction of multiple masks, each with different
+        kinds of structure. You can combine masks with `&` and `|`. Due to the way jit works, we don't use inheritance
+        or similar to represent different kinds of masks. Instead, we use a single class with different fields.
+
     In general, it should be safe to batch Attention Masks, but it is important that *all members of a batch have the
-    same sequence of combined masks*. Otherwise, the batching will not work and you'll get weird errors
+    same set of combined masks*. Otherwise, the batching will not work and you'll get weird errors
 
-    The interface exposed by this class is designed to work well with the attention functions in this module as
-    well as something like flash attention.
+    (Perhaps it's ok to use inheritance here? I'm not sure. Splash attention landed on inheritance, so maybe
+    that's a good sign.)
 
-    A mask can be materialized, in which case it returns the mask as a NamedArray.
     """
 
     is_causal: bool = eqx.static_field()
@@ -622,14 +630,14 @@ class AttentionMask(eqx.Module):
         return AttentionMask(is_causal=self.is_causal, explicit_mask=self.explicit_mask, segment_ids=segment_ids)
 
     def __and__(self, other) -> "AttentionMask":
-        is_causal = self.is_causal and other.is_causal
+        is_causal = self.is_causal or other.is_causal
         explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
         segment_ids = self._check_for_same_segment_ids(other)
 
         return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
 
     def __or__(self, other) -> "AttentionMask":
-        is_causal = self.is_causal or other.is_causal
+        is_causal = self.is_causal and other.is_causal
         explicit_mask = combine_masks_or(self.explicit_mask, other.explicit_mask)
         segment_ids = self._check_for_same_segment_ids(other)
         return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
