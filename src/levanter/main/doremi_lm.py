@@ -110,11 +110,23 @@ def main(config: TrainLmConfig):
         valid_datasets = config.data.validation_sets(ref_model.Pos.size)
 
         causal_train_datasets = {
-            k: CausalLmDataset(v, config.model.Pos, config.model.KeyPos, ignore_index=config.data.ignore_token_id)
+            k: CausalLmDataset(
+                v,
+                config.model.Pos,
+                config.model.KeyPos,
+                ignore_index=config.data.ignore_token_id,
+                eos_id=tokenizer.eos_token_id,
+            )
             for k, v in train_datasets.items()
         }
         valid_datasets = {
-            k: CausalLmDataset(v, config.model.Pos, config.model.KeyPos, ignore_index=config.data.ignore_token_id)
+            k: CausalLmDataset(
+                v,
+                config.model.Pos,
+                config.model.KeyPos,
+                ignore_index=config.data.ignore_token_id,
+                eos_id=tokenizer.eos_token_id,
+            )
             for k, v in valid_datasets.items()
         }
 

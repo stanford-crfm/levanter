@@ -131,6 +131,7 @@ def main(config: TrainLmConfig):
             Pos,
             KeyPos,
             ignore_index=config.data.ignore_token_id,
+            eos_id=tokenizer.eos_token_id,
         )
 
         # add epoch logging if epochs specified
@@ -199,7 +200,12 @@ def main(config: TrainLmConfig):
             logger.warning("No evaluation datasets provided.")
         else:
             causal_datasets = [
-                (CausalLmDataset(ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id), tags)
+                (
+                    CausalLmDataset(
+                        ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id, eos_id=tokenizer.eos_token_id
+                    ),
+                    tags,
+                )
                 for ds, tags in tagged_eval_datasets
             ]
             cb = levanter.eval.cb_tagged_lm_evaluate(
