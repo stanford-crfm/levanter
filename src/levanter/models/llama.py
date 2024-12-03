@@ -12,24 +12,16 @@ import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    stack_state_dict,
-    unflatten_linear_layers,
-    unstack_state_dict,
-)
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
-from levanter.types import BlockFoldable
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.logging import silence_transformer_nag
+from levanter.utils.types import BlockFoldable
 
 
 silence_transformer_nag()
@@ -64,6 +56,7 @@ class LlamaConfig(HFCompatConfig):
     activation_function: str = "silu"
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
+    tie_word_embeddings: bool = False
 
     # Attention-related config
     upcast_attn: bool = False
@@ -120,6 +113,7 @@ class LlamaConfig(HFCompatConfig):
             activation_function=hf_config.hidden_act,
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
+            tie_word_embeddings=hf_config.tie_word_embeddings,
             rope=rope_config,
         )
 
@@ -148,6 +142,7 @@ class LlamaConfig(HFCompatConfig):
             hidden_act=self.activation_function,
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
+            tie_word_embeddings=self.tie_word_embeddings,
             # rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
             rope_theta=rope_theta,
@@ -177,7 +172,7 @@ class LlamaConfig(HFCompatConfig):
         )
 
 
-class LlamaMlp(eqx.Module, StateDictSerializationMixin):
+class LlamaMlp(eqx.Module):
     """Multi-layer Perceptron
     In comparison with GPT2, LlamaMlp adds an up-proj that multiplies with activated gate_proj,
     before down-proj.
@@ -210,46 +205,8 @@ class LlamaMlp(eqx.Module, StateDictSerializationMixin):
         outputs = self.down_proj(hidden_states, key=k_down)
         return outputs
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
-        d = {}
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "gate_proj"), state_dict, self.gate_proj, out_dims_first_in_dict=True
-            )
-        )
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "up_proj"), state_dict, self.up_proj, out_dims_first_in_dict=True
-            )
-        )
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "down_proj"), state_dict, self.down_proj, out_dims_first_in_dict=True
-            )
-        )
 
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix=prefix)
-
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "gate_proj"), self.gate_proj, out_dims_first_in_dict=True)
-        )
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "up_proj"), self.up_proj, out_dims_first_in_dict=True)
-        )
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "down_proj"), self.down_proj, out_dims_first_in_dict=True)
-        )
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class LlamaAttention(StateDictSerializationMixin, eqx.Module):
+class LlamaAttention(eqx.Module):
     config: LlamaConfig = eqx.static_field()
     q_proj: hnn.Linear  # projection from Embed to query
     k_proj: hnn.Linear  # projection from Embed to key
@@ -313,29 +270,6 @@ class LlamaAttention(StateDictSerializationMixin, eqx.Module):
         attn_output = self.o_proj(attn_output, key=key_o)
         return attn_output
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaAttention
-        d = {}
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "q_proj"), state_dict, self.q_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "k_proj"), state_dict, self.k_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "v_proj"), state_dict, self.v_proj, True))
-        d.update(unflatten_linear_layers(apply_prefix(prefix, "o_proj"), state_dict, self.o_proj, True))
-
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # flatten the linear layers of LlamaAttention to match the shape of HF state_dict
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "q_proj"), self.q_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "k_proj"), self.k_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "v_proj"), self.v_proj, True))
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "o_proj"), self.o_proj, True))
-
-        state_dict.update(my_dict)
-        return state_dict
-
 
 class LlamaRMSNorm(eqx.Module):
     """
@@ -381,7 +315,7 @@ class LlamaRMSNorm(eqx.Module):
         return out.astype(in_dtype)
 
 
-class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
+class LlamaDecoderLayer(eqx.Module):
     config: LlamaConfig = eqx.static_field()
     self_attn: LlamaAttention
     mlp: LlamaMlp
@@ -422,7 +356,7 @@ class LlamaDecoderLayer(StateDictSerializationMixin, eqx.Module):
         return output
 
 
-class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
+class LlamaTransformer(eqx.Module):
     config: LlamaConfig = eqx.static_field()
     layers: BlockFoldable[LlamaDecoderLayer]
     norm: LlamaRMSNorm
@@ -451,27 +385,8 @@ class LlamaTransformer(StateDictSerializationMixin, eqx.Module):
 
         return x
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        if isinstance(self.layers, Stacked):
-            state_dict = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "layers"))
 
-        out = super().from_state_dict(state_dict, prefix=prefix)
-        return out
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix=prefix)
-
-        if isinstance(self.layers, Stacked):
-            stacked_dict = unstack_state_dict(my_state_dict, prefix=apply_prefix(prefix, "layers"))
-            state_dict.update(stacked_dict)
-        else:
-            state_dict.update(my_state_dict)
-
-        return state_dict
-
-
-class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
+class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
     """Similar to GPT2 Embedding, except that:
     - Llama doesn't have position embedding in the Embedding layer.
     - Llama doesn't use dropout.
@@ -501,10 +416,10 @@ class LlamaEmbedding(StateDictSerializationMixin, eqx.Module):
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
-class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializationMixin):
+class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig]):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
-    lm_head: hnn.Linear
+    lm_head: Optional[hnn.Linear]
 
     @property
     def config(self):
@@ -523,7 +438,11 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         k_t, k_emb = jrandom.split(key, 2)
         transformer = LlamaTransformer.init(config, key=k_t)
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
-        lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+        if config.tie_word_embeddings:
+            lm_head = None
+        else:
+            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+
         return LlamaLMHeadModel(transformer, embeddings, lm_head)
 
     def __call__(
@@ -544,38 +463,47 @@ class LlamaLMHeadModel(eqx.Module, LmHeadModel[LlamaConfig], StateDictSerializat
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
-        lm_logits = self.lm_head(x, key=k_head)
+        if self.lm_head:
+            lm_logits = self.lm_head(x, key=k_head)
+        else:
+            lm_logits = self.embeddings.unembed(x)
         return lm_logits
+
+    def activations(
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+    ) -> NamedArray:
+        """
+        Compute the activations for the next token in a sequence.
+        Args:
+            input_ids: token IDs with shape {Pos}
+            attn_mask: attention mask with shape {Pos, KeyPos}
+            key: PRNGKey for random number generation
+
+        Returns:
+            NamedArray: activations with shape {Pos, Embed}
+
+        """
+        x = self.embeddings.embed(input_ids)
+        x = self.transformer(x, attn_mask=attn_mask, key=key)
+
+        return x
+
+    def get_lm_head(self) -> hax.NamedArray:
+        if self.lm_head is None:
+            return self.embeddings.token_embeddings.weight
+        else:
+            return self.lm_head.weight
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[LlamaConfig]":
         new_Vocab = self.Vocab.resize(new_size)
         k1, k2 = maybe_rng_split(key, 2)
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
-        new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
-        new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
-
-        return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
+        if self.lm_head is not None:
+            new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
+            new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
+            return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
+        else:
+            return dataclasses.replace(self, embeddings=new_embeddings)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of LlamaMlp
-        d = state_dict.copy()
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
-            )
-        )
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix=prefix)
-
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "lm_head"), self.lm_head, out_dims_first_in_dict=True)
-        )
-
-        state_dict.update(my_dict)
-        return state_dict

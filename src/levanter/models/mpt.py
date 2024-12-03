@@ -15,23 +15,15 @@ import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 import levanter.models.attention
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    stack_state_dict,
-    unflatten_linear_layers,
-    unstack_state_dict,
-)
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()
@@ -107,7 +99,7 @@ class MptAttentionConfig:
 
 
 @LmConfig.register_subclass("mpt")
-@dataclass
+@dataclass(frozen=True)
 class MptConfig(HFCompatConfig):
     d_model: int = 768
     n_heads: int = 12
@@ -212,7 +204,7 @@ class MptConfig(HFCompatConfig):
         )
 
 
-class MptMlp(eqx.Module, StateDictSerializationMixin):
+class MptMlp(eqx.Module):
     up_proj: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     down_proj: hnn.Linear  # projection from Intermediate to Embed
 
@@ -233,7 +225,7 @@ class MptMlp(eqx.Module, StateDictSerializationMixin):
 
 
 # Attention is the same as GPT-2 Attention, modulo alibi
-class MptAttention(StateDictSerializationMixin, eqx.Module):
+class MptAttention(eqx.Module):
     Wqkv: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     out_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
 
@@ -298,35 +290,6 @@ class MptAttention(StateDictSerializationMixin, eqx.Module):
 
         return attn_output
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # our c_attn is [embed] -> [3, heads, head_dim] and hf's is the flattened [embed] -> [3 * heads * head_dim]
-        # and our c_proj is [heads, head_dim] -> [embed] and hf's is the flattened [heads * head_dim] -> [embed]
-        # so we need to reshape the one in the dict before forwarding to the linear
-        # keep in mind that everything is vectorized in our implementation, so there's a leading num_layers dim
-
-        d = unflatten_linear_layers(apply_prefix(prefix, "Wqkv"), state_dict, self.Wqkv, out_dims_first_in_dict=True)
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "out_proj"), state_dict, self.out_proj, out_dims_first_in_dict=True
-            )
-        )
-
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_state_dict
-        # reminder that everything is vectorized
-        state_dict.update(flatten_linear_layers(apply_prefix(prefix, "Wqkv"), self.Wqkv, out_dims_first_in_dict=True))
-        state_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "out_proj"), self.out_proj, out_dims_first_in_dict=True)
-        )
-        return state_dict
-
-
-# Block is broadly similar to GPT-2 Block, with the following changes:
-# * fancy layer norm type (we ignore this)
-# pdrop seems to be off so we won't use it
-
 
 class MptBlock(eqx.Module):
     norm_1: eqx.Module
@@ -362,7 +325,7 @@ class MptBlock(eqx.Module):
         return hidden_states
 
 
-class MptTransformer(StateDictSerializationMixin, eqx.Module):
+class MptTransformer(eqx.Module):
     config: MptConfig = eqx.static_field()
     blocks: Stacked[MptBlock]
     norm_f: hnn.LayerNorm
@@ -396,28 +359,8 @@ class MptTransformer(StateDictSerializationMixin, eqx.Module):
 
         return hidden_states
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # We use a vectorized set of blocks, meaning that we have 1 GptBlock,
-        # whereas in hf we have numlayers GptBlocks. So we need to build one GptBlock from numlayers GptBlocks.
-        # the individual blocks are named h.0.FOO, h.1.FOO, etc.
-        # we want to vectorize them to h.FOO, h.FOO, etc.
-        stacked = stack_state_dict(state_dict, prefix=apply_prefix(prefix, "blocks"))
-        out = super().from_state_dict(stacked, prefix=prefix)
-        return out
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # this method needs to "devectorize" the blocks, so that we have a list of blocks h.0.FOO, h.1.FOO, etc.
-        # first just do the normal thing with our own dict, which we'll post-process
-        my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix)
-
-        stacked_dict = unstack_state_dict(my_state_dict, apply_prefix(prefix, "blocks"))
-        state_dict.update(stacked_dict)
-
-        return state_dict
-
-
-class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
+class MptLmHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSerialization):
     wte: hnn.Embedding
     transformer: MptTransformer
     _config: MptConfig = eqx.static_field()
@@ -447,14 +390,15 @@ class MptLmHeadModel(eqx.Module, LmWithHfSerializationMixin):
         return MptLmHeadModel(wte, transformer, config)
 
     @named_call
-    def __call__(
+    def activations(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray], *, key=None
     ) -> NamedArray:
         hidden_states = self.wte.embed(input_ids)
         hidden_states = self.transformer(hidden_states, attention_mask=attn_mask, key=key)
-        output_logits = self.wte.unembed(hidden_states)
+        return hidden_states
 
-        return output_logits
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.wte.weight
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "MptLmHeadModel":
         if new_size == self.vocab_size:

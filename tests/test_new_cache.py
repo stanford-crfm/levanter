@@ -1,6 +1,4 @@
 import asyncio
-import copy
-import os
 import tempfile
 from typing import Any, Dict, Iterator, Sequence
 
@@ -10,17 +8,7 @@ import ray
 
 from levanter.data import BatchProcessor, ShardedDataSource, batched
 from levanter.data.sharded_datasource import TextUrlDataSource
-from levanter.store.cache import (
-    LEDGER_FILE_NAME,
-    CacheLedger,
-    CacheOptions,
-    SerialCacheWriter,
-    ShardedCacheWriter,
-    TreeStore,
-    _get_builder_actor,
-    _serialize_json_and_commit,
-    build_or_load_cache,
-)
+from levanter.store.cache import CacheOptions, SerialCacheWriter, TreeStore, _get_builder_actor, build_or_load_cache
 from levanter.utils.py_utils import logical_cpu_core_count
 
 
@@ -140,13 +128,13 @@ def test_full_end_to_end_cache():
     with td as tmpdir:
         ray_ds = build_or_load_cache(
             tmpdir,
-            SimpleShardSource(num_shards=2),
+            SimpleShardSource(num_shards=15),
             TestProcessor(),
             await_finished=True,
-            options=CacheOptions.no_fanciness(8),
+            options=CacheOptions(num_shard_groups=3, batch_size=8),
         )
 
-        expected = process_interleave(TestProcessor(), SimpleShardSource(num_shards=2), 8)
+        expected = simple_process(TestProcessor(), SimpleShardSource(num_shards=15))
 
         all_data = ray_ds[:]
 
@@ -162,15 +150,14 @@ def test_full_end_to_end_cache_with_groups():
             SimpleShardSource(num_shards=5),
             TestProcessor(),
             await_finished=True,
-            options=CacheOptions(num_shard_groups=2, batch_size=8, shard_order_randomization_key=None),
+            options=CacheOptions(num_shard_groups=2, batch_size=8),
         )
 
-        expected = process_interleave(TestProcessor(), SimpleShardSource(num_shards=5), 8)
+        expected = simple_process(TestProcessor(), SimpleShardSource(num_shards=5))
 
         all_data = ray_ds[:]
 
-        # check_datasets_equal(all_data, expected)
-        assert len(all_data) == len(list(expected))
+        check_datasets_equal(all_data, expected)
 
 
 @pytest.mark.ray
@@ -204,7 +191,6 @@ class _CustomException(Exception):
 
 
 @pytest.mark.ray
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 def test_cache_recover_from_crash():
     class CrashingShardSource(ShardedDataSource[list[int]]):
         def __init__(self, crash_point: int):
@@ -218,7 +204,7 @@ def test_cache_recover_from_crash():
             # parse the shard name to get the shard number
             shard_num = int(shard_name.split("_")[1])
             for i in range(10):
-                if shard_num * 10 + i == self.crash_point:
+                if i == self.crash_point:
                     raise _CustomException(f"Crashing at {shard_num} {i} {self.crash_point}")
                 if i >= row:
                     yield [shard_num * 10 + i] * 10
@@ -226,7 +212,7 @@ def test_cache_recover_from_crash():
     with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as tmpdir2:
         source = CrashingShardSource(4)
         with pytest.raises(_CustomException):
-            build_or_load_cache(tmpdir, source, TestProcessor())
+            build_or_load_cache(tmpdir, source, TestProcessor(), CacheOptions(target_size_per_flush=1))
 
         # kill the broker actor so that we can test recovery
         ray.kill(
@@ -244,11 +230,11 @@ def test_cache_recover_from_crash():
         )
 
         # testing this doesn't throw
-        source = CrashingShardSource(1000)
+        source = CrashingShardSource(100000)
         reader1 = build_or_load_cache(tmpdir, source, TestProcessor(), await_finished=True)
 
         # compare to the original with no crash
-        reader2 = build_or_load_cache(tmpdir2, SimpleShardSource(), TestProcessor(), await_finished=True)
+        reader2 = build_or_load_cache(tmpdir2, SimpleShardSource(num_shards=4), TestProcessor(), await_finished=True)
 
         check_datasets_equal(reader1, reader2)
 
@@ -295,7 +281,7 @@ def test_chunk_ordering_is_correct_with_slow_shards():
         # now block until the cache is done
         cache.await_finished(timeout=30)
 
-        expected = process_interleave(processor, SlowShardSource(), 16)
+        expected = simple_process(processor, SlowShardSource())
 
         check_datasets_equal(list(cache[:]), expected)
 
@@ -334,13 +320,12 @@ async def test_can_get_elems_before_finished():
             SlowShardSource(),
             TestProcessor(),
             await_finished=False,
-            force_flush=True,
-            options=CacheOptions.no_fanciness(5),
-        )  # we need force_flush to ensure the cache is written to disk
+            options=CacheOptions(target_size_per_flush=1, batch_size=1),
+        )
 
         # read the first 10 elements
         # ensure the first 10 elements are [{"test": np.array([i] * 10)} for i in range(10)]
-        first_10 = list(await cache.get_batch(range(0, 10)))
+        first_10 = list(await asyncio.wait_for(cache.get_batch(range(0, 10)), timeout=30.0))
 
         for i, x in enumerate(first_10):
             np.testing.assert_array_equal(x["test"], np.array([i] * 10))
@@ -353,7 +338,7 @@ async def test_can_get_elems_before_finished():
 
         # now ensure we can get the next 10 elements, which will be
         # [{"test": np.array([i] * 10)} for i in range(10, 20)]
-        batch = await asyncio.wait_for(cache.get_batch(range(10, 20)), timeout=10)
+        batch = await asyncio.wait_for(cache.get_batch(range(10, 20)), timeout=10.0)
 
         for i, x in enumerate(batch):
             np.testing.assert_array_equal(x["test"], np.array([i + 10] * 10))
@@ -364,7 +349,6 @@ async def test_can_get_elems_before_finished():
         cache.await_finished(timeout=10)
 
 
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 def test_shard_cache_crashes_if_processor_throws():
     class ThrowingProcessor(SimpleProcessor):
@@ -398,7 +382,6 @@ def test_shard_cache_fails_with_multiple_shards_with_the_same_name():
             build_or_load_cache(tmpdir, dataset, TestProcessor(), await_finished=True)
 
 
-@pytest.mark.skip("This test segfaults in CI. I think a ray bug")
 @pytest.mark.ray
 @pytest.mark.asyncio
 async def test_shard_cache_fails_gracefully_with_unknown_file_type_async():
@@ -451,89 +434,3 @@ def test_shard_cache_fails_gracefully_with_unknown_file_type():
             cache.await_finished(timeout=10)
 
         del cache
-
-
-def test_sharded_cache_writer():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        source = SimpleShardSource(num_shards=4)
-        processor = SimpleProcessor()
-        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, CacheOptions.no_fanciness(8))
-
-        exemplar = {"data": np.array([0], dtype=np.int64)}
-
-        writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
-        for shard_name in source.shard_names:
-            for ex in batched(source.open_shard(shard_name), ledger.metadata.options.batch_size):
-                writer.write_batch(shard_name, processor(ex))
-
-        for shard_name in source.shard_names:
-            writer.finish_shard(shard_name, source._rows_per_shard)
-
-        store = writer.finish()
-
-        data_path = store.path
-
-        del store
-
-        builder = TreeStore.open(exemplar, data_path, mode="r")
-
-        assert len(builder) == 40
-
-        for i, x in enumerate(builder):
-            np.testing.assert_array_equal(x["data"], np.asarray([i % 10 + i // 10 * 10] * 10))
-
-        # check totals for the ledger
-        ledger = writer.ledger
-        assert ledger.total_num_rows == 40
-        assert ledger.is_finished
-
-        for shard_name in source.shard_names:
-            assert ledger.shard_rows[shard_name] == 10
-
-
-def test_sharded_cache_writer_trims_on_resume():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        source = SimpleShardSource(num_shards=4)
-        processor = SimpleProcessor()
-
-        exemplar = {"data": np.array([0], dtype=np.int64)}
-
-        ledger = CacheLedger.load_or_initialize(tmpdir, source, processor, CacheOptions.no_fanciness(batch_size=8))
-
-        writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
-        for shard_name in source.shard_names:
-            for ex in batched(source.open_shard(shard_name), 8):
-                writer.write_batch(shard_name, processor(ex))
-
-        for shard_name in source.shard_names:
-            writer.finish_shard(shard_name, 10)
-
-        writer.finish()
-
-        # now deliberately truncate the ledger a bit
-        ledger = copy.deepcopy(writer.ledger)
-        assert ledger.total_num_rows == 40
-        assert ledger.is_finished
-        ledger.total_num_rows = 24
-        ledger.shard_rows["shard_0"] = 8
-        ledger.shard_rows["shard_1"] = 8
-        ledger.shard_rows["shard_2"] = 8
-        ledger.shard_rows["shard_3"] = 0
-        ledger.is_finished = False
-
-        _serialize_json_and_commit(os.path.join(tmpdir, LEDGER_FILE_NAME), ledger)
-
-        writer = ShardedCacheWriter(tmpdir, ledger, exemplar)
-
-        # ensure it got truncated
-        assert writer.ledger.total_num_rows == 24
-        assert writer.ledger.is_finished is False
-        assert writer.ledger.shard_rows["shard_0"] == 8
-        assert writer.ledger.shard_rows["shard_1"] == 8
-        assert writer.ledger.shard_rows["shard_2"] == 8
-        assert writer.ledger.shard_rows["shard_3"] == 0
-
-        new_store = writer._tree_store
-        new_data = new_store[:]
-
-        assert len(new_data) == 24

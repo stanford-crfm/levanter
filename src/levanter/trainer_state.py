@@ -12,8 +12,8 @@ from optax import GradientTransformation, OptState
 from haliax.quantization import Fp8Config, apply_updates, fp8_linear_layers, partition_for_grad_overwrite
 from haliax.types import IntScalar, Scalar
 
-from levanter.types import FilterTree
 from levanter.utils.jax_utils import is_inexact_arrayish
+from levanter.utils.types import FilterTree
 
 
 M = TypeVar("M", bound=PyTree)

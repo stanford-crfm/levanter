@@ -2,27 +2,20 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Dict, Optional, Type, Union
 
-import equinox as eqx
 import jax.random as jrandom
 
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split
+from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    unflatten_linear_layers,
-)
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.flop_utils import lm_flops_per_token
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()
@@ -150,7 +143,7 @@ class MistralConfig(LlamaConfig):
         )
 
 
-class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerializationMixin):
+class MistralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MistralConfig]):
     transformer: LlamaTransformer
     embeddings: LlamaEmbedding
     lm_head: hnn.Linear
@@ -175,7 +168,11 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
         lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
         return MistralLMHeadModel(transformer, embeddings, lm_head)
 
-    def __call__(
+    def get_lm_head(self) -> hax.NamedArray:
+        assert self.lm_head.bias is None
+        return self.lm_head.weight
+
+    def activations(
         self,
         input_ids: NamedArray,
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
@@ -193,8 +190,7 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
-        lm_logits = self.lm_head(x, key=k_head)
-        return lm_logits
+        return x
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[MistralConfig]":
         new_Vocab = self.Vocab.resize(new_size)
@@ -207,24 +203,3 @@ class MistralLMHeadModel(eqx.Module, LmHeadModel[MistralConfig], StateDictSerial
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
-
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        # unflatten the linear layers of HF state_dict to match the shape of MistralMlp
-        d = state_dict.copy()
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "lm_head"), state_dict, self.lm_head, out_dims_first_in_dict=True
-            )
-        )
-        return super().from_state_dict(d, prefix)
-
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix=prefix)
-
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "lm_head"), self.lm_head, out_dims_first_in_dict=True)
-        )
-
-        state_dict.update(my_dict)
-        return state_dict

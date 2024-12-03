@@ -42,9 +42,9 @@ from haliax.quantization import Fp8Config
 from haliax.types import Scalar
 
 import levanter.checkpoint
-import levanter.logging
 import levanter.tracker
 import levanter.tracker.wandb
+import levanter.utils.logging
 from levanter import tracker
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
@@ -53,10 +53,10 @@ from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
-from levanter.types import ComputeLossFunction, FilterSpec
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
+from levanter.utils.types import ComputeLossFunction, FilterSpec
 
 
 logger = pylogging.getLogger(__name__)
@@ -65,7 +65,7 @@ M = TypeVar("M")  # Model
 X = TypeVar("X")  # Input
 S = TypeVar("S", bound=TrainerState)
 
-DEFAULT_JAX_CONFIG = {
+DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
@@ -331,7 +331,12 @@ class Trainer:
             model = model_init()
             # only force trainable params to param precision. Other params are cast to compute precision
             state = TrainerState.init(
-                self.optimizer, model, key=training_key, is_trainable=is_trainable, mp=self.mp, fp8=self.fp8
+                self.optimizer,
+                model,
+                key=training_key,
+                is_trainable=is_trainable,
+                mp=self.mp,
+                fp8=self.fp8,
             )
             return state
 
@@ -376,7 +381,6 @@ class Trainer:
         while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
-
             info = self.train_step(state, example)
             state = info.state
 
@@ -445,7 +449,10 @@ class Trainer:
 
             self.add_hook(
                 callbacks.compute_validation_loss(
-                    eval_loss, eval_loader, max_batches=self.config.max_eval_batches, name=name
+                    eval_loss,
+                    eval_loader,
+                    max_batches=self.config.max_eval_batches,
+                    name=name,
                 ),
                 every=self.config.steps_per_eval,
             )
@@ -498,8 +505,15 @@ class Trainer:
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
         mbs = self.config.microbatch_size
-        grad_fn = microbatched(grad_fn, self.TrainBatch, mbs, self.parameter_axis_mapping, self.compute_axis_mapping)
-        return grad_fn(model, *batch, **batch_kwargs)
+        grad_fn = microbatched(
+            grad_fn,
+            self.TrainBatch,
+            mbs,
+            self.parameter_axis_mapping,
+            self.compute_axis_mapping,
+        )
+        with hax.axis_mapping(self.compute_axis_mapping):
+            return grad_fn(model, *batch, **batch_kwargs)
 
 
 def _initialize_global_tracker(config, run_id):
@@ -569,7 +583,7 @@ class TrainerConfig:
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
     initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
 
-    jax_config: Dict[str, JsonAtom] = field(
+    jax_config: Mapping[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
     )  # config to pass to jax.config.update
 
@@ -597,7 +611,10 @@ class TrainerConfig:
 
     def __post_init__(self):
         if self.wandb is not None:
-            warnings.warn("wandb is deprecated. use tracker with type wandb instead", DeprecationWarning)
+            warnings.warn(
+                "wandb is deprecated. use tracker with type wandb instead",
+                DeprecationWarning,
+            )
             self.tracker = self.wandb
 
     def initialize(self):
@@ -609,7 +626,7 @@ class TrainerConfig:
         self._validate_and_set_defaults()
 
         id = self._maybe_set_id()
-        levanter.logging.init_logging(self.log_dir, f"{id}.log")
+        levanter.utils.logging.init_logging(self.log_dir, f"{id}.log")
         _initialize_global_tracker(self.tracker, id)
 
         self.ray.initialize()
@@ -765,6 +782,10 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
+
+        if self.replica_dcn_axis_size == -1:
+            self.replica_dcn_axis_size = self.num_slices
+            logger.info(f"Setting replica_dcn_axis_size to {self.replica_dcn_axis_size}")
 
 
 class AllConfig(Protocol):

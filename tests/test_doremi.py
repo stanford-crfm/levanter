@@ -15,7 +15,7 @@ from levanter.callbacks import eval_loss_loop
 from levanter.data import AsyncDataset
 from levanter.data.mixture import MixtureDataset
 from levanter.trainer import Trainer, TrainerConfig
-from levanter.utils.jax_utils import key_iterator
+from levanter.utils.jax_utils import key_iterator, local_cpu_mesh
 from levanter.utils.py_utils import non_caching_cycle
 
 
@@ -27,8 +27,18 @@ class Example(equinox.Module):
 Block = hax.Axis("Block", 1024)
 
 
+def platform_of_array(x):
+    if isinstance(x, jax.Array):
+        return set(d.platform for d in x.devices())
+    elif isinstance(x, hax.NamedArray):
+        return platform_of_array(x.array)
+    else:
+        return "cpu"
+
+
 class LogitDataset(AsyncDataset[Example]):
     def __init__(self, W, noise, x_mask, x_bias, *, key):
+        super().__init__()
         self.W = W
         self.noise = noise
         self.x_mask = x_mask
@@ -52,17 +62,12 @@ class LogitDataset(AsyncDataset[Example]):
 
         self._gen_block_data = _gen_block_data
 
-    def __iter__(self):
-        key_iter = key_iterator(self.key)
-        Dim = self.W.axes[0]
-        while True:
-            kk = next(key_iter)
-            this_key_iter = key_iterator(kk)
-            x_block = hax.random.normal(next(this_key_iter), (Block, Dim)) * self.x_mask + self.x_bias
-            noise = hax.random.normal(next(this_key_iter), (Block,)) * self.noise
-            y_block = (hax.nn.sigmoid(hax.dot(x_block, self.W, axis=Dim) + noise) > 0.5).astype(float)
-            for i in range(Block.size):
-                yield self._make_example(x_block, y_block, i)
+    def _make_block(self, Dim, kk):
+        this_key_iter = key_iterator(kk)
+        x_block = hax.random.normal(next(this_key_iter), (Block, Dim)) * self.x_mask + self.x_bias
+        noise = hax.random.normal(next(this_key_iter), (Block,)) * self.noise
+        y_block = (hax.nn.sigmoid(hax.dot(x_block, self.W, axis=Dim) + noise) > 0.5).astype(float)
+        return x_block, y_block
 
     async def async_len(self) -> int:
         raise ValueError("Infinitely long dataset")
@@ -106,21 +111,21 @@ def test_estimate_mixture_weights():
     Dim = hax.Axis("Dim", 5)
     Batch = hax.Axis("Batch", 32)
 
-    keys = key_iterator(0)
+    # data loading needs to take place on CPU
+    with local_cpu_mesh():
+        keys = key_iterator(0)
+        W1 = hax.named([0.0, 0.5, 0.5, 0.0, 0.0], (Dim,))
+        x1_mask = hax.named([0.0, 1.0, 1.0, 0.0, 0.0], (Dim,))
+        W2 = hax.named([0.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
+        x2_mask = hax.named([0.0, 0.0, 0.0, 1.0, 1.0], (Dim,))
+        W3 = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
+        x3_mask = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
+        x3_bias = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
 
-    # W = hax.random.normal(next(keys), (Dim,))
-    W1 = hax.named([0.0, 0.5, 0.5, 0.0, 0.0], (Dim,))
-    x1_mask = hax.named([0.0, 1.0, 1.0, 0.0, 0.0], (Dim,))
-    W2 = hax.named([0.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
-    x2_mask = hax.named([0.0, 0.0, 0.0, 1.0, 1.0], (Dim,))
-    W3 = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
-    x3_mask = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
-    x3_bias = hax.named([1.0, 0.0, 0.0, 0.0, 0.0], (Dim,))
-
-    # y = sigmoid(Wx + b + N(0, noise^2)) > 0.5
-    ds1 = LogitDataset(W1, 0.1, x1_mask, 0.0, key=next(keys))
-    ds2 = LogitDataset(W2, 2.0, x2_mask, 0.0, key=next(keys))
-    ds3 = LogitDataset(W3, 0.05, x3_mask, x3_bias, key=next(keys))
+        # y = sigmoid(Wx + b + N(0, noise^2)) > 0.5
+        ds1 = LogitDataset(W1, 0.1, x1_mask, 0.0, key=next(keys))
+        ds2 = LogitDataset(W2, 2.0, x2_mask, 0.0, key=next(keys))
+        ds3 = LogitDataset(W3, 0.05, x3_mask, x3_bias, key=next(keys))
 
     # TODO: remove key as a requirement for models
     def compute_loss_fn(model, example, reduction=hax.mean, reduction_axis=None, key=None):

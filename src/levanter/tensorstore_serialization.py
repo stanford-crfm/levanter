@@ -83,6 +83,8 @@ def _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths):
 
 def _sharding_from_leaf(leaf, axis_mapping, mesh) -> Optional[jax.sharding.Sharding]:
     if is_named_array(leaf):
+        if leaf.array is None:
+            return None
         return hax.partitioning.sharding_for_axis(leaf.axes, axis_mapping, mesh)
     elif hasattr(leaf, "sharding") and getattr(leaf, "sharding") is not None:
         return leaf.sharding
@@ -91,7 +93,7 @@ def _sharding_from_leaf(leaf, axis_mapping, mesh) -> Optional[jax.sharding.Shard
     elif isinstance(leaf, (bool, float, complex, int, np.ndarray)):
         return _fully_replicated_sharding(mesh)
     else:
-        print(f"Unknown leaf type {type(leaf)}")
+        logger.warning(f"Unknown leaf type {type(leaf)}")
         return None
 
 
@@ -134,13 +136,23 @@ def tree_deserialize_leaves_tensorstore(
     paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
     paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
 
-    shardings_leaves, shardings_structure = jtu.tree_flatten(shardings)
+    shardings_leaves, shardings_structure = jtu.tree_flatten(shardings, is_leaf=_is_named_or_none)
 
     assert len(shardings_leaves) == len(paths)
 
-    ret_leaves = manager.deserialize_with_paths(shardings=shardings_leaves, paths=paths)
+    # ok, so, jax really doesn't want any Nones in the leaves here, so we need to temporarily partition the pytree
+    real_indices = [i for i, x in enumerate(shardings_leaves) if x is not None]
+    real_leaves = [x for x in shardings_leaves if x is not None]
+    real_paths = [paths[i] for i in real_indices]
 
-    deser_arrays = jtu.tree_unflatten(shardings_structure, ret_leaves)
+    deser_leaves = manager.deserialize_with_paths(shardings=real_leaves, paths=real_paths)
+    # now we need to recreate the original structure
+
+    out_leaves = [None] * len(shardings_leaves)
+    for i, x in zip(real_indices, deser_leaves):
+        out_leaves[i] = x
+
+    deser_arrays = jtu.tree_unflatten(shardings_structure, out_leaves)
 
     # deser_arrays only has arrays, but we need named arrays for at least some.
     # The original pytree has the structure we want, so we'll use that to rebuild the named arrays

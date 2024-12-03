@@ -1,5 +1,6 @@
 import braceexpand
 import fsspec
+from fsspec.asyn import AsyncFileSystem
 
 
 def exists(url, **kwargs) -> bool:
@@ -14,7 +15,7 @@ def mkdirs(path):
     fs.makedirs(path, exist_ok=True)
 
 
-def fsspec_expand_glob(url):
+def expand_glob(url):
     expanded_urls = braceexpand.braceexpand(url)
     for expanded_url in expanded_urls:
         if "*" in expanded_url:
@@ -28,3 +29,21 @@ def fsspec_expand_glob(url):
                 yield from [f"{protocol}://{path}" for path in globbed]
         else:
             yield expanded_url
+
+
+def remove(url, *, recursive=False, **kwargs):
+    """Remove a file from a remote filesystem."""
+    # TODO: better to use a STS deletion policy or job for this one.
+    fs, path = fsspec.core.url_to_fs(url, **kwargs)
+
+    fs.rm(path, recursive=recursive)
+
+
+async def async_remove(url, *, recursive=False, **kwargs):
+    """Remove a file from a remote filesystem."""
+    fs, path = fsspec.core.url_to_fs(url, **kwargs)
+
+    if isinstance(fs, AsyncFileSystem):
+        return await fs._rm(path, recursive=recursive)
+    else:
+        fs.rm(path, recursive=recursive)

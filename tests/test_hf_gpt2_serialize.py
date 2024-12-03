@@ -19,7 +19,7 @@ import haliax as hax
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.models.loss import next_token_loss
+from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig
 from levanter.utils.tree_utils import inference_mode
 from test_utils import arrays_only, skip_if_no_torch
@@ -132,12 +132,10 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         return model(input_ids, labels=input_ids)[0]
 
     torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input.array)).to(torch.int64).unsqueeze(0))
-    causal_mask = AttentionMask.causal()
 
-    def compute_loss(model, input_ids):
-        pred_y = model(input_ids, key=None, attn_mask=causal_mask)
-
-        return next_token_loss(model.Pos, model.Vocab, pred_y, input_ids).scalar()
+    def compute_loss(model: LmHeadModel, input_ids):
+        example = LmExample.causal(input_ids)
+        return compute_next_token_loss(model, example, key=None).scalar()
 
     jax_compute_grad = equinox.filter_value_and_grad(compute_loss, has_aux=False)
     jax_grad: Gpt2LMHeadModel
@@ -148,7 +146,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     state_dict = torch_model.transformer.state_dict(keep_vars=True)
     state_dict = {k: v.grad for k, v in state_dict.items()}
 
-    jax_grad_dict = jax_grad.to_state_dict()
+    jax_grad_dict = hax.state_dict.to_torch_compatible_state_dict(jax_grad)
 
     for jax_key, jax_g in jax_grad_dict.items():
         if jax_key not in state_dict:
@@ -159,7 +157,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         assert onp.isclose(jax_g, torch_g.detach().cpu().numpy(), rtol=1e-2, atol=1e-2).all(), f"{jax_g} != {torch_g}"
 
     # now we also want to check that the optimizers do similar things
-    optimizer_config = AdamConfig(weight_decay=0.0, learning_rate=1e-3, warmup_ratio=0.0, lr_schedule="constant")
+    optimizer_config = AdamConfig(weight_decay=0.0, learning_rate=1e-3, warmup=0.0, lr_schedule="constant")
 
     if optimizer_config.max_grad_norm is not None:
         torch.nn.utils.clip_grad_norm_(torch_model.parameters(), optimizer_config.max_grad_norm)
@@ -178,7 +176,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     updates, state = jax_optimizer.update(updates=jax_grad, state=state, params=model)
     new_model = equinox.apply_updates(model, updates)
 
-    new_model_dict = new_model.to_state_dict()
+    new_model_dict = hax.state_dict.to_torch_compatible_state_dict(new_model)
     state_dict = torch_model.transformer.state_dict(keep_vars=True)
 
     # now compare new params
@@ -207,8 +205,8 @@ def test_hf_save_to_fs_spec():
 
         loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
 
-        simple_dict = simple_model.to_state_dict()
-        loaded_dict = loaded_model.to_state_dict()
+        simple_dict = hax.state_dict.to_torch_compatible_state_dict(simple_model)
+        loaded_dict = hax.state_dict.to_torch_compatible_state_dict(loaded_model)
 
         assert simple_dict.keys() == loaded_dict.keys()
 

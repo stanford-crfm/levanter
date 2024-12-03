@@ -197,7 +197,7 @@ class _CompositeBatchProcessor(BatchProcessor):
 
             match transform:
                 case _MapTransform(fn=fn):
-                    batch = map(fn, batch)
+                    batch = [fn(x) for x in batch]
                 case _BatchMapTransform(fn=fn):
                     batch = fn(batch)
                     is_soa_form = isinstance(batch, dict) or isinstance(batch, pa.RecordBatch)
