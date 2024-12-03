@@ -5,3 +5,11 @@ from .sophia import (  # SophiaGConfig,; SophiaGObjective,
     scale_by_sophia_g,
     scale_by_sophia_h,
 )
+from .muon import (
+    MuonConfig,
+    ScaleByMuonState
+)
+from .mars import (
+    MarsConfig,
+    ScaleByMarsState
+)
