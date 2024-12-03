@@ -2,8 +2,9 @@
 # * Orbax: https://github.com/google/orbax/blob/11d2934ecfff77e86b5e07d0fef02b67eff4511b/orbax/checkpoint/pytree_checkpoint_handler.py#L312
 import logging
 import os
+from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import equinox
 import jax
@@ -43,11 +44,22 @@ def tree_serialize_leaves_tensorstore(
         manager_was_none = False
 
     leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
+    assert len(jax.tree.leaves(leaf_key_paths, is_leaf=is_named_array)) == len(
+        jax.tree.leaves(pytree, is_leaf=is_named_array)
+    )
 
     paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
-    paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
-    leaves = jtu.tree_leaves(pytree, is_leaf=lambda x: x is None)
-    assert len(leaves) == len(paths)
+
+    # make a dataclass since tuples are pytrees
+    @dataclass
+    class Pair:
+        path: str
+        leaf: Any
+
+    zipped = jax.tree.map(lambda x, y: Pair(x, y), paths, pytree, is_leaf=lambda x: x is None)
+    paired_leaves = jax.tree.leaves(zipped)
+    paths = [p.path for p in paired_leaves]
+    leaves = [p.leaf.array if is_named_array(p.leaf) else p.leaf for p in paired_leaves]
 
     # ok, not all of these are arrays, but we'll deal with that in the async function
     def _ensure_is_array(x):
