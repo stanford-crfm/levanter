@@ -152,17 +152,21 @@ def leaf_key_paths(
         x, prefix=join_key(prefix, p), is_leaf=is_leaf, use_state_dict_keys=use_state_dict_keys
     )
 
+    out: PyTree[str]
+
     if is_leaf is not None and is_leaf(pytree):
-        return prefix
+        out = prefix
+    elif pytree is None:
+        out = None
     elif isinstance(pytree, dict):
-        return {k: rec(v, k) for k, v in pytree.items()}
+        out = {k: rec(v, k) for k, v in pytree.items()}
     elif _isnamedtupleinstance(pytree):
         d = {k: rec(v, k) for k, v in pytree._asdict().items()}
-        return pytree.__class__(**d)
+        out = pytree.__class__(**d)
     elif isinstance(pytree, list):
-        return [rec(v, str(i)) for i, v in enumerate(pytree)]
+        out = [rec(v, str(i)) for i, v in enumerate(pytree)]
     elif isinstance(pytree, tuple):
-        return tuple(rec(v, str(i)) for i, v in enumerate(pytree))
+        out = tuple(rec(v, str(i)) for i, v in enumerate(pytree))
     elif isinstance(pytree, eqx.Module):
         names = []
         rec_values = []
@@ -170,26 +174,28 @@ def leaf_key_paths(
             if field.metadata.get("static", False):
                 continue
             field_name = field.name
-            field = getattr(pytree, field_name)
+            field_value = getattr(pytree, field_name)
             names.append(field_name)
 
             if use_state_dict_keys and hasattr(pytree, "_state_dict_key_map"):
                 field_name = pytree._state_dict_key_map().get(field_name, field_name)
 
-            rec_value = rec(field, field_name)
+            rec_value = rec(field_value, field_name)
             rec_values.append(rec_value)
 
         _, tree_def = eqx.tree_flatten_one_level(pytree)
         out = jax.tree_util.tree_unflatten(tree_def, rec_values)
-        return out
-        # this doesn't work reliably because tree_at doesn't like none values
-        # return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values, is_leaf=lambda x: x is None)
     else:
         leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
-        if len(leaves) == 1:
-            return jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
+        if len(leaves) == 0:
+            out = None
+        elif len(leaves) == 1:
+            out = jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
         else:
-            return jax.tree_util.tree_unflatten(treedef, [join_key(prefix, str(i)) for i in range(len(leaves))])
+            out = jax.tree_util.tree_unflatten(treedef, [join_key(prefix, str(i)) for i in range(len(leaves))])
+
+    # assert len(jax.tree.leaves(out, is_leaf=is_leaf)) == len(jax.tree.leaves(pytree, is_leaf=is_leaf)), (out, pytree)
+    return out
 
 
 def join_key(prefix, k):
