@@ -13,7 +13,7 @@ class TrainLmConfig:
     data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 ```
 
 Your training run will typically be associated with a single config file. For instance, you might have a file
@@ -35,7 +35,8 @@ model:
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: [ "openwebtext", "gpt2"]
 
@@ -110,7 +111,6 @@ The following table lists some of the parameters that you might want to change.
 | Parameter      | Description                                                                   | Default |
 |----------------|-------------------------------------------------------------------------------|---------|
 | `log_dir`      | Where to save logs (python logger). `$run_id` will be appended                | `logs/` |
-| `run_base_dir` | where to save run artifacts. not really used much. `$run_id` will be appended | `runs/` |
 
 
 
@@ -179,12 +179,34 @@ The default step-based checkpoint policy is to save a checkpoint every 10,000 st
 
 
 
-## WandB
+## Trackers and Logging
 
-We mostly use wandb for logging, including using wandb for allocating the run id. We may change this.
 
-These all live in a nested object `wandb` inside `trainer`. Most of these are the same as the corresponding `wandb.init`
-parameters.
+We mostly use [W&B](https://wandb.ai/site) for tracking values and other metadata about a run. However, we also support
+Tensorboard and a few other trackers. You can also use multiple trackers at once, or even write your own.
+See  [Trackers](dev/Trackers.md) for more information.
+
+### W&B
+
+Wandb is the default tracker and is installed by default. To use it, you can configure it in your config file:
+
+```yaml
+trainer:
+    tracker:
+        type: wandb
+        project: my-project
+        entity: my-entity
+```
+
+Because wandb is the default, you can also just do:
+
+```yaml
+trainer:
+    tracker:
+      project: my-project
+      entity: my-entity
+```
+
 
 
 | Parameter      | Description                                    | Default                    |
@@ -206,6 +228,35 @@ of your main script.
 To use it, you must also set the right environment variables. Something like `XLA_FLAGS="--xla_dump_to=/tmp/output_folder/xla_dumps --xla_dump_hlo_pass_re=.*`.
 We will automatically parse out the env variable.
 
+### Tensorboard
+
+Tensorboard is also supported. To use it, you can configure it in your config file:
+
+```yaml
+trainer:
+    tracker:
+        type: tensorboard
+        logdir: logs
+```
+
+### Multiple Trackers
+
+In some cases, you may want to use multiple trackers at once.
+For example, you may want to use both W&B and Tensorboard.
+
+To do this, you can use the [levanter.tracker.tracker.CompositeTracker][] class, or, if using a config file, you
+can specify multiple trackers:
+
+```yaml
+trainer:
+  tracker:
+    - type: wandb
+      project: my-project
+      entity: my-entity
+    - type: tensorboard
+      logdir: logs
+```
+
 ## Ray Config
 
 Levanter will by default automatically start a Ray cluster with all
@@ -213,11 +264,11 @@ the machines being used for training. This is useful for distributed
 preprocessing. You can disable this behavior using `auto_start_cluster: false`.
 
 
-| Parameter           | Description                                                                 | Default |
-|---------------------|-----------------------------------------------------------------------------|---------|
-| `address`           | The address of the Ray cluster to connect to.                                | `None`  |
-| `start_workers`     | Whether to start Ray workers. If `False`, you must start them yourself.      | `True`  |
-| `auto_start_cluster`| Whether to start a Ray cluster automatically.                                | `True`  |
+| Parameter            | Description                                                             | Default |
+|----------------------|-------------------------------------------------------------------------|---------|
+| `address`            | The address of the Ray cluster to connect to.                           | `None`  |
+| `start_workers`      | Whether to start Ray workers. If `False`, you must start them yourself. | `True`  |
+| `auto_start_cluster` | Whether to start a Ray cluster automatically.                           | `True`  |
 
 
 ## Distributed Config
@@ -227,30 +278,120 @@ If you're not using SLURM or TPUs, you can specify the cluster manually using th
 
 **Don't use this on TPU, and possibly not on SLURM either.**
 
-| Parameter           | Description                                                                 | Default                 |
-|---------------------|-----------------------------------------------------------------------------|-------------------------|
-| `coordinator_address`| The address of the coordinator. If `None`, we'll use the default address.   | `None`                  |
-| `num_processes`     | The number of processes in the cluster.                                     | `None`                  |
-| `process_id`        | The process id of this process.                                             | `None`                  |
-| `local_device_ids`  | The local device ids of this process.                                       | ${CUDA_VISIBLE_DEVICES} |
+| Parameter             | Description                                                               | Default                 |
+|-----------------------|---------------------------------------------------------------------------|-------------------------|
+| `coordinator_address` | The address of the coordinator. If `None`, we'll use the default address. | `None`                  |
+| `num_processes`       | The number of processes in the cluster.                                   | `None`                  |
+| `process_id`          | The process id of this process.                                           | `None`                  |
+| `local_device_ids`    | The local device ids of this process.                                     | ${CUDA_VISIBLE_DEVICES} |
 
 
 
 ## Optimizer
 
-[levanter.trainer.OptimizerConfig][] is a dataclass that specifies the optimizer configuration. It has the following fields:
+### Standard Options
 
-| Parameter       | Description                                                       | Default  |
-|-----------------|-------------------------------------------------------------------|----------|
-| `learning_rate` | The learning rate.                                                | `1e-4`   |
-| `weight_decay`  | The weight decay.                                                 | `0.0`    |
-| `beta1`         | The beta1 parameter for Adam.                                     | `0.9`    |
-| `beta2`         | The beta2 parameter for Adam.                                     | `0.999`  |
-| `epsilon`       | The epsilon parameter for Adam.                                   | `1e-8`   |
-| `max_grad_norm` | The maximum gradient norm (for clipping).                         | `1.0`    |
-| `min_lr_ratio`  | The minimum learning rate ratio.                                  | `0.0`    |
-| `warmup_ratio`  | The warmup ratio. Fraction of total steps to warmup               | `0.01`   |
-| `lr_schedule`   | The learning rate schedule. One of `constant`, `cosine`, `linear` | `cosine` |
+All optimizers in Levanter are based on the [levanter.optim.OptimizerConfig][] dataclass. This class has the following fields,
+which are common to all optimizers (and most have to do with learning rate scheduling):
+
+
+| Parameter       | Description                                                                   | Default  |
+|-----------------|-------------------------------------------------------------------------------|----------|
+| `weight_decay`  | The weight decay.                                                             | `0.0`    |
+| `learning_rate` | The learning rate.                                                            | `1e-4`   |
+| `lr_schedule`   | The type of learning rate schedule for decay. See below.                      | `cosine` |
+| `min_lr_ratio`  | The minimum learning rate ratio.                                              | `0.1`    |
+| `warmup`        | Warmup fraction or number of steps                                            | `0.01`   |
+| `decay`         | Decay fraction or number of steps                                             | `None`    |
+| `rewarmup`      | The learning rate re-warmup, if using cycles.                                 | `0.0`    |
+| `cycles`        | The number of cycles for the learning rate, or steps where cycles end         | `None`   |
+| `cycle_length`  | How long the cycles should be (as an int, fraction), or list of cycle lengths | `None`   |
+
+By default, Levanter uses a cosine learning rate decay with warmup. The learning rate is decayed to
+`min_lr_ratio * learning_rate` over the course of the training run. This is a fairly standard default for LLM training.
+
+#### Learning Rate Schedules
+
+The `lr_schedule` parameter specifies the learning rate schedule. The following schedules are supported:
+
+* `constant`: Constant learning rate.
+* `linear`: Linear decay.
+* `cosine`: Cosine decay.
+* `inv_sqrt`: Inverse square root decay.
+* `inv`: Inverse decay.
+
+#### Cycles
+
+By default, there is only one cycle, and Levanter's LR schedule looks like this:
+
+```
+[warmup] -> [stable] -> [decay]
+```
+
+But you can specify more with either the `cycles` or `cycle_length` parameters.
+If you want to use a learning rate schedule with cycles, you can specify the number of cycles with the `cycles`
+or `cycle_length` parameters. The LR will be decayed to `min_lr_ratio * learning_rate` at the end of each cycle.
+With cycles, Levanter's LR schedule looks like this:
+
+
+```
+[warmup] -> [stable] -> [decay] -> {[rewarmup] -> [stable] -> [decay]} x (cycles - 1)
+```
+
+or more compactly:
+
+```
+{[(re)?warmup] -> [stable] -> [decay]} x cycle
+```
+
+Here's what the phases mean:
+
+* `warmup`: The first warmup in training, which is part of the first cycle. The LR will start at 0 and linearly increase to the learning rate over this period.
+* `stable`: The stable period. The LR will stay at the learning rate for this period.
+* `decay`: The decay period. The LR will decay to `min_lr_ratio * learning_rate` over this period.
+* `rewarmup`: The re-warmup period. If using cycles, the LR will be re-warmed from the final value of the previous cycle back to the peak value of the next cycle.
+
+Also note that if *rewarmup* is 0, there will be no rewarmup period, meaning the LR will jump
+back to the max LR. This is the default, and works surprisingly well. In addition, the stable
+and decay phase of the first cycle will generally be different from the stable and decay phase of the other cycles,
+since rewarmup and warmup are typically different.
+
+`stable` cannot be specified directly. It is the period between `warmup` and `decay` in the first cycle, and the period
+between `rewarmup` and `decay` in subsequent cycles. By default, there is no `stable` period.
+
+All of these parameters can be specified in terms of a fraction of the total number of steps of a cycle or as an absolute number of
+steps.
+
+Here are what the `cycles` and `cycle_length` parameters mean:
+
+* `cycle_length`: If you specify an int or float for `cycle_length`, the learning rate will cycle through the
+schedule with the specified length. This is equivalent to specifying `cycles` as `num_train_steps / cycle_length`.
+If `cycle_length` is a float < 1.0, it is interpreted as a fraction of the total number of steps.
+If you specify a list of ints, the learning rate will cycle through the schedule with the specified cycle lengths.
+* `cycles`: If you specify an int for `cycles`, the learning rate will cycle through the schedule `cycles` times.
+If you specify a list of ints, the learning rate will cycle through the schedule with the specified steps as the minima
+of the cycles.
+
+It is an error to specify both `cycles` and `cycle_length`.
+
+You can also specify `cycles` as a list, e.g. `[10000, 25000, 50000]`. In this case,
+`cycles` is interpreted as the minima for the cycles, with the first and final steps being cycle minima as well.
+`cycles` as an int is equivalent to list `cycles` with the low points evenly spaced at
+`[num_train_steps / (c + 1)]`.
+
+See [our paper on WSD-S](https://arxiv.org/pdf/2410.05192) for more information on cyclic LR schedules for training LLMs
+with short or no rewarmup.
+
+### AdamConfig
+
+Additionally, [levanter.optim.AdamConfig][] has the following fields:
+
+| Parameter       | Description                                  | Default |
+|-----------------|----------------------------------------------|---------|
+| `beta1`         | The beta1 parameter for Adam.                | `0.9`   |
+| `beta2`         | The beta2 parameter for Adam.                | `0.95`  |
+| `epsilon`       | The epsilon parameter for Adam.              | `1e-8`  |
+| `max_grad_norm` | The maximum gradient norm (for clipping).    | `1.0`   |
 
 
 ## LM Model Config
@@ -277,8 +418,26 @@ We won't go into detail here. You can see the auto-generated docs below.
 
 ::: levanter.checkpoint.Checkpointer
 
-### Wandb
-::: levanter.logging.WandbConfig
+### Trackers and Metrics
+
+See also [Trackers](dev/Trackers.md) for more information. Basic configuration is shown below.
+
+#### Single Tracker
+
+```yaml
+trainer:
+  tracker:
+    type: wandb
+    project: my-project
+    entity: my-entity
+```
+
+
+
+::: levanter.tracker.wandb.WandbConfig
+
+::: levanter.tracker.tensorboard.TensorboardConfig
+
 
 ### Distributed and Ray
 
@@ -288,7 +447,10 @@ We won't go into detail here. You can see the auto-generated docs below.
 
 ### Optimizer
 
-::: levanter.trainer.OptimizerConfig
+::: levanter.optim.OptimizerConfig
+
+::: levanter.optim.AdamConfig
+
 
 ### LM Model
 

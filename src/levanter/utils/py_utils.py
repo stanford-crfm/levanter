@@ -1,11 +1,13 @@
 import os
+import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 
 def logical_cpu_core_count():
     """Returns the number of logical CPU cores available to the process."""
-    num_cpus = os.getenv("SLURM_CPUS_PER_TASK", None)
+    num_cpus = os.getenv("SLURM_CPUS_ON_NODE", None)
     if num_cpus is not None:
         return int(num_cpus)
 
@@ -13,6 +15,22 @@ def logical_cpu_core_count():
         return os.cpu_count()
     except NotImplementedError:
         return 1
+
+
+def logical_cpu_memory_size():
+    """Returns the total amount of memory in GB available to the process or logical memory for SLURM."""
+    mem = os.getenv("SLURM_MEM_PER_NODE", None)
+    tasks = os.getenv("SLURM_NTASKS_PER_NODE", None)
+    if mem is not None and tasks is not None:
+        return float(mem) / int(tasks) / 1024.0  # MEM_PER_NODE is in MB
+
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total / (1024.0**3)
+    except ValueError:
+        import psutil
+
+        return psutil.virtual_memory().total / (1024.0**3)
 
 
 def non_caching_cycle(iterable):
@@ -142,3 +160,59 @@ def cached_classproperty(func: Callable[..., PropReturn]) -> PropReturn:
 
 
 cached_classproperty.__doc__ = _CachedClassProperty.__doc__
+
+
+def actual_sizeof(obj):
+    """similar to sys.getsizeof, but recurses into dicts and lists and other objects"""
+    seen = set()
+    size = 0
+    objects = [obj]
+    while objects:
+        need_to_see = []
+        for obj in objects:
+            if id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            size += sys.getsizeof(obj)
+            if isinstance(obj, dict):
+                need_to_see.extend(obj.values())
+            elif hasattr(obj, "__dict__"):
+                need_to_see.extend(obj.__dict__.values())
+            elif isinstance(obj, (list, tuple, set, frozenset)):
+                need_to_see.extend(obj)
+        objects = need_to_see
+    return size
+
+
+class Stopwatch:
+    """Resumable stop watch for tracking time per call"""
+
+    def __init__(self):
+        self._start_time = time.time()
+        self._elapsed = 0.0
+        self._n = 0
+
+    def start(self):
+        self._start_time = time.time()
+        self._n += 1
+
+    def stop(self):
+        self._elapsed += time.time() - self._start_time
+
+    def reset(self):
+        self._elapsed = 0.0
+
+    def elapsed(self):
+        return self._elapsed
+
+    def average(self):
+        if self._n == 0:
+            return 0.0
+        return self._elapsed / self._n
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()

@@ -175,7 +175,11 @@ _already_initialized = False
 
 
 def auto_ray_cluster(
-    address: Optional[str] = None, namespace: Optional[str] = "levanter", start_workers: bool = True, **kwargs
+    address: Optional[str] = None,
+    namespace: Optional[str] = "levanter",
+    start_workers: bool = True,
+    fail_if_cluster_already_initialized: bool = False,
+    **kwargs,
 ):
     """Initializes ray, automatically discovering the address if it is not provided.
     Currently supports slurm and TPU.
@@ -220,38 +224,64 @@ def auto_ray_cluster(
                 # Explicitly setting the number of CPUs on ray init stops init errors
                 num_cpus = logical_cpu_core_count()
 
-                # it used to be that if we were coordinator, we were also process 0
-                # this is no longer the case, so instead we need to check if we are the coordinator
-                # and if so, start the head
+                if _is_local_leader():
+                    # it used to be that if we were coordinator, we were also process 0
+                    # this is no longer the case, so instead we need to check if we are the coordinator
+                    # and if so, start the head
+                    if _is_this_machine(host):
+                        logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
+                        logger.info(f"Starting ray head with num_cpus set to {num_cpus}.")
+                        ret = os.system(
+                            f"ray start --head --port {ray_port} --num-cpus {num_cpus} --dashboard-host=0.0.0.0"
+                        )
+                        if ret != 0:
+                            if not fail_if_cluster_already_initialized:
+                                # see if we can connect to the head
+                                logger.warning(
+                                    f"Failed to start ray head with exit code {ret}. Checking if we can connect to"
+                                    " the head..."
+                                )
+                                ret = os.system("ray status")
+                                if ret != 0:
+                                    raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                                else:
+                                    logger.info(f"Ray head already running on port {ray_port}. Connecting to it.")
+                            else:
+                                raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                        else:
+                            logger.info(f"Successfully started ray head on port {ray_port}.")
 
-                if _is_this_machine(host):
-                    logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
-                    logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    ret = os.system(
-                        f"ray start --head --port {ray_port} --num-cpus {num_cpus} --dashboard-host=0.0.0.0"
-                    )
-                    if ret != 0:
-                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
-                    else:
-                        logger.info(f"Successfully started ray head on port {ray_port}.")
-
-                    # install an atexit handler to kill the head when we exit
-                    atexit.register(lambda: os.system("ray stop -g 10 --force"))
-                elif start_workers:
-                    logger.info(
-                        f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
-                    )
-                    logger.info(f"Starting ray with num_cpus set to {num_cpus}.")
-                    ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
-                    if ret != 0:
-                        raise RuntimeError(f"Failed to start ray head with exit code {ret}")
-                    else:
-                        logger.info(f"Successfully started ray worker and connected to {address}.")
+                        # install an atexit handler to kill the head when we exit
+                        atexit.register(lambda: os.system("ray stop -g 10 --force &> /dev/null"))
+                    elif start_workers:
+                        logger.info(
+                            f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
+                        )
+                        logger.info(f"Starting ray worker with num_cpus set to {num_cpus}.")
+                        ret = os.system(f"ray start --address {address} --num-cpus {num_cpus}")
+                        if ret != 0:
+                            raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                        else:
+                            logger.info(f"Successfully started ray worker and connected to {address}.")
 
     logger.info(f"ray.init(address={repr(address)}, namespace={repr(namespace)}, **{repr(kwargs)})")
-    # Ray has retry logic, so we don't need to retry here :fingers-crossed:
-    ray.init(address=address, namespace=namespace, **kwargs)
-    atexit.register(lambda: ray.shutdown())
+    # Ray has retry logic, but it doesn't seem to work super well, so we retry manually
+    for i in range(0, 5):
+        try:
+            ray.init(address=address, namespace=namespace, **kwargs)
+            break
+        except Exception as e:
+            if i == 4:
+                raise e
+            else:
+                logger.warning(f"Failed to initialize ray with address {address}. Retrying...")
+                continue
+
+    def do_shutdown():
+        logger.info("Shutting down ray...")
+        ray.shutdown()
+
+    atexit.register(do_shutdown)
     _already_initialized = True
 
 
@@ -318,6 +348,9 @@ def _is_this_machine(host):
     """
     Checks if the given host identifies this machine.
     """
+    if host == "localhost" or host == "0.0.0.0":
+        return True
+
     try:
         # Get IP addresses of all interfaces
         machine_ips = [addr[4][0] for addr in socket.getaddrinfo(socket.gethostname(), None)]
@@ -330,3 +363,45 @@ def _is_this_machine(host):
 
     # Check if the host IP matches any of the machine IPs
     return any(host_ip == machine_ip for machine_ip in machine_ips)
+
+
+def _remove_if_possible(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _touch(file_path):
+    with open(file_path, "a"):
+        os.utime(file_path, None)
+
+
+def _is_local_leader():
+    import atexit
+
+    import filelock
+    from jax.experimental.multihost_utils import broadcast_one_to_all
+
+    if jax.process_count() == 1:
+        return True
+
+    import random
+
+    random_id = random.randint(0, 1000000)
+    random_id = broadcast_one_to_all(random_id)
+
+    lock = filelock.FileLock(f"/tmp/levanter_local_process_zero_lock.{random_id}")
+    action_performed_file = f"/tmp/levanter_local_process_zero_action_performed.{random_id}"
+
+    try:
+        with lock.acquire(timeout=0.1):
+            if not os.path.exists(action_performed_file):
+                _touch(action_performed_file)
+                return True  # Action needs to be performed
+            else:
+                return False  # Action already performed
+            atexit.register(_remove_if_possible, lock.lock_file)
+            atexit.register(_remove_if_possible, action_performed_file)
+    except filelock.Timeout:
+        return False

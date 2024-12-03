@@ -23,6 +23,7 @@ def test_export_lm_to_hf():
         num_layers=2,
         num_heads=2,
         seq_len=32,
+        use_flash_attention=True,
         hidden_dim=32,
     )
 
@@ -34,7 +35,7 @@ def test_export_lm_to_hf():
         # in our trainer, we only export the trainable params
         trainable, non_trainable = eqx.partition(model, is_inexact_arrayish)
 
-        save_checkpoint(trainable, None, 0, f"{tmpdir}/ckpt")
+        save_checkpoint({"model": trainable}, 0, f"{tmpdir}/ckpt")
 
         try:
             config = export_lm_to_hf.ConvertLmConfig(
@@ -43,15 +44,15 @@ def test_export_lm_to_hf():
                 model=export_lm_to_hf.Gpt2Config(
                     num_layers=2,
                     num_heads=2,
-                    seq_len=32,
+                    seq_len=64,
+                    use_flash_attention=True,
                     hidden_dim=32,
                 ),
             )
             export_lm_to_hf.main(config)
 
             if has_torch():
-                m = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/output")
-                print(m)
+                AutoModelForCausalLM.from_pretrained(f"{tmpdir}/output")
 
         finally:
             try:

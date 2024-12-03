@@ -24,24 +24,32 @@ Levanter is a framework for training large language models (LLMs) and other foun
 2. **Scalable**: Levanter scales to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
 3. **Reproducible**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
-We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox),
-and [Haliax](https://github.com/stanford-crfm/haliax).
+We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
+
+## Documentation
+
+Levanter's documentation is available at [levanter.readthedocs.io](https://levanter.readthedocs.io/en/latest/).
+Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.readthedocs.io/en/latest/).
 
 ## Features
 
-* **Distributed Training**: We support distributed training on TPUs (and soon, GPUs), including FSDP and tensor parallelism.
+* **Distributed Training**: We support distributed training on TPUs and GPUs, including FSDP and tensor parallelism.
 * **Compatibility**: Levanter supports importing and exporting models to/from the Hugging Face ecosystem, including tokenizers, datasets, and models via [SafeTensors](https://github.com/huggingface/safetensors).
 * **Performance**: Levanter's performance rivals commercially-backed frameworks like MosaicML's Composer or Google's MaxText.
-* **Reproducibility**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
+* **Resilience**: Levanter supports fast, distributed checkpointing and fast resume from checkpoints with no data seek, making Levanter robust to preemption and hardware failure.
 * **Cached On-Demand Data Preprocessing**: We preprocess corpora online, but we cache the results of preprocessing so
 that resumes are much faster and so that subsequent runs are even faster. As soon as the first part of the cache is complete, Levanter will start training.
-* **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
+* **Logging**: Levanter logs a rich and detailed set of metrics covering loss and performance. Levanter also supports a few different logging backends, including [WandB](https://wandb.ai/site) and [TensorBoard](https://www.tensorflow.org/tensorboard). (Adding a new logging backend is easy!) Levanter even exposes the ability
+to log inside of JAX `jit`-ted functions.
+* **Reproducibility**: On TPU, Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 * **Distributed Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
-* **Optimization**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization. Our new optimizer, [Sophia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
+* * **Optimization**: Levanter supports the new [Sophia](https://arxiv.org/abs/2305.14342) optimizer, which can be 2x as fast as Adam. We also support ses [Optax](https://github.com/deepmind/optax) for optimization with AdamW, etc.
+* * **Flexible**: Levanter supports tuning data mixtures without having to retokenize or shuffle data.
 
 <!--levanter-intro-end-->
 
-Levanter was created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team. ([We're hiring!](https://crfm.stanford.edu/apply.html)) You can also find us in the #levanter channel on the unofficial [Jax LLM Discord](https://discord.gg/CKazXcbbBm)
+Levanter was created by [Stanford's Center for Research on Foundation Models (CRFM)](https://crfm.stanford.edu/)'s research engineering team.
+You can also find us in the #levanter channel on the unofficial [Jax LLM Discord](https://discord.gg/CKazXcbbBm)
 
 ## Getting Started
 
@@ -49,10 +57,6 @@ Here is a small set of examples to get you started. For more information about t
 please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](docs/Configuration-Guide.md).
 You can also use `--help` or poke around other configs to see all the options available to you.
 
-### Documentation
-
-Levanter's documentation is available at [levanter.readthedocs.io](https://levanter.readthedocs.io/en/latest/).
-Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.readthedocs.io/en/latest/).
 
 ### Installing Levanter
 
@@ -149,7 +153,8 @@ model:
     gradient_checkpointing: true
     scale_attn_by_inverse_layer_idx: true
 trainer:
-  wandb:
+  tracker:
+    type: wandb
     project: "levanter"
     tags: [ "openwebtext", "gpt2"]
 
@@ -196,6 +201,8 @@ Please see the [CUDA Getting Started](docs/Getting-Started-GPU.md) guide for mor
 <!--levanter-user-guide-end-->
 
 ## Contributing
+
+[![GitHub repo Good Issues for newbies](https://img.shields.io/github/issues/stanford-crfm/levanter/good%20first%20issue?style=flat&logo=github&logoColor=green&label=Good%20First%20issues)](https://github.com/stanford-crfm/levanter/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) [![GitHub Help Wanted issues](https://img.shields.io/github/issues/stanford-crfm/levanter/help%20wanted?style=flat&logo=github&logoColor=b545d1&label=%22Help%20Wanted%22%20issues)](https://github.com/stanford-crfm/levanter/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) [![GitHub Help Wanted PRs](https://img.shields.io/github/issues-pr/stanford-crfm/levanter/help%20wanted?style=flat&logo=github&logoColor=b545d1&label=%22Help%20Wanted%22%20PRs)](https://github.com/stanford-crfm/levanter/pulls?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) [![GitHub repo Issues](https://img.shields.io/github/issues/stanford-crfm/levanter?style=flat&logo=github&logoColor=red&label=Issues)](https://github.com/stanford-crfm/levanter/issues?q=is%3Aopen)
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more information.
 

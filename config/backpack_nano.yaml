@@ -15,7 +15,6 @@ trainer:
 
   num_train_steps: 100
   train_batch_size: 32
-  per_device_parallelism: 1
   model_axis_size: 1
 
 optimizer:

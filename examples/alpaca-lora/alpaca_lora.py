@@ -6,9 +6,9 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
+import equinox as eqx
 import jax.random as jrandom
 import transformers
-import wandb
 
 import haliax as hax
 
@@ -21,7 +21,7 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
-from levanter.models.lm_model import LmExample, LmHeadModel
+from levanter.models.lm_model import LmHeadModel, compute_next_token_loss
 from levanter.trainer import Trainer
 from levanter.utils.jax_utils import parameter_count
 from levanter.utils.py_utils import non_caching_cycle
@@ -49,7 +49,7 @@ class TrainArgs(alpaca.TrainArgs):
 
 
 def train(config: TrainArgs):
-    config.trainer.initialize(config)
+    levanter.initialize(config)
 
     # Since Levanter has different implementations of models from HF, we need to convert the HF checkpoint.
     # This class is a wrapper around the HF checkpoint converter that also downloads the checkpoint if necessary.
@@ -80,13 +80,18 @@ def train(config: TrainArgs):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with config.trainer.device_mesh:
+    # end major difference from Alpaca
+
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
-        model: LmHeadModel = converter.load_pretrained(model_config, axis_mapping=parameter_axis_mapping)
+        # load untrainable params in compute precision to save memory
+        model: LmHeadModel = converter.load_pretrained(  # type: ignore
+            model_config.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+        )
 
         # Major difference from Alpaca: we loraize the model.
 
@@ -98,35 +103,33 @@ def train(config: TrainArgs):
 
         lora_param_filter = lora_trainable_params_filter(model)
 
-        def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-            return model.compute_loss(example, key=key).scalar()
-
-        trainer = Trainer(config.trainer, optimizer, compute_loss, is_trainable=lora_param_filter)
-
-        # end major difference from Alpaca
-
-        trainer.add_default_hooks()
-        state = trainer.initial_state(training_key, model=model)
+        state = trainer.initial_state(training_key, model=model, is_trainable=lora_param_filter)
 
         # log some info about the model
         all_param_count = parameter_count(state.model)
-        just_lora_params = parameter_count(trainer.trainable_params_only(state.model))
+        just_lora_params = parameter_count(eqx.filter(state.model, lora_param_filter))
 
-        wandb.summary["parameter_count"] = all_param_count
-        wandb.summary["trainable_parameter_count"] = just_lora_params
+        levanter.tracker.log_summary(
+            {
+                "parameter_count": all_param_count,
+                "trainable_parameter_count": just_lora_params,
+                "fraction_trainable": just_lora_params * 1.0 / all_param_count,
+            }
+        )
+
         logger.info(f"Total parameter count: {all_param_count}")
         logger.info(f"Trainable parameter count: {just_lora_params}")
-        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count%.3}")
+        logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3f}")
 
         # Levanter has two kinds of data loaders: sharded and replicated. Replicated is simpler and allows for
         # single pass training. Sharded only loads a subset of the data on each device, and is more efficient for large
         # datasets. We use replicated here since the dataset is small.
-        loader = trainer.replicated_loader(train_dataset, trainer.TrainBatch)
+        loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
         loader = non_caching_cycle(loader)
 
-        if state.step != 0:
-            logger.info(f"Resuming training from step {state.step}")
-            for i in range(state.step):
+        if int(state.step) != 0:
+            logger.info(f"Resuming training from step {int(state.step)}")
+            for i in range(int(state.step)):
                 next(loader)  # type: ignore
 
         # Save HF PEFT checkpoints periodically (and at the end of training), which is just the lora weights

@@ -1,5 +1,8 @@
 /scratch
 
+# Configuration for TPU launches/secrets
+.config
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -133,16 +136,23 @@ dmypy.json
 # JetBrains
 .idea/
 
+# vscode
+.vscode
 
 # Wandb stuff
 /wandb
 
 # dataset cache files
+/cache
 *.parquet
 ledger.json
 
 /checkpoints
 *.jaxpr
 
-# local execution commands
 local_*.sh
+
+# aider
+.aider*
+
+.benchmarks

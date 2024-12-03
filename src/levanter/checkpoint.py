@@ -4,10 +4,13 @@ import json
 import logging
 import os
 import pathlib
+import queue
+import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Callable, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Callable, List, Optional, ParamSpec, Sequence, TypeVar, Union
 
 import equinox
 import fsspec
@@ -15,21 +18,23 @@ import jax
 import jax.numpy as jnp
 from draccus import field
 from fsspec import AbstractFileSystem
-from jax.experimental.multihost_utils import broadcast_one_to_all, sync_global_devices
+from jax.experimental.array_serialization.serialization import GlobalAsyncCheckpointManager
+from jax.experimental.multihost_utils import broadcast_one_to_all
 from jaxtyping import PyTree
 
 import haliax.partitioning
+from haliax.jax_utils import is_in_jit, is_jax_array_like
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
-from levanter.types import FilterSpec
+from levanter.utils.types import FilterSpec
 
 
 logger = logging.getLogger(__name__)
 
 PathLike = Union[str, pathlib.Path]
 
-M = TypeVar("M")
-S = TypeVar("S")
+M = TypeVar("M", bound=PyTree)
+Sig = ParamSpec("Sig")
 
 
 @dataclass(frozen=True)
@@ -100,21 +105,29 @@ class Checkpointer:
             if prev_until >= until:
                 raise ValueError("Step policies must be sorted by 'until' value")
 
+        # The default of 5 minutes is too short even for modestly sized models for some reason
+        self._manager = GlobalAsyncCheckpointManager(timeout_secs=60 * 30)
+
+        if jax.process_index() == 0:
+            self._async_checkpoint_remover_queue: queue.Queue[str] = queue.Queue(maxsize=-1)
+            self._async_checkpoint_remover_thread = threading.Thread(
+                target=self._async_checkpoint_remover, daemon=True
+            )
+            self._async_checkpoint_remover_thread.start()
+            self._checkpoint_being_removed = None
+
     def load_checkpoint(
         self,
-        model: M,
-        training_state: S,
+        state: M,
         path: Optional[PathLike] = None,
         *,
         discover_latest: bool = True,
         axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
         mesh: Optional[haliax.partitioning.Mesh] = None,
-    ) -> Optional[Tuple[M, S, int]]:
+    ) -> Optional[M]:
         if path is None:
             path = self.base_path
-        return load_checkpoint(
-            model, training_state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
-        )
+        return load_checkpoint(state, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh)
 
     def load_model(
         self,
@@ -124,16 +137,17 @@ class Checkpointer:
         discover_latest: bool = True,
         axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
         mesh: Optional[haliax.partitioning.Mesh] = None,
-    ) -> Optional[Tuple[M, int]]:
-        if path is None:
-            path = self.base_path
-        ckpt = load_checkpoint(
-            model, None, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
+    ) -> Optional[M]:
+        """
+        Convenience method/holdover from  previous API for loading checkpoints.
+        Loads just the model assuming the model is in the `model` subdir of the discovered checkpoint.
+        """
+        ret_dict = self.load_checkpoint(
+            {"model": model}, path, discover_latest=discover_latest, axis_mapping=axis_mapping, mesh=mesh
         )
-        if ckpt is None:
+        if ret_dict is None:
             return None
-        model, _, step = ckpt
-        return model, step
+        return ret_dict["model"]
 
     def on_step(self, info, force: bool = False):
         step = info.step
@@ -182,17 +196,16 @@ class Checkpointer:
             last_checkpoint = self._last_temporary_checkpoint
             destination = f"step-{step}"
 
-            self.save_checkpoint(info, destination)
-
             if not save_permanent_ckpt:
                 self._last_temporary_checkpoint = destination
             else:
                 self._last_temporary_checkpoint = None
 
-            # TODO: we should consider writing to disk whether it's a temporary checkpoint or not
-            # so that we can delete it properly if we recover
-            if last_checkpoint is not None:
-                self._rm_checkpoint(last_checkpoint)
+            def callback():
+                if last_checkpoint is not None:
+                    self._rm_checkpoint(last_checkpoint)
+
+            self.save_checkpoint(info, destination, commit_callback=callback)
 
     def _get_current_step_save_interval(self, step):
         # binary search for the correct interval
@@ -202,39 +215,100 @@ class Checkpointer:
             return None
         return current_policy.every
 
-    def _rm_checkpoint(self, checkpoint):
-        if jax.process_index() != 0:
-            return
+    def wait_until_finished(self):
+        self._manager.wait_until_finished()
+        if jax.process_index() == 0:
+            while self._checkpoint_being_removed is not None or not self._async_checkpoint_remover_queue.empty():
+                time.sleep(0.2)
 
+    def _rm_checkpoint(self, checkpoint):
+        if jax.process_index() == 0:
+            logger.info(f"Removing checkpoint {checkpoint}")
+            self._async_checkpoint_remover_queue.put(checkpoint)
+
+    def _do_rm_checkpoint(self, checkpoint):
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
             cp_path = os.path.join(plain_path, checkpoint)
-            logger.info(f"Deleting checkpoint {checkpoint} from {cp_path}")
+            logger.info(f"Deleting old checkpoint {checkpoint} from {cp_path}")
+            time_in = time.time()
             fs.rm(cp_path, recursive=True)
-        # don't let this take down a run
+            time_out = time.time()
+            logger.info(f"Deleted old checkpoint {checkpoint} from {cp_path} in {time_out - time_in:.2f} seconds")
         except Exception:  # pylint: disable=broad-except
-            logger.exception("Failed to delete checkpoint", exc_info=True)
+            logger.exception(f"Failed to delete checkpoint {checkpoint}", exc_info=True)
 
-    def save_checkpoint(self, info, destination: str):
+    def save_checkpoint(self, info, destination: str, commit_callback: Optional[Callable[[], None]] = None):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
-        model = equinox.filter(info.model, self.keep_params)
+        state = info.state.saveable_state
+
         save_checkpoint(
-            model=model,
-            training_state=(info.opt_state, info.next_key),
+            state,
             step=info.step,
             checkpoint_path=path,
+            manager=self._manager,
+            commit_callback=commit_callback,
         )
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
-        logger.info(f"Saved checkpoint at step {info.step} to {path}. Save time is {self._last_save_time}")
+
+    def _async_checkpoint_remover(self):
+        while True:
+            checkpoint = self._async_checkpoint_remover_queue.get(block=True)
+            self._checkpoint_being_removed = checkpoint
+            self._do_rm_checkpoint(checkpoint)
+            self._checkpoint_being_removed = None
 
 
-def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike, *, exist_ok: bool = False):
+# In callbacks.py - Add a new callback that handles epoch checkpointing
+class EpochCheckpointer:
     """
-    Save a checkpoint to a given path using TensorStore. If exist_ok is True, the checkpoint
-    will be saved even if a checkpoint already exists at the given path.
+    A separate checkpointing system that saves based on epochs.
+    Works alongside the regular step-based checkpointer without modifying core state.
+    """
+
+    def __init__(
+        self,
+        checkpointer: Checkpointer,
+        every_n_epochs: int = 1,
+        total_dataset_size: Optional[int] = None,
+        batch_size: int = 1,
+    ):
+        self.checkpointer = checkpointer
+        self.every_n_epochs = every_n_epochs
+        self.total_dataset_size = total_dataset_size
+        self.batch_size = batch_size
+        self._last_saved_epoch = -1
+
+    def __call__(self, step_info):
+        if self.total_dataset_size is None:
+            return  # Can't calculate epochs without dataset size
+
+        # Calculate current epoch from steps without modifying StepInfo
+        current_epoch = (step_info.step * self.batch_size) // self.total_dataset_size
+
+        # Only save if we've moved to a new epoch and it matches our interval
+        if current_epoch > self._last_saved_epoch and current_epoch % self.every_n_epochs == 0:
+            # Use existing checkpointer's save_checkpoint method
+            self.checkpointer.save_checkpoint(
+                step_info,
+                f"epoch-{current_epoch}",
+            )
+            self._last_saved_epoch = current_epoch
+
+
+def save_checkpoint(
+    tree: M,
+    step: int,
+    checkpoint_path: PathLike,
+    manager: Optional[GlobalAsyncCheckpointManager] = None,
+    *,
+    commit_callback: Optional[Callable[[], None]] = None,
+):
+    """
+    Save a checkpoint to a given path using TensorStore.
 
     If the path does not exist, it will be created.
 
@@ -242,23 +316,24 @@ def save_checkpoint(model, training_state, step: int, checkpoint_path: PathLike,
 
     This method is jax.Array-aware and will save shards in a way that can be restored
     """
+    step = int(step)
     checkpoint_path = str(checkpoint_path)
     logger.info(f"Saving checkpoint to {checkpoint_path} for step {step}")
 
     fs: AbstractFileSystem
     fs, plain_path = _get_fs_and_plain_path(checkpoint_path)
-    fs.makedirs(plain_path, exist_ok=exist_ok)
+    fs.makedirs(plain_path, exist_ok=True)
 
-    tree_serialize_leaves_tensorstore(os.path.join(checkpoint_path, "model"), model)
-    if training_state is not None:
-        tree_serialize_leaves_tensorstore(os.path.join(checkpoint_path, "training_state"), training_state)
+    def my_callback():
+        save_metadata(checkpoint_path, fs, step)
+        logger.info(f"Saved checkpoint to {checkpoint_path} for step {step}")
 
-    save_metadata(checkpoint_path, fs, step)
+        if commit_callback is not None:
+            commit_callback()
 
-    logger.info(f"Saved checkpoint for step {step}")
+    tree = equinox.filter(tree, lambda x: is_jax_array_like(x) or isinstance(x, (int, float, bool, complex)))
 
-    # make sure that all processes agree on the checkpoint path and also synchronize hosts
-    sync_global_devices(checkpoint_path)
+    tree_serialize_leaves_tensorstore(checkpoint_path, tree, manager, commit_callback=my_callback)
 
     return checkpoint_path
 
@@ -271,54 +346,187 @@ def save_metadata(checkpoint_path, fs, step):
 
 
 def load_checkpoint(
-    model: M,
-    training_state: S,
+    tree: M,
     checkpoint_path: PathLike,
     *,
+    subpath: Optional[str] = None,
     discover_latest=True,
     axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
     mesh: Optional[jax.sharding.Mesh] = None,
-) -> Optional[Tuple[M, S, int]]:
+) -> M:
     """
-    Load a checkpoint from a given path.
+    Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
+    in a subdirectory of the given path will be loaded. If subpath is not None, then the checkpoint
+    loads only that subpath of the checkpoint. This is useful for loading, e.g., just the model and not
+    the entire training state.
 
-    Returns the loaded model state, training state, and step. If discover_latest is True,
-    the latest checkpoint in the given path will be loaded. Otherwise, the checkpoint at
-    the given path will be loaded. If no checkpoint is found, returns None
+    Args:
+        tree: an exemplar of the tree to load. Can be a PyTree[ShapeDTypeStruct] instead of a PyTree[Any]
+        checkpoint_path: the path to load the checkpoint from
+        subpath: the subpath to load from the checkpoint
+        discover_latest: whether to discover the latest checkpoint in the given path
+        axis_mapping: the axis mapping to use for loading the checkpoint
+        mesh: the mesh to use for loading the checkpoint
+    Returns:
+        the loaded checkpoint, with the same structure as the exemplar tree
 
-    If training_state is None, no training state will be loaded.
     """
     fs: AbstractFileSystem
     fs, _ = _get_fs_and_plain_path(checkpoint_path)
 
     checkpoint_path = str(checkpoint_path)
 
+    if is_in_jit():
+        logger.warning("Loading checkpoint in jit. This is not recommended and probably won't work.")
+
     if discover_latest:
         checkpoint_path = discover_latest_checkpoint(checkpoint_path)  # type: ignore
 
     if checkpoint_path is None or not fs.exists(checkpoint_path):
-        return None
+        raise FileNotFoundError(f"Could not find checkpoint at {checkpoint_path}")
 
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     metadata = load_metadata(checkpoint_path, fs)
 
-    model = tree_deserialize_leaves_tensorstore(
-        os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
+    if subpath:
+        checkpoint_path = os.path.join(checkpoint_path, subpath)
+
+    ser, non_ser = equinox.partition(tree, is_jax_array_like)
+    try:
+        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, ser, axis_mapping=axis_mapping, mesh=mesh)
+        tree = equinox.combine(tree, non_ser)
+        return tree
+    except:  # noqa
+        from levanter.trainer_state import TrainerState
+
+        if not isinstance(tree, TrainerState):
+            raise
+        else:
+            logger.warning("Attempting to load old-style checkpoint")
+            model, training_state = tree.model, (tree.opt_state, tree.training_key)
+
+            model = tree_deserialize_leaves_tensorstore(
+                os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
+            )
+
+            if training_state is None:
+                opt_state = None
+                key = None
+            else:
+                training_state = tree_deserialize_leaves_tensorstore(
+                    os.path.join(checkpoint_path, "training_state"),
+                    training_state,
+                    axis_mapping=axis_mapping,
+                    mesh=mesh,
+                )
+                opt_state, key = training_state
+
+            # TODO: pretty sure this is right, but should verify
+            step = metadata["step"]
+            new_state = dataclasses.replace(
+                tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
+            )
+            return new_state
+
+
+def load_checkpoint_or_initialize(
+    init_fn: Callable[Sig, M],
+    checkpoint_path: PathLike,
+    *,
+    subpath: Optional[str] = None,
+    discover_latest=True,
+    axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
+    mesh: Optional[jax.sharding.Mesh] = None,
+    is_checkpointed: FilterSpec = True,
+    donate_args: FilterSpec = True,
+    donate_kwargs: Optional[FilterSpec] = None,
+    do_load: Optional[bool] = None,
+) -> Callable[Sig, M]:
+    """
+    Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
+    in a subdirectory of the given path will be loaded. If subpath is not None, then the checkpoint
+    loads only that subpath of the checkpoint. This is useful for loading, e.g., just the model and not
+    the entire training state.
+
+    This function supports "partial" checkpoint loading, where only a subset of the parameters of the
+    state is loaded from the checkpoint. This is useful for initializing just some parameters.
+    (Note that you have to declare which parameters you are expecting to load via is_checkpointed.
+     Things can't just be missing from the checkpoint.)
+
+    init_fn will be called inside eval_shape and inside jit, so it should be a pure function. In particular,
+    it should not do any I/O.
+
+    This function is commonly used for initializing training state from a possibly non-existent checkpoint, but it can be used
+    for initializing any state from a checkpoint.
+
+    By default, this function will donate all arguments to init_fn that are not present in the checkpoint.
+
+    Args:
+        init_fn: a function to initialize if needed
+        checkpoint_path: the path to load the checkpoint from
+        subpath: the subpath to load from the checkpoint
+        discover_latest: whether to discover the latest checkpoint in the given path
+        axis_mapping: the axis mapping to use for loading the checkpoint
+        mesh: the mesh to use for loading the checkpoint
+        is_checkpointed: a FilterSpec that specifies which parameters are checkpointed
+        donate_args: a FilterSpec that specifies which arguments to donate to init_fn if we need to initialize
+        donate_kwargs: a FilterSpec that specifies which kwargs to donate to init_fn if we need to initialize
+        do_load: if True, always load the checkpoint. If False, always initialize. If None, load if the checkpoint exists, otherwise initialize
+
+    Returns:
+        A function that takes the same arguments as init_fn, but loads the checkpoint if it exists and returns the
+        loaded state.
+
+    """
+
+    # some state might not be initialized, so we need to initialize it
+    # JAX will be smart and only do the compute for things we actually need
+    @haliax.named_jit(
+        axis_resources=axis_mapping,
+        out_axis_resources=axis_mapping,
+        donate_args=donate_args,
+        donate_kwargs=donate_kwargs,
     )
+    def init_and_merge(state, *args, **kwargs):
+        init_state = init_fn(*args, **kwargs)
+        return equinox.combine(state, init_state)
 
-    if training_state is None:
-        training_state = None
-    else:
-        training_state = tree_deserialize_leaves_tensorstore(
-            os.path.join(checkpoint_path, "training_state"), training_state, axis_mapping=axis_mapping, mesh=mesh
-        )
+    def load_or_init(*args, **kwargs):
+        # we need to call init_fn to get the shape, dtype, and structure of the state
+        # we'll use this to deserialize the checkpoint
+        state_shape = equinox.filter_eval_shape(init_fn, *args, **kwargs)
 
-    return model, training_state, metadata["step"]
+        # we need to filter the state to get the parameters we want to load
+        # we'll use this to deserialize the checkpoint
+        filtered_state_shape = equinox.filter(state_shape, is_checkpointed)
+        # strip out all the shape stuff, leaving only the dtype and structure
+        loaded_state = equinox.filter(state_shape, lambda _: False)
+
+        if do_load is not False:
+            # now we can load the checkpoint
+            try:
+                loaded_state = load_checkpoint(
+                    filtered_state_shape,
+                    checkpoint_path,
+                    subpath=subpath,
+                    discover_latest=discover_latest,
+                    axis_mapping=axis_mapping,
+                    mesh=mesh,
+                )
+            except FileNotFoundError:
+                if do_load is True:
+                    raise
+                logger.info(f"Checkpoint not found at {checkpoint_path}. Initializing from scratch.")
+
+        state = init_and_merge(loaded_state, *args, **kwargs)
+
+        return state
+
+    return load_or_init
 
 
 def load_metadata(checkpoint_path, fs=None):
     if fs is None:
-        fs: AbstractFileSystem
         fs, _, _ = fsspec.get_fs_token_paths(str(checkpoint_path))
     with fs.open(os.path.join(checkpoint_path, "metadata.json")) as metadata_in:
         metadata = json.load(metadata_in)
@@ -378,16 +586,19 @@ class CheckpointerConfig:
         default_factory=lambda: [dict(every=10000)]
     )  # list of dicts with two keys: every and until
 
-    def expanded_path(self, run_id):
-        return os.path.expanduser(os.path.join(self.base_path, run_id))
+    append_run_id_to_base_path: bool = True
 
-    def create(self, run_id, keep_params: PyTree[FilterSpec] = True) -> Checkpointer:
+    def expanded_path(self, run_id) -> str:
+        if self.append_run_id_to_base_path:
+            return os.path.expanduser(os.path.join(self.base_path, run_id))
+        return os.path.expanduser(self.base_path)
+
+    def create(self, run_id) -> Checkpointer:
         keeps = [CheckpointInterval(**k) for k in self.keep]
         return Checkpointer(
             base_path=self.expanded_path(run_id),
             save_interval=self.save_interval,
             step_policies=keeps,
-            keep_params=keep_params,
         )
 
     def __post_init__(self):
@@ -403,3 +614,6 @@ class CheckpointerConfig:
                     interval["until"] is None or interval["until"] > prev_interval["until"]
                 ), "Checkpoint intervals must be monotonic"
             prev_interval = interval
+
+
+# TODO: add partial checkpoint loading

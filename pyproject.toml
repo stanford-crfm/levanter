@@ -1,13 +1,13 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "levanter"
-version = "1.1"
+version = "1.2"
 authors = [
-  { name="David Hall", email="dlwh@cs.stanford.edu" },
-  {name="Ivan Zhou", email="ivanz@stanford.edu"}
+    { name = "David Hall", email = "dlwh@cs.stanford.edu" },
+    { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
 ]
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
@@ -21,60 +21,41 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 dependencies = [
-    # we require that you install jax yourself, since the extras vary by system.
-    # jax = {version = ">=0.4.10,<0.5.0"}
-#    "haliax>=1.3,<2.0",
-#     Haliax changes in step with levanter, so we'll just use the git version except for releases.
-    "haliax @ git+https://github.com/stanford-crfm/haliax.git",
-    "equinox>=0.10.7",
-    "jaxtyping>=0.2.20",
-    "transformers>=4.22.0",
-    "optax",
-    "wandb",
-    "draccus>=0.6",
+    "haliax>=1.4.dev324",
+    "equinox>=0.11.7",
+    "jaxtyping>=0.2.34",
+    "tokenizers>=0.15.2",
+    "transformers>=4.41.2,<4.47.0",
+    "optax>=0.1.9",
+    "wandb>=0.17.8",
+    "draccus>=0.9.3",
     "pyarrow>=11.0.0",
     "zstandard>=0.20.0",
-    "datasets==2.11.0",
-    "gcsfs<2023.10.0",
+    "datasets>=3.1.0,<4.0",
+    "gcsfs>=2024.2,<2025",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
-    "fsspec<2023.10.0",
-    # TODO: minimize and report an issue to tensorstore
-    # causes hangs when serializing to GCS
-    "tensorstore==0.1.45",
+    "fsspec[http]>=2024.2,<2025",
+    "tensorstore>=0.1.65",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
-    "safetensors[numpy]",
+    "safetensors[numpy]~=0.4.2",
     "matplotlib>=3.7.0",
-    "tblib>=1.7.0,<2.0.0",
-    "dataclasses-json",
-    "ray[default]",
-    "pydantic<2",  # temporary pin until Ray supports pydantic 2.0
-    "rich>=13",
-#    "chex>=0.1.85"
+    "tblib>=1.7.0,<4.0.0",
+    "dataclasses-json~=0.6.4",
+    "ray[default]>=2.34.0",
+    "pydantic<3",
+    "rich~=13.0",
+    "filelock~=3.13",
+    #    "ai2-olmo",
+    "async-lru~=2.0",
+    "tqdm-loggable>=0.2",
+    "deepdiff"
 ]
-
-[tool.hatch.build]
-include = ["config/*.yaml", "config/*/*.yaml", "*.py"]
-dev-mode-dirs = [".", "src"]
-
-[tool.hatch.build.sources]
-"src/levanter" = "levanter"
-"config" = "levanter/config"
-
-[tool.hatch.metadata]
-allow-direct-references = true
-
-
-
-[tool.hatch.build.targets.wheel]
-packages = ["levanter"]
-
 
 [project.urls]
 "Homepage" = "https://github.com/stanford-crfm/levanter"
 "Bug Tracker" = "https://github.com/stanford-crfm/levanter/issues"
-
 
 [tool.black]
 line-length = 119
@@ -92,7 +73,14 @@ ensure_newline_before_comments = true
 line_length = 119
 src_paths = ["src", "tests"]
 known_haliax = ["haliax"]
-sections=["FUTURE", "STDLIB", "THIRDPARTY", "HALIAX", "FIRSTPARTY", "LOCALFOLDER"]
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "THIRDPARTY",
+    "HALIAX",
+    "FIRSTPARTY",
+    "LOCALFOLDER",
+]
 
 [tool.mypy]
 python_version = "3.10"
@@ -102,7 +90,23 @@ mypy_path = ["src"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "entry: marks tests as entry point tests (deselect with '-m \"not entry\"')",
+    "ray: marks tests that require Ray (deselect with '-m \"not ray\"')",
 ]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "flake8",
+    "soundfile",
+    "librosa",
+    "pytest-forked",
+    "pytest-asyncio",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["levanter", "levanter.*"]

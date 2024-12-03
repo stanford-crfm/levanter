@@ -9,78 +9,85 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, Iterable, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jmp
 import numpy as np
-import optax
-import wandb
 from draccus import field
-from jax import ShapeDtypeStruct
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray, PyTree
-from optax import GradientTransformation, OptState
+from optax import GradientTransformation
 
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
+from haliax.quantization import Fp8Config
+from haliax.types import Scalar
 
-import levanter.logging
-from levanter.checkpoint import CheckpointerConfig
+import levanter.checkpoint
+import levanter.tracker
+import levanter.tracker.wandb
+import levanter.utils.logging
+from levanter import tracker
+from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
-from levanter.data import Dataset, ReplicatedBatchLoader, ShardableDataset, ShardedBatchLoader
+from levanter.data import AsyncDataset, DataLoader
 from levanter.distributed import DistributedConfig, RayConfig
-from levanter.grad_accum import accumulate_gradients_sharded
-from levanter.logging import WandbConfig, capture_time
-from levanter.types import FilterSpec
-from levanter.utils import cloud_utils
-from levanter.utils.jax_utils import is_inexact_arrayish
+from levanter.grad_accum import microbatched
+from levanter.tracker import TrackerConfig, capture_time
+from levanter.trainer_state import TrainerState, saveable_training_mask
+from levanter.utils import cloud_utils, fsspec_utils
+from levanter.utils.jax_utils import create_fsdp_mesh
 from levanter.utils.tree_utils import inference_mode
+from levanter.utils.types import ComputeLossFunction, FilterSpec
 
 
 logger = pylogging.getLogger(__name__)
 
+M = TypeVar("M")  # Model
 X = TypeVar("X")  # Input
-M = TypeVar("M", bound=PyTree)
-S = TypeVar("S", bound=PyTree)
+S = TypeVar("S", bound=TrainerState)
 
-DEFAULT_JAX_CONFIG = {
+DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
     "jax_threefry_partitionable": True,
     "jax_softmax_custom_jvp": True,
 }
 
+
 # A note on the semantics of "step" vs "next_step":
 # The "step" of a TrainerState is the state after `step` steps have been taken.
 # A "StepInfo"'s step is the step that was just completed. If you want the next step, use `next_step`.
-
-
 @dataclass
-class TrainerState(Generic[M]):
-    step: int
-    model: M
-    opt_state: OptState
-    training_key: PRNGKeyArray
-
-
-@dataclass
-class StepInfo(Generic[M]):
-    state: TrainerState[M]
+class StepInfo(Generic[S]):
+    state: S
     loss: float
     step_duration: float
 
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
-    next_key = property(lambda self: self.state.training_key)
 
-    step = property(lambda self: self.state.step - 1)
+    step = property(lambda self: int(self.state.step) - 1)
     """
     The step that was just completed. If you want the next step, use `next_step`.
     """
-    next_step = property(lambda self: self.state.step)
+    next_step = property(lambda self: int(self.state.step))
 
 
 @dataclass
@@ -110,37 +117,60 @@ class TrainerHooks:
             return decorator(fn)
 
 
+def _unify_model_and_model_init(model: Optional[M], model_init: Optional[Callable[[], M]]) -> Callable[[], M]:
+    if model is not None:
+        if model_init is not None:
+            raise ValueError("only one of model and model_init should be specified")
+
+        if model is not None:
+            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see jax partials
+            model_init = jax.tree_util.Partial(lambda m: m, model)
+    elif model_init is None:
+        raise ValueError("one of model and model_init must be specified")
+
+    return model_init
+
+
 class Trainer:
     config: "TrainerConfig"
     optimizer: GradientTransformation
     hooks: TrainerHooks
-    is_trainable_param: Optional[PyTree[FilterSpec]]
+    tracker: levanter.tracker.Tracker
+    is_trainable_param: PyTree[FilterSpec]
     _raw_loss_function: Callable
+    _cmanagers: List[typing.ContextManager] = []
 
     def __init__(
         self,
         config: "TrainerConfig",
         optimizer: GradientTransformation,
-        loss_fn: Callable,
+        loss_fn: ComputeLossFunction,
         *,
-        is_trainable: PyTree[FilterSpec] = True,
+        add_default_hooks: bool = True,
     ):
         """
 
         Args:
             config:  the trainer config
-            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.trainer.OptimizerConfig][]
+            optimizer: the optimizer, e.g. `optax.adam(1e-3)` or produced by [levanter.optim.OptimizerConfig][]
             loss_fn (Callable): the loss function. This should be a function that takes a model and some inputs and returns a
                 scalar loss. It should be jit-able and should not have any side effects.
-            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
-                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
-                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
         """
         self.hooks = TrainerHooks()
         self.config = config
-        self._raw_loss_function = loss_fn
         self.optimizer = optimizer
-        self.is_trainable_param = is_trainable
+        self._raw_loss_function = loss_fn
+        if isinstance(config.tracker, Sequence):
+            self.tracker = levanter.tracker.CompositeTracker([c.init(self.run_id) for c in config.tracker])
+        else:
+            self.tracker = config.tracker.init(self.run_id)
+
+        self._cmanagers = []
+
+        if add_default_hooks:
+            self._add_default_hooks()
+
+        self._cmanagers = []
 
     @cached_property
     def loss_fn(self):
@@ -148,12 +178,11 @@ class Trainer:
         Wrapped loss function that casts the model to compute precision and sets the context axis mapping to compute
         """
 
-        @named_jit(in_axis_resources=self.parameter_axis_mapping, axis_resources=self.compute_axis_mapping)
         @functools.wraps(self._raw_loss_function)
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
-                return self._raw_loss_function(model, *batch, **batch_kwargs)
+                return _ensure_scalar(self._raw_loss_function(model, *batch, **batch_kwargs))
 
         return fn
 
@@ -167,6 +196,19 @@ class Trainer:
     def mp(self) -> jmp.Policy:
         """Returns the mixed precision policy"""
         return self.config.mp
+
+    @property
+    def fp8(self) -> Optional[Fp8Config]:
+        if self.config.fp8 is True:
+            return Fp8Config()
+        elif self.config.fp8 is False:
+            return None
+        else:
+            return self.config.fp8
+
+    @property
+    def num_train_steps(self) -> int:
+        return self.config.num_train_steps
 
     @typing.overload
     def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
@@ -202,111 +244,143 @@ class Trainer:
     def EvalBatch(self):
         return self.config.EvalBatch
 
+    def __enter__(self):
+        if len(self._cmanagers) > 0:
+            raise RuntimeError("Trainer is already entered")
+
+        self._cmanagers = [
+            levanter.current_tracker(self.tracker),
+            self.device_mesh,
+            hax.axis_mapping(self.parameter_axis_mapping),
+        ]
+
+        for cmanager in self._cmanagers:
+            cmanager.__enter__()
+
+        return self
+
+    def __exit__(self, *args):
+        problems = []
+        for cmanager in reversed(self._cmanagers):
+            try:
+                cmanager.__exit__(*args)
+            except Exception as e:
+                problems.append(e)
+
+        self._cmanagers = []
+
+        if len(problems) > 0:
+            raise RuntimeError("Exception(s) occurred while exiting trainer", problems) from problems[0]
+
     def initial_state(
-        self, training_key: PRNGKeyArray, model: Optional[M] = None, model_init: Optional[Callable[[], M]] = None
-    ) -> TrainerState:
+        self,
+        training_key: PRNGKeyArray,
+        model: Optional[M] = None,
+        model_init: Optional[Callable[[], M]] = None,
+        *,
+        is_trainable: PyTree[FilterSpec] = True,
+    ) -> TrainerState[M]:
         """
-        Initializes the model, optimizer state, and random key. Also handles loading a checkpoint if needed.
+        Either loads a checkpoint or initializes a fresh trainer state. This is the recommended way to initialize
+        a trainer state.
+
+        This method is smart enough to handle subclasses of TrainerState. If you want to extend TrainerState, you
+        can override _initialize_state_from_scratch
+
+        Args
+            is_trainable: optional filter spec for the trainable parameters. This is used to filter out non-trainable
+                parameters for the optimizer state and for computing gradients. Non-trainable parameters are also
+                not checkpointed. If you don't specify this, all parameters are assumed to be trainable.
 
         Returns:
-            model, opt_state, key, resume_step
+            TrainerState: the initial state,
         """
+        model_init = _unify_model_and_model_init(model, model_init)
 
-        if model is not None and model_init is not None:
-            raise ValueError("only one of model and model_init should be specified")
-        elif model is None and model_init is None:
-            raise ValueError("one of model and model_init must be specified")
-
-        if model is not None:
-            # we can't just use `lambda: model` because JAX jit can't see captures, but it can see partials
-            # We can't use plain partials because they aren't pytrees
-            model_init = jax.tree_util.Partial(lambda m: m, model)
-
+        del model
         assert model_init is not None
 
-        model_shape, opt_state_shape = eqx.filter_eval_shape(self._init_model_and_opt_state, model_init)
+        # first try to load a full trainer state checkpoint
+        checkpoint_path = self.checkpoint_path
 
-        # we only checkpoint the trainable parameters, so we need to filter out the non-trainable ones
-        trainable_model_shape = self.trainable_params_only(model_shape)
+        load_checkpoint = self.config.load_checkpoint
+        # we don't save the full trainer state, so we need to filter out the non-trainable parameters
+        if load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist")
+        elif load_checkpoint is None:
+            load_checkpoint = fsspec_utils.exists(checkpoint_path)
 
-        ckpt = self.maybe_load_checkpoint(
-            trainable_model_shape,
-            (opt_state_shape, training_key),
-            axis_mapping=self.parameter_axis_mapping,
-            mesh=self.device_mesh,
-        )
-
-        if ckpt is not None:
-            trainable_model, (opt_state, training_key), completed_step = ckpt
-            if model is not None:
-                model = eqx.combine(trainable_model, model)
-            else:
-                model = eqx.combine(trainable_model, model_shape)
-
-            if any(isinstance(leaf, ShapeDtypeStruct) for leaf in jax.tree_leaves(model)):
-                # if we're resuming, we need to re-initialize the non-trainable parameters to their original values
-                non_trainable = named_jit(self._init_non_trainable_params, self.parameter_axis_mapping)(model_init)
-                model = eqx.combine(trainable_model, non_trainable)
-
-            step = completed_step + 1
-        elif self.config.initialize_from is not None:
-            # initialize from a levanter checkpoint
-            logger.info(f"Initializing model from checkpoint {self.config.initialize_from}")
-            match levanter.checkpoint.load_checkpoint(
-                model_shape,
-                None,
+        if load_checkpoint is False and self.config.initialize_from is not None:
+            # we're not going to load a checkpoint, so see if we can initialize from a model
+            logger.info(f"Initializing from {self.config.initialize_from}")
+            # todo: we are potentially holding two models in memory at once here, if we pass in a model
+            # instead of a model_init and we use initialize_from. We could avoid this by deleting
+            # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
+            # it also seems unlikely that we'd want to do this, so I'm not going to bother for now
+            loaded_model = load_checkpoint_or_initialize(
+                model_init,
                 self.config.initialize_from,
                 axis_mapping=self.parameter_axis_mapping,
                 mesh=self.device_mesh,
-            ):
-                # new_model is probably only the trainable parameters, so we init the rest
-                case base_model, _, loaded_step:
-                    logger.info(f"Initialized from step {loaded_step} of {self.config.initialize_from}")
-                    old_model_init = model_init
+                subpath="model",
+                do_load=True,
+            )()
+            model_init = jax.tree_util.Partial(lambda m: m, loaded_model)
 
-                    model_init = jax.tree_util.Partial(lambda m: eqx.combine(m, old_model_init()), base_model)
-                    model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(
-                        model_init
-                    )
+        def init_state_and_model(model_init, training_key):
+            model = model_init()
+            # only force trainable params to param precision. Other params are cast to compute precision
+            state = TrainerState.init(
+                self.optimizer,
+                model,
+                key=training_key,
+                is_trainable=is_trainable,
+                mp=self.mp,
+                fp8=self.fp8,
+            )
+            return state
 
-                    step = 0
-                case None:
-                    raise ValueError(f"Could not load model from checkpoint {self.config.initialize_from}")
-        else:
-            model, opt_state = named_jit(self._init_model_and_opt_state, self.parameter_axis_mapping)(model_init)
-            step = 0
+        trainer_state_shape = eqx.filter_eval_shape(init_state_and_model, model_init, training_key)
+        saveable_train_state = saveable_training_mask(trainer_state_shape, is_trainable)
 
-        return TrainerState(step, model, opt_state, training_key)
+        state = load_checkpoint_or_initialize(
+            init_state_and_model,
+            checkpoint_path,
+            axis_mapping=self.parameter_axis_mapping,
+            mesh=self.device_mesh,
+            is_checkpointed=saveable_train_state,
+            do_load=load_checkpoint,
+        )(model_init, training_key)
 
-    def train_step(self, state: TrainerState[M], *batch: X, **batch_kwargs) -> StepInfo[M]:
+        return state
+
+    @property
+    def checkpoint_path(self) -> str:
+        checkpoint_path = self.config.load_checkpoint_path
+        if checkpoint_path is None:
+            checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
+        return checkpoint_path
+
+    def train_step(self, state: S, *batch: X, **batch_kwargs) -> StepInfo[S]:
         """
         Performs a single training step.
         """
         with capture_time() as step_time:
-            key, new_key = jax.random.split(state.training_key)
-            loss, new_model, new_optstate = self._train_step_fn(
-                state.model, state.opt_state, *batch, **batch_kwargs, key=key
-            )
+            loss, new_state = self._jit_train_step_fn(state, *batch, **batch_kwargs)
             # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             loss = loss.item()  # type: ignore
 
-        return StepInfo(TrainerState(state.step + 1, new_model, new_optstate, new_key), loss, step_time())
+        return StepInfo(new_state, loss, step_time())
 
-    def training_steps(
-        self, state: TrainerState[M], train_loader, run_hooks: bool = True
-    ) -> typing.Iterator[StepInfo]:
+    def training_steps(self, state: S, train_loader, run_hooks: bool = True) -> typing.Iterator[StepInfo[S]]:
         """
         Generator that yields training steps and runs hooks.
         """
         iter_data = iter(train_loader)
 
-        while state.step < self.config.num_train_steps:
+        while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
                 example = next(iter_data)
-
-            # TODO: refactor logging
-            wandb.log({"throughput/loading_time": loading_time()}, step=state.step)
-
             info = self.train_step(state, example)
             state = info.state
 
@@ -314,11 +388,13 @@ class Trainer:
                 with capture_time() as hook_time:
                     self.run_hooks(info)
 
-                wandb.log({"throughput/hook_time": hook_time()}, step=state.step)
+                levanter.tracker.log_metrics({"throughput/hook_time": hook_time()}, step=info.step)
+
+            levanter.tracker.log_metrics({"throughput/loading_time": loading_time()}, step=info.step)
 
             yield info
 
-    def train(self, state: TrainerState[M], train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[M]:
+    def train(self, state: S, train_loader: Iterable[X], run_hooks: bool = True) -> StepInfo[S]:
         """
         Performs training until the number of steps is reached.
         """
@@ -331,171 +407,141 @@ class Trainer:
 
         return info
 
-    def add_default_hooks(self, eval_dataset: Optional[Iterable[X]] = None):
+    def _add_default_hooks(self):
         from levanter import callbacks
 
         self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_to_wandb, every=1)
-        if eval_dataset is not None:
-            self.add_eval_hook(eval_dataset)
-        self.add_hook(callbacks.wandb_xla_logger(self.config.wandb), every=self.config.steps_per_eval)
+        self.add_hook(callbacks.log_step_info(self.config.num_train_steps), every=1)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
-        checkpointer = self.config.checkpointer.create(self.run_id, self.is_trainable_param)
+        checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+        if self.config.profiler:
+            profile_path = self.config.log_dir / self.run_id / "profiler"
+            total_prof_steps = self.config.profiler_num_steps
+            if total_prof_steps + self.config.profiler_start_step > self.config.num_train_steps:
+                logger.warning(
+                    f"Adjusting profiler_total_steps from {total_prof_steps} to"
+                    f" {self.config.num_train_steps - self.config.profiler_start_step}"
+                )
+                total_prof_steps = self.config.num_train_steps - self.config.profiler_start_step
+            self.add_hook(
+                callbacks.profile(
+                    str(profile_path),
+                    self.config.profiler_start_step,
+                    total_prof_steps,
+                    self.config.profiler_perfetto_link,
+                ),
+                every=1,
+            )
 
     def add_eval_hook(self, eval_dataset, name: Optional[str] = None):
         from levanter import callbacks
 
-        eval_loader = self.replicated_loader(eval_dataset, self.EvalBatch)
+        eval_loader = self.data_loader(eval_dataset, self.EvalBatch)
 
         if eval_loader and (self.config.max_eval_batches is None or self.config.max_eval_batches > 0):
 
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
                 model = inference_mode(model, True)
+                model = self.mp.cast_to_compute(model)
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
             self.add_hook(
                 callbacks.compute_validation_loss(
-                    eval_loss, eval_loader, max_batches=self.config.max_eval_batches, name=name
+                    eval_loss,
+                    eval_loader,
+                    max_batches=self.config.max_eval_batches,
+                    name=name,
                 ),
                 every=self.config.steps_per_eval,
             )
 
-    def replicated_loader(self, dataset: Dataset[X], batch_axis: Axis) -> ReplicatedBatchLoader[X]:
-        """Creates a replicated batch loader for the given dataset. Generally you should use this
-        if you either be able to make a single pass over the dataset.
+    def data_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
+        """Creates a data loader for the given dataset and batch axis.
 
         Args:
-            dataset (Dataset): the dataset to load
+            dataset (AsyncDataset): the dataset to load
             batch_axis (Axis): the batch axis
 
         Returns:
-            ReplicatedBatchLoader: the batch loader
+            DataLoader: the data loader
         """
-        return ReplicatedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
-
-    def sharded_loader(self, dataset: ShardableDataset[X], batch_axis: Axis) -> ShardedBatchLoader[X]:
-        """Creates a sharded batch loader for the given dataset. Generally you should use this
-        for training and you don't care about epoch boundaries.
-
-        Args:
-            dataset (Dataset): the dataset to load
-            batch_axis (Axis): the batch axis
-
-        Returns:
-            ShardedBatchLoader: the batch loader
-        """
-        return ShardedBatchLoader(dataset, self.device_mesh, batch_axis, self.compute_axis_mapping)
+        return DataLoader(
+            batch_axis,
+            dataset,
+            max_buffered_batches=128,
+            mesh=self.device_mesh,
+            axis_resources=self.compute_axis_mapping,
+            prefetch_size=32,
+        )
 
     @cached_property
-    def _train_step_fn(self):
-        @named_jit(
+    def _jit_train_step_fn(self):
+        return named_jit(
+            self._train_step,
             axis_resources=self.parameter_axis_mapping,
             out_axis_resources=self.parameter_axis_mapping,
-            donate_args=(True, True),
+            donate_args=(True,),
         )
-        def train_step(model, opt_state, *batch, **batch_kwargs):
-            model = inference_mode(model, False)
 
-            # we do this so that we only take the gradients of the trainable parameters
-            trainable_model, rest_model = self.partition_trainable_params(model)
+    def _train_step(self, state: S, *batch, **batch_kwargs) -> tuple[Scalar, S]:
+        key, new_key = jax.random.split(state.training_key)
+        model = inference_mode(state.model, False)
 
-            def split_loss_fn(trainable_model, *batch, **batch_kwargs):
-                model = eqx.combine(trainable_model, rest_model)
-                return self.loss_fn(model, *batch, **batch_kwargs)
+        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
-            loss, grads = accumulate_gradients_sharded(
-                split_loss_fn, self.TrainBatch, self.config.per_device_parallelism, self.parameter_axis_mapping
-            )(trainable_model, *batch, **batch_kwargs)
+        # Sophia needs to be able to access the loss function in the optimizer
+        def obj_fun(trainable_model):
+            model = eqx.combine(trainable_model, state.model)
+            with hax.axis_mapping(self.compute_axis_mapping):
+                model = self.mp.cast_to_compute(model)
+                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
-            updates, opt_state = self.optimizer.update(grads, opt_state, params=trainable_model)
-            model = eqx.apply_updates(model, updates)
+        new_state = state.take_step(grads, obj_fun=obj_fun)
+        new_state = hax.shard(new_state, self.parameter_axis_mapping)
+        return loss, new_state
 
-            return loss, model, opt_state
+    def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
+        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
+        mbs = self.config.microbatch_size
+        grad_fn = microbatched(
+            grad_fn,
+            self.TrainBatch,
+            mbs,
+            self.parameter_axis_mapping,
+            self.compute_axis_mapping,
+        )
+        with hax.axis_mapping(self.compute_axis_mapping):
+            return grad_fn(model, *batch, **batch_kwargs)
 
-        return train_step
 
-    def _init_model_and_opt_state(self, model_init):
-        model = model_init()
-        # only force trainable params to param precision. Other params are cast to compute precision
-        trainable, non_trainable = self.partition_trainable_params(model)
-        trainable = self.mp.cast_to_param(trainable)
-        non_trainable = self.mp.cast_to_compute(non_trainable)
-        model = eqx.combine(trainable, non_trainable)
-        opt_state = self.optimizer.init(trainable)
-        return model, opt_state
+def _initialize_global_tracker(config, run_id):
+    if isinstance(config, Sequence):
+        tracker = levanter.tracker.CompositeTracker([c.init(run_id) for c in config])
+    else:
+        tracker = config.init(run_id)
 
-    def _init_non_trainable_params(self, model_init):
-        model = model_init()
-        # only force trainable params to param precision. Other params are cast to compute precision
-        trainable, non_trainable = self.partition_trainable_params(model)
-        non_trainable = self.mp.cast_to_compute(non_trainable)
-        return non_trainable
-
-    def trainable_params_only(self, model: M) -> M:
-        """
-        Filters out non-trainable parameters from the model. This is used internally to
-        for the optimizer state and to compute gradients, but you can also use it to filter out
-        params for logging or something.
-        """
-        return self.partition_trainable_params(model)[0]
-
-    def partition_trainable_params(self, model):
-        """
-        Partitions the model into trainable and non-trainable parameters. This is used internally
-        for the gradient calculation and checkpointing, but you can also use it to filter out params for logging
-        or something.
-
-        Returns:
-            trainable, non-trainable
-        """
-
-        def trainable_and_diffable(pred):
-            if callable(pred):
-                return lambda x: pred(x) and is_inexact_arrayish(x)
-            elif pred is True:
-                return is_inexact_arrayish
-            else:
-                return pred
-
-        combined_mask = jax.tree_util.tree_map(trainable_and_diffable, self.is_trainable_param)
-        return eqx.partition(model, combined_mask)
-
-    def maybe_load_checkpoint(
-        self, model: M, training_state: S, *, axis_mapping=None, mesh=None
-    ) -> Optional[Tuple[M, S, int]]:
-        """Loads a checkpoint if one exists and we're supposed to load it,
-        otherwise returns the model and training state as is"""
-        if self.config.load_checkpoint is not False:
-            # TODO: don't remake the checkpointer every time
-            checkpointer = self.config.checkpointer.create(self.run_id)
-            load_checkpoint_path = self.config.load_checkpoint_path
-
-            if load_checkpoint_path is None:
-                load_checkpoint_path = self.config.checkpointer.expanded_path(self.run_id)
-
-            ckpt = checkpointer.load_checkpoint(
-                model, training_state, load_checkpoint_path, axis_mapping=axis_mapping, mesh=mesh
-            )
-
-            if ckpt is None and self.config.load_checkpoint is True:
-                raise ValueError(f"Could not load checkpoint from {load_checkpoint_path}")
-
-            return ckpt
-        else:
-            return None
+    levanter.tracker.set_global_tracker(tracker)
 
 
 @dataclass
 class TrainerConfig:
     seed: int = 0  # random seed
     mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
+    fp8: Optional[bool | Fp8Config] = None
 
-    wandb: WandbConfig = field(default_factory=WandbConfig)
+    wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")
-    run_base_dir: Path = Path("runs/")
     id: Optional[str] = None  # run id. if None, will be set to a random string
+
+    tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
+
+    # TODO: refactor callbacks
+    profiler: bool = False
+    profiler_start_step: int = 5
+    profiler_num_steps: int = 100
+    profiler_perfetto_link: bool = False
 
     # config related to partitioning
 
@@ -503,12 +549,19 @@ class TrainerConfig:
     fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
     tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
-    # TODO: in theory we can support tuples of physical axis names, but I don't think anyone actually uses that.
-    axis_resources: Mapping[str, str] = field(default_factory=dict)
+    axis_resources: Mapping[str, Union[Tuple[str], str]] = field(default_factory=dict)
     """mapping from logical axis to physical axis. batch_axis, fsdp_axis, and tensor_parallel_axes are preferred"""
-    parameter_axis_resources: Mapping[str, str] = field(default_factory=dict)  # overrides axis_mapping for parameter
+    parameter_axis_resources: Mapping[str, Union[Tuple[str], str]] = field(
+        default_factory=dict
+    )  # overrides axis_mapping for parameter
     """logical->physical mapping for parameter/optimizer sharding. fsdp_axis and tensor_parallel_axes are preferred"""
-    model_axis_size: int = 1  # how many devices to shard each model over. Data axis is the other axis
+
+    """Interchip Interconnect (ICI) & Data Center Networking (DCN) shardings https://cloud.google.com/tpu/docs/multislice-introduction"""
+    replica_ici_axis_size: int = 1
+    model_axis_size: int = 1
+    """how many devices within each slice for sharding with DP. Fix TP=1, the rest of the devices is for FSDP."""
+    replica_dcn_axis_size: int = 1
+    """how many slices in the multislice scheme for sharding with DP and TP. The rest of the devices is for FSDP."""
 
     # Config related to batch sizes
     train_batch_size: int = 512
@@ -530,7 +583,7 @@ class TrainerConfig:
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
     initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
 
-    jax_config: Dict[str, JsonAtom] = field(
+    jax_config: Mapping[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
     )  # config to pass to jax.config.update
 
@@ -545,15 +598,6 @@ class TrainerConfig:
     shutdown_at_exit: Union[bool, float] = False
 
     @property
-    def run_name(self) -> str:
-        try:
-            import wandb
-
-            return wandb.run and (wandb.run.name or wandb.run.id) or "unnamed"
-        except ImportError:
-            return "unnamed"
-
-    @property
     def TrainBatch(self):
         return Axis("batch", self.train_batch_size)
 
@@ -561,23 +605,38 @@ class TrainerConfig:
     def EvalBatch(self):
         return Axis("batch", self.eval_batch_size)
 
-    def initialize(self, all_config):
-        """Initializes jax, wandb, logging, setting the run name/id in the process"""
+    @property
+    def microbatch_size(self):
+        return self.per_device_parallelism * self.data_axis_size
+
+    def __post_init__(self):
+        if self.wandb is not None:
+            warnings.warn(
+                "wandb is deprecated. use tracker with type wandb instead",
+                DeprecationWarning,
+            )
+            self.tracker = self.wandb
+
+    def initialize(self):
+        """Initializes jax, logging, setting the run name/id in the process"""
+        self._initialize_jax_config()
         # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
         pylogging.basicConfig(level=pylogging.INFO)
         self.distributed.initialize()
-        self._maybe_set_id()
-        self._initialize_logging()
-        self.ray.initialize()
-        self._initialize_jax_config()
         self._validate_and_set_defaults()
-        self.wandb.init(self.id, all_config)
+
+        id = self._maybe_set_id()
+        levanter.utils.logging.init_logging(self.log_dir, f"{id}.log")
+        _initialize_global_tracker(self.tracker, id)
+
+        self.ray.initialize()
 
         if self.require_accelerator is None:
             self.require_accelerator = not sys.platform.startswith("darwin")
 
         if self.require_accelerator:
-            assert jax.default_backend() != "cpu", "Accelerator required but not found"
+            if jax.default_backend() == "cpu":
+                raise RuntimeError("No accelerator found. Please run on a TPU or GPU.")
 
         if self.shutdown_at_exit is not False:
             if isinstance(self.shutdown_at_exit, bool):
@@ -587,19 +646,51 @@ class TrainerConfig:
 
     @cached_property
     def device_mesh(self) -> Mesh:
-        devices = jax.devices()
-        devices = np.array(devices).reshape(self.data_axis_size, self.model_axis_size)
-        return Mesh(devices, (ResourceAxis.DATA, ResourceAxis.MODEL))
+        return create_fsdp_mesh(
+            self.replica_ici_axis_size,
+            self.data_ici_axis_size,
+            self.model_axis_size,
+            self.replica_dcn_axis_size,
+            self.data_dcn_axis_size,
+        )
 
     @property
     def eval_batch_size(self):
         return self.per_device_eval_parallelism * self.data_axis_size
 
+    @cached_property
+    def num_slices(self):
+        """number of nodes"""
+        return max(getattr(device, "slice_index", 0) for device in jax.devices()) + 1
+
+    @property
+    def num_devices_per_slice(self):
+        """number of devices within a slice"""
+        return jax.device_count() // self.num_slices
+
+    @property
+    def data_ici_axis_size(self):
+        """size of the FSDP axis within slices"""
+        assert self.num_devices_per_slice % (self.replica_ici_axis_size * self.model_axis_size) == 0
+        return self.num_devices_per_slice // (self.replica_ici_axis_size * self.model_axis_size)
+
+    @property
+    def data_dcn_axis_size(self):
+        """size of the FSDP axis across slices"""
+        assert self.num_slices % self.replica_dcn_axis_size == 0
+        return self.num_slices // self.replica_dcn_axis_size
+
     @property
     def data_axis_size(self):
         """size of the data parallel/batch parallel axis."""
-        assert jax.device_count() % self.model_axis_size == 0
-        return jax.device_count() // self.model_axis_size
+        return (
+            self.data_dcn_axis_size * self.data_ici_axis_size * self.replica_dcn_axis_size * self.replica_ici_axis_size
+        )
+
+    @property
+    def replica_axis_size(self):
+        """size of the data parallel/batch parallel axis."""
+        return self.replica_dcn_axis_size * self.replica_ici_axis_size
 
     @cached_property
     def compute_axis_mapping(self) -> ResourceMapping:
@@ -613,7 +704,7 @@ class TrainerConfig:
             axes_to_return[axis] = ResourceAxis.MODEL
 
         if self.batch_axis is not None:
-            axes_to_return[self.batch_axis] = ResourceAxis.DATA
+            axes_to_return[self.batch_axis] = (ResourceAxis.REPLICA, ResourceAxis.DATA)  # type: ignore
 
         return axes_to_return
 
@@ -636,10 +727,6 @@ class TrainerConfig:
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
 
-    def _initialize_logging(self):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        levanter.logging.init_logger(self.log_dir / f"{self.id}.log")
-
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right
         # for random ids, we want to ensure that all hosts have the same id
@@ -652,7 +739,7 @@ class TrainerConfig:
             # TODO: this doesn't work with wandb sweeps. need to reconcile when we merge
             if "RUN_ID" in os.environ:
                 self.id = os.environ["RUN_ID"]
-            elif self.wandb.id is not None:
+            elif self.wandb is not None and self.wandb.id is not None:
                 self.id = self.wandb.id
             else:
                 # wandb run ids are 8 characters [a-z0-9], which we'll emulate here
@@ -662,6 +749,8 @@ class TrainerConfig:
                 self.id = "".join(gen.choice(list("abcdefghijklmnopqrstuvwxyz0123456789"), 8))
 
             logger.info(f"Setting run id to {self.id}")
+
+        return self.id
 
     # we can't do this in post_init because we don't want to call jax.device_count before calling distributed.initialize
     def _validate_and_set_defaults(self):
@@ -676,8 +765,13 @@ class TrainerConfig:
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
+        assert self.train_batch_size != -1 or self.per_device_parallelism != -1
+
         if self.per_device_parallelism == -1:
-            self.per_device_parallelism = self.train_batch_size // jax.device_count()
+            self.per_device_parallelism = self.train_batch_size // self.data_axis_size
+
+        if self.train_batch_size == -1:
+            self.train_batch_size = self.per_device_parallelism * self.data_axis_size
 
         # validate size of per_device_parallelism
         if self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:
@@ -689,110 +783,29 @@ class TrainerConfig:
         if self.per_device_eval_parallelism == -1:
             self.per_device_eval_parallelism = self.per_device_parallelism
 
-
-@dataclass
-class OptimizerConfig:
-    # Config related to optimizer (always adam for now)
-    learning_rate: float = 6e-4
-    weight_decay: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.999
-    epsilon: float = 1e-8
-    max_grad_norm: Optional[float] = 1.0
-
-    min_lr_ratio: float = 0.1
-    warmup_ratio: Optional[float] = None  # Deprecated. fraction of training steps to use as warmup
-    warmup: float = 0.01
-    """fraction of training steps to use as warmup, or steps to use. 0.0 means no warmup"""
-    cooldown: float = 0.0
-    """fraction of training steps to use as cooldown, or steps to use. 0.0 means no cooldown"""
-    lr_schedule: str = "cosine"  # constant, cosine, linear
-
-    def build(self, num_train_steps: int) -> GradientTransformation:
-        """Creates the optimizer"""
-        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
-        def _optimizer(learning_rate):
-            components = []
-
-            if self.max_grad_norm:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
-
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
-
-            if self.weight_decay > 0:
-                # TODO: add weight decay masking??
-                components.append(optax.add_decayed_weights(self.weight_decay))
-
-            # - learning rate for descent
-            components.append(optax.scale(-learning_rate))
-
-            optimizer = optax.chain(*components)
-
-            return optimizer
-
-        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
-
-    def lr_scheduler(self, num_train_steps):
-        warmup_steps = self._convert_warmup(num_train_steps)
-        cooldown_steps = _convert_ratio_or_steps(self.cooldown, num_train_steps)
-        lr_decay_steps = num_train_steps - warmup_steps - cooldown_steps
-        min_lr = self.learning_rate * self.min_lr_ratio
-
-        match self.lr_schedule:
-            case "constant":
-                schedule = optax.constant_schedule(self.learning_rate)
-            case "cosine":
-                schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-            case "linear":
-                schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps - warmup_steps)
-            case "inv_sqrt":
-                schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
-            case _:
-                raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
-
-        schedules = []
-        boundaries = []
-
-        if warmup_steps != 0:
-            warmup = optax.linear_schedule(0.0, self.learning_rate, warmup_steps)
-            schedules.append(warmup)
-            boundaries.append(warmup_steps)
-
-        schedules.append(schedule)
-
-        if cooldown_steps != 0:
-            final_main_lr = schedule(lr_decay_steps)
-            cooldown = optax.linear_schedule(final_main_lr, min_lr, cooldown_steps)
-            schedules.append(cooldown)
-            boundaries.append(num_train_steps - cooldown_steps)
-
-        if len(schedules) > 1:
-            schedule = optax.join_schedules(schedules, boundaries)
-
-        return schedule
-
-    def _convert_warmup(self, num_train_steps: int):
-        if self.warmup_ratio is not None:
-            warnings.warn("warmup_ratio is deprecated. Use warmup instead")
-            return int(self.warmup_ratio * num_train_steps)
-        else:
-            return _convert_ratio_or_steps(self.warmup, num_train_steps)
+        if self.replica_dcn_axis_size == -1:
+            self.replica_dcn_axis_size = self.num_slices
+            logger.info(f"Setting replica_dcn_axis_size to {self.replica_dcn_axis_size}")
 
 
-def _inv_sqrt_decay_schedule(lr: float, min_lr: float, warmup_steps: int, timescale: float = 10000):
-    def schedule(count):
-        decay = jnp.minimum(1.0, 1.0 / jnp.sqrt(jnp.maximum(count + warmup_steps, 1) / timescale))
-        return jnp.maximum(lr * decay, min_lr)
-
-    return schedule
+class AllConfig(Protocol):
+    trainer: TrainerConfig
 
 
-def _params_only(t):
-    return eqx.filter(t, is_inexact_arrayish)
-
-
-def _convert_ratio_or_steps(ratio_or_steps: float, num_train_steps: int):
-    if ratio_or_steps < 1.0:
-        return int(ratio_or_steps * num_train_steps)
+def initialize(config: TrainerConfig | AllConfig):
+    """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
+    as hyperparameters and an artifact"""
+    if isinstance(config, TrainerConfig):
+        trainer_config = config
     else:
-        return int(ratio_or_steps)
+        trainer_config = config.trainer
+
+    trainer_config.initialize()
+    levanter.tracker.log_configuration(config)
+
+
+def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
+    if isinstance(x, hax.NamedArray):
+        return x.scalar()
+    else:
+        return x

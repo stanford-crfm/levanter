@@ -1,14 +1,20 @@
 import contextlib
 import json
+import warnings
 from dataclasses import fields
 from typing import Any, Callable, Optional, TypeVar
 
 import equinox as eqx
 import jax
+import numpy as np
 from jax import numpy as jnp
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, NamedSharding, PartitionSpec, PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
+import haliax
 from haliax.jax_utils import is_jax_array_like
+from haliax.partitioning import ResourceAxis
 
 
 X = TypeVar("X")
@@ -26,8 +32,25 @@ def jnp_to_python(a: jnp.ndarray):
 @contextlib.contextmanager
 def use_cpu_device():
     """Temporarily sets the default device to CPU"""
-    with jax.default_device(jax.local_devices(backend="cpu")[0]):
-        yield
+    cpu = jax.local_devices(backend="cpu")[0]
+    with jax.default_device(cpu):
+        yield cpu
+
+
+@contextlib.contextmanager
+def local_cpu_mesh():
+    """Temporarily sets the default device to CPU"""
+    cpu = jax.local_devices(backend="cpu")[0]
+    mesh = jax.sharding.Mesh(
+        np.array([cpu]).reshape(1, 1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    )
+    with use_cpu_device(), mesh:
+        yield mesh
+
+
+def is_inside_jit():
+    """Returns True if we're currently inside a jit"""
+    return isinstance(jnp.zeros(()), jax.core.Tracer)
 
 
 def flops_estimate(fn, *args, **kwargs):
@@ -80,6 +103,26 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: 
 
     _sync_counter += 1
     return obj
+
+
+def barrier_sync(timeout: float = 200):
+    """
+    Uses jax's unpublished distributed api to wait for all processes to reach a barrier. This is useful for ensuring
+    that all processes have reached a certain point in the code before continuing.
+    """
+    global _sync_counter
+    if jax.process_count() == 1:
+        return
+    import jax._src.distributed as distributed
+    from jaxlib.xla_extension import DistributedRuntimeClient
+
+    client: Optional[DistributedRuntimeClient] = distributed.global_state.client
+
+    if client is None:
+        raise RuntimeError("barrier_sync requires jax distributed client to be initialized")
+
+    _sync_counter += 1
+    client.wait_at_barrier(f"levanter_barrier_sync_{_sync_counter}", timeout_in_ms=int(timeout * 1000.0))
 
 
 # from https://stackoverflow.com/questions/2166818/how-to-check-if-an-object-is-an-instance-of-a-namedtuple
@@ -135,7 +178,12 @@ def leaf_key_paths(
 
             rec_value = rec(field, field_name)
             rec_values.append(rec_value)
-        return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values)
+
+        _, tree_def = eqx.tree_flatten_one_level(pytree)
+        out = jax.tree_util.tree_unflatten(tree_def, rec_values)
+        return out
+        # this doesn't work reliably because tree_at doesn't like none values
+        # return eqx.tree_at(lambda m: [getattr(m, name) for name in names], pytree, rec_values, is_leaf=lambda x: x is None)
     else:
         leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
         if len(leaves) == 1:
@@ -150,7 +198,9 @@ def join_key(prefix, k):
     return f"{prefix}.{k}" if prefix else k
 
 
-def key_iterator(key: PRNGKeyArray):
+def key_iterator(key: PRNGKeyArray | int):
+    if isinstance(key, int):
+        key = jax.random.PRNGKey(key)
     while True:
         key, subkey = jax.random.split(key)
         yield subkey
@@ -167,3 +217,120 @@ def is_inexact_arrayish(x):
         return jnp.issubdtype(x.dtype, jnp.inexact)
     else:
         return False
+
+
+def tree_filter_like(template: X, tree: X) -> X:
+    """
+    Filters a tree to only include the leaves that are not None in the template.
+
+    This is useful for filtering out nontrainable parameters from a tree.
+    """
+
+    def match_like(templ_leaf, tree_leaf):
+        if templ_leaf is None:
+            return None
+        else:
+            if tree_leaf is None:
+                warnings.warn(f"Template has a non-None value where tree is None. Template value: {templ_leaf}")
+            return tree_leaf
+
+    return jax.tree_util.tree_map(match_like, template, tree, is_leaf=lambda x: x is None)
+
+
+def as_arrayish(x):
+    if hasattr(x, "shape") and hasattr(x, "dtype"):
+        return x
+    else:
+        return jnp.asarray(x)
+
+
+def best_effort_sharding(shape, *, devices=None, mesh=None):
+    if hasattr(shape, "shape"):
+        shape = shape.shape
+
+    if devices is None:
+        devices = jax.devices()
+
+    if mesh is None:
+        mesh = haliax.partitioning._get_mesh()
+        if mesh.devices.shape == ():
+            mesh = None
+
+    if mesh is None:
+        device_shape = (len(devices),)
+        # we want to shard an array with shape shape across len(devices)
+        # each axis in the array has to be divisible by the corresponding axis in device_shape, so
+        # we iterate from the right, taking the gcd of the shape and the left-most axis of device_shape
+        num_devices = device_shape[0]
+
+        for i in range(len(shape) - 1, -1, -1):
+            shape_i = shape[i]
+            gcd = np.gcd(shape_i, num_devices)
+            num_devices //= gcd
+            device_shape = (num_devices, gcd) + device_shape[1:]
+        sharding = PositionalSharding(devices).reshape(list(device_shape))
+        sharding = sharding.replicate(axis=0, keepdims=False)
+        return sharding
+    else:
+        # get the existing mesh and find the FSDP axis
+        fsdp_axis = mesh.axis_names.index(haliax.partitioning.ResourceAxis.DATA)
+        num_devices = mesh.devices.shape[fsdp_axis]
+
+        for i in range(len(shape) - 1, -1, -1):
+            shape_i = shape[i]
+            if shape_i % num_devices == 0:
+                sharded_axis = i
+                break
+        else:
+            return NamedSharding(mesh, PartitionSpec(None))
+
+        axis_sharding = [None] * len(shape)
+        axis_sharding[sharded_axis] = haliax.partitioning.ResourceAxis.DATA
+        sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
+
+        return sharding
+
+
+def create_fsdp_mesh(
+    replica_ici_axis_size: int,
+    data_ici_axis_size: int,
+    model_axis_size: int,
+    replica_dcn_axis_size: int = 1,
+    data_dcn_axis_size: int = 1,
+):
+    is_multislice = hasattr(jax.devices()[0], "slice_index")
+    if is_multislice:
+        devices = mesh_utils.create_hybrid_device_mesh(
+            (replica_ici_axis_size, data_ici_axis_size, model_axis_size),
+            (replica_dcn_axis_size, data_dcn_axis_size, 1),
+            allow_split_physical_axes=True,
+        )
+    else:
+        devices = mesh_utils.create_device_mesh(
+            (replica_ici_axis_size, data_ici_axis_size, model_axis_size),
+            allow_split_physical_axes=True,
+        )
+
+    return Mesh(devices, (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL))
+
+
+def estimated_free_device_memory(device) -> Optional[float]:
+    """
+    Returns free memory in GB. If the device doesn't support memory stats, returns None.
+    Args:
+        device:
+
+    Returns:
+
+    """
+    stats = device.memory_stats()
+    if stats is None:
+        return None
+    else:
+        limit = stats.get("bytes_limit", None)
+        if limit is None:
+            return None
+
+        in_use = stats.get("bytes_in_use", 0)
+
+        return (limit - in_use) // (1024.0**3)

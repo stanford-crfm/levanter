@@ -1,25 +1,22 @@
-data: 
-  cache_dir: "gs://levanter-data-new/tokenized/pile-old/"
-  tokenizer: "EleutherAI/gpt-neox-20b"
+data: !include data/pile_source_old.yaml
 model:
   type: gpt2
   hidden_dim: 768
   num_heads: 12
   num_layers: 12
-  seq_len: 1024
+  seq_len: 2048
   gradient_checkpointing: true
   scale_attn_by_inverse_layer_idx: true
 trainer:
-  wandb:
+  tracker:
     project: "levanter"
     tags: [ "pile", "gpt2"]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
-  per_device_parallelism: 4
 
-  train_batch_size: 512
+  train_batch_size: 256
+  num_train_steps: 50000
 optimizer:
-  learning_rate: 6E-4
+  learning_rate: 6e-4
   weight_decay: 0.1
-  min_lr_ratio: 0.1

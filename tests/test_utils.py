@@ -1,7 +1,7 @@
 import glob
 import os
 from functools import reduce
-from typing import Callable, List, Optional, Sequence, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar
 
 import draccus
 import equinox as eqx
@@ -11,13 +11,13 @@ from chex import assert_trees_all_close
 from equinox import nn as nn
 from equinox import static_field
 from jax._src.random import PRNGKey
-from transformers import BatchEncoding
+from transformers import AutoConfig, BatchEncoding
 
 import haliax as hax
 
 from levanter.checkpoint import _get_fs_and_plain_path
 from levanter.data._preprocessor import BatchProcessor
-from levanter.data.sharded_dataset import ShardedDataset
+from levanter.data.sharded_datasource import ShardedDataSource
 from levanter.data.text import _stack_batch_encodings
 from levanter.models.attention import AttentionMask
 
@@ -113,7 +113,7 @@ def assert_trees_not_close(a, b):
 
 
 def arrays_only(x):
-    return eqx.filter(x, eqx.is_inexact_array_like)
+    return eqx.filter(x, eqx.is_array_like)
 
 
 def has_torch():
@@ -125,8 +125,34 @@ def has_torch():
         return False
 
 
+def has_soundlibs():
+    try:
+        import librosa  # noqa F401
+        import soundfile  # noqa F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def skip_if_no_torch(f):
     return pytest.mark.skipif(not has_torch(), reason="torch not installed")(f)
+
+
+def skip_if_no_soundlibs(f):
+    return pytest.mark.skipif(not has_soundlibs(), reason="soundfile/librosa not installed")(f)
+
+
+def skip_if_module_missing(module: str):
+    def try_import_module(module):
+        try:
+            __import__(module)
+        except ImportError:
+            return False
+        else:
+            return True
+
+    return pytest.mark.skipif(not try_import_module(module), reason=f"{module} not installed")
 
 
 def skip_if_checkpoint_not_accessible(path: str):
@@ -139,34 +165,51 @@ def skip_if_checkpoint_not_accessible(path: str):
         else:
             return True
 
-    return pytest.mark.skipif(not try_load_path(path), reason="Checkpoint not accessible")(lambda x: x)
+    return pytest.mark.skipif(not try_load_path(path), reason="Checkpoint not accessible")
 
 
 def skip_if_hf_model_not_accessible(model_id: str):
     def try_load_hf(model_id):
         try:
-            from transformers import AutoModelForCausalLM
-
-            AutoModelForCausalLM.from_pretrained(model_id)
+            AutoConfig.from_pretrained(model_id)
         except Exception:
             return False
         else:
             return True
 
-    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")(lambda x: x)
+    return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")
 
 
-class IdentityProcessor(BatchProcessor[BatchEncoding]):
+def skip_in_ci(fn_or_msg):
+    if isinstance(fn_or_msg, str):
+
+        def decorator(fn):
+            return pytest.mark.skipif("CI" in os.environ, reason=fn_or_msg)(fn)
+
+        return decorator
+
+    return pytest.mark.skipif("CI" in os.environ, reason="skipped in CI")(fn_or_msg)
+
+
+class IdentityProcessor(BatchProcessor[BatchEncoding, BatchEncoding]):
     def __call__(self, batch: Sequence[BatchEncoding]) -> BatchEncoding:
         stacked = reduce(_stack_batch_encodings, batch)
         return stacked
 
     @property
+    def output_exemplar(self):
+        return BatchEncoding({})
+
+    @property
     def num_cpus(self) -> int:
         return 0
 
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
-class ShardsDataset(ShardedDataset[T]):
+
+class ShardsDataSource(ShardedDataSource[T]):
     def __init__(self, docs: List[List[T]]):
         self.docs = docs
 
@@ -178,7 +221,7 @@ class ShardsDataset(ShardedDataset[T]):
         return self.docs[int(shard_name)][row:]
 
 
-class SingleShardDocumentSource(ShardedDataset[T]):
+class SingleShardDocumentSource(ShardedDataSource[T]):
     def __init__(self, docs: List[T]):
         self.docs = docs
 

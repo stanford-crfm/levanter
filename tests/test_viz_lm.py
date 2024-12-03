@@ -3,7 +3,6 @@ import tempfile
 
 import jax
 import pytest
-from ray.util.client import ray
 
 import haliax
 
@@ -11,18 +10,8 @@ import levanter.main.viz_logprobs as viz_logprobs
 import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
-from levanter.logging import WandbConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.utils.py_utils import logical_cpu_core_count
-
-
-def setup_module(module):
-    ray_designated_cores = max(1, logical_cpu_core_count())
-    ray.init("local", num_cpus=ray_designated_cores)
-
-
-def teardown_module(module):
-    ray.shutdown()
+from levanter.tracker.wandb import WandbConfig
 
 
 @pytest.mark.entry
@@ -33,17 +22,18 @@ def test_viz_lm():
         num_layers=2,
         num_heads=2,
         hidden_dim=32,
-        seq_len=32,
+        seq_len=64,
+        use_flash_attention=True,
     )
 
     with tempfile.TemporaryDirectory() as f:
         try:
-            data_config = tiny_test_corpus.tiny_corpus_config(f)
+            data_config, _ = tiny_test_corpus.construct_small_data_cache(f)
             tok = data_config.the_tokenizer
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-            save_checkpoint(model, None, 0, f"{f}/ckpt")
+            save_checkpoint({"model": model}, 0, f"{f}/ckpt")
 
             config = viz_logprobs.VizGpt2Config(
                 data=data_config,
