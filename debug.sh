@@ -1,1 +1,0 @@
-gcloud compute tpus tpu-vm ssh debug-8 --zone europe-west4-a --worker=all --command 'WANDB_API_KEY= levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path levanter/config/gpt2_small.yaml --trainer.checkpointer.base_path gs://levanter-checkpoints-new/gpt'
