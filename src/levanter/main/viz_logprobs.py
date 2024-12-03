@@ -46,7 +46,7 @@ def main(config: VizGpt2Config):
 
     eval_loader = DataLoader(
         EvalBatch,
-        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos),  # type: ignore
+        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos, eos_id=tokenizer.eos_token_id),  # type: ignore
         32,
         config.trainer.device_mesh,
         config.trainer.compute_axis_mapping,

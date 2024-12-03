@@ -49,7 +49,9 @@ def main(config: EvalLmConfig):
     KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=jax.random.PRNGKey(0)), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(
+            config.data.train_set(Pos.size, key=jax.random.PRNGKey(0)), Pos, KeyPos, eos_id=tokenizer.eos_token_id
+        )
     else:
         validation_set = config.data.validation_set(Pos.size)
         if validation_set is None:
