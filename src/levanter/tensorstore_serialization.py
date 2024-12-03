@@ -1,7 +1,5 @@
 # References:
 # * Orbax: https://github.com/google/orbax/blob/11d2934ecfff77e86b5e07d0fef02b67eff4511b/orbax/checkpoint/pytree_checkpoint_handler.py#L312
-import asyncio
-import functools
 import logging
 import os
 from functools import partial
@@ -12,12 +10,11 @@ import jax
 import jax.experimental.array_serialization.serialization as array_ser
 import jax.numpy as jnp
 import numpy as np
-import tensorstore
-from jax.sharding import Mesh
-from tensorstore import TensorStore
+from jax.sharding import Mesh, Sharding
+from jaxtyping import PyTree
 
 import haliax as hax
-import haliax.tree_util as htu
+from haliax.jax_utils import is_jax_array_like
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
@@ -44,16 +41,12 @@ def tree_serialize_leaves_tensorstore(
     else:
         manager_was_none = False
 
-    leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=_is_named_or_none)
+    leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
 
-    def path_from_key_path(key_path):
-        return os.path.join(checkpoint_dir, *key_path.split("."))
-
-    paths = jax.tree.map(path_from_key_path, leaf_key_paths, is_leaf=lambda x: x is None)
-    print(pytree, paths)
+    paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
     paths = jax.tree.leaves(paths, is_leaf=lambda x: x is None)
     leaves = jax.tree.leaves(pytree, is_leaf=lambda x: x is None)
-    assert len(leaves) == len(paths), f"leaves: {leaves}, paths: {paths}"
+    assert len(leaves) == len(paths)
 
     # ok, not all of these are arrays, but we'll deal with that in the async function
     def _ensure_is_array(x):
@@ -79,88 +72,40 @@ def tree_serialize_leaves_tensorstore(
         manager.wait_until_finished()
 
 
-def _tensorstore_spec_for(checkpoint_dir, key_path: str):
-    checkpoint_path = os.path.join(checkpoint_dir, *key_path.split("."))
-    ts_spec = array_ser.get_tensorstore_spec(checkpoint_path)
-    return ts_spec
+def _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths):
+    def path_from_key_path(key_path):
+        return os.path.join(checkpoint_dir, *key_path.split("."))
+
+    paths = jax.tree.map(path_from_key_path, leaf_key_paths)
+    return paths
 
 
-async def _serialize_one_leaf(x, spec):
-    if isinstance(x, hax.NamedArray):
-        # we don't need to do anything special for named arrays to serialize, though we will for deserialization.
-        return await _serialize_one_leaf(x.array, spec)
-    elif isinstance(x, jax.Array):
-        if not x.is_fully_addressable:
-            return await array_ser.async_serialize(x, spec)
-        else:
-            return await save_array_to_tensorstore(x, spec)
-    elif isinstance(x, (bool, float, complex, int)):
-        return await save_array_to_tensorstore(np.array(x), spec)
-    elif x is None:
-        return
-    elif isinstance(x, jnp.ndarray):
-        return await save_array_to_tensorstore(x, spec)
-    elif isinstance(x, np.ndarray):
-        return await save_array_to_tensorstore(x, spec)
+def _sharding_from_leaf(leaf, axis_mapping, mesh) -> Optional[jax.sharding.Sharding]:
+    if is_named_array(leaf):
+        if leaf.array is None:
+            return None
+        return hax.partitioning.sharding_for_axis(leaf.axes, axis_mapping, mesh)
+    elif hasattr(leaf, "sharding") and getattr(leaf, "sharding") is not None:
+        return leaf.sharding
+    elif is_jax_array_like(leaf):
+        return _fully_replicated_sharding(mesh)
+    elif isinstance(leaf, (bool, float, complex, int, np.ndarray)):
+        return _fully_replicated_sharding(mesh)
     else:
-        raise TypeError(f"Can't serialize {type(x)}")
-
-
-async def save_array_to_tensorstore(x, spec):
-    if jax.process_index() == 0:
-        if x.dtype == jnp.bfloat16:
-            # Tensorstore uses 'bfloat16', not '<V2'.
-            dtype = "bfloat16"
-        else:
-            dtype = np.dtype(x.dtype).str
-        t = await tensorstore.open(
-            tensorstore.Spec(spec), create=True, shape=x.shape, dtype=dtype, context=array_ser.TS_CONTEXT
-        )
-
-        await t.write(x)
-
-
-async def load_array_from_tensorstore(spec):
-    t: TensorStore = await tensorstore.open(tensorstore.Spec(spec), context=array_ser.TS_CONTEXT)
-    return await t.read()
-
-
-async def _deserialize_one_leaf(like, spec, axis_mapping, mesh):
-    if is_named_array(like):
-        return await _deserialize_named_array(like, spec, axis_mapping, mesh)
-    elif isinstance(like, jax.Array):
-        if not like.is_fully_addressable:
-            return await array_ser.async_deserialize(like.sharding, spec, global_shape=like.shape, dtype=like.dtype)
-        else:
-            return await load_array_from_tensorstore(spec)
-    elif isinstance(like, (bool, float, complex, int)):
-        arr = await load_array_from_tensorstore(spec)
-        return arr.item()
-    elif like is None:
+        logger.warning(f"Unknown leaf type {type(leaf)}")
         return None
-    elif isinstance(like, jnp.ndarray) or isinstance(like, np.ndarray) or isinstance(like, jax.ShapeDtypeStruct):
-        return await load_array_from_tensorstore(spec)
-    elif callable(like):
-        return like
-    else:
-        raise TypeError(f"Can't deserialize {type(like)}")
 
 
-async def _deserialize_named_array(like, spec, axis_mapping, mesh):
-    # the main thing we're worried about is deserialized NamedArrays that are not yet arrays but are ShapedDtypeStructs.
-    # These don't (currently) have sharding info, but we can infer it from the axes
-    if isinstance(like.array, jax.ShapeDtypeStruct):
-        sharding = hax.partitioning.sharding_for_axis(like.axes, axis_mapping, mesh)
-        array = await array_ser.async_deserialize(sharding, spec, global_shape=like.array.shape, dtype=like.dtype)
-        assert sharding.is_equivalent_to(array.sharding, len(like.array.shape))
-        return hax.NamedArray(array, like.axes)
-    else:
-        array = await _deserialize_one_leaf(like.array, spec, axis_mapping, mesh)
-        return hax.NamedArray(array, like.axes)
+def _fully_replicated_sharding(mesh):
+    return hax.partitioning.sharding_for_axis((), {}, mesh)
 
 
 def tree_deserialize_leaves_tensorstore(
-    checkpoint_dir, pytree, axis_mapping: Optional[ResourceMapping] = None, mesh: Optional[Mesh] = None
+    checkpoint_dir,
+    pytree,
+    axis_mapping: Optional[ResourceMapping] = None,
+    mesh: Optional[Mesh] = None,
+    manager: Optional[array_ser.GlobalAsyncCheckpointManager] = None,
 ):
     """
     Deserializes a PyTree of Arrays and NamedArrays from a Tensorstore checkpoint, returning a pytree with the same shape
@@ -168,24 +113,52 @@ def tree_deserialize_leaves_tensorstore(
     (i.e. they are not yet arrays but are ShapedDtypeStructs), provided you pass in the axis_mapping and mesh (or
     they are available by context)
 
-    :param checkpoint_dir: the directory containing the tensorstore checkpoint, can be a local path or a GCS path
-    :param pytree: the exemplar pytree
-    :param axis_mapping: optional, the axis mapping for the NamedArrays (if they are not yet arrays)
-    :param mesh: optional, the mesh for the NamedArrays (if they are not yet arrays)
+    Args:
+        checkpoint_dir: the directory containing the tensorstore checkpoint, can be a local path or a GCS path
+        pytree: the exemplar pytree
+        axis_mapping: optional, the axis mapping for the NamedArrays (if they are not yet arrays)
+        mesh: optional, the mesh for the NamedArrays (if they are not yet arrays)
+        manager: optional, the checkpoint manager to use. If not provided, a new one will be created
 
-    :return: a pytree with the same shape as the exemplar pytree, but with the arrays deserialized from the checkpoint
+    Returns:
+        A pytree with the same shape as the exemplar pytree, but with the arrays deserialized from the checkpoint
     """
+    if manager is None:
+        manager = array_ser.GlobalAsyncCheckpointManager()
+
+    shardings: PyTree[Optional[Sharding]] = jax.tree.map(
+        partial(_sharding_from_leaf, axis_mapping=axis_mapping, mesh=mesh), pytree, is_leaf=is_named_array
+    )
+
     # TODO: support ShapeDtypeStructs that are not NamedArrays
-    leaf_key_paths = jax_utils.leaf_key_paths(pytree, is_leaf=is_named_array)
-    specs = htu.tree_map(partial(_tensorstore_spec_for, checkpoint_dir), leaf_key_paths)
+    leaf_key_paths = jax_utils.leaf_key_paths(shardings, is_leaf=is_named_array)
+    paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
+    paths = jax.tree.leaves(paths, is_leaf=lambda x: x is None)
 
-    deser_partial = functools.partial(_deserialize_one_leaf, axis_mapping=axis_mapping, mesh=mesh)
+    shardings_leaves, shardings_structure = jax.tree.flatten(shardings, is_leaf=_is_named_or_none)
 
-    futures = jax.tree.map(deser_partial, pytree, specs, is_leaf=is_named_array)
-    leaves, structure = jax.tree.flatten(futures, is_leaf=is_named_array)
+    assert len(shardings_leaves) == len(paths)
 
-    async def _do_deserialize():
-        values = await asyncio.gather(*leaves)
-        return jax.tree.unflatten(structure, values)
+    # ok, so, jax really doesn't want any Nones in the leaves here, so we need to temporarily partition the pytree
+    real_indices = [i for i, x in enumerate(shardings_leaves) if x is not None]
+    real_leaves = [x for x in shardings_leaves if x is not None]
+    real_paths = [paths[i] for i in real_indices]
 
-    return asyncio.run(_do_deserialize())
+    deser_leaves = manager.deserialize_with_paths(shardings=real_leaves, paths=real_paths)
+    # now we need to recreate the original structure
+
+    out_leaves = [None] * len(shardings_leaves)
+    for i, x in zip(real_indices, deser_leaves):
+        out_leaves[i] = x
+
+    deser_arrays = jax.tree.unflatten(shardings_structure, out_leaves)
+
+    # deser_arrays only has arrays, but we need named arrays for at least some.
+    # The original pytree has the structure we want, so we'll use that to rebuild the named arrays
+    def _rebuild_named_array(like, array):
+        if is_named_array(like):
+            return hax.NamedArray(array, like.axes)
+        else:
+            return array
+
+    return jax.tree.map(_rebuild_named_array, pytree, deser_arrays, is_leaf=_is_named_or_none)
