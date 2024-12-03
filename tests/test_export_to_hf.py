@@ -41,13 +41,7 @@ def test_export_lm_to_hf():
             config = export_lm_to_hf.ConvertLmConfig(
                 checkpoint_path=f"{tmpdir}/ckpt",
                 output_dir=f"{tmpdir}/output",
-                model=export_lm_to_hf.Gpt2Config(
-                    num_layers=2,
-                    num_heads=2,
-                    seq_len=64,
-                    use_flash_attention=True,
-                    hidden_dim=32,
-                ),
+                model=model_config,
             )
             export_lm_to_hf.main(config)
 
