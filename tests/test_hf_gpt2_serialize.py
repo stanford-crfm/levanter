@@ -134,7 +134,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
     torch_out = torch_loss(torch_model, torch.from_numpy(onp.array(input.array)).to(torch.int64).unsqueeze(0))
 
     def compute_loss(model: LmHeadModel, input_ids):
-        example = LmExample.causal(input_ids)
+        example = LmExample.causal(input_ids, eos_id=converter.tokenizer.eos_token_id)
         return compute_next_token_loss(model, example, key=None).scalar()
 
     jax_compute_grad = equinox.filter_value_and_grad(compute_loss, has_aux=False)

@@ -1,16 +1,21 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+import numpy as np
 import pytest
 from chex import assert_trees_all_close
+from jax.sharding import Mesh
 
 import haliax as hax
+from haliax import Axis
 
 from levanter.models.attention import (
+    AttentionBackend,
     AttentionMask,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
+    dot_product_attention,
 )
 from test_utils import skip_if_module_missing
 
@@ -214,3 +219,46 @@ def test_tpu_splash_attention():
         hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
         assert hax_out.axes == flash_out.axes
         assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.parametrize("impl", ["default", "jax_flash", "vanilla"])
+def test_segment_ids_are_respected(impl):
+    # test that we can't attend to something outside of the range
+    # splash needs 128
+    D = 128 if impl == "default" else 2
+    L = 256
+    Pos = Axis("Pos", L)
+    Head = Axis("Head", D)
+
+    keys = np.zeros((L, D), dtype=np.float32)
+    keys[0, 0] = 100.0  # really want to attend to this
+    values = np.zeros((L, D), dtype=np.float32)
+    values[0, 1] = 300.0  # check if we did attend
+    KPos = Pos.alias("KPos")
+
+    query = np.ones((L, D), dtype=np.float32)
+
+    query = hax.named(query, (Pos, Head))
+    keys = hax.named(keys, (KPos, Head))
+    values = hax.named(values, (KPos, Head))
+
+    query, keys, values = jax.device_put(
+        [query, keys, values], jax.sharding.PositionalSharding(jax.devices()).reshape(-1, 1)
+    )
+
+    segment_ids = np.array([0, 0, 0] + [1] * (L - 3), dtype=np.int32)
+    segment_ids = jax.device_put(segment_ids, jax.sharding.PositionalSharding(jax.devices()))
+    segment_ids = hax.named(segment_ids, (Pos,))
+    mask = AttentionMask(is_causal=True, segment_ids=segment_ids)
+
+    devices = jax.devices()
+
+    with Mesh(devices, ("dp",)):
+        result = hax.named_jit(dot_product_attention)(
+            Pos, KPos, Head, query, keys, values, attn_backend=AttentionBackend(impl), mask=mask, flash_block_size=128
+        )
+
+    # the first 3 positions should all have a value of 300.0
+    assert_trees_all_close(result.array[0:3, 1], 300.0, atol=1e-3, rtol=1e-3)
+    # the rest should be 0
+    assert_trees_all_close(result.array[3:, 1], 0.0, atol=1e-3, rtol=1e-3)

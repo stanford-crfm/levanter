@@ -85,7 +85,9 @@ def main(config: LoraLmConfig):
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=data_key), Pos, KeyPos)
+        train_dataset = CausalLmDataset(
+            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, eos_id=tokenizer.eos_token_id
+        )
         train_loader = trainer.data_loader(train_dataset, Batch)
 
         # load the underlying hf model
@@ -121,7 +123,7 @@ def main(config: LoraLmConfig):
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3e}")
 
         for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
+            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
             trainer.add_eval_hook(eval_dataset, name=name)
 
         # boilerplate hooks and such
@@ -129,7 +131,9 @@ def main(config: LoraLmConfig):
             logger.warning("No evaluation datasets provided.")
 
         for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
+            eval_dataset = CausalLmDataset(
+                eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id, eos_id=tokenizer.eos_token_id
+            )
             trainer.add_eval_hook(eval_dataset, name=name)
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)

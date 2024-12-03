@@ -171,7 +171,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
             loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
         else:
             loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
-        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask)
+        lm_ex = LmExample.causal(input_ids, loss_mask=loss_mask, eos_id=tokenizer.eos_token_id)
         return lm_ex
 
     return dataset.map(_prepare_example)

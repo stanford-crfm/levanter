@@ -222,15 +222,18 @@ class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
         dataset: AsyncDataset[np.ndarray],
         QPos: Axis,
         KPos: Axis,
+        *,
         fcm_prob: float = 0.0,
         key: Optional[PRNGKey] = None,
         ignore_index: Optional[int] = None,
+        eos_id: Optional[int] = None,
     ):
         self.dataset = dataset
         self.QPos = QPos
         self.KPos = KPos
         self.fcm_prob = fcm_prob
         self.ignore_id = ignore_index
+        self.eos_id = eos_id
         self.key = key
 
         if self.fcm_prob > 0.0 and self.key is None:
@@ -241,7 +244,7 @@ class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
         @functools.partial(eqx.filter_jit, out_shardings=sharding)
         def _create_lm_example(tokens, key):
             tokens = hax.named(tokens, self.QPos)
-            example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id)
+            example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id, eos_id=eos_id)
 
             if self.fcm_prob > 0:
                 # masks for attention
@@ -802,22 +805,22 @@ def _prepare_supervised_examples(ex: list[dict], tokenizer: PreTrainedTokenizerB
 
     out = []
     for ids, len in zip(truncated, lens):
-        causal = _mk_sup_example_jit(Pos, hax.named(ids, Pos), len, tokenizer.pad_token_id)
+        causal = _mk_sup_example_jit(Pos, hax.named(ids, Pos), len, tokenizer.pad_token_id, tokenizer.eos_token_id)
 
         out.append(causal)
 
     return out
 
 
-@functools.partial(jax.jit, static_argnums=(0, 3))
-def _mk_sup_example_jit(Pos, input_ids: hax.NamedArray, sources_len, pad_token_id):
+@functools.partial(jax.jit, static_argnums=(0, 3, 4))
+def _mk_sup_example_jit(Pos, input_ids: hax.NamedArray, sources_len, pad_token_id, eos_id):
     # mask out padding and anything before the start of the target
     loss_mask = hax.arange(Pos) >= sources_len - 1
     # don't predict the padding
     targets = hax.roll(input_ids, -1, Pos)
     loss_mask = loss_mask & (targets != pad_token_id)
     loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
-    return LmExample.causal(input_ids, loss_mask=loss_mask)
+    return LmExample.causal(input_ids, loss_mask=loss_mask, eos_id=eos_id)
 
 
 def mk_supervised_datasets(

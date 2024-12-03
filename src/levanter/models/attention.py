@@ -7,6 +7,7 @@ from typing import Optional, Union, overload
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
@@ -439,9 +440,9 @@ def _bin_and_group_axes_by_function(q, k, v, QPos, KPos, Key):
     NVTE and the Splash Attention kernel require the Q, K, and V to be in a specific format. This function groups the axes
     of Q, K, and V into the right bins to match that format.
 
-    NVTE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed), while Splash Attention requires BHSD
-     the size of the axes is a bit flexible,
-    with the following conditions:
+    NVTE requires Q, K, and V to have shape BSHD (Batch, Sequence, Head, Embed), while Splash Attention requires BHSD.
+
+    The size of the axes is a bit flexible, with the following conditions:
     - B must be the same for all (TODO: is this true?)
     - S must be the same for K and V. Q's S can be different
     - H: Q's H must be a multiple of K's H (for GQA or MQA)
@@ -543,6 +544,17 @@ def _unflatten_bshd(attn_output, q_class, v_class):
     return attn_output
 
 
+def _materialize_segment_mask(segment_ids, QPos, KPos, q_slice, k_slice) -> NamedArray:
+    """
+    Make a segment mask for attention. This is a mask that prevents attention between different segments.
+    """
+    kv_segment_ids = segment_ids.rename({QPos: KPos})[KPos, k_slice]
+    q_segment_ids = segment_ids[QPos, q_slice]
+    sub_KPos = kv_segment_ids.resolve_axis(KPos.name)
+
+    return q_segment_ids.broadcast_axis(sub_KPos) == kv_segment_ids
+
+
 class AttentionMask(eqx.Module):
     """
 
@@ -552,18 +564,27 @@ class AttentionMask(eqx.Module):
     Represents an attention mask in a structured way to make it easier to optimize attention for particular use cases
     (causal, prefix, etc.). It is anticipated that this will be extended with new types of masks as needed.
 
+    The abstraction is based on two concepts:
+
+    1) Materialization: An AttentionMask can be materialized for a particular slice of the query and key position axes.
+       Most naively, you can just get the whole mask as a NamedArray. However, in some cases, you might want to
+       only get a particular chunk (e.g. for flash attention).
+    2) Combination: AttentionMasks are represented as an implicit conjunction of multiple masks, each with different
+        kinds of structure. You can combine masks with `&` and `|`. Due to the way jit works, we don't use inheritance
+        or similar to represent different kinds of masks. Instead, we use a single class with different fields.
+
     In general, it should be safe to batch Attention Masks, but it is important that *all members of a batch have the
-    same sequence of combined masks*. Otherwise, the batching will not work and you'll get weird errors
+    same set of combined masks*. Otherwise, the batching will not work and you'll get weird errors
 
-    The interface exposed by this class is designed to work well with the attention functions in this module as
-    well as something like flash attention.
+    (Perhaps it's ok to use inheritance here? I'm not sure. Splash attention landed on inheritance, so maybe
+    that's a good sign.)
 
-    A mask can be materialized, in which case it returns the mask as a NamedArray.
     """
 
     is_causal: bool = eqx.static_field()
     explicit_mask: Optional[NamedArray] = None
-    # TODO: add sequence packing
+    segment_ids: Optional[NamedArray] = None
+    # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
     # TODO: add prefixlm
     # cf https://github.com/google-research/t5x/blob/51a99bff8696c373cc03918707ada1e98cbca407/t5x/examples/decoder_only/layers.py#L978
 
@@ -589,7 +610,13 @@ class AttentionMask(eqx.Module):
         else:
             explicit = None
 
-        return combine_masks_and(causal, explicit)
+        mask = combine_masks_and(causal, explicit)
+
+        if self.segment_ids is not None:
+            segment_mask = _materialize_segment_mask(self.segment_ids, QPos, KPos, q_slice, k_slice)
+            mask = combine_masks_and(mask, segment_mask)
+
+        return mask
 
     @staticmethod
     def causal() -> "AttentionMask":
@@ -599,15 +626,38 @@ class AttentionMask(eqx.Module):
     def explicit(mask: NamedArray) -> "AttentionMask":
         return AttentionMask(is_causal=False, explicit_mask=mask)
 
+    def with_segment_ids(self, segment_ids: NamedArray) -> "AttentionMask":
+        return AttentionMask(is_causal=self.is_causal, explicit_mask=self.explicit_mask, segment_ids=segment_ids)
+
     def __and__(self, other) -> "AttentionMask":
-        is_causal = self.is_causal and other.is_causal
+        is_causal = self.is_causal or other.is_causal
         explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask)
+        segment_ids = self._check_for_same_segment_ids(other)
+
+        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
 
     def __or__(self, other) -> "AttentionMask":
-        is_causal = self.is_causal or other.is_causal
+        is_causal = self.is_causal and other.is_causal
         explicit_mask = combine_masks_or(self.explicit_mask, other.explicit_mask)
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask)
+        segment_ids = self._check_for_same_segment_ids(other)
+        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
+
+    def _check_for_same_segment_ids(self, other):
+        if self.segment_ids is not None and other.segment_ids is not None:
+            # only one segment mask is allowed
+            # b/c we might do this in jit, we use eqx.error_if
+            # in theory we can do this one by just assigning unique ids to each unique pair...
+            # (but i don't really anticipate needing this)
+            segment_ids = eqx.error_if(
+                self.segment_ids,
+                not haliax.all(self.segment_ids == other.segment_ids),
+                "Only one segment mask is allowed",
+            )
+        elif self.segment_ids is not None:
+            segment_ids = self.segment_ids
+        else:
+            segment_ids = other.segment_ids
+        return segment_ids
 
 
 @overload
@@ -661,7 +711,6 @@ def materialize_mask(
 
 # TODO: padding mask
 # TODO: FCM mask?
-# TODO: sequence packing mask
 
 
 def _try_tpu_splash_attention(
@@ -819,6 +868,24 @@ def _tpu_splash_attention(
     physical_axes_k = _physical_axis_for_binning(k_class)
     physical_axes_v = _physical_axis_for_binning(v_class)
 
+    # segment_ids
+    segment_ids = mask.segment_ids if isinstance(mask, AttentionMask) else None
+    physical_axes_segments = pspec_for_axis(segment_ids.axes) if segment_ids is not None else None
+    # do we have a batch axis in segment_ids? (needed for vmap below)
+    if segment_ids is not None:
+        index_of_seq_dim = segment_ids.axes.index(QPos)
+        other_indices = [i for i in range(len(segment_ids.axes)) if i != index_of_seq_dim]
+        if len(other_indices) > 1:
+            raise NotImplementedError(
+                f"Only one batch axis is supported in segment_ids right now (got {segment_ids.axes})"
+            )
+        elif len(other_indices) == 1:
+            segment_batch_axis = other_indices[0]
+        else:
+            segment_batch_axis = None
+    else:
+        segment_batch_axis = None
+
     # MaxText uses a block size of 512
     block_size = block_size or 512
 
@@ -830,11 +897,12 @@ def _tpu_splash_attention(
             physical_axes_q,
             physical_axes_k,
             physical_axes_v,
+            physical_axes_segments,
         ),
         out_specs=physical_axes_q,
         check_rep=False,
     )
-    def wrap_flash_attention(q, k, v):
+    def wrap_flash_attention(q, k, v, segment_ids):
         # NB: inside the function, q, k, and v are partitioned, so in general the lengths of dims are not the same
         Sq = q.shape[2]
         Sk = k.shape[2]
@@ -850,6 +918,11 @@ def _tpu_splash_attention(
             block_kv_dq=min(block_size, Sq),
         )
 
+        if mask.segment_ids is not None:
+            # for now only support self attention
+            segment_ids = segment_ids.array
+            segment_ids = SegmentIds(segment_ids, segment_ids)
+
         if mask is None:
             base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
         elif isinstance(mask, AttentionMask):
@@ -857,10 +930,10 @@ def _tpu_splash_attention(
                 base_mask = splash_attention_mask.CausalMask(shape=(Sq, Sk))
             else:
                 base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
-
             # This is going to be a pain to support
             if mask.explicit_mask is not None:
                 raise NotImplementedError("Explicit masks are not yet supported for splash attention")
+
         elif isinstance(mask, NamedArray):
             raise NotImplementedError("NamedArray masks are not yet supported for splash attention")
         else:
@@ -876,9 +949,11 @@ def _tpu_splash_attention(
         q = q.astype(attention_dtype)
         k = k.astype(attention_dtype)
         v = v.astype(attention_dtype)
-        return jax.vmap(splash_kernel)(q, k, v, segment_ids=None)
+        return jax.vmap(
+            lambda q, k, v, si: splash_kernel(q, k, v, segment_ids=si), in_axes=(0, 0, 0, segment_batch_axis)
+        )(q, k, v, segment_ids)
 
-    attn_output = wrap_flash_attention(q_, k_, v_)
+    attn_output = wrap_flash_attention(q_, k_, v_, segment_ids)
 
     attn_output = haliax.named(attn_output, ("B", "H", "S", "D"))
     # the output shape is B, S_q, H_q, D_v. Right now we're requiring D_k == D_v
