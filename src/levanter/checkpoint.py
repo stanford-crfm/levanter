@@ -152,14 +152,14 @@ class Checkpointer:
     def on_step(self, info, force: bool = False):
         step = info.step
 
-        if step == 0:
-            self._last_save_time = self._dt_now_injection()
-            if not force:
-                return  # don't save checkpoint at step 0 unless forced
-
-        if step == self._last_save_step:
-            # we've already saved a checkpoint at this step
-            return
+        # if step == 0:
+        #     self._last_save_time = self._dt_now_injection()
+        #     if not force:
+        #         return  # don't save checkpoint at step 0 unless forced
+        #
+        # if step == self._last_save_step and not force:
+        #     # we've already saved a checkpoint at this step
+        #     return
 
         # two reasons we can save: time or step
         # they have different behaviors for retention.

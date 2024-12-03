@@ -11,7 +11,6 @@ import equinox
 import jax
 import jax.experimental.array_serialization.serialization as array_ser
 import jax.numpy as jnp
-import jax.tree_util as jtu
 import numpy as np
 import tensorstore
 from jax.sharding import Mesh
@@ -50,10 +49,11 @@ def tree_serialize_leaves_tensorstore(
     def path_from_key_path(key_path):
         return os.path.join(checkpoint_dir, *key_path.split("."))
 
-    paths = jtu.tree_map(path_from_key_path, leaf_key_paths, is_leaf=lambda x: x is None)
-    paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
-    leaves = jtu.tree_leaves(pytree, is_leaf=lambda x: x is None)
-    assert len(leaves) == len(paths)
+    paths = jax.tree.map(path_from_key_path, leaf_key_paths, is_leaf=lambda x: x is None)
+    print(pytree, paths)
+    paths = jax.tree.leaves(paths, is_leaf=lambda x: x is None)
+    leaves = jax.tree.leaves(pytree, is_leaf=lambda x: x is None)
+    assert len(leaves) == len(paths), f"leaves: {leaves}, paths: {paths}"
 
     # ok, not all of these are arrays, but we'll deal with that in the async function
     def _ensure_is_array(x):
@@ -181,11 +181,11 @@ def tree_deserialize_leaves_tensorstore(
 
     deser_partial = functools.partial(_deserialize_one_leaf, axis_mapping=axis_mapping, mesh=mesh)
 
-    futures = jtu.tree_map(deser_partial, pytree, specs, is_leaf=is_named_array)
-    leaves, structure = jtu.tree_flatten(futures, is_leaf=is_named_array)
+    futures = jax.tree.map(deser_partial, pytree, specs, is_leaf=is_named_array)
+    leaves, structure = jax.tree.flatten(futures, is_leaf=is_named_array)
 
     async def _do_deserialize():
         values = await asyncio.gather(*leaves)
-        return jtu.tree_unflatten(structure, values)
+        return jax.tree.unflatten(structure, values)
 
     return asyncio.run(_do_deserialize())
