@@ -12,7 +12,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec, PositionalSharding
 from jaxtyping import PRNGKeyArray, PyTree
 
-import haliax
+import haliax as hax
 from haliax.jax_utils import is_jax_array_like
 from haliax.partitioning import ResourceAxis
 
@@ -258,7 +258,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
         devices = jax.devices()
 
     if mesh is None:
-        mesh = haliax.partitioning._get_mesh()
+        mesh = hax.partitioning._get_mesh()
         if mesh.devices.shape == ():
             mesh = None
 
@@ -279,7 +279,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
         return sharding
     else:
         # get the existing mesh and find the FSDP axis
-        fsdp_axis = mesh.axis_names.index(haliax.partitioning.ResourceAxis.DATA)
+        fsdp_axis = mesh.axis_names.index(hax.partitioning.ResourceAxis.DATA)
         num_devices = mesh.devices.shape[fsdp_axis]
 
         for i in range(len(shape) - 1, -1, -1):
@@ -291,7 +291,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
             return NamedSharding(mesh, PartitionSpec(None))
 
         axis_sharding = [None] * len(shape)
-        axis_sharding[sharded_axis] = haliax.partitioning.ResourceAxis.DATA
+        axis_sharding[sharded_axis] = hax.partitioning.ResourceAxis.DATA
         sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
 
         return sharding
