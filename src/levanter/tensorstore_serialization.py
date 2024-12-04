@@ -10,6 +10,7 @@ import equinox
 import jax
 import jax.experimental.array_serialization.serialization as array_ser
 import jax.numpy as jnp
+import jax.tree_util as jtu
 import numpy as np
 from jax.sharding import Mesh, Sharding
 from jaxtyping import PyTree
@@ -59,7 +60,6 @@ def tree_serialize_leaves_tensorstore(
     paired_leaves = jax.tree.leaves(zipped)
     paths = [p.path for p in paired_leaves]
     leaves = [p.leaf.array if is_named_array(p.leaf) else p.leaf for p in paired_leaves]
-    assert len(leaves) == len(paths), f"{len(leaves)} != {len(paths)}"
 
     # ok, not all of these are arrays, but we'll deal with that in the async function
     def _ensure_is_array(x):
@@ -89,7 +89,7 @@ def _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths):
     def path_from_key_path(key_path):
         return os.path.join(checkpoint_dir, *key_path.split("."))
 
-    paths = jax.tree.map(path_from_key_path, leaf_key_paths)
+    paths = jtu.tree_map(path_from_key_path, leaf_key_paths)
     return paths
 
 
@@ -139,16 +139,16 @@ def tree_deserialize_leaves_tensorstore(
     if manager is None:
         manager = array_ser.GlobalAsyncCheckpointManager()
 
-    shardings: PyTree[Optional[Sharding]] = jax.tree.map(
+    shardings: PyTree[Optional[Sharding]] = jtu.tree_map(
         partial(_sharding_from_leaf, axis_mapping=axis_mapping, mesh=mesh), pytree, is_leaf=is_named_array
     )
 
     # TODO: support ShapeDtypeStructs that are not NamedArrays
     leaf_key_paths = jax_utils.leaf_key_paths(shardings, is_leaf=is_named_array)
     paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
-    paths = jax.tree.leaves(paths, is_leaf=lambda x: x is None)
+    paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
 
-    shardings_leaves, shardings_structure = jax.tree.flatten(shardings, is_leaf=_is_named_or_none)
+    shardings_leaves, shardings_structure = jtu.tree_flatten(shardings, is_leaf=_is_named_or_none)
 
     assert len(shardings_leaves) == len(paths)
 
@@ -164,7 +164,7 @@ def tree_deserialize_leaves_tensorstore(
     for i, x in zip(real_indices, deser_leaves):
         out_leaves[i] = x
 
-    deser_arrays = jax.tree.unflatten(shardings_structure, out_leaves)
+    deser_arrays = jtu.tree_unflatten(shardings_structure, out_leaves)
 
     # deser_arrays only has arrays, but we need named arrays for at least some.
     # The original pytree has the structure we want, so we'll use that to rebuild the named arrays
@@ -174,4 +174,4 @@ def tree_deserialize_leaves_tensorstore(
         else:
             return array
 
-    return jax.tree.map(_rebuild_named_array, pytree, deser_arrays, is_leaf=_is_named_or_none)
+    return jtu.tree_map(_rebuild_named_array, pytree, deser_arrays, is_leaf=_is_named_or_none)

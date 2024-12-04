@@ -2,6 +2,7 @@ import json
 import tempfile
 
 import numpy as np
+import pytest
 from jax import random
 
 import haliax as hax
@@ -65,7 +66,8 @@ def get_config(vocab_size=1000):
 
 
 @skip_if_no_torch
-def test_llama_roundtrip():
+@pytest.mark.parametrize("test_seq_len", [128, 256, 512])
+def test_llama3_roundtrip(test_seq_len):
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
@@ -77,7 +79,8 @@ def test_llama_roundtrip():
     config = LlamaConfig.from_hf_config(hf_config)
 
     # Make input and attn_mask
-    input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
+    test_Pos = config.Pos.resize(test_seq_len)
+    input = hax.random.randint(random.PRNGKey(0), test_Pos, 0, Vocab.size)
     attn_mask = AttentionMask.causal()
     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 

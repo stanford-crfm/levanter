@@ -13,6 +13,8 @@ from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
+import levanter.eval
+import levanter.eval_harness
 from levanter import callbacks
 from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
@@ -23,6 +25,7 @@ from levanter.data.text import (
     SupervisedSourceConfig,
     mk_supervised_datasets,
 )
+from levanter.eval_harness import LmEvalHarnessConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -56,11 +59,12 @@ class TrainLmConfig:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
-    update_hessian_steps: int = 10
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
     epoch: int = 0
+    eval_harness: Optional[LmEvalHarnessConfig] = None
+    eval_harness_steps: int = 10000
 
 
 def main(config: TrainLmConfig):
@@ -122,6 +126,14 @@ def main(config: TrainLmConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
+        # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
+        # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
+        # tokens: gpt-2 has 50257, for example. So we round up.
+        vocab_size = len(tokenizer)
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
+        if vocab_size != Vocab.size:
+            logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
+
         # TODO: fix this
         tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         # TokenSeqDataset is config.data.train_set(Pos.size, key=data_key)
@@ -152,14 +164,6 @@ def main(config: TrainLmConfig):
                 batch_size=trainer.config.train_batch_size,
             )
             trainer.add_hook(epoch_checkpointer, every=1)
-
-        # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
-        # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
-        # tokens: gpt-2 has 50257, for example. So we round up.
-        vocab_size = len(tokenizer)
-        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
-        if vocab_size != Vocab.size:
-            logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
@@ -252,6 +256,13 @@ def main(config: TrainLmConfig):
             trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
                 every=config.hf_save_steps,
+            )
+
+        if config.eval_harness is not None:
+            eval_harness = config.eval_harness
+            trainer.add_hook(
+                levanter.eval_harness.lm_eval_harness(eval_harness, tokenizer, EvalBatch, compute_axis_mapping),
+                every=config.eval_harness_steps,
             )
 
         # visualize log probs
