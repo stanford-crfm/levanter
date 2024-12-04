@@ -157,7 +157,7 @@ class Checkpointer:
             if not force:
                 return  # don't save checkpoint at step 0 unless forced
 
-        if step == self._last_save_step:
+        if step == self._last_save_step and not force:
             # we've already saved a checkpoint at this step
             return
 
@@ -380,10 +380,14 @@ def load_checkpoint(
         logger.warning("Loading checkpoint in jit. This is not recommended and probably won't work.")
 
     if discover_latest:
-        checkpoint_path = discover_latest_checkpoint(checkpoint_path)  # type: ignore
+        discovered_checkpoint_path = discover_latest_checkpoint(checkpoint_path)  # type: ignore
+    else:
+        discovered_checkpoint_path = checkpoint_path
 
-    if checkpoint_path is None or not fs.exists(checkpoint_path):
+    if discovered_checkpoint_path is None or not fs.exists(discovered_checkpoint_path):
         raise FileNotFoundError(f"Could not find checkpoint at {checkpoint_path}")
+
+    checkpoint_path = discovered_checkpoint_path
 
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     metadata = load_metadata(checkpoint_path, fs)

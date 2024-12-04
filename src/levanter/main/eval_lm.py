@@ -49,7 +49,9 @@ def main(config: EvalLmConfig):
     KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = CausalLmDataset(config.data.train_set(Pos.size, key=jax.random.PRNGKey(0)), Pos, KeyPos)
+        raw_dataset = CausalLmDataset(
+            config.data.train_set(Pos.size, key=jax.random.PRNGKey(0)), Pos, KeyPos, eos_id=tokenizer.eos_token_id
+        )
     else:
         validation_set = config.data.validation_set(Pos.size)
         if validation_set is None:
@@ -99,7 +101,7 @@ def main(config: EvalLmConfig):
         if config.hf_checkpoint is not None:
             # load the huggingface model
             model_config = config.model
-            if not hasattr(model_config, "hf_checkpoint_converter"):
+            if not hasattr(model_config, "default_hf_checkpoint_converter"):
                 raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
             converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)

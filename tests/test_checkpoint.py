@@ -13,7 +13,7 @@ from chex import assert_trees_all_close, assert_trees_all_equal
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
 
-import haliax
+import haliax as hax
 from haliax import Axis
 
 from levanter.callbacks import StepInfo
@@ -252,7 +252,7 @@ def test_load_from_checkpoint_or_initialize():
     Out = Axis("out", 1)
 
     def init_fn(key):
-        return haliax.nn.MLP.init(In, Out, 2, 1, key=key, use_bias=False, use_final_bias=False)
+        return hax.nn.MLP.init(In, Out, 2, 1, key=key, use_bias=False, use_final_bias=False)
 
     k0 = jax.random.PRNGKey(0)
     k1 = jax.random.PRNGKey(1)
@@ -260,9 +260,9 @@ def test_load_from_checkpoint_or_initialize():
     model0 = eqx.filter_jit(init_fn)(k0)
     model1 = eqx.filter_jit(init_fn)(k1)
 
-    is_checkpointed = jtu.tree_map(lambda _: False, model0)
+    is_checkpointed = hax.tree_util.tree_map(lambda _: False, model0)
     is_checkpointed = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed, replace=True)
-    is_checkpointed1 = jtu.tree_map(lambda _: False, model1)
+    is_checkpointed1 = hax.tree_util.tree_map(lambda _: False, model1)
     is_checkpointed1 = eqx.tree_at(lambda t: t.layers[-1], is_checkpointed1, replace=True)
 
     with jax.sharding.Mesh(jax.devices(), ("devices",)), tempfile.TemporaryDirectory() as tmpdir:
@@ -306,7 +306,7 @@ def test_load_from_checkpoint_or_initialize_works_if_file_not_found():
     Out = Axis("out", 1)
 
     def init_fn(key):
-        return haliax.nn.MLP.init(In, Out, 2, 3, key=key)
+        return hax.nn.MLP.init(In, Out, 2, 3, key=key)
 
     k0 = jax.random.PRNGKey(0)
     k1 = jax.random.PRNGKey(1)

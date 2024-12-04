@@ -30,9 +30,10 @@ def test_lm_example_handles_ignore_id():
     tokens = hax.arange(Pos, dtype=jnp.int32)
 
     ignore_id = 6
+    eos_id = 10
 
-    ex_ignore = LmExample.causal(tokens, ignore_id=ignore_id)
-    ex_no_ignore = LmExample.causal(tokens)
+    ex_ignore = LmExample.causal(tokens, ignore_id=ignore_id, eos_id=eos_id)
+    ex_no_ignore = LmExample.causal(tokens, eos_id=eos_id)
     assert ex_ignore.loss_mask[Pos, ignore_id - 1] == 0
 
     logits = hax.ones((Pos, Embed))
