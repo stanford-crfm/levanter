@@ -4,11 +4,12 @@ from typing import Generic, Optional, Type, TypeVar
 
 import draccus
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
 import haliax as hax
-from haliax import Axis, NamedArray
+from haliax import Axis, NamedArray, NamedOrNumeric
 
 from levanter.models.attention import AttentionMask
 from levanter.models.loss import maybe_fused_next_token_loss
@@ -57,6 +58,33 @@ class LmExample(eqx.Module):
             eos_mask = eos_mask.at[Pos, 0].set(False).astype(jnp.int32)
             segment_ids = hax.cumsum(eos_mask, axis=Pos)
             attn_mask = attn_mask.with_segment_ids(segment_ids)
+
+        return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+    @staticmethod
+    def from_prompt_and_completion(
+        Pos,
+        tokens: hax.NamedArray,
+        prompt_length: NamedOrNumeric,
+        *,
+        ignore_id: Optional[int] = None,
+        all_causal: bool = True,
+    ) -> "LmExample":
+        # mask out the prompt tokens
+        loss_mask = hax.arange(Pos) >= prompt_length - 1
+        # don't predict the padding
+        if ignore_id is not None:
+            targets = hax.roll(tokens, -1, Pos)
+            loss_mask = loss_mask & (targets != ignore_id)
+
+        # don't predict the last token
+        loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
+
+        if all_causal:
+            attn_mask = AttentionMask.causal()
+        else:
+            # causal just for the completion part. We don't have a special structured mask for this, so we just
+            raise NotImplementedError("Not implemented yet")
 
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 

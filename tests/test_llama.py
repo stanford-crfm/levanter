@@ -82,7 +82,9 @@ def test_llama_rotary_embedding():
 
 
 @skip_if_no_torch
-def test_apply_rotary_pos_emb():
+@pytest.mark.parametrize("model_seq_len", [128, 256])
+@pytest.mark.parametrize("test_seq_len", [64, 128, 256])
+def test_apply_rotary_pos_emb(model_seq_len, test_seq_len):
     import torch
     from transformers.models.llama.modeling_llama import apply_rotary_pos_emb as hf_apply_rotary_pos_emb
     from transformers.models.llama.modeling_llama import rotate_half as hf_rotate_half
@@ -95,9 +97,9 @@ def test_apply_rotary_pos_emb():
     def named_array_to_tensor(named_array):
         return torch.from_numpy(np.array(named_array.array))
 
-    llama_config = _get_llama_config()
+    llama_config = _get_llama_config(seq_len=model_seq_len)
 
-    Pos = llama_config.Pos
+    Pos = llama_config.Pos.resize(test_seq_len)
     Heads = llama_config.Heads
     HeadSize = llama_config.HeadSize
     Batch = hax.Axis("batch", 2)
@@ -138,7 +140,8 @@ def test_apply_rotary_pos_emb():
 @skip_if_no_torch
 @pytest.mark.parametrize("use_flash", [True, False])
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_llama_attention(use_flash, num_kv_heads):
+@pytest.mark.parametrize("test_seq_len", [64, 128, 256])
+def test_llama_attention(use_flash, num_kv_heads, test_seq_len):
     import torch
     from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
 
@@ -154,7 +157,10 @@ def test_llama_attention(use_flash, num_kv_heads):
     x, mask = _get_random_inputs(config)
     x_torch = torch.from_numpy(np.array(x.array))
     batch_size = x_torch.shape[0]
-    explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
+    test_Pos = config.Pos.resize(test_seq_len)
+    test_KeyPos = config.KeyPos.resize(test_seq_len)
+
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(test_Pos, test_KeyPos).array))
     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
 
     # the torch mask is really a bias, so we need to invert it and make it a big negative number
@@ -389,3 +395,32 @@ def test_state_dict_consistency(scan_layers, num_kv_heads):
     hf_model = LlamaForCausalLM(hf_config)
     levanter_state_dict = hax.state_dict.to_torch_compatible_state_dict(model)
     assert set(hf_model.state_dict().keys()) == set(levanter_state_dict.keys())
+
+
+@pytest.mark.parametrize("num_kv_heads", [2, 4])
+def test_llama_seq_len_doesnt_change_predictions(num_kv_heads):
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+
+    # Make input and attn_mask
+    input_256 = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
+    input_128 = input_256[config.Pos, :128]
+    attn_mask = AttentionMask.causal()
+
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+
+    @hax.named_jit
+    def compute(model, input):
+        model_output = model(input, attn_mask=attn_mask)
+        return model_output
+
+    jax_out_1 = compute(model, input_128)
+    jax_out_2 = compute(model, input_256)[config.Pos, :128]
+
+    assert np.allclose(jax_out_1.array, jax_out_2.array, rtol=1e-6, atol=1e-6)

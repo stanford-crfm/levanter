@@ -7,7 +7,11 @@ name = "levanter"
 version = "1.2"
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
+    { name = "Jason Wang"},
+    { name = "Ahmed Ahmed"},
     { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
+    { name = "Will Held"},
+    { name = "Virginia Adams"}
 ]
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
@@ -47,10 +51,11 @@ dependencies = [
     "pydantic<3",
     "rich~=13.0",
     "filelock~=3.13",
-    #    "ai2-olmo",
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
-    "deepdiff"
+    "deepdiff",
+#    "lm-eval==0.4.2",
+    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
 
 [project.urls]
@@ -100,11 +105,11 @@ markers = [
 [project.optional-dependencies]
 test = [
     "pytest",
+    "pytest-forked",
+    "pytest-asyncio",
     "flake8",
     "soundfile",
     "librosa",
-    "pytest-forked",
-    "pytest-asyncio",
 ]
 
 [tool.setuptools.packages.find]
