@@ -143,7 +143,7 @@ def test_estimate_mixture_weights():
 
     optimizer = optax.adam(1e-2)
 
-    trainer = Trainer(tiny_trainer_config, optimizer, compute_loss_fn)
+    trainer = Trainer(tiny_trainer_config, optimizer, compute_loss_fn, add_default_hooks=False)
 
     def fit_to_dataset(dataset: AsyncDataset):
         initial_model = init_model()
@@ -154,8 +154,7 @@ def test_estimate_mixture_weights():
 
             loss = 0.0
 
-            # state = trainer.train(state, loader, run_hooks=False)
-            for state in trainer.training_steps(state, loader, run_hooks=False):
+            for state in trainer.training_steps(state, loader):
                 if state.step >= 200:
                     loss += state.loss
 
