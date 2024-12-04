@@ -1,17 +1,20 @@
-import re
+import dataclasses
 from dataclasses import dataclass
-from typing import Any, Callable, NamedTuple, Optional, Union
+from typing import NamedTuple
 
 import chex
 import jax
 import jax.numpy as jnp
 import optax
-from levanter.optim.config import OptimizerConfig
-from levanter.utils.jax_utils import leaf_key_paths
 from optax import tree_utils as otu
-import equinox as eqx
+
 import haliax
-from functools import partial
+from haliax.nn import Linear
+
+from levanter.optim.config import OptimizerConfig
+from levanter.optim.util import map_flattened_linear_layers
+from levanter.utils.jax_utils import leaf_key_paths
+
 
 @OptimizerConfig.register_subclass("muon")
 @dataclass
@@ -19,6 +22,7 @@ class MuonConfig(OptimizerConfig):
     """
     Muon optimizer configuration: Momentum Orthogonalized by Newton-Schulz.
     """
+
     lr: float = 0.02
     muon_to_adam_lr: float = 0.18  # Scaling factor between AdamW and Muon learning rates
     momentum: float = 0.95
@@ -67,9 +71,10 @@ class MuonConfig(OptimizerConfig):
                 components.append(optax.scale(-adam_lr))
                 optimizer = optax.chain(*components)
                 return optimizer
+
             transformations = {
-                'muon': muon_transform(),
-                'adamw': adamw_transform(),
+                "muon": muon_transform(),
+                "adamw": adamw_transform(),
             }
 
             return optax.multi_transform(transformations, self.create_mask)
@@ -84,28 +89,30 @@ class MuonConfig(OptimizerConfig):
         paths = leaf_key_paths(params)
 
         def mask_fn(param, path):
-            path_str = '.'.join(path) if isinstance(path, (list, tuple)) else str(path)
-            if 'Embedding' in path_str or 'lm_head' in path_str:
-                return 'adamw'
-            elif param.ndim == 2:
-                return 'muon'
+            path_str = ".".join(path) if isinstance(path, (list, tuple)) else str(path)
+            if "Embedding" in path_str or "lm_head" in path_str:
+                return "adamw"
+            elif isinstance(param, Linear):
+                # muon for linear layers
+                return dataclasses.replace(param, weight="muon", bias="adamw" if param.bias is not None else None)
             else:
-                return 'adamw'
+                return "adamw"
 
-        return jax.tree_util.tree_map(mask_fn, params, paths)
-    
-    
+        return jax.tree_util.tree_map(mask_fn, params, paths, is_leaf=lambda x: isinstance(x, Linear))
+
+
 class ScaleByMuonState(NamedTuple):
-  """State for the Mars algorithm."""
-  momentum_buffer: optax.Updates
+    """State for the Mars algorithm."""
+
+    momentum_buffer: optax.Updates
+
 
 def scale_with_muon(momentum=0.95, nesterov=True, steps=5):
     def init_fn(params):
         momentum_buffer = otu.tree_zeros_like(params)  # First moment
         return ScaleByMuonState(momentum_buffer=momentum_buffer)
 
-
-    def update_fn(updates, state, params=None):        
+    def update_fn(updates, state, params=None):
         buf = state.momentum_buffer
         buf = jax.tree.map(
             lambda m, g: None if g is None else momentum * m + g,
@@ -122,24 +129,24 @@ def scale_with_muon(momentum=0.95, nesterov=True, steps=5):
             )
         else:
             updates = buf
-        
-        
-        updates = jax.tree.map(
-            lambda g: None if g is None else zeropower_via_newtonschulz5(g, steps=steps),
-            updates,
-            is_leaf=lambda x: x is None,
-        )
-        
-        updates = jax.tree.map(
-            lambda g: None if g is None else jnp.sqrt(jnp.maximum(1, g.shape[0] / g.shape[1])) * g,
-            updates,
-            is_leaf=lambda x: x is None,
-        )
-        
+
+        def transform_linear_layer(layer: haliax.nn.Linear):
+            assert layer.weight.ndim == 2
+
+            updated_weight_array = zeropower_via_newtonschulz5(layer.weight.array, steps=steps)
+
+            scale = jnp.sqrt(jnp.maximum(1, updated_weight_array.shape[0] / updated_weight_array.shape[1]))
+            updated_weight_array *= scale
+
+            updated_weight = dataclasses.replace(layer.weight, array=updated_weight_array)
+
+            return dataclasses.replace(layer, weight=updated_weight)  # type: ignore
+
+        updates = map_flattened_linear_layers(transform_linear_layer, updates)
+
         return updates, ScaleByMuonState(momentum_buffer=buf)
 
     return optax.GradientTransformation(init_fn, update_fn)
-
 
 
 def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
@@ -148,7 +155,7 @@ def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
     """
     chex.assert_rank(X, 2)
     a, b, c = (3.4445, -4.7750, 2.0315)
-    X /= (jnp.linalg.norm(X) + eps)  # Ensure top singular value <= 1
+    X /= jnp.linalg.norm(X) + eps  # Ensure top singular value <= 1
     transpose = False
     if X.shape[0] > X.shape[1]:
         X = X.T
