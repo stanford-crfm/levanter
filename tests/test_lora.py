@@ -12,6 +12,7 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax.quantization import DefaultDotGeneralOp, DotGeneralOp
 
+from levanter.callbacks import StepInfo
 from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.lora import (
@@ -26,7 +27,6 @@ from levanter.lora import (
 )
 from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.trainer import StepInfo
 from levanter.trainer_state import TrainerState
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_torch

@@ -34,9 +34,9 @@ from haliax import Axis
 from haliax.partitioning import ResourceMapping
 from haliax.state_dict import from_torch_compatible_state_dict, save_state_dict, to_torch_compatible_state_dict
 
+from levanter.callbacks import StepInfo
 from levanter.models.asr_model import ASRMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.trainer import StepInfo
 from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.hf_utils import HfTokenizer
