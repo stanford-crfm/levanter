@@ -13,3 +13,4 @@ from .mars import (
     MarsConfig,
     ScaleByMarsState
 )
+from .kron import KronConfig
