@@ -3,6 +3,7 @@ import levanter.config as config
 import levanter.data as data
 import levanter.distributed as distributed
 import levanter.eval as eval
+import levanter.eval_harness as eval_harness
 import levanter.models as models
 import levanter.optim as optim
 import levanter.tracker as tracker
