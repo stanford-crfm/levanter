@@ -49,7 +49,6 @@ dependencies = [
     "dataclasses-json~=0.6.4",
     "ray[default]>=2.34.0",
     "pydantic<3",
-    "rich~=13.0",
     "filelock~=3.13",
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
