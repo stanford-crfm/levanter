@@ -1,5 +1,10 @@
 from dataclasses import dataclass
+from typing import Any, Optional, Union
+
+import jax.numpy as jnp
 import optax
+from jax.sharding import PartitionSpec
+
 from levanter.optim.config import OptimizerConfig
 
 
@@ -65,7 +70,7 @@ class KronConfig(OptimizerConfig):
     precond_dtype: Optional[Union[str, jnp.dtype]] = None
     precond_update_precision: Optional[str] = "tensorfloat32"
     precond_grads_precision: Optional[str] = None
-    scanned_layers: Optional[base.Params] = None
+    scanned_layers: Optional[optax.Params] = None
     lax_map_scanned_layers: bool = False
     lax_map_batch_size: int = 8
     merge_small_dims: bool = True
@@ -73,7 +78,7 @@ class KronConfig(OptimizerConfig):
     partition_grads_into_blocks: bool = True
     block_size: int = 512
     params_sharding: Optional[Any] = None
-    preconditioner_sharding: Optional[tuple[str, str]] = None
+    preconditioner_sharding: Optional[tuple[str | None, str | None]] = None
 
     def build(self, num_train_steps):
         """Creates the optimizer."""
