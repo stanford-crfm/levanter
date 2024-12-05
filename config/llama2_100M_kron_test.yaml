@@ -1,4 +1,5 @@
-data: !include data/dclm_gpt_neo.yaml
+data:
+  id: openwebtext
 model:
   type: llama
   seq_len: 4096
