@@ -20,9 +20,9 @@ trainer:
     save_interval: 30m
     
 
-  train_batch_size: 1024
-  per_device_parallelism: 64  # set for v3 TPU
-  per_device_eval_parallelism: 64 # set a larger batch size for eval
+  train_batch_size: 512
+  per_device_parallelism: 32  # set for v3 TPU
+  per_device_eval_parallelism: 32 # set a larger batch size for eval
   num_train_steps: 50001
 optimizer:
   learning_rate: 1E-3
@@ -32,4 +32,4 @@ optimizer:
   lr_schedule: constant
   min_lr_ratio: 0.0 
   max_grad_norm: 0.0  # don't need with kron's normalize_grads
-  type: kron 
+  type: kron
