@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 
 import jax
+import numpy as np
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from levanter.tracker import Tracker
 from levanter.tracker.helpers import generate_pip_freeze, infer_experiment_git_root
+from levanter.tracker.histogram import Histogram
 from levanter.tracker.tracker import TrackerConfig
 from levanter.utils import jax_utils
 
@@ -48,9 +50,9 @@ class WandbTracker(Tracker):
         self._last_warning_step = -500
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
-        self.run.config.update(hparams, allow_val_change=True)
+        self.run.config.update(_convert_values_to_loggable(hparams), allow_val_change=True)
 
-    def log(self, metrics: dict[str, Any], *, step, commit=None):
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         if step is None and not commit:
             step = self.run.step
 
@@ -64,10 +66,10 @@ class WandbTracker(Tracker):
 
         step = int(step)
 
-        self.run.log(metrics, step=step, commit=commit)
+        self.run.log(_convert_values_to_loggable(metrics), step=step, commit=commit)
 
-    def log_summary(self, metrics: dict[str, Any]):
-        self.run.summary.update(metrics)
+    def log_summary(self, metrics: typing.Mapping[str, Any]):
+        self.run.summary.update(_convert_values_to_loggable(metrics))
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         self.run.log_artifact(artifact_path, name=name, type=type)
@@ -75,6 +77,29 @@ class WandbTracker(Tracker):
     def finish(self):
         logger.info("Finishing wandb run...")
         self.run.finish()
+
+
+def _convert_values_to_loggable(values: typing.Mapping[str, Any]):
+    def convert_value_to_loggable(value: Any):
+        if isinstance(value, (list, tuple)):
+            return [convert_value_to_loggable(v) for v in value]
+        elif isinstance(value, typing.Mapping):
+            return {k: convert_value_to_loggable(v) for k, v in value.items()}
+        elif isinstance(value, jax.Array):
+            if value.ndim == 0:
+                return value.item()
+            else:
+                return np.array(value)
+        elif isinstance(value, Histogram):
+            import wandb
+
+            counts, limits = value.to_numpy_histogram()
+
+            return wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
+        else:
+            return value
+
+    return convert_value_to_loggable(values)
 
 
 def is_wandb_available():
@@ -93,7 +118,7 @@ class WandbConfig(TrackerConfig):
     """
 
     entity: Optional[str] = None  # An entity is a username or team name where you send runs
-    project: Optional[str] = None  # The name of the project where you are sending the enw run.
+    project: Optional[str] = "levanter"  # The name of the project where you are sending the enw run.
     name: Optional[str] = None  # A short display name for this run, which is how you'll identify this run in the UI.
     tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
     id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project

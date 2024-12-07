@@ -1,13 +1,8 @@
-import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Generic, Iterable, Mapping, Sequence, TypeVar, Union
 
 import numpy as np
 import pyarrow as pa
-import ray
-
-from levanter.utils.actor_pool import AutoScalingActorPool, PoolWorkerBase
-from levanter.utils.ray_utils import RefBox
 
 
 T = TypeVar("T")
@@ -234,54 +229,6 @@ def dict_from_record_batch(b) -> dict:
             return x
 
     return {b.field(i).name: to_hf_batched(b.column(i).to_numpy(zero_copy_only=False)) for i in range(b.num_columns)}
-
-
-@ray.remote(num_cpus=0.1)  # keep this low b/c it doesn't do much
-class BatchProcessorPool:
-    def __init__(self, processor: BatchProcessor, min_size: int = 1, max_size: int = 10):
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(message)s")
-        processor_ref = ray.put(processor)
-        self.actor_pool = AutoScalingActorPool(
-            lambda: _create_batch_processor_actor(processor, processor_ref), min_size, max_size
-        )
-
-    async def process_batch(self, batch_ref: RefBox):
-        return await self.actor_pool.submit(
-            lambda a, b: a.process_batch.remote(b), batch_ref.ref, obj_ref=batch_ref.ref
-        )
-
-    def num_pending_tasks(self):
-        return self.actor_pool.num_pending_tasks
-
-    def resize_pool(self, *, min_size: int | None = None, max_size: int | None = None):
-        self.actor_pool.resize_pool(min_size=min_size, max_size=max_size)
-
-    def ensure_max_at_least(self, size: int):
-        self.actor_pool.resize_pool(max_size=max(size, self.actor_pool.get_max_size()))
-
-
-def _create_batch_processor_actor(processor: BatchProcessor, processor_ref):
-    cpus = processor.num_cpus
-    gpus = processor.num_gpus
-    resources = processor.resources
-    return _BatchProcessorActor.options(  # type: ignore
-        num_cpus=cpus, num_gpus=gpus, resources=resources, scheduling_strategy="SPREAD"
-    ).remote(processor_ref)
-
-
-@ray.remote
-class _BatchProcessorActor(PoolWorkerBase):
-    def __init__(self, processor: BatchProcessor):
-        from levanter.store.tree_store import TreeBatchPreparer
-
-        self.processor = processor
-        self.preparer = TreeBatchPreparer(processor.output_exemplar)
-
-    def process_batch(self, batch):
-        result = self.processor(batch)
-        result = _canonicalize_batch(result)
-        prepared = self.preparer(result)
-        return prepared
 
 
 def _canonicalize_batch(batch: Union[dict, list[dict]]) -> list[dict]:

@@ -14,10 +14,10 @@ class Tracker(abc.ABC):
     The name is borrowed from HF Accelerate.
 
     Examples:
-        >>> from levanter.tracker import current_tracker, log_metrics
+        >>> from levanter.tracker import current_tracker, log
         >>> from levanter.tracker.wandb import WandbTracker
         >>> with current_tracker(WandbTracker()):
-        ...     log_metrics({"foo": 1}, step=0)
+        ...     log({"foo": 1}, step=0)
     """
 
     name: str
@@ -27,7 +27,7 @@ class Tracker(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def log(self, metrics: dict[str, typing.Any], *, step: Optional[int], commit: Optional[bool] = None):
+    def log(self, metrics: typing.Mapping[str, typing.Any], *, step: Optional[int], commit: Optional[bool] = None):
         """
         Log metrics to the tracker. Step is always required.
 
@@ -77,7 +77,7 @@ class CompositeTracker(Tracker):
         for tracker in self.loggers:
             tracker.log_hyperparameters(hparams)
 
-    def log(self, metrics: dict[str, Any], *, step, commit=None):
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         for tracker in self.loggers:
             tracker.log(metrics, step=step, commit=commit)
 
@@ -119,7 +119,7 @@ class NoopTracker(Tracker):
     def log_hyperparameters(self, hparams: dict[str, Any]):
         pass
 
-    def log(self, metrics: dict[str, Any], *, step, commit: Optional[bool] = None):
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit: Optional[bool] = None):
         pass
 
     def log_summary(self, metrics: dict[str, Any]):
