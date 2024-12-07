@@ -35,6 +35,8 @@ class KronConfig(OptimizerConfig):
             - None: All preconditioners are triangular (default)
             - 'one_diag': Largest/last dim per layer uses diagonal preconditioner
             - 'all_diag': All preconditioners are diagonal
+        preconditioner_lr: Learning rate for preconditioner.
+        preconditioner_init_scale: Scale for preconditioner initialization.
         mu_dtype: Dtype of the momentum buffer. Defaults to same dtype as parameters.
         precond_dtype: Dtype of the preconditioners. Defaults to 'float32'.
         precond_update_precision: Precision for matmul during preconditioner update.
@@ -66,6 +68,8 @@ class KronConfig(OptimizerConfig):
     max_size_triangular: int = 10000
     min_ndim_triangular: int = 2
     memory_save_mode: Optional[str] = None
+    preconditioner_lr: float = 0.1
+    preconditioner_init_scale: float = 1.0
     mu_dtype: Optional[Union[str, jnp.dtype]] = None
     precond_dtype: Optional[Union[str, jnp.dtype]] = None
     precond_update_precision: Optional[str] = "tensorfloat32"
@@ -103,6 +107,8 @@ class KronConfig(OptimizerConfig):
                     max_size_triangular=self.max_size_triangular,
                     min_ndim_triangular=self.min_ndim_triangular,
                     memory_save_mode=self.memory_save_mode,
+                    preconditioner_lr=self.preconditioner_lr,
+                    preconditioner_init_scale=self.preconditioner_init_scale,
                     mu_dtype=self.mu_dtype,
                     precond_dtype=self.precond_dtype,
                     precond_update_precision=self.precond_update_precision,
@@ -194,6 +200,8 @@ def scale_by_kron(
     max_size_triangular: int = 8192,
     min_ndim_triangular: int = 2,
     memory_save_mode: Optional[str] = None,
+    preconditioner_lr: float = 0.1,
+    preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_update_precision: Optional[str] = "tensorfloat32",
@@ -225,6 +233,8 @@ def scale_by_kron(
             to set all preconditioners to be triangular, 'one_diag' sets the largest
             or last dim to be diagonal per layer, and 'all_diag' sets all preconditioners
             to be diagonal.
+        preconditioner_lr: float, learning rate for preconditioner.
+        preconditioner_init_scale: float, scale for preconditioner initialization.
         mu_dtype: optional str or jnp.dtype, dtype of the momentum buffer. Defaults to
             same dtype as the parameters.
         precond_dtype: optional str or jnp.dtype, dtype of the preconditioners. Defaults
@@ -258,8 +268,6 @@ def scale_by_kron(
     """
     mu_dtype = canonicalize_dtype(mu_dtype)
     precond_dtype = canonicalize_dtype(precond_dtype or jnp.float32)
-    preconditioner_lr = 0.1
-    preconditioner_init_scale = 1.0
     lax_map = lax_map_scanned_layers
     bs = lax_map_batch_size
 
@@ -976,6 +984,8 @@ def kron(
     max_size_triangular: int = 8192,
     min_ndim_triangular: int = 2,
     memory_save_mode: Optional[str] = None,
+    preconditioner_lr: float = 0.1,
+    preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_update_precision: Optional[str] = "tensorfloat32",
@@ -1011,6 +1021,8 @@ def kron(
             to set all preconditioners to be triangular, 'one_diag' sets the largest
             or last dim to be diagonal per layer, and 'all_diag' sets all preconditioners
             to be diagonal.
+        preconditioner_lr: float, learning rate for preconditioner.
+        preconditioner_init_scale: float, scale for preconditioner initialization.
         mu_dtype: optional str or jnp.dtype, dtype of the momentum buffer. Defaults to
             same dtype as the parameters.
         precond_dtype: optional str or jnp.dtype, dtype of the preconditioners. Defaults
@@ -1050,6 +1062,8 @@ def kron(
             max_size_triangular=max_size_triangular,
             min_ndim_triangular=min_ndim_triangular,
             memory_save_mode=memory_save_mode,
+            preconditioner_lr=preconditioner_lr,
+            preconditioner_init_scale=preconditioner_init_scale,
             mu_dtype=mu_dtype,
             precond_dtype=precond_dtype,
             precond_update_precision=precond_update_precision,
