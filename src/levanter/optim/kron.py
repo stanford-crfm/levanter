@@ -61,8 +61,8 @@ class KronConfig(OptimizerConfig):
     # some of these are changed from kron defaults to better suit levanter
     beta1: float = 0.9
     weight_decay: float = 0.1
-    max_grad_norm: Optional[float] = None
-    normalize_grads: bool = True
+    max_grad_norm: Optional[float] = 1.0
+    normalize_grads: bool = False
     preconditioner_update_probability: float = 0.05
     update_prob_flat_start: int = 1000
     max_size_triangular: int = 10000
