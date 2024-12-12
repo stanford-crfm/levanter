@@ -635,8 +635,8 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
     tasks_to_run = config.to_task_dict()
 
     def lm_eval_harness(step: StepInfo, force=False):
-        # if step.step == 0 and not force:
-        #     return  # don't run eval on the first step
+        if step.step == 0 and not force:
+            return  # don't run eval on the first step
 
         model = inference_mode(step.model, True)
         outputs = _actually_run_eval_harness(
