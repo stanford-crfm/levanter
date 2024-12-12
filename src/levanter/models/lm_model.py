@@ -11,6 +11,7 @@ from jax.random import PRNGKey
 import haliax as hax
 from haliax import Axis, NamedArray, NamedOrNumeric
 
+from levanter.grad_accum import NumElementsBatch
 from levanter.models.attention import AttentionMask
 from levanter.models.loss import maybe_fused_next_token_loss
 
@@ -19,7 +20,7 @@ LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
 
 
-class LmExample(eqx.Module):
+class LmExample(eqx.Module, NumElementsBatch):
     tokens: hax.NamedArray
     loss_mask: hax.NamedArray
     attn_mask: AttentionMask | NamedArray = AttentionMask.causal()
@@ -87,6 +88,9 @@ class LmExample(eqx.Module):
             raise NotImplementedError("Not implemented yet")
 
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+    def num_elements(self):
+        return self.loss_mask.sum()
 
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?
@@ -221,6 +225,7 @@ def compute_next_token_loss(
     key=None,
     reduction: Optional[hax.ReductionFunction] = hax.mean,
     reduction_axis: Optional[hax.AxisSelection] = None,
+    batch_num_elements: Optional[int] = None,
     logsumexp_weight: Optional[float] = None,
     loss_dtype: Optional[Type[jnp.dtype]] = jnp.float32,
 ) -> jnp.ndarray | NamedArray:
@@ -241,6 +246,7 @@ def compute_next_token_loss(
         loss_mask=example.loss_mask,
         reduction=reduction,
         reduction_axis=reduction_axis,
+        batch_num_elements=batch_num_elements,
         logsumexp_weight=logsumexp_weight,
         dtype=loss_dtype,
         block_size=model.config.cross_entropy_block_size,

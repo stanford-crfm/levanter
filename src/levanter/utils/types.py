@@ -51,9 +51,10 @@ class ComputeLossFunction(Protocol[M_con, X]):
     def __call__(
         self,
         model: M_con,
-        *inputs: X,
+        input: X,
         reduction: Optional[hax.ReductionFunction] = hax.mean,
         reduction_axis: Optional[hax.AxisSelection] = None,
+        batch_num_elements: Optional[int] = None,
         **kwargs,
     ) -> Scalar | hax.NamedArray:
         ...

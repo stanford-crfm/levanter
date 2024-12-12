@@ -1,4 +1,5 @@
 import functools
+import logging
 from typing import Optional
 
 import equinox
@@ -8,6 +9,9 @@ import jax.numpy as jnp
 import haliax as hax
 from haliax import NamedArray
 from haliax.nn import cross_entropy_loss_and_log_normalizers
+
+
+logger = logging.getLogger(__name__)
 
 
 def maybe_fused_next_token_loss(
@@ -20,6 +24,7 @@ def maybe_fused_next_token_loss(
     loss_mask: Optional[NamedArray] = None,
     reduction: Optional[hax.ReductionFunction] = hax.mean,
     reduction_axis: Optional[hax.AxisSelection] = None,
+    batch_num_elements: Optional[int] = None,
     logsumexp_weight: Optional[float] = None,
     block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = jnp.float32,
@@ -36,6 +41,7 @@ def maybe_fused_next_token_loss(
         loss_mask (Optional[NamedArray]): Mask to apply to the loss.
         reduction (Optional[hax.ReductionFunction]): Reduction function.
         reduction_axis (Optional[hax.AxisSelection]): Axis to apply reduction.
+        batch_num_elements (Optional[int]): The number of elements in the batch. When passed, it is used to reduce the loss.
         logsumexp_weight (Optional[float]): Weight for logsumexp penalty.
         block_size (Optional[int]): Size of each block for processing.
 
@@ -45,6 +51,9 @@ def maybe_fused_next_token_loss(
     # Resolve axes
     Pos = pred_embeddings.resolve_axis(Pos)
     Vocab = pred_lm_head.resolve_axis(Vocab)
+    if batch_num_elements is not None:
+        if reduction is not hax.sum:
+            logger.warning("batch_num_elements given when reduction is not hax.sum, make sure this is intended")
 
     if block_size is None:
         # Full softmax computation
@@ -53,32 +62,36 @@ def maybe_fused_next_token_loss(
             logits = logits.astype(dtype)
 
         # Shift target tokens to predict the next token
-        return next_token_loss(Pos, Vocab, logits, true_ids, loss_mask, reduction, reduction_axis, logsumexp_weight)
-
-    # Shift target tokens to predict the next token
-    target_y = hax.roll(true_ids, -1, Pos)
-
-    # Create a mask that excludes the last token
-    not_last_loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)  # type: ignore
-    if loss_mask is not None:
-        loss_mask = loss_mask * not_last_loss_mask
+        loss = next_token_loss(Pos, Vocab, logits, true_ids, loss_mask, reduction, reduction_axis, logsumexp_weight)
     else:
-        loss_mask = not_last_loss_mask
+        # Shift target tokens to predict the next token
+        target_y = hax.roll(true_ids, -1, Pos)
 
-    # Compute the loss with optional block-wise processing
-    return fused_cross_entropy_loss_and_logsumexp_penalty(
-        pred_embeddings,
-        pred_lm_head,
-        Contract=Embed,
-        Label=Vocab,
-        target_y=target_y,
-        reduction=reduction,
-        reduction_axis=reduction_axis,
-        where=loss_mask,
-        logsumexp_weight=logsumexp_weight,
-        block_size=block_size,
-        dtype=dtype,
-    )
+        # Create a mask that excludes the last token
+        not_last_loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)  # type: ignore
+        if loss_mask is not None:
+            loss_mask = loss_mask * not_last_loss_mask
+        else:
+            loss_mask = not_last_loss_mask
+
+        # Compute the loss with optional block-wise processing
+        loss = fused_cross_entropy_loss_and_logsumexp_penalty(
+            pred_embeddings,
+            pred_lm_head,
+            Contract=Embed,
+            Label=Vocab,
+            target_y=target_y,
+            reduction=reduction,
+            reduction_axis=reduction_axis,
+            where=loss_mask,
+            logsumexp_weight=logsumexp_weight,
+            block_size=block_size,
+            dtype=dtype,
+        )
+
+    if batch_num_elements is not None:
+        return loss / batch_num_elements
+    return loss
 
 
 def next_token_loss(

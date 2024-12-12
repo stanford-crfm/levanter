@@ -1,3 +1,4 @@
+import abc
 import enum
 import functools
 from typing import Callable, Optional, ParamSpec, TypeVar
@@ -18,6 +19,12 @@ from levanter.utils.jax_utils import zeros_like_tree
 
 Args = ParamSpec("Args")
 R = TypeVar("R")
+
+
+class NumElementsBatch(abc.ABC):
+    @abc.abstractmethod
+    def num_elements(self) -> int:
+        pass
 
 
 class ReductionType(enum.Enum):
