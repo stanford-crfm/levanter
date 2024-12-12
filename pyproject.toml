@@ -29,7 +29,7 @@ dependencies = [
     "equinox>=0.11.7",
     "jaxtyping>=0.2.34",
     "tokenizers>=0.15.2",
-    "transformers>=4.41.2,<4.48.0",
+    "transformers>=4.41.2,<4.49.0",
     "optax>=0.1.9",
     "wandb>=0.17.8",
     "draccus>=0.9.3",
@@ -49,13 +49,12 @@ dependencies = [
     "dataclasses-json~=0.6.4",
     "ray[default]>=2.34.0",
     "pydantic<3",
-    "rich~=13.0",
     "filelock~=3.13",
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
     "deepdiff",
 #    "lm-eval==0.4.2",
-    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+#    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
 
 [project.urls]

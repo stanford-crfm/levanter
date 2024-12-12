@@ -154,11 +154,12 @@ def test_llama_attention(use_flash, num_kv_heads, test_seq_len):
     hf_attention = HFLlamaAttention(config.to_hf_config(32000))
     hf_attention.load_state_dict(state, strict=True)
 
-    x, mask = _get_random_inputs(config)
-    x_torch = torch.from_numpy(np.array(x.array))
-    batch_size = x_torch.shape[0]
     test_Pos = config.Pos.resize(test_seq_len)
     test_KeyPos = config.KeyPos.resize(test_seq_len)
+
+    x, mask = _get_random_inputs(config, test_Pos)
+    x_torch = torch.from_numpy(np.array(x.array))
+    batch_size = x_torch.shape[0]
 
     explicit_mask = torch.from_numpy(np.array(mask.materialize(test_Pos, test_KeyPos).array))
     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
@@ -167,12 +168,9 @@ def test_llama_attention(use_flash, num_kv_heads, test_seq_len):
     mask_torch = (mask_torch == 0).float() * -1e9
 
     out = attention(x, mask)
-    position_ids = torch.arange(config.Pos.size).reshape(1, -1)
+    position_ids = torch.arange(test_Pos.size).reshape(1, -1)
     hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
-    # assert np.isclose(
-    #     hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    # ).all(), f"{hf_out[0]} != {out}"
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
 
@@ -343,9 +341,12 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
     )
 
 
-def _get_random_inputs(config: LlamaConfig):
+def _get_random_inputs(config: LlamaConfig, override_Pos=None):
     Embed = config.Embed
-    Pos = config.Pos
+    if override_Pos is not None:
+        Pos = override_Pos
+    else:
+        Pos = config.Pos
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
     mask = AttentionMask.causal()

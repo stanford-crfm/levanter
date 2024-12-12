@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 from dataclasses import dataclass, field
@@ -99,6 +100,7 @@ def train(config: SFTConfig):
             converter = converter.replaced(tokenizer=tokenizer)
 
         model_config = converter.default_config
+        model_config = dataclasses.replace(converter.default_config, seq_len=config.max_seq_len)
     elif config.trainer.initialize_from is None:
         raise ValueError("Must specify either --initialize_from_hf or --initialize_from")
     else:

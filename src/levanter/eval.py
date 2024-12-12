@@ -16,9 +16,9 @@ import haliax as hax
 from haliax.partitioning import ResourceMapping
 
 import levanter.tracker
+from levanter.callbacks import StepInfo
 from levanter.data import AsyncDataset, DataLoader
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
-from levanter.trainer import StepInfo
 from levanter.utils.hf_utils import HfTokenizer, byte_length_of_token
 from levanter.utils.logging import LoadingTimeTrackerIterator
 from levanter.utils.stat_utils import Arrayish, RunningMean
@@ -238,7 +238,7 @@ def cb_tagged_lm_evaluate(
                 for tag, bpb in result.tag_macro_bpb.items():
                     log_dict[_join_prefix(prefix, tag) + "/macro_bpb"] = bpb
 
-        levanter.tracker.log_metrics(log_dict, step=step.step)
+        levanter.tracker.log(log_dict, step=step.step)
 
         return result
 

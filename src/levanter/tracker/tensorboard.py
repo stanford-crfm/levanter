@@ -5,8 +5,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import fsspec
+import jax
+import numpy as np
 
 from levanter.tracker import Tracker, TrackerConfig
+from levanter.tracker.histogram import Histogram
 
 
 pylogger = logging.getLogger(__name__)
@@ -21,13 +24,36 @@ class TensorboardTracker(Tracker):
     def __init__(self, writer: "SummaryWriter"):
         self.writer = writer
 
-    def log_hyperparameters(self, hparams: dict[str, Any]):
+    def log_hyperparameters(self, hparams: typing.Mapping[str, Any]):
         self.writer.add_hparams(hparams, {"dummy": 0})
 
-    def log(self, metrics: dict[str, Any], *, step, commit=None):
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         del commit
-        for k, v in metrics.items():
-            self.writer.add_scalar(k, v, step)
+        metrics = _flatten_nested_dict(metrics)
+        for k, value in metrics.items():
+            if isinstance(value, jax.Array):
+                if value.ndim == 0:
+                    value = value.item()
+                else:
+                    value = np.array(value)
+            elif isinstance(value, Histogram):
+                num = value.num
+                if hasattr(num, "item"):
+                    num = num.item()
+                self.writer.add_histogram_raw(
+                    k,
+                    min=value.min.item(),
+                    max=value.max.item(),
+                    num=num,
+                    sum=value.sum.item(),
+                    sum_squares=value.sum_squares.item(),
+                    bucket_limits=np.array(value.bucket_limits).tolist(),
+                    bucket_counts=np.concatenate([[0], np.array(value.bucket_counts)]).tolist(),
+                    global_step=step,
+                )
+                continue
+
+            self.writer.add_scalar(k, value, global_step=step)
 
     def log_summary(self, metrics: dict[str, Any]):
         for k, v in metrics.items():
