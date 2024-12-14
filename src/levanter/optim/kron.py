@@ -302,9 +302,9 @@ def scale_by_kron(
                     params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
                 params, params_struct = jax.tree.flatten(params)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
-                print(f"scanned_layers_: {scanned_layers_}")
+                print(f"kron scanned_layers_: {scanned_layers_}")
                 params_sharding_ = jax.tree.leaves(params_sharding_)
-                print(f"params_sharding_: {params_sharding_}")
+                print(f"kron params_sharding_: {params_sharding_}")
 
         # unbox if flax style partitioned
         if have_flax:
@@ -554,12 +554,14 @@ def scale_by_kron(
                     params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
                 updates, updates_struct = jax.tree.flatten(updates)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
-                print(f"scanned_layers_: {scanned_layers_}")
+                print(f"kron scanned_layers_: {scanned_layers_}")
                 params_sharding_ = jax.tree.leaves(params_sharding_)
-                print(f"params_sharding_: {params_sharding_}")
+                print(f"kron params_sharding_: {params_sharding_}")
 
         have_params_sharding = params_sharding_ is not None
-        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None
+        if have_params_sharding:
+            original_params_sharding_ = params_sharding_
+        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None or have_hax
 
         # unbox if flax style partitioned
         flax_partitioned = False
@@ -947,6 +949,10 @@ def scale_by_kron(
             lambda g, s: jnp.reshape(g, s), precond_gs, input_shapes
         )
 
+        # final constraint for good measure
+        if have_params_sharding:
+            precond_gs = _safe_sharding_constraint(precond_gs, original_params_sharding_)
+
         # box preconditioned grads
         if flax_partitioned:
             flat_precond_gs, _ = jax.tree.flatten(precond_gs)
@@ -1212,14 +1218,33 @@ def _init_Q_exprs(
                 # use triangular matrix as preconditioner for this dim
                 q_sharding = None
                 if have_qs_sharding:
-                    # infer a so-so sharding scheme from params if nothing specified
-                    # (first dim of q will match corresponding dim in params)
-                    q_sharding = (
-                        precond_sharding
-                        if precond_sharding is not None
-                        else PartitionSpec(dim_sh, None)
-                    )
+                    if have_hax:
+                        # if we're in haliax we can grab fsdp axis and shard accordingly
+                        # get current mesh
+                        mesh = hax.partitioning._get_mesh()
+                        if mesh.devices.shape == ():
+                            mesh = None
+                        # get fsdp mesh axis
+                        if mesh is not None:
+                            fsdp_axis = mesh.axis_names.index(hax.partitioning.ResourceAxis.DATA)
+                            fsdp_size = mesh.devices.shape[fsdp_axis]
+                            if size % fsdp_size == 0:
+                                q_sharding = PartitionSpec(fsdp_axis, None)
+                            else:
+                                q_sharding = PartitionSpec(None, None)
+                        else:
+                            q_sharding = PartitionSpec(None, None)
+                    else:
+                        # infer a so-so sharding scheme from params if nothing specified
+                        # (first dim of q will match corresponding dim in params)
+                        q_sharding = (
+                            precond_sharding
+                            if precond_sharding is not None
+                            else PartitionSpec(dim_sh, None)
+                        )
+                        # TODO ensure array axis is divisible by mesh axis
                     sharding_out[i] = q_sharding
+
                 if existing_Q is None:
                     q = scale * jnp.eye(size, dtype=dtype)
                     if have_qs_sharding:
