@@ -104,7 +104,7 @@ If you're using a TPU, more complete documentation for setting that up is availa
 As a kind of hello world, here's how you can train a GPT-2 "nano"-sized model on a small dataset.
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_nano.yaml
+python -m levanter.main.train_lm --config_path config/llama2_100M_kron_test.yaml
 
 # alternatively, if you didn't use -e and are in a different directory
 python -m levanter.main.train_lm --config_path gpt2_nano
