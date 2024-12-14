@@ -217,10 +217,12 @@ For modules like Attention, Mlp, and Embeddings, you can read the weight from Le
 
 ```python
 # initialize the module in Levanter
+import haliax
+
 attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
 
 # read the weights from Levanter
-state = attention.to_state_dict()
+state = haliax.state_dict.to_torch_compatible_state_dict(attention.state_dict())
 state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
 
 # load the weights into HuggingFace

@@ -263,7 +263,9 @@ def main(config: TrainLmConfig):
         if config.eval_harness is not None:
             eval_harness = config.eval_harness
             trainer.add_hook(
-                levanter.eval_harness.lm_eval_harness(eval_harness, tokenizer, EvalBatch, compute_axis_mapping),
+                levanter.eval_harness.lm_eval_harness(
+                    eval_harness, tokenizer, EvalBatch, compute_axis_mapping, trainer.mp
+                ),
                 every=config.eval_harness_steps,
             )
 
