@@ -1226,10 +1226,11 @@ def _init_Q_exprs(
                             mesh = None
                         # get fsdp mesh axis
                         if mesh is not None:
-                            fsdp_axis = mesh.axis_names.index(hax.partitioning.ResourceAxis.DATA)
+                            fsdp_axis_name = hax.partitioning.ResourceAxis.DATA
+                            fsdp_axis = mesh.axis_names.index(fsdp_axis_name)
                             fsdp_size = mesh.devices.shape[fsdp_axis]
                             if size % fsdp_size == 0:
-                                q_sharding = PartitionSpec(fsdp_axis, None)
+                                q_sharding = PartitionSpec(fsdp_axis_name, None)
                             else:
                                 q_sharding = PartitionSpec(None, None)
                         else:
