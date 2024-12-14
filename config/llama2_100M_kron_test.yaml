@@ -31,5 +31,5 @@ optimizer:
   cooldown: 0.1
   lr_schedule: constant
   min_lr_ratio: 0.0 
-  max_grad_norm: 0.0  # don't need with kron's normalize_grads on (default)
+  max_grad_norm: 1.0
   type: kron
