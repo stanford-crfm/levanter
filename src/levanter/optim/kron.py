@@ -65,7 +65,7 @@ class KronConfig(OptimizerConfig):
     normalize_grads: bool = False
     preconditioner_update_probability: float = 0.05
     update_prob_flat_start: int = 1000
-    max_size_triangular: int = 10000
+    max_size_triangular: int = 25000
     min_ndim_triangular: int = 2
     memory_save_mode: Optional[str] = None
     preconditioner_lr: float = 0.1
