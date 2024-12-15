@@ -64,7 +64,7 @@ class KronConfig(OptimizerConfig):
     max_grad_norm: Optional[float] = 1.0
     normalize_grads: bool = False
     preconditioner_update_probability: float = 0.05
-    update_prob_flat_start: int = 1000
+    update_prob_flat_start: int = 500
     max_size_triangular: int = 25000
     min_ndim_triangular: int = 2
     memory_save_mode: Optional[str] = None
@@ -80,7 +80,7 @@ class KronConfig(OptimizerConfig):
     merge_small_dims: bool = True
     target_merged_dim_size: int = 8192
     partition_grads_into_blocks: bool = True
-    block_size: int = 512
+    block_size: int = 256
     params_sharding: Optional[Any] = None
     preconditioner_sharding: Optional[tuple[str | None, str | None]] = None
 
