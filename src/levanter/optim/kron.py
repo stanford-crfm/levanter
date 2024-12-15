@@ -516,7 +516,7 @@ def scale_by_kron(
             )
 
         return dict(
-            key=jax.random.PRNGKey(jax.process_index()),
+            key=jax.random.PRNGKey(0),
             count=jnp.zeros([], jnp.int32),
             mu=mu,
             Qs_preconditioners=Qs,
