@@ -896,7 +896,7 @@ def scale_by_kron(
             do_update,
             update_preconditioner_fn,
             pass_through_fn,
-            key,
+            state["key"],
             Qs,
             momentum_updates,
             state["balance_counter"],
