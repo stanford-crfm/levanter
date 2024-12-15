@@ -77,9 +77,9 @@ class KronConfig(OptimizerConfig):
     scanned_layers: Optional[optax.Params] = None
     lax_map_scanned_layers: bool = False
     lax_map_batch_size: int = 8
-    merge_small_dims: bool = True
+    merge_small_dims: bool = False
     target_merged_dim_size: int = 8192
-    partition_grads_into_blocks: bool = True
+    partition_grads_into_blocks: bool = False
     block_size: int = 256
     params_sharding: Optional[Any] = None
     preconditioner_sharding: Optional[tuple[str | None, str | None]] = None
