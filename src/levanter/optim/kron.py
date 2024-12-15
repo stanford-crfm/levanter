@@ -511,6 +511,7 @@ def scale_by_kron(
                 mu=mu_sharding,
                 Qs_preconditioners=Qs_sharding,
                 update_counter=PartitionSpec(),
+                balance_counter=PartitionSpec(),
             )
 
         return dict(
@@ -518,12 +519,12 @@ def scale_by_kron(
             mu=mu,
             Qs_preconditioners=Qs,
             update_counter=jnp.zeros([], jnp.int32),
+            balance_counter=jnp.zeros([], jnp.int32),
         )
 
     def update_fn(updates: base.Updates, state: dict, params: base.Params = None):
         del params
         count_inc = safe_int32_increment(state["count"])
-        key = jax.random.fold_in(jax.random.PRNGKey(42), state["count"])
 
         # unbox if haliax style partitioned
         scanned_layers_ = scanned_layers
@@ -651,7 +652,6 @@ def scale_by_kron(
             )
 
         # merge small dimensions
-        dummy_updates_tree = jax.tree.map(lambda _: jnp.zeros([]), updates)
         nones = jax.tree.map(lambda _: None, momentum_updates)
         merged_params_sharding = params_sharding_
         original_shapes = None
@@ -690,14 +690,16 @@ def scale_by_kron(
                     sharding_without_scan,
                     scanned_dim_sharding,
                 )
-                # constrain sharding
-                momentum_updates = _safe_sharding_constraint(
-                    momentum_updates, merged_params_sharding
-                )
+        # constrain sharding
+        if have_params_sharding:
+            momentum_updates = _safe_sharding_constraint(
+                momentum_updates, merged_params_sharding
+            )
 
         # partition grads into blocks
-        partitioned_sharding = merged_params_sharding
+        dummy_updates_tree = jax.tree.map(lambda _: jnp.zeros([]), updates)
         n_dims_to_map = jax.tree.map(lambda s: int(s), scanned_layers_)
+        partitioned_sharding = merged_params_sharding
         partitioners = None
         partitioned_shapes = None
         if partition_grads_into_blocks:
@@ -750,11 +752,12 @@ def scale_by_kron(
                     merged_params_sharding,
                     scanned_layers_,
                 )
-                # constrain sharding
-                momentum_updates = _safe_sharding_constraint(
-                    momentum_updates, partitioned_sharding
-                )
             n_dims_to_map = jax.tree.map(lambda x: x + 1, n_dims_to_map)
+        # constrain sharding
+        if have_params_sharding:
+            momentum_updates = _safe_sharding_constraint(
+                momentum_updates, partitioned_sharding
+            )
 
         # get einsum expressions and Qs sharding
         Qs = state["Qs_preconditioners"]
@@ -796,7 +799,7 @@ def scale_by_kron(
             )
 
         # maybe update preconditioner
-        def update_preconditioner(key, Qs):
+        def update_preconditioner_fn(Qs, grads_in, bal_counter):
             with jax.default_matmul_precision(precond_update_precision):
                 # balance preconditioners about every 100 updates
                 def balance_Qs(Qs_to_bal):
@@ -815,15 +818,16 @@ def scale_by_kron(
                         n_dims_to_map,
                     )
 
-                key, subkey = jax.random.split(key)
-                do_balances = jax.random.uniform(subkey) <= 0.01
+                balance_counter_inc = safe_int32_increment(bal_counter)
+                do_balances = balance_counter_inc >= 100
+                balance_counter_inc = jnp.where(do_balances, 0, balance_counter_inc)
                 Qs = jax.lax.cond(do_balances, balance_Qs, lambda qs: qs, Qs)
                 if have_qs_sharding:
                     Qs = _safe_sharding_constraint(Qs, Qs_sharding)
 
                 # create random vectors
                 key, subkey = jax.random.split(key)
-                Vs = _tree_random_like(subkey, momentum_updates)
+                Vs = _tree_random_like(subkey, grads_in)
                 # apply params sharding to random vectors
                 if have_params_sharding:
                     Vs = _safe_sharding_constraint(Vs, partitioned_sharding)
@@ -832,7 +836,7 @@ def scale_by_kron(
                 damp_eps = jnp.sqrt(jnp.finfo(jnp.float32).eps)  # bf16 eps too large
                 grads_in = jax.tree.map(
                     lambda g, v: g + damp_eps.astype(g.dtype) * jnp.mean(jnp.abs(g)) * v,
-                    momentum_updates,
+                    grads_in,
                     Vs,
                 )
 
@@ -876,15 +880,24 @@ def scale_by_kron(
                     new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
 
                 new_Qs = otu.tree_cast(new_Qs, precond_dtype)
-                return new_Qs
+                return new_Qs, balance_counter_inc
+
+        def pass_through_fn(qs, grads_in, bal_counter):
+            if have_qs_sharding:
+                qs = _safe_sharding_constraint(qs, Qs_sharding)
+            return qs, bal_counter
 
         # update preconditioner deterministically
         update_counter_inc = safe_int32_increment(state["update_counter"])
         do_update = update_counter_inc >= 1 / update_prob_in
         update_counter_inc = jnp.where(do_update, 0, update_counter_inc)
-        key, subkey = jax.random.split(key)
-        Qs = jax.lax.cond(
-            do_update, update_preconditioner, lambda _, qs: qs, subkey, Qs
+        Qs, balance_counter_inc = jax.lax.cond(
+            do_update,
+            update_preconditioner_fn,
+            pass_through_fn,
+            Qs,
+            momentum_updates,
+            state["balance_counter"],
         )
         if have_qs_sharding:
             Qs = _safe_sharding_constraint(Qs, Qs_sharding)
@@ -971,6 +984,7 @@ def scale_by_kron(
             mu=mu,
             Qs_preconditioners=Qs,
             update_counter=update_counter_inc,
+            balance_counter=balance_counter_inc,
         )
 
         return precond_gs, state
