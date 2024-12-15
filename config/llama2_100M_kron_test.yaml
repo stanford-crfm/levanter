@@ -1,5 +1,4 @@
-data:
-  id: openwebtext
+data: !include data/openwebtext_source.yaml
 model:
   type: llama
   seq_len: 4096

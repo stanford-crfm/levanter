@@ -3,7 +3,6 @@ from typing import Any, Optional, Union
 
 import jax.numpy as jnp
 import optax
-from jax.sharding import PartitionSpec
 
 from levanter.optim.config import OptimizerConfig
 
@@ -305,6 +304,7 @@ def scale_by_kron(
                 print(f"kron scanned_layers_: {scanned_layers_}")
                 params_sharding_ = jax.tree.leaves(params_sharding_)
                 print(f"kron params_sharding_: {params_sharding_}")
+                print(f"kron shapes: {[p.shape for p in params]}")
 
         # unbox if flax style partitioned
         if have_flax:
@@ -388,6 +388,8 @@ def scale_by_kron(
                 params_sharding_,
                 scanned_layers_,
             )
+            print(f"kron sharding_without_scan: {sharding_without_scan}")
+            print(f"kron scanned_dim_sharding: {scanned_dim_sharding}")
 
         # merge small dimensions
         nones = jax.tree.map(lambda _: None, params)
@@ -554,9 +556,10 @@ def scale_by_kron(
                     params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
                 updates, updates_struct = jax.tree.flatten(updates)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
-                print(f"kron scanned_layers_: {scanned_layers_}")
+                print(f"update kron scanned_layers_: {scanned_layers_}")
                 params_sharding_ = jax.tree.leaves(params_sharding_)
-                print(f"kron params_sharding_: {params_sharding_}")
+                print(f"update kron params_sharding_: {params_sharding_}")
+                print(f"update kron shapes: {[p.shape for p in updates]}")
 
         have_params_sharding = params_sharding_ is not None
         if have_params_sharding:
@@ -597,6 +600,7 @@ def scale_by_kron(
                 lambda sh: PartitionSpec(None) if sh == PartitionSpec() else sh,
                 params_sharding_,
             )
+            print(f"update kron params_sharding_ after: {params_sharding_}")
 
         # scanned layers
         if scanned_layers_ is None:
@@ -649,6 +653,8 @@ def scale_by_kron(
                 params_sharding_,
                 scanned_layers_,
             )
+            print(f"update kron sharding_without_scan: {sharding_without_scan}")
+            print(f"update kron scanned_dim_sharding: {scanned_dim_sharding}")
 
         # merge small dimensions
         dummy_updates_tree = jax.tree.map(lambda _: jnp.zeros([]), updates)
@@ -883,9 +889,10 @@ def scale_by_kron(
         do_update = update_counter_inc >= 1 / update_prob_in
         update_counter_inc = jnp.where(do_update, 0, update_counter_inc)
         key, subkey = jax.random.split(key)
-        Qs = jax.lax.cond(
-            do_update, update_preconditioner, lambda _, qs: qs, subkey, Qs
-        )
+        # Qs = jax.lax.cond(
+        #     do_update, update_preconditioner, lambda _, qs: qs, subkey, Qs
+        # )
+        Qs = update_preconditioner(subkey, Qs)
         if have_qs_sharding:
             Qs = _safe_sharding_constraint(Qs, Qs_sharding)
 
