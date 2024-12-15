@@ -253,7 +253,7 @@ class WrappedHFDataSource(ShardedDataSource[dict]):
     def _load_dataset(self):
         # obnoxiously, the dataset loading stuff doesn't work with ray because of multiprocessing
         # so we have to do this hacky thing where we load the dataset in the worker
-        return datasets.load_dataset(self.id, split=self.split, streaming=self.streaming, **self.kwargs)
+        return datasets.load_dataset(self.id, split=self.split, streaming=self.streaming, trust_remote_code=True, **self.kwargs)
 
 
 class TextUrlDataSource(ShardedDataSource[str]):
