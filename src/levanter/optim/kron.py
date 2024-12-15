@@ -507,6 +507,7 @@ def scale_by_kron(
 
         if return_partition_specs_only:
             return dict(
+                key=jax.random.PRNGKey(jax.process_index()),
                 count=PartitionSpec(),
                 mu=mu_sharding,
                 Qs_preconditioners=Qs_sharding,
@@ -799,7 +800,7 @@ def scale_by_kron(
             )
 
         # maybe update preconditioner
-        def update_preconditioner_fn(Qs, grads_in, bal_counter):
+        def update_preconditioner_fn(key, Qs, grads_in, bal_counter):
             with jax.default_matmul_precision(precond_update_precision):
                 # balance preconditioners about every 100 updates
                 def balance_Qs(Qs_to_bal):
@@ -880,21 +881,22 @@ def scale_by_kron(
                     new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
 
                 new_Qs = otu.tree_cast(new_Qs, precond_dtype)
-                return new_Qs, balance_counter_inc
+                return key, new_Qs, balance_counter_inc
 
-        def pass_through_fn(qs, grads_in, bal_counter):
+        def pass_through_fn(key, qs, grads_in, bal_counter):
             if have_qs_sharding:
                 qs = _safe_sharding_constraint(qs, Qs_sharding)
-            return qs, bal_counter
+            return key, qs, bal_counter
 
         # update preconditioner deterministically
         update_counter_inc = safe_int32_increment(state["update_counter"])
         do_update = update_counter_inc >= 1 / update_prob_in
         update_counter_inc = jnp.where(do_update, 0, update_counter_inc)
-        Qs, balance_counter_inc = jax.lax.cond(
+        key, Qs, balance_counter_inc = jax.lax.cond(
             do_update,
             update_preconditioner_fn,
             pass_through_fn,
+            key,
             Qs,
             momentum_updates,
             state["balance_counter"],
@@ -980,6 +982,7 @@ def scale_by_kron(
         mu = otu.tree_cast(mu, mu_dtype)
         Qs = otu.tree_cast(Qs, precond_dtype)
         state = dict(
+            key=key,
             count=count_inc,
             mu=mu,
             Qs_preconditioners=Qs,
