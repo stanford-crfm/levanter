@@ -507,7 +507,7 @@ def scale_by_kron(
 
         if return_partition_specs_only:
             return dict(
-                key=jax.random.PRNGKey(jax.process_index()),
+                key=PartitionSpec(),
                 count=PartitionSpec(),
                 mu=mu_sharding,
                 Qs_preconditioners=Qs_sharding,
@@ -516,6 +516,7 @@ def scale_by_kron(
             )
 
         return dict(
+            key=jax.random.PRNGKey(jax.process_index()),
             count=jnp.zeros([], jnp.int32),
             mu=mu,
             Qs_preconditioners=Qs,
