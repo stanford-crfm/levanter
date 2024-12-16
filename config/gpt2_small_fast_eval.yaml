@@ -24,6 +24,11 @@ supervised_data:
     cache_dir: "gs://levanter-data/tokenized-gpt2/arc_easy/"
     tags: [ "arc", "e"]
 
+eval_harness:
+  task_spec: ["piqa", "hellaswag"]
+  max_examples: 2048
+eval_harness_steps: 1000
+
 model:
   type: gpt2
   hidden_dim: 768
