@@ -893,15 +893,30 @@ def scale_by_kron(
         update_counter_inc = safe_int32_increment(state["update_counter"])
         do_update = update_counter_inc >= 1 / update_prob_in
         update_counter_inc = jnp.where(do_update, 0, update_counter_inc)
-        Qs, balance_counter_inc = jax.lax.cond(
-            do_update,
-            update_preconditioner_fn,
-            pass_through_fn,
-            subkey,
-            Qs,
-            momentum_updates,
-            state["balance_counter"],
+        # Qs, balance_counter_inc = jax.lax.cond(
+        #     do_update,
+        #     update_preconditioner_fn,
+        #     pass_through_fn,
+        #     subkey,
+        #     Qs,
+        #     momentum_updates,
+        #     state["balance_counter"],
+        # )
+
+        def cond_fn(state):
+            return state[-1]
+
+        def iter_fn(state):
+            rngkey, qs, grads_in, bal_counter, _ = state
+            qs, bal_counter = update_preconditioner_fn(rngkey, qs, grads_in, bal_counter)
+            return rngkey, qs, grads_in, bal_counter, False
+
+        while_out = jax.lax.while_loop(
+            cond_fn,
+            iter_fn,
+            (subkey, Qs, momentum_updates, state["balance_counter"], do_update),
         )
+        _, Qs, _, balance_counter_inc, _ = while_out
         if have_qs_sharding:
             Qs = _safe_sharding_constraint(Qs, Qs_sharding)
 
