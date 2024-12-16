@@ -77,9 +77,9 @@ class KronConfig(OptimizerConfig):
     scanned_layers: Optional[optax.Params] = None
     lax_map_scanned_layers: bool = False
     lax_map_batch_size: int = 8
-    merge_small_dims: bool = False
+    merge_small_dims: bool = True
     target_merged_dim_size: int = 8192
-    partition_grads_into_blocks: bool = False
+    partition_grads_into_blocks: bool = True
     block_size: int = 256
     params_sharding: Optional[Any] = None
     preconditioner_sharding: Optional[tuple[str | None, str | None]] = None
@@ -272,9 +272,6 @@ def scale_by_kron(
     bs = lax_map_batch_size
 
     def init_fn(params, return_partition_specs_only=False):
-        have_params_sharding = params_sharding is not None
-        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None
-
         # unbox if haliax style partitioned
         scanned_layers_ = scanned_layers
         params_sharding_ = params_sharding
@@ -305,6 +302,9 @@ def scale_by_kron(
                 print(f"kron scanned_layers_: {scanned_layers_}")
                 params_sharding_ = jax.tree.leaves(params_sharding_)
                 print(f"kron params_sharding_: {params_sharding_}")
+
+        have_params_sharding = params_sharding_ is not None
+        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None or have_hax
 
         # unbox if flax style partitioned
         if have_flax:
