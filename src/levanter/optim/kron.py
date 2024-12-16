@@ -300,11 +300,11 @@ def scale_by_kron(
                 params, params_struct = jax.tree.flatten(params)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
                 print(f"kron scanned_layers_: {scanned_layers_}")
-                params_sharding_ = None # jax.tree.leaves(params_sharding_)
+                params_sharding_ = jax.tree.leaves(params_sharding_)
                 print(f"kron params_sharding_: {params_sharding_}")
 
         have_params_sharding = params_sharding_ is not None
-        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None # or have_hax
+        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None or have_hax
 
         # unbox if flax style partitioned
         if have_flax:
@@ -559,13 +559,13 @@ def scale_by_kron(
                 updates, updates_struct = jax.tree.flatten(updates)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
                 print(f"kron scanned_layers_: {scanned_layers_}")
-                params_sharding_ = None # jax.tree.leaves(params_sharding_)
+                params_sharding_ = jax.tree.leaves(params_sharding_)
                 print(f"kron params_sharding_: {params_sharding_}")
 
         have_params_sharding = params_sharding_ is not None
         if have_params_sharding:
             original_params_sharding_ = params_sharding_
-        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None # or have_hax
+        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None or have_hax
 
         # unbox if flax style partitioned
         flax_partitioned = False
@@ -1180,7 +1180,7 @@ def _init_Q_exprs(
     precond_sharding=None,
     param_sharding=None,
 ):
-    have_qs_sharding = False # precond_sharding is not None or param_sharding is not None
+    have_qs_sharding = precond_sharding is not None or param_sharding is not None
     letters = string.ascii_lowercase + string.ascii_uppercase
     if len(t_shape) == 0:  # scalar
         Q = [scale * jnp.ones(t_shape, dtype=dtype)] if existing_Q is None else existing_Q
