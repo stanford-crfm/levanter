@@ -37,7 +37,6 @@ from haliax import NamedArray
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, load_tokenizer
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.loss import next_token_loss
 from levanter.utils.hf_utils import HfTokenizer
 
 
@@ -58,7 +57,7 @@ from haliax.partitioning import ResourceMapping, round_axis_for_partitioning
 import levanter.config
 from levanter.checkpoint import load_checkpoint
 from levanter.data import AsyncDataset, DataLoader
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import StepInfo, TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
@@ -157,15 +156,7 @@ class LevanterHarnessLM(LM):
             logits = logits.astype(jnp.float32)
             Pos = logits.resolve_axis(self.EvalPos.name)
 
-            loss = next_token_loss(
-                Pos=Pos,
-                Vocab=model.Vocab,
-                logits=logits,
-                true_ids=example.tokens,
-                loss_mask=example.loss_mask,
-                reduction=hax.sum,
-                reduction_axis=Pos,
-            )
+            loss, _, _ = compute_next_token_loss(model, example)
 
             not_last_loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=bool)
             pred_targets = hax.argmax(logits, axis=model.Vocab)

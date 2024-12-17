@@ -11,7 +11,6 @@ from jax.random import PRNGKey
 import haliax as hax
 from haliax import Axis, NamedArray, NamedOrNumeric
 
-from levanter.grad_accum import NumElementsBatch
 from levanter.models.attention import AttentionMask
 from levanter.models.loss import maybe_fused_next_token_loss
 
@@ -20,7 +19,7 @@ LmConfigT = TypeVar("LmConfigT", bound="LmConfig")
 LmT = TypeVar("LmT", bound="LmHeadModel")
 
 
-class LmExample(eqx.Module, NumElementsBatch):
+class LmExample(eqx.Module):
     tokens: hax.NamedArray
     loss_mask: hax.NamedArray
     attn_mask: AttentionMask | NamedArray = AttentionMask.causal()
@@ -223,20 +222,21 @@ def compute_next_token_loss(
     example: LmExample,
     *,
     key=None,
-    reduction: Optional[hax.ReductionFunction] = hax.mean,
-    reduction_axis: Optional[hax.AxisSelection] = None,
-    batch_num_elements: Optional[int] = None,
     logsumexp_weight: Optional[float] = None,
     loss_dtype: Optional[Type[jnp.dtype]] = jnp.float32,
-) -> jnp.ndarray | NamedArray:
+) -> tuple[NamedArray, NamedArray, dict]:
     """
     Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
     across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
     reduced, and the result is a named array with axes (*batch axes, sequence_length).
     """
     activations = model.activations(example.tokens, example.attn_mask, key=key)
+    if isinstance(activations, tuple):
+        activations, extras = activations
+    else:
+        extras = {}
 
-    loss = maybe_fused_next_token_loss(
+    loss, where = maybe_fused_next_token_loss(
         model.Pos,
         model.Embed,
         model.Vocab,
@@ -244,12 +244,9 @@ def compute_next_token_loss(
         model.get_lm_head(),
         example.tokens,
         loss_mask=example.loss_mask,
-        reduction=reduction,
-        reduction_axis=reduction_axis,
-        batch_num_elements=batch_num_elements,
         logsumexp_weight=logsumexp_weight,
         dtype=loss_dtype,
         block_size=model.config.cross_entropy_block_size,
     )
 
-    return loss
+    return loss, where, extras

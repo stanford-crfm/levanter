@@ -1,4 +1,4 @@
-from typing import Any, Callable, Optional, Protocol, Tuple, TypeVar, Union
+from typing import Any, Callable, Protocol, Tuple, TypeVar, Union
 
 from jaxtyping import PyTree
 
@@ -52,9 +52,6 @@ class ComputeLossFunction(Protocol[M_con, X]):
         self,
         model: M_con,
         input: X,
-        reduction: Optional[hax.ReductionFunction] = hax.mean,
-        reduction_axis: Optional[hax.AxisSelection] = None,
-        batch_num_elements: Optional[int] = None,
         **kwargs,
-    ) -> Scalar | hax.NamedArray:
+    ) -> tuple[hax.NamedArray, hax.NamedArray, dict]:
         ...

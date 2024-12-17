@@ -45,7 +45,13 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
     mlp = Mlp.init(In, Out, Mid, key=jax.random.PRNGKey(0))
 
     def loss_fn(mlp, x):
-        return mlp(x).mean().scalar()
+        out = mlp(x)
+        where = hax.ones_like(out)
+        return out, where, {}
+
+    def scalar_loss_fn(mlp, x):
+        out, where, _ = loss_fn(mlp, x)
+        return hax.mean(out, where=where).scalar(), {}
 
     x = hax.random.normal(jax.random.PRNGKey(0), (Batch, In))
 
@@ -55,22 +61,17 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
 
     mesh = Mesh(jax.devices(), ("data",))
 
-    @hax.partitioning.named_jit(axis_resources=axis_mapping)
+    # @hax.partitioning.named_jit(axis_resources=axis_mapping)
     def jit_grad_accum(mlp, x):
-        grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
-        grad_fn = microbatched(grad_fn, Batch, parallelism, axis_mapping, axis_mapping)
-        acc_v, acc_g = grad_fn(
-            mlp,
-            x,
-        )
-        return acc_v, acc_g
+        grad_fn = microbatched(loss_fn, Batch, parallelism, axis_mapping, axis_mapping)
+        return grad_fn(mlp, x)
 
     with mesh:
         mlp = haliax.shard(mlp, axis_mapping)
         x = haliax.shard(x, axis_mapping)
-        grad_fn = eqx.filter_value_and_grad(loss_fn)
-        acc_v, acc_g = jit_grad_accum(mlp, x)
-        v, g = grad_fn(mlp, x)
+        grad_fn = eqx.filter_value_and_grad(scalar_loss_fn, has_aux=True)
+        (acc_v, _), acc_g = jit_grad_accum(mlp, x)
+        (v, _), g = grad_fn(mlp, x)
 
         assert_trees_all_close(acc_v, v, atol=1e-3, rtol=1e-3)
 
