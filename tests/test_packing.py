@@ -4,7 +4,15 @@ import pytest
 
 import haliax as hax
 
-from levanter.data.packing import PromptCompletion, SequencePacker, pack_prompt_completions
+from levanter.data.packing import (
+    PromptCompletion,
+    SequencePacker,
+    pack_prompt_completions,
+    per_segment_correct,
+    per_segment_loss,
+)
+from levanter.models.attention import AttentionMask
+from levanter.models.lm_model import LmExample
 
 
 def test_per_segment_loss():
@@ -137,6 +145,73 @@ def test_pack_prompt_completions_simple():
     np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)
     np.testing.assert_array_equal(packed_2.attn_mask.segment_ids.array, expected_segment_ids_2)
     np.testing.assert_array_equal(packed_2.loss_mask.array, expected_loss_mask_2)
+
+
+def test_pack_prompt_completions_exceed_max_buffered_examples():
+    Pos = hax.Axis("pos", size=10)
+    pad_token = 0
+    max_pack_size = 1
+    max_buffered_examples = 1
+
+    sequences = [
+        PromptCompletion(ids=[1, 2, 3], prompt_length=2),
+        PromptCompletion(ids=[4, 5], prompt_length=1),
+        PromptCompletion(ids=[6, 7, 8], prompt_length=1),
+    ]
+
+    results = list(pack_prompt_completions(Pos, sequences, pad_token, max_pack_size, max_buffered_examples))
+
+    assert len(results) == 3
+
+    # Check the first packed example
+    packed_1 = results[0]
+    expected_tokens_1 = [1, 2, 3, 0, 0, 0, 0, 0, 0, 0]
+    expected_segment_ids_1 = [0, 0, 0, -1, -1, -1, -1, -1, -1, -1]
+    expected_loss_mask_1 = [0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_1.tokens.array, expected_tokens_1)
+    np.testing.assert_array_equal(packed_1.attn_mask.segment_ids.array, expected_segment_ids_1)
+    np.testing.assert_array_equal(packed_1.loss_mask.array, expected_loss_mask_1)
+
+    # Check the second packed example
+    packed_2 = results[1]
+    expected_tokens_2 = [4, 5, 0, 0, 0, 0, 0, 0, 0, 0]
+    expected_segment_ids_2 = [0, 0, -1, -1, -1, -1, -1, -1, -1, -1]
+    expected_loss_mask_2 = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)
+    np.testing.assert_array_equal(packed_2.attn_mask.segment_ids.array, expected_segment_ids_2)
+    np.testing.assert_array_equal(packed_2.loss_mask.array, expected_loss_mask_2)
+
+    # Check the third packed example
+    packed_3 = results[2]
+    expected_tokens_3 = [6, 7, 8, 0, 0, 0, 0, 0, 0, 0]
+    expected_segment_ids_3 = [0, 0, 0, -1, -1, -1, -1, -1, -1, -1]
+    expected_loss_mask_3 = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_3.tokens.array, expected_tokens_3)
+    np.testing.assert_array_equal(packed_3.attn_mask.segment_ids.array, expected_segment_ids_3)
+    np.testing.assert_array_equal(packed_3.loss_mask.array, expected_loss_mask_3)
+
+
+def test_segment_correct():
+    # Mock segment_ids and loss_mask
+    Pos = hax.Axis("pos", size=10)
+    segment_ids = hax.named(jnp.array([0, 0, 1, 1, 1, 2, 2, 2, 2, 2]), Pos)
+    loss_mask = hax.named(jnp.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0]), Pos)
+
+    # Create a packed example
+    attn_mask = AttentionMask.causal().with_segment_ids(segment_ids=segment_ids)
+    packed_example = LmExample(tokens=None, loss_mask=loss_mask, attn_mask=attn_mask)
+
+    # Mock correctness array (True for correct, False for incorrect)
+    correct = hax.named(jnp.array([True, True, True, False, True, False, True, True, True, True]), Pos)
+
+    # Call the function
+    unique_ids, segment_correct = per_segment_correct(packed_example, correct, max_segments=4)
+
+    assert list(unique_ids) == [0, 1, 2, -1]
+    assert list(segment_correct) == [True, False, True, True]
 
 
 if __name__ == "__main__":

@@ -122,8 +122,10 @@ def per_segment_loss(
     packed_example: LmExample, losses: hax.NamedArray, max_segments: int
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Returns a pair of arrays of shape (max_segments,), where the first array is segment ids
-    and the second is loss per segment.
+    Returns a pair of arrays of shape (max_segments,), where:
+
+    * the first array is segment ids
+    * the second is loss per segment.
 
     This code is designed to run in a jit-compiled function, meaning we have to careful of shapes
     """
@@ -151,3 +153,41 @@ def per_segment_loss(
     segment_losses = jnp.einsum("ij,j->i", segment_mask, masked_losses.array)
 
     return unique_segment_ids, segment_losses
+
+
+def per_segment_correct(
+    packed_example: LmExample, correct: hax.NamedArray, max_segments: int
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Returns a pair of arrays of shape (max_segments,), where:
+
+    * the first array is segment ids
+    * the second is whether all tokens in the segment are correct.
+
+    This code is designed to run in a jit-compiled function, meaning we have to careful of shapes
+
+    correct is a boolean array of the same shape as the losses array indicating whether the token was correct
+    """
+
+    assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
+
+    segment_ids = packed_example.attn_mask.segment_ids.array
+    assert (
+        segment_ids.ndim == 1
+    ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"
+
+    # mask out padding etc
+    masked_correct = hax.logical_or(correct, hax.logical_not(packed_example.loss_mask))
+
+    # sum the losses for each segment
+    # Extract unique segment IDs with padding
+    unique_segment_ids = jnp.unique(segment_ids, size=max_segments, fill_value=-1)
+
+    # Create a mask matrix where each row corresponds to a unique segment
+    segment_mask = unique_segment_ids[:, None] == segment_ids[None, :]  # [segment, len]
+
+    segment_mask = segment_mask.astype(masked_correct.dtype)
+
+    segment_correct = jnp.all(jnp.where(segment_mask, masked_correct.array, True), axis=1)
+
+    return unique_segment_ids, segment_correct
