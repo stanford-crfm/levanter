@@ -20,7 +20,7 @@ def test_per_segment_loss():
 
     losses = hax.named(jnp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0]), Pos)
 
-    unique_ids, segment_losses = packer.per_segment_loss(packed, losses, max_segments=3)
+    unique_ids, segment_losses = per_segment_loss(packed, losses, max_segments=3)
 
     assert list(unique_ids) == [-1, 0, 1]
     assert list(segment_losses) == [0.0, 0.6, 0.9]

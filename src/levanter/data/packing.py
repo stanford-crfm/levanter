@@ -71,40 +71,6 @@ class SequencePacker:
 
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
-    def per_segment_loss(
-        self, packed_example: LmExample, losses: hax.NamedArray, max_segments: int
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """
-        Returns a pair of arrays of shape (max_segments,), where the first array is segment ids
-        and the second is loss per segment.
-
-        This code is designed to run in a jit-compiled function, meaning we have to careful of shapes
-        """
-
-        assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
-
-        segment_ids = packed_example.attn_mask.segment_ids.array
-        assert (
-            segment_ids.ndim == 1
-        ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"
-
-        # mask out padding etc
-        masked_losses = losses * packed_example.loss_mask
-
-        # sum the losses for each segment
-        # Extract unique segment IDs with padding
-        unique_segment_ids = jnp.unique(segment_ids, size=max_segments, fill_value=-1)
-
-        # Create a mask matrix where each row corresponds to a unique segment
-        segment_mask = unique_segment_ids[:, None] == segment_ids[None, :]  # [segment, len]
-
-        segment_mask = segment_mask.astype(masked_losses.dtype)
-
-        # segment_losses = jnp.esum(losses * segment_mask, axis=1) # [segment]
-        segment_losses = jnp.einsum("ij,j->i", segment_mask, masked_losses.array)
-
-        return unique_segment_ids, segment_losses
-
 
 @dataclass
 class PromptCompletion:
@@ -150,3 +116,38 @@ def pack_prompt_completions(
 
     for packer in packers:
         yield packer.pack()
+
+
+def per_segment_loss(
+    packed_example: LmExample, losses: hax.NamedArray, max_segments: int
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Returns a pair of arrays of shape (max_segments,), where the first array is segment ids
+    and the second is loss per segment.
+
+    This code is designed to run in a jit-compiled function, meaning we have to careful of shapes
+    """
+
+    assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
+
+    segment_ids = packed_example.attn_mask.segment_ids.array
+    assert (
+        segment_ids.ndim == 1
+    ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"
+
+    # mask out padding etc
+    masked_losses = losses * packed_example.loss_mask
+
+    # sum the losses for each segment
+    # Extract unique segment IDs with padding
+    unique_segment_ids = jnp.unique(segment_ids, size=max_segments, fill_value=-1)
+
+    # Create a mask matrix where each row corresponds to a unique segment
+    segment_mask = unique_segment_ids[:, None] == segment_ids[None, :]  # [segment, len]
+
+    segment_mask = segment_mask.astype(masked_losses.dtype)
+
+    # segment_losses = jnp.esum(losses * segment_mask, axis=1) # [segment]
+    segment_losses = jnp.einsum("ij,j->i", segment_mask, masked_losses.array)
+
+    return unique_segment_ids, segment_losses
