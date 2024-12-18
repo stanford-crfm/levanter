@@ -301,8 +301,7 @@ class TaggedEvaluator:
                 m = self.mp.cast_to_compute(m)
 
             with hax.axis_mapping(axis_mapping):
-                losses = compute_next_token_loss(m, batch, reduction=None, reduction_axis=())
-                mask = batch.loss_mask  # [Batch, Pos]
+                losses, mask, _extras = compute_next_token_loss(m, batch)
                 this_tokens = hax.sum(mask)
                 this_loss = hax.einsum("->", losses, mask)  # to scalar
 
