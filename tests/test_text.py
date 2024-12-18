@@ -40,12 +40,14 @@ def test_lm_example_handles_ignore_id():
     lm_head = hax.zeros((Embed, Vocab))
     lm_head = lm_head.at[Vocab, ignore_id].set(-100)
 
-    ignored_loss = maybe_fused_next_token_loss(
+    ignored_loss, ignored_where = maybe_fused_next_token_loss(
         Pos, Embed, Vocab, logits, lm_head, tokens, loss_mask=ex_ignore.loss_mask
     )
-    no_ignore_loss = maybe_fused_next_token_loss(
+    ignored_loss = hax.sum(ignored_loss, where=ignored_where)
+    no_ignore_loss, no_ignore_where = maybe_fused_next_token_loss(
         Pos, Embed, Vocab, logits, lm_head, tokens, loss_mask=ex_no_ignore.loss_mask
     )
+    no_ignore_loss = hax.sum(no_ignore_loss, where=no_ignore_where)
 
     assert no_ignore_loss.item() >= ignored_loss.item() + 100 / Pos.size
 

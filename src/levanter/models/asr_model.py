@@ -11,6 +11,7 @@ from haliax.nn import cross_entropy_loss
 
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
+from levanter.utils.types import Extras
 
 
 class AudioTextExample(eqx.Module):
@@ -97,9 +98,7 @@ class ASRMixin(abc.ABC):
         example: AudioTextExample,
         *,
         key=None,
-        reduction: Optional[hax.ReductionFunction] = hax.mean,
-        reduction_axis: Optional[hax.AxisSelection] = None,
-    ) -> jnp.ndarray | NamedArray:
+    ) -> tuple[jnp.ndarray | NamedArray, NamedArray, Extras]:
         """
         Computes the cross-entropy loss for predicted ASR tokens. If reduction is not None, the loss is reduced
         across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
@@ -110,10 +109,13 @@ class ASRMixin(abc.ABC):
         targets = hax.roll(example.tokens, -1, axis=self.Pos.name)
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         loss = cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+            logits,
+            self.Vocab,
+            target_y,
+            reduction=None,
         )
 
-        return loss
+        return loss, example.loss_mask, {}
 
     @property
     def vocab_size(self) -> int:
