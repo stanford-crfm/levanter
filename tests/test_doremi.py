@@ -128,10 +128,11 @@ def test_estimate_mixture_weights():
         ds3 = LogitDataset(W3, 0.05, x3_mask, x3_bias, key=next(keys))
 
     # TODO: remove key as a requirement for models
-    def compute_loss_fn(model, example, reduction=hax.mean, reduction_axis=None, key=None):
+    def compute_loss_fn(model, example, key=None):
         del key
         y_pred = model(example.x)
-        return hax.nn.binary_cross_entropy_loss(y_pred, example.y, reduction=reduction, reduction_axis=reduction_axis)
+        losses = hax.nn.binary_cross_entropy_loss(y_pred, example.y, reduction=None)
+        return losses, hax.ones_like(losses), {}
 
     tiny_trainer_config = TrainerConfig(
         num_train_steps=300,

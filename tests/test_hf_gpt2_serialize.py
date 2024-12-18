@@ -135,7 +135,8 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
 
     def compute_loss(model: LmHeadModel, input_ids):
         example = LmExample.causal(input_ids, eos_id=converter.tokenizer.eos_token_id)
-        return compute_next_token_loss(model, example, key=None).scalar()
+        loss, where, _ = compute_next_token_loss(model, example, key=None)
+        return hax.mean(loss, where=where).scalar()
 
     jax_compute_grad = equinox.filter_value_and_grad(compute_loss, has_aux=False)
     jax_grad: Gpt2LMHeadModel

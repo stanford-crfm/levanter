@@ -43,7 +43,7 @@ from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh, zeros_like_tree
 from levanter.utils.tree_utils import inference_mode
-from levanter.utils.types import ComputeLossFunction, FilterSpec
+from levanter.utils.types import ComputeLossFunction, Extras, FilterSpec
 
 
 logger = pylogging.getLogger(__name__)
@@ -391,10 +391,10 @@ class Trainer:
 
         with capture_time() as step_time:
             if hooks_this_time:
-                loss, new_state, cb_states = self._jit_train_step_fn(state, batch, batch_kwargs)
+                loss, new_state, extras, cb_states = self._jit_train_step_fn(state, batch, batch_kwargs)
                 # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             else:
-                loss, new_state = self._jit_train_step_fn_no_hook(state, batch, batch_kwargs)
+                loss, new_state, extras = self._jit_train_step_fn_no_hook(state, batch, batch_kwargs)
             loss = loss.item()  # type: ignore
 
             info = StepInfo(new_state, loss, step_time())
@@ -404,7 +404,8 @@ class Trainer:
                 if hooks_this_time:
                     self.hooks.run_jit_hooks_outside_step(info, cb_states)
 
-            levanter.tracker.log({"throughput/hook_time": hook_time()}, step=info.step)
+            log_items = {k: v.item() for k, v in extras.items()} | {"throughput/hook_time": hook_time()}
+            levanter.tracker.log(log_items, step=info.step)
 
         return info
 
@@ -525,11 +526,13 @@ class Trainer:
 
     def _train_step(
         self, state: S, batch, batch_kwargs, _no_hooks=False
-    ) -> tuple[Scalar, S, Sequence[CBInfo]] | tuple[Scalar, S]:
+    ) -> tuple[Scalar, S, Extras, Sequence[CBInfo]] | tuple[Scalar, S, Extras]:
         key, new_key = jax.random.split(state.training_key)
         model = inference_mode(state.model, False)
 
-        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, batch, **batch_kwargs, key=key)
+        (loss, extras), grads = self._compute_gradients_microbatched(
+            self.loss_fn, model, batch, **batch_kwargs, key=key
+        )
 
         with hax.axis_mapping(self.parameter_axis_mapping):
             if not _no_hooks:
@@ -545,11 +548,13 @@ class Trainer:
         new_state = state.take_step(grads, obj_fun=obj_fun)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)
         if _no_hooks:
-            return loss, new_state
+            return loss, new_state, extras
         else:
-            return loss, new_state, hook_infos
+            return loss, new_state, extras, hook_infos
 
-    def _compute_gradients_microbatched(self, loss_fn, model: M, batch: X, **batch_kwargs) -> tuple[Scalar, M]:
+    def _compute_gradients_microbatched(
+        self, loss_fn, model: M, batch: X, **batch_kwargs
+    ) -> tuple[tuple[Scalar, Extras], M]:
         mbs = self.config.microbatch_size
         grad_fn = microbatched(
             loss_fn,

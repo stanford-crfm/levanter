@@ -1,11 +1,9 @@
-import enum
 import functools
 from typing import Callable, Optional, ParamSpec, TypeVar
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.tree as jtu
 from jax.lax import with_sharding_constraint
 from jax.sharding import PartitionSpec
 
@@ -23,34 +21,6 @@ Args = ParamSpec("Args")
 R = TypeVar("R")
 M_con = TypeVar("M_con", contravariant=True)  # Model
 X = TypeVar("X", contravariant=True)  # Input
-
-
-class ReductionType(enum.Enum):
-    SUM = enum.auto()
-    MEAN = enum.auto()
-    # TODO: add MAX?
-
-
-def apply_updates_running(acc, r, updates, overwrites):
-    def _running_sum_updates(u, p):
-        if u is None:
-            return p
-        else:
-            return p * (1 - r) + u * r
-
-    def _is_none(x):
-        return x is None
-
-    def _apply_update(tree, update, overwrite):
-        if overwrite is not None:
-            return overwrite
-
-        return jtu.map(_running_sum_updates, update, tree, is_leaf=_is_none)
-
-    def is_leaf(x):
-        return x is None or isinstance(x, hq.OverwriteWithGradient)
-
-    return jtu.map(_apply_update, acc, updates, overwrites, is_leaf=is_leaf)
 
 
 # TODO: should we use a custom_jvp on microbatched?
@@ -108,6 +78,8 @@ def microbatched(
         @functools.wraps(loss_fn)
         def no_accum_loss_fn(*args, **kwargs):
             losses, where, extras = loss_fn(*args, **kwargs)
+            seen_tokens = where.sum().scalar()
+            extras["seen_tokens"] = seen_tokens
             return hax.mean(losses, where=where).scalar(), extras
 
         return eqx.filter_value_and_grad(no_accum_loss_fn, has_aux=True)
@@ -119,7 +91,7 @@ def microbatched(
     @functools.wraps(loss_fn)
     def accum_loss_fn(*args, **kwargs):
         losses, where, extras = loss_fn(*args, **kwargs)
-        return hax.mean(losses, where=where).scalar(), (where.sum(), extras)
+        return hax.sum(losses, where=where).scalar(), (where.sum(), extras)
 
     grad_fn = eqx.filter_value_and_grad(accum_loss_fn, has_aux=True)
 
@@ -154,17 +126,20 @@ def microbatched(
 
                 # TODO: this uses the latest value for the scale for fp8, which seems not ideal but probably ok?
                 overwrites, updates = hq.partition_for_grad_overwrite(grads_mb)
-                r = n_mb / (total + n_mb)
-                loss = loss + (loss_mb - loss) * r
-                grads = apply_updates_running(grads, r, updates, overwrites)
+                grads = hq.apply_updates(grads, updates, overwrites)
                 grads = hax.shard_with_axis_mapping(grads, accum_axis_mapping)
-            print(loss, loss_mb, r)
+                loss += loss_mb
+                total += n_mb
+
             return (loss, (total, {k: v + extras_mb[k] for k, v in extras.items()})), grads
 
         with jax.named_scope("microbatched"):
-            (loss, (_, extras)), grads, = hax.fold(
+            (loss, (total, extras)), grads, = hax.fold(
                 loop, AccumStep
             )(acc, (args, kwargs, key))
+            grads = jax.tree_util.tree_map(lambda x: x / total, grads)
+            loss /= total
+            extras["seen_tokens"] = total
 
         return (loss, extras), grads
 

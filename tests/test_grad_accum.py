@@ -61,7 +61,7 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
 
     mesh = Mesh(jax.devices(), ("data",))
 
-    # @hax.partitioning.named_jit(axis_resources=axis_mapping)
+    @hax.partitioning.named_jit(axis_resources=axis_mapping)
     def jit_grad_accum(mlp, x):
         grad_fn = microbatched(loss_fn, Batch, parallelism, axis_mapping, axis_mapping)
         return grad_fn(mlp, x)

@@ -134,12 +134,17 @@ def estimate_mixture_weights(
         proxy = inference_mode(state.model, False)
         with hax.axis_mapping(trainer.compute_axis_mapping):
             # calculate per-token losses for proxy and ref
-            proxy_losses, proxy_loss_bwd = eqx.filter_vjp(lambda p: loss_fn(p, batch, reduction_axis=()), proxy)
-            ref_losses = loss_fn(ref, batch, reduction_axis=())
+            def scalar_loss_fn(p, batch):
+                ret, _, _ = loss_fn(p, batch)
+                return ret
+
+            proxy_losses, proxy_loss_bwd = eqx.filter_vjp(lambda p: scalar_loss_fn(p, batch), proxy)
+            ref_losses = scalar_loss_fn(ref, batch)
 
             # calculate excess losses, aggregate per-domain losses
             excess_losses = proxy_losses - ref_losses
             clipped_losses = hax.maximum(excess_losses, 0)
+            print(clipped_losses.shape)
             per_domain_losses = _compute_per_domain_losses(clipped_losses, Domain, domains)
 
             # Update domain weights
