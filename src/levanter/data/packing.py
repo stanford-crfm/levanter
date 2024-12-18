@@ -1,6 +1,6 @@
 # Implements sequence packing
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Iterable, Iterator
 
 import jax.numpy as jnp
 import numpy as np
@@ -9,6 +9,7 @@ import haliax as hax
 
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
+from levanter.utils.jax_utils import local_cpu_mesh
 
 
 # cf https://github.com/tensorflow/tensor2tensor/blob/bafdc1b67730430d38d6ab802cbd51f9d053ba2e/tensor2tensor/data_generators/generator_utils.py#L623
@@ -29,6 +30,7 @@ class SequencePacker:
         self.num_segments = 0
         self.pad_token = pad_token
         self.max_pack_size = max_pack_size
+        assert pad_token is not None, "pad_token must be set"
 
     def can_pack(self, ids: list[int]) -> bool:
         return len(ids) + len(self._ids) <= self.Pos.size and self.num_segments < self.max_pack_size
@@ -63,13 +65,14 @@ class SequencePacker:
 
         loss_mask = self._loss_mask + [0] * (self.Pos.size - len(self._loss_mask))
 
-        tokens = hax.named(ids, self.Pos)
-        segment_ids = hax.named(segment_ids, self.Pos)
-        loss_mask = hax.named(loss_mask, self.Pos)
+        with local_cpu_mesh():
+            tokens = hax.named(ids, self.Pos)
+            segment_ids = hax.named(segment_ids, self.Pos)
+            loss_mask = hax.named(loss_mask, self.Pos)
 
-        attn_mask = AttentionMask.causal().with_segment_ids(segment_ids)
+            attn_mask = AttentionMask.causal().with_segment_ids(segment_ids)
 
-        return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+            return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 
 @dataclass
@@ -81,16 +84,16 @@ class PromptCompletion:
 
 def pack_prompt_completions(
     Pos: hax.Axis,
-    sequences: list[PromptCompletion],
+    sequences: Iterable[PromptCompletion],
     pad_token: int,
-    max_pack_size: int = 64,
+    max_segments_per_example: int = 64,
     max_buffered_examples: int = 64,
 ) -> Iterator[LmExample]:
     """
     Packs a list of prompt completions into LmExamples using the SequencePacker
     """
 
-    packers = [SequencePacker(Pos, max_pack_size, pad_token)]
+    packers = [SequencePacker(Pos, max_segments_per_example, pad_token)]
 
     for sequence in sequences:
         loss_mask = np.arange(len(sequence.ids)) >= sequence.prompt_length - 1
@@ -100,13 +103,13 @@ def pack_prompt_completions(
             if packer.can_pack(sequence.ids):
                 packer.add_example(sequence.ids, loss_mask, sequence.segment_id)
 
-                if packer.num_segments == max_pack_size:
+                if packer.num_segments == max_segments_per_example:
                     yield packer.pack()
                     packers.remove(packer)
                 break
         else:
             # no packer could fit the example, create a new one
-            packer = SequencePacker(Pos, max_pack_size, pad_token)
+            packer = SequencePacker(Pos, max_segments_per_example, pad_token)
             packer.add_example(sequence.ids, loss_mask, sequence.segment_id)
             packers.append(packer)
 
@@ -119,10 +122,10 @@ def pack_prompt_completions(
 
 
 def per_segment_loss(
-    packed_example: LmExample, losses: hax.NamedArray, max_segments: int
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+    packed_example: LmExample, losses: hax.NamedArray, max_Segments: hax.Axis
+) -> tuple[hax.NamedArray, hax.NamedArray]:
     """
-    Returns a pair of arrays of shape (max_segments,), where:
+    Returns a pair of arrays of shape (Segments,), where:
 
     * the first array is segment ids
     * the second is loss per segment.
@@ -132,32 +135,37 @@ def per_segment_loss(
 
     assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
 
-    segment_ids = packed_example.attn_mask.segment_ids.array
+    segment_ids = packed_example.attn_mask.segment_ids
     assert (
         segment_ids.ndim == 1
     ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"
+    Pos = packed_example.tokens.axes[0]
 
     # mask out padding etc
     masked_losses = losses * packed_example.loss_mask
 
     # sum the losses for each segment
-    # Extract unique segment IDs with padding
-    unique_segment_ids = jnp.unique(segment_ids, size=max_segments, fill_value=-1)
+    unique_segment_ids = _unique_segment_ids(max_Segments, segment_ids)
 
     # Create a mask matrix where each row corresponds to a unique segment
-    segment_mask = unique_segment_ids[:, None] == segment_ids[None, :]  # [segment, len]
+    segment_mask = unique_segment_ids == segment_ids.broadcast_axis(max_Segments)
 
     segment_mask = segment_mask.astype(masked_losses.dtype)
 
-    # segment_losses = jnp.esum(losses * segment_mask, axis=1) # [segment]
-    segment_losses = jnp.einsum("ij,j->i", segment_mask, masked_losses.array)
+    segment_losses = hax.dot(segment_mask, masked_losses, axis=Pos)
 
     return unique_segment_ids, segment_losses
 
+def _unique_segment_ids(max_Segments, segment_ids):
+    # Extract unique segment IDs with padding
+    # TODO: add unique to haliax
+    unique_segment_ids = jnp.unique(segment_ids.array, size=max_Segments.size, fill_value=-1)
+    unique_segment_ids = hax.named(unique_segment_ids, max_Segments)
+    return unique_segment_ids
 
 def per_segment_correct(
-    packed_example: LmExample, correct: hax.NamedArray, max_segments: int
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+    packed_example: LmExample, correct: hax.NamedArray, max_Segments: hax.Axis
+) -> tuple[hax.NamedArray, hax.NamedArray]:
     """
     Returns a pair of arrays of shape (max_segments,), where:
 
@@ -171,23 +179,25 @@ def per_segment_correct(
 
     assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
 
-    segment_ids = packed_example.attn_mask.segment_ids.array
+    segment_ids = packed_example.attn_mask.segment_ids
     assert (
         segment_ids.ndim == 1
     ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"
+
+    Pos = packed_example.tokens.axes[0]
 
     # mask out padding etc
     masked_correct = hax.logical_or(correct, hax.logical_not(packed_example.loss_mask))
 
     # sum the losses for each segment
     # Extract unique segment IDs with padding
-    unique_segment_ids = jnp.unique(segment_ids, size=max_segments, fill_value=-1)
+    unique_segment_ids = _unique_segment_ids(max_Segments, segment_ids)
 
     # Create a mask matrix where each row corresponds to a unique segment
-    segment_mask = unique_segment_ids[:, None] == segment_ids[None, :]  # [segment, len]
+    segment_mask = unique_segment_ids == segment_ids.broadcast_axis(max_Segments)
 
     segment_mask = segment_mask.astype(masked_correct.dtype)
 
-    segment_correct = jnp.all(jnp.where(segment_mask, masked_correct.array, True), axis=1)
+    segment_correct = hax.all(hax.where(segment_mask, masked_correct, True), axis=Pos)
 
     return unique_segment_ids, segment_correct

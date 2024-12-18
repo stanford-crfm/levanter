@@ -24,7 +24,7 @@ import tempfile
 import typing
 from dataclasses import dataclass
 from functools import cached_property
-from typing import List, Optional, Sequence, Tuple
+from typing import Iterator, List, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -37,8 +37,10 @@ from haliax import NamedArray
 
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, load_tokenizer
+from levanter.data.packing import per_segment_correct, per_segment_loss, PromptCompletion, pack_prompt_completions
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.loss import next_token_loss
+from levanter.utils.background_iterable import BackgroundIterator
 from levanter.utils.hf_utils import HfTokenizer
 
 
@@ -66,6 +68,39 @@ from levanter.utils.tree_utils import inference_mode
 
 
 logger = logging.getLogger(__name__)
+
+def _iterate_tokenized_requests(requests: list[Instance], tokenizer: HfTokenizer, max_len: int) -> Iterator[PromptCompletion]:
+    """
+    Tokenize the requests and yield them as PromptCompletions, for packing into LmExamples.
+    """
+    for i, request in enumerate(requests):
+        # it's kinda annoying we run tokenization twice, but it's the easiest way to get the prompt length
+        # CF: https://github.com/EleutherAI/lm-evaluation-harness/blob/main/lm_eval/api/model.py#L354
+        context, completion = request.args
+        whole_enc = tokenizer(context + completion)
+        context_enc = tokenizer(context)
+
+        context_enc_len = len(context_enc["input_ids"])
+        whole_ids = whole_enc["input_ids"]
+        if len(whole_ids) > max_len:
+            logger.warning(f"Request {i} is too long. Truncating.")
+            # truncate from the left
+            whole_ids = whole_ids[-max_len:]
+            context_enc_len = max_len - len(completion)
+            if context_enc_len < 0:
+                context_enc_len = 0
+                logger.warning("Prompt length is negative after truncation. Setting to 0.")
+
+        yield PromptCompletion(ids=whole_ids, prompt_length=context_enc_len, segment_id=i)
+
+
+def _pack_requests(requests: list[Instance], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int) -> Iterator[LmExample]:
+    packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size)
+    yield from pack_prompt_completions(
+        Pos, packed_iterator,
+        max_segments_per_example=max_pack_size,
+        pad_token=tokenizer.pad_token_id
+    )
 
 
 class EvalDataset(AsyncDataset[LmExample]):
@@ -148,6 +183,7 @@ class LevanterHarnessLM(LM):
         axis_resources,
         tokenizer,
         mp: jmp.Policy | None,
+        max_packed_segments: int = 64,
     ):
         super().__init__()
         self.EvalBatch = EvalBatch
@@ -156,18 +192,20 @@ class LevanterHarnessLM(LM):
         self.axis_resources = axis_resources
         self.tokenizer = tokenizer
         self.mp = mp
+        self.max_packed_segments = max_packed_segments
 
-        def _eval_loglikelihood(model: LmHeadModel, example: LmExample) -> tuple[NamedArray, NamedArray]:
+        def _eval_loglikelihood(model: LmHeadModel, packed_example: LmExample) -> tuple[NamedArray, NamedArray, NamedArray]:
             """
             Returns:
-                - loss: The negative log-likelihood of the completion.
-                - correct: Whether the completion is correct
+                - segments: The segment IDs of the completions. (shape: (Segments,))
+                - loss: The log-likelihood of the completion. (shape: (Segments,))
+                - correct: Whether the completion is correct or not. (shape: (Segments,))
             """
 
             if self.mp is not None:
                 model = self.mp.cast_to_compute(model)
 
-            logits = model(example.tokens, attn_mask=example.attn_mask)
+            logits = model(packed_example.tokens, attn_mask=packed_example.attn_mask)
             logits = logits.astype(jnp.float32)
             Pos = logits.resolve_axis(self.EvalPos.name)
 
@@ -175,20 +213,32 @@ class LevanterHarnessLM(LM):
                 Pos=Pos,
                 Vocab=model.Vocab,
                 logits=logits,
-                true_ids=example.tokens,
-                loss_mask=example.loss_mask,
-                reduction=hax.sum,
-                reduction_axis=Pos,
+                true_ids=packed_example.tokens,
+                loss_mask=packed_example.loss_mask,
+                reduction=None,
             )
 
-            not_last_loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=bool)
+            # We need to compute losses and also whether or not the completion is correct
+            # (i.e. the greedy prediction is the target)
             pred_targets = hax.argmax(logits, axis=model.Vocab)
-            targets = hax.roll(example.tokens, -1, axis=Pos)
-            # "freebie" is the positions we don't need to predict (prompt or final token's next token)
-            freebie = hax.logical_not(example.loss_mask * not_last_loss_mask)
-            correct = hax.all(hax.equal(pred_targets, targets) + freebie, axis=Pos)
+            targets = hax.roll(packed_example.tokens, -1, axis=Pos)
+            is_correct = targets == pred_targets
 
-            return -loss, correct
+            max_Segments = hax.Axis("Segments", size=self.max_packed_segments)
+
+            batched_segment_ids, batched_per_segment_losses = (
+                hax.vmap(per_segment_loss, self.EvalBatch)(packed_example, loss, max_Segments)
+            )
+
+            _, batched_per_segment_correct = (
+                hax.vmap(per_segment_correct, self.EvalBatch)(packed_example, is_correct, max_Segments)
+            )
+
+            segments = hax.flatten(batched_segment_ids, "segment")
+            losses = hax.flatten(batched_per_segment_losses, "segment")
+            correct = hax.flatten(batched_per_segment_correct, "segment")
+
+            return segments, -losses, correct
 
         # no sharded outputs
         self._jit_loglikelihood = hax.named_jit(
@@ -203,22 +253,34 @@ class LevanterHarnessLM(LM):
         """
         # pad requests to be a multiple of the batch size
         initial_length = len(requests)
-        dataset = self._pad_dataset_to_batch_size(requests)
+        # mesh = haliax.partitioning._get_mesh()
 
-        mesh = haliax.partitioning._get_mesh()
+        if self.tokenizer.pad_token_id is None:
+            logger.warning("No pad token set. Setting to eos token.")
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        loader = DataLoader(
-            self.EvalBatch, dataset, max_buffered_batches=1024, mesh=mesh, axis_resources=self.axis_resources
-        )
+        packed_iterator = _pack_requests(requests, self.tokenizer, self.EvalPos, self.max_packed_segments)
+        # packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
-        result: list[tuple[float, bool]] = []
-        for batch in tqdm(loader, desc="Loglikelihood", unit="ba"):
-            out_lls, out_correct = self._jit_loglikelihood(self.model, batch)
-            result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
+        # loader = DataLoader(
+        #     self.EvalBatch, dataset, max_buffered_batches=1024, mesh=mesh, axis_resources=self.axis_resources
+        # )
 
-        assert len(result) >= initial_length
-        # skip padding
-        result = result[:initial_length]
+        result_probs = np.zeros(len(requests))
+        result_greedy = np.zeros(len(requests))
+
+        for batch in tqdm(packed_iterator, desc="Loglikelihood", unit="packed"):
+            out_ids, out_lls, out_correct = self._jit_loglikelihood(self.model, batch)
+            # result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
+            # -1's are going to be where we had too few sequences to fill a batch
+            out_ids = np.array(out_ids.array)
+            out_lls = np.array(out_lls.array)
+            out_correct = np.array(out_correct.array)
+            valid_indices = out_ids != -1
+            result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
+            result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
+
+        result = list(zip(result_probs[:initial_length], result_greedy[:initial_length]))
 
         return result
 
@@ -663,7 +725,8 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
 
     return lm_eval_harness
 
-
 if __name__ == "__main__":
     levanter.config.main(run_eval_harness_main)()
     print("Done", flush=True)
+
+

@@ -28,10 +28,12 @@ def test_per_segment_loss():
 
     losses = hax.named(jnp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0]), Pos)
 
-    unique_ids, segment_losses = per_segment_loss(packed, losses, max_segments=3)
+    Segments = hax.Axis("segments", size=3)
 
-    assert list(unique_ids) == [-1, 0, 1]
-    assert list(segment_losses) == [0.0, 0.6, 0.9]
+    unique_ids, segment_losses = per_segment_loss(packed, losses, max_Segments=Segments)
+
+    assert list(unique_ids.array) == [-1, 0, 1]
+    assert list(segment_losses.array) == [0.0, 0.6, 0.9]
 
 
 def test_can_pack_simple_case():
@@ -197,21 +199,24 @@ def test_pack_prompt_completions_exceed_max_buffered_examples():
 def test_segment_correct():
     # Mock segment_ids and loss_mask
     Pos = hax.Axis("pos", size=10)
+    tokens = hax.named(jnp.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), Pos)
     segment_ids = hax.named(jnp.array([0, 0, 1, 1, 1, 2, 2, 2, 2, 2]), Pos)
     loss_mask = hax.named(jnp.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0]), Pos)
 
     # Create a packed example
     attn_mask = AttentionMask.causal().with_segment_ids(segment_ids=segment_ids)
-    packed_example = LmExample(tokens=None, loss_mask=loss_mask, attn_mask=attn_mask)
+    packed_example = LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
     # Mock correctness array (True for correct, False for incorrect)
     correct = hax.named(jnp.array([True, True, True, False, True, False, True, True, True, True]), Pos)
 
-    # Call the function
-    unique_ids, segment_correct = per_segment_correct(packed_example, correct, max_segments=4)
+    max_Segments = hax.Axis("segments", size=4)
 
-    assert list(unique_ids) == [0, 1, 2, -1]
-    assert list(segment_correct) == [True, False, True, True]
+    # Call the function
+    unique_ids, segment_correct = per_segment_correct(packed_example, correct, max_Segments)
+
+    assert list(unique_ids.array) == [0, 1, 2, -1]
+    assert list(segment_correct.array) == [True, False, True, True]
 
 
 if __name__ == "__main__":
