@@ -7,6 +7,8 @@ from jax.sharding import PartitionSpec
 
 from levanter.optim.config import OptimizerConfig
 
+from psgd_jax.kron import scale_by_kron as sbk
+
 
 @OptimizerConfig.register_subclass("kron")
 @dataclass
@@ -97,31 +99,31 @@ class KronConfig(OptimizerConfig):
             if self.max_grad_norm and not self.normalize_grads:
                 components.append(optax.clip_by_global_norm(self.max_grad_norm))
             components.append(
-                scale_by_kron(
+                sbk(
                     b1=self.beta1,
-                    normalize_grads=self.normalize_grads,
-                    preconditioner_update_probability=precond_update_prob_schedule(
-                        min_prob=self.preconditioner_update_probability,
-                        flat_start=self.update_prob_flat_start,
-                    ),
-                    max_size_triangular=self.max_size_triangular,
-                    min_ndim_triangular=self.min_ndim_triangular,
-                    memory_save_mode=self.memory_save_mode,
-                    preconditioner_lr=self.preconditioner_lr,
-                    preconditioner_init_scale=self.preconditioner_init_scale,
-                    mu_dtype=self.mu_dtype,
-                    precond_dtype=self.precond_dtype,
-                    precond_update_precision=self.precond_update_precision,
-                    precond_grads_precision=self.precond_grads_precision,
-                    scanned_layers=self.scanned_layers,
-                    lax_map_scanned_layers=self.lax_map_scanned_layers,
-                    lax_map_batch_size=self.lax_map_batch_size,
-                    merge_small_dims=self.merge_small_dims,
-                    target_merged_dim_size=self.target_merged_dim_size,
-                    partition_grads_into_blocks=self.partition_grads_into_blocks,
-                    block_size=self.block_size,
-                    params_sharding=self.params_sharding,
-                    preconditioner_sharding=precond_partition_spec,
+                    # normalize_grads=self.normalize_grads,
+                    # preconditioner_update_probability=precond_update_prob_schedule(
+                    #     min_prob=self.preconditioner_update_probability,
+                    #     flat_start=self.update_prob_flat_start,
+                    # ),
+                    # max_size_triangular=self.max_size_triangular,
+                    # min_ndim_triangular=self.min_ndim_triangular,
+                    # memory_save_mode=self.memory_save_mode,
+                    # preconditioner_lr=self.preconditioner_lr,
+                    # preconditioner_init_scale=self.preconditioner_init_scale,
+                    # mu_dtype=self.mu_dtype,
+                    # precond_dtype=self.precond_dtype,
+                    # precond_update_precision=self.precond_update_precision,
+                    # precond_grads_precision=self.precond_grads_precision,
+                    # scanned_layers=self.scanned_layers,
+                    # lax_map_scanned_layers=self.lax_map_scanned_layers,
+                    # lax_map_batch_size=self.lax_map_batch_size,
+                    # merge_small_dims=self.merge_small_dims,
+                    # target_merged_dim_size=self.target_merged_dim_size,
+                    # partition_grads_into_blocks=self.partition_grads_into_blocks,
+                    # block_size=self.block_size,
+                    # params_sharding=self.params_sharding,
+                    # preconditioner_sharding=precond_partition_spec,
                 )
             )
             if self.weight_decay > 0:
@@ -295,16 +297,20 @@ def scale_by_kron(
                         is_leaf=lambda x: isinstance(x, hax.nn.Stacked),
                     )
                 if params_sharding_ is None:
-                    params_sharding_ = hax.partitioning.infer_resource_partitions(params)
-                    params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
+                    try:
+                        params_sharding_ = hax.partitioning.infer_resource_partitions(params)
+                        params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
+                    except:
+                        params_sharding_ = None
                 params, params_struct = jax.tree.flatten(params)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
                 print(f"kron scanned_layers_: {scanned_layers_}")
-                params_sharding_ = jax.tree.leaves(params_sharding_)
-                print(f"kron params_sharding_: {params_sharding_}")
+                if params_sharding_ is not None:
+                    params_sharding_ = jax.tree.leaves(params_sharding_)
+                    print(f"kron params_sharding_: {params_sharding_}")
 
         have_params_sharding = params_sharding_ is not None
-        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None or have_hax
+        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None
 
         # unbox if flax style partitioned
         if have_flax:
@@ -554,18 +560,22 @@ def scale_by_kron(
                         is_leaf=lambda x: isinstance(x, hax.nn.Stacked),
                     )
                 if params_sharding_ is None:
-                    params_sharding_ = hax.partitioning.infer_resource_partitions(updates)
-                    params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
+                    try:
+                        params_sharding_ = hax.partitioning.infer_resource_partitions(updates)
+                        params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
+                    except:
+                        params_sharding_ = None
                 updates, updates_struct = jax.tree.flatten(updates)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
                 print(f"kron scanned_layers_: {scanned_layers_}")
-                params_sharding_ = jax.tree.leaves(params_sharding_)
-                print(f"kron params_sharding_: {params_sharding_}")
+                if params_sharding_ is not None:
+                    params_sharding_ = jax.tree.leaves(params_sharding_)
+                    print(f"kron params_sharding_: {params_sharding_}")
 
         have_params_sharding = params_sharding_ is not None
         if have_params_sharding:
             original_params_sharding_ = params_sharding_
-        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None or have_hax
+        have_qs_sharding = have_params_sharding or preconditioner_sharding is not None
 
         # unbox if flax style partitioned
         flax_partitioned = False
@@ -1546,6 +1556,10 @@ def _partitions(lst):
             for part in _partitions(lst[i + 1 :]):
                 yield [lst[: i + 1]] + part
 
+"""
+128, 4, 4, 8
+(128, 512)
+"""
 
 def _merge_small_dims(
     shape_to_merge, max_dim, dim_diag, sharding_to_merge=None
@@ -1694,3 +1708,25 @@ def _unstack_matrices(stacked_arrays, revert_indices):
     if in_tuple:
         return tuple(array_list)
     return array_list
+
+
+if __name__ == "__main__":
+    import jax_sourceror
+
+    axis_a = hax.Axis("d", 128)
+    axis_b = hax.Axis("b", 8)
+
+    params = {
+        "w": hax.NamedArray(jnp.ones((128, 8)), (axis_a, axis_b)),
+        "b": hax.NamedArray(jnp.ones((128,)), (axis_a,)),
+    }
+    grads = {
+        "w": hax.NamedArray(jnp.ones((128, 8)), (axis_a, axis_b)),
+        "b": hax.NamedArray(jnp.ones((128,)), (axis_a,)),
+    }
+
+    optimizer = kron()
+    opt_state = optimizer.init(params)
+    source_code = jax_sourceror.sourcerize(optimizer.update)(grads, opt_state, params)
+
+    print(source_code)
