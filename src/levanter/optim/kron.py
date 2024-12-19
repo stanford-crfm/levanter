@@ -115,7 +115,7 @@ class KronConfig(OptimizerConfig):
                     # precond_dtype=self.precond_dtype,
                     # precond_update_precision=self.precond_update_precision,
                     # precond_grads_precision=self.precond_grads_precision,
-                    # scanned_layers=self.scanned_layers,
+                    scanned_layers=self.scanned_layers,
                     # lax_map_scanned_layers=self.lax_map_scanned_layers,
                     # lax_map_batch_size=self.lax_map_batch_size,
                     # merge_small_dims=self.merge_small_dims,
