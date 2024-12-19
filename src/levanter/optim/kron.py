@@ -61,10 +61,10 @@ class KronConfig(OptimizerConfig):
     # some of these are changed from kron defaults to better suit levanter
     beta1: float = 0.9
     weight_decay: float = 0.1
-    max_grad_norm: Optional[float] = 1.0
-    normalize_grads: bool = False
-    preconditioner_update_probability: float = 0.05
-    update_prob_flat_start: int = 500
+    max_grad_norm: Optional[float] = 0.0
+    normalize_grads: bool = True
+    preconditioner_update_probability: float = 0.03
+    update_prob_flat_start: int = 1000
     max_size_triangular: int = 25000
     min_ndim_triangular: int = 2
     memory_save_mode: Optional[str] = None
@@ -72,7 +72,7 @@ class KronConfig(OptimizerConfig):
     preconditioner_init_scale: float = 1.0
     mu_dtype: Optional[Union[str, jnp.dtype]] = None
     precond_dtype: Optional[Union[str, jnp.dtype]] = None
-    precond_update_precision: Optional[str] = "tensorfloat32"
+    precond_update_precision: Optional[str] = "float32"
     precond_grads_precision: Optional[str] = None
     scanned_layers: Optional[optax.Params] = None
     lax_map_scanned_layers: bool = False
