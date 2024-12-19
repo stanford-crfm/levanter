@@ -200,7 +200,7 @@ def scale_by_kron(
     scanned_layers: Optional[base.Params] = None,
     lax_map_scanned_layers: bool = False,
     lax_map_batch_size: int = 8,
-) -> base.GradientTransformationExtraArgs:
+) -> base.GradientTransformation:
     """
     Implements PSGD Kron from https://github.com/lixilinx/psgd_torch.
 
@@ -234,7 +234,7 @@ def scale_by_kron(
         lax_map_batch_size: int, batch size for lax.map, see JAX docs for more info.
 
     Returns:
-        optax.GradientTransformationExtraArgs
+        optax.GradientTransformation
     """
     mu_dtype = canonicalize_dtype(mu_dtype)
     precond_dtype = canonicalize_dtype(precond_dtype)
@@ -511,7 +511,7 @@ def scale_by_kron(
 
         return updates, state
 
-    return base.GradientTransformationExtraArgs(init_fn, update_fn)
+    return base.GradientTransformation(init_fn, update_fn)
 
 
 def kron(
@@ -536,7 +536,7 @@ def kron(
     scanned_layers: Optional[base.Params] = None,
     lax_map_scanned_layers: bool = False,
     lax_map_batch_size: int = 8,
-) -> base.GradientTransformationExtraArgs:
+) -> base.GradientTransformation:
     """
     Implements PSGD Kron from https://github.com/lixilinx/psgd_torch.
 
@@ -574,7 +574,7 @@ def kron(
         lax_map_batch_size: int, batch size for lax.map, see JAX docs for more info.
 
     Returns:
-        optax.GradientTransformationExtraArgs
+        optax.GradientTransformation
     """
     optimizer = [
         scale_by_kron(
