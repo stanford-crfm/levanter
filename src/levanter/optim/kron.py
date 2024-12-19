@@ -133,10 +133,9 @@ class KronConfig(OptimizerConfig):
             components.append(optax.scale_by_learning_rate(learning_rate))
             return optax.chain(*components)
 
-        # return optax.inject_hyperparams(_optimizer)(
-        #     learning_rate=self.lr_scheduler(num_train_steps)
-        # )
-        return _optimizer(self.lr_scheduler(num_train_steps))
+        return optax.inject_hyperparams(_optimizer)(
+            learning_rate=self.lr_scheduler(num_train_steps)
+        )
     
 
 from typing import Any, List, Optional, Union, Callable
