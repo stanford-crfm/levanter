@@ -180,7 +180,7 @@ class DataLoaderIterator(Iterator[Ex]):
 
             # TODO: if we ever do "big data" (i.e. huge examples) we might want to be able to load part of an example
             # which will require support from the datastore (i.e. tensorstore)
-            device_batch = _stack_tree(self.dl.Batch.name, [data_for_this_batch[i] for i in range(begin, end)])
+            device_batch = stack_tree(self.dl.Batch.name, [data_for_this_batch[i] for i in range(begin, end)])
             batch_leaves = hax.tree_util.tree_leaves(device_batch)
 
             cache[(begin, end)] = batch_leaves
@@ -268,7 +268,7 @@ class _JaxCpuBackgroundIterator(BackgroundIterator[Ex]):
 
 
 @functools.partial(jax.jit, static_argnums=(0,))
-def _stack_tree(batch_name, individual_datums):
+def stack_tree(batch_name, individual_datums):
     def _stack_leaves_unchecked(*leaves):
         if is_named_array(leaves[0]):
             return hax.stack(batch_name, leaves)

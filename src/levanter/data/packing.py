@@ -98,6 +98,7 @@ def pack_prompt_completions(
     for sequence in sequences:
         loss_mask = np.arange(len(sequence.ids)) >= sequence.prompt_length - 1
         loss_mask[-1] = 0
+        assert np.any(loss_mask)
 
         for packer in packers:
             if packer.can_pack(sequence.ids):
@@ -156,12 +157,14 @@ def per_segment_loss(
 
     return unique_segment_ids, segment_losses
 
+
 def _unique_segment_ids(max_Segments, segment_ids):
     # Extract unique segment IDs with padding
     # TODO: add unique to haliax
     unique_segment_ids = jnp.unique(segment_ids.array, size=max_Segments.size, fill_value=-1)
     unique_segment_ids = hax.named(unique_segment_ids, max_Segments)
     return unique_segment_ids
+
 
 def per_segment_correct(
     packed_example: LmExample, correct: hax.NamedArray, max_Segments: hax.Axis

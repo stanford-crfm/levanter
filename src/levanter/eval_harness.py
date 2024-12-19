@@ -21,6 +21,7 @@ import functools
 import json
 import logging
 import tempfile
+import time
 import typing
 from dataclasses import dataclass
 from functools import cached_property
@@ -31,13 +32,16 @@ import jax
 import jax.numpy as jnp
 import jmp
 import numpy as np
+from optax.tree_utils import tree_zeros_like
 
 import haliax
 from haliax import NamedArray
 
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, load_tokenizer
+from levanter.data.loader import stack_tree
 from levanter.data.packing import PromptCompletion, pack_prompt_completions, per_segment_correct, per_segment_loss
+from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.loss import next_token_loss
 from levanter.utils.background_iterable import BackgroundIterator
@@ -60,7 +64,7 @@ from haliax.partitioning import ResourceMapping, round_axis_for_partitioning
 
 import levanter.config
 from levanter.checkpoint import load_checkpoint
-from levanter.data import AsyncDataset
+from levanter.data import AsyncDataset, batched
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import StepInfo, TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
@@ -243,6 +247,11 @@ class LevanterHarnessLM(LM):
             losses = hax.flatten(batched_per_segment_losses, "segment")
             correct = hax.flatten(batched_per_segment_correct, "segment")
 
+            jax.debug.inspect_array_sharding(
+                batched_segment_ids, callback=lambda x: print(f"batched Segment ids: {x}")
+            )
+            jax.debug.inspect_array_sharding(batched_segment_ids, callback=lambda x: print(f"Segment ids: {x}"))
+
             return segments, -losses, correct
 
         # no sharded outputs
@@ -258,7 +267,6 @@ class LevanterHarnessLM(LM):
         """
         # pad requests to be a multiple of the batch size
         initial_length = len(requests)
-        # mesh = haliax.partitioning._get_mesh()
 
         if self.tokenizer.pad_token_id is None:
             logger.warning("No pad token set. Setting to eos token.")
@@ -269,23 +277,74 @@ class LevanterHarnessLM(LM):
 
         result_probs = np.zeros(len(requests))
         result_greedy = np.zeros(len(requests))
+        covered_points = np.zeros(len(requests), dtype=bool)
 
-        for batch in tqdm(packed_iterator, desc="Loglikelihood", unit="packed"):
-            out_ids, out_lls, out_correct = self._jit_loglikelihood(self.model, batch)
+        time_in = time.time()
+        for q, batch in enumerate(
+            tqdm(batched(packed_iterator, self.EvalBatch.size), desc="Loglikelihood", unit="ba")
+        ):
+            segments_this_batch = set()
+            for i in range(len(batch)):
+                segments_this_batch.update(np.unique(batch[i].attn_mask.segment_ids.array).tolist())
+
+            try:
+                segments_this_batch.remove(-1)
+            except KeyError:
+                pass
+
+            orig_batch_len = len(batch)
+            print(f"{q} {jax.process_index()} tokens: {np.array(batch[0].tokens.array).tolist()}")
+            # print(f"{q} {jax.process_index()} mask: {np.array(batch[0].loss_mask.array).tolist()}")
+            print(
+                f"{q} {jax.process_index()} attn: {np.unique(np.array(batch[0].attn_mask.segment_ids.array)).tolist()}"
+            )
+            if len(batch) < self.EvalBatch.size:
+                dummy_instance = self._make_dummy_instance(batch)
+                batch.extend([dummy_instance] * (self.EvalBatch.size - len(batch)))
+
+            stacked = stack_tree(self.EvalBatch, batch)
+            stacked = hax.shard(stacked, self.axis_resources)
+            time_batch = time.time()
+
+            out_ids, out_lls, out_correct = self._jit_loglikelihood(self.model, stacked)
             # result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
             # -1's are going to be where we had too few sequences to fill a batch
-            out_ids = np.array(out_ids.array)
-            out_lls = np.array(out_lls.array)
-            out_correct = np.array(out_correct.array)
+            out_ids = np.array(out_ids.array)[0 : orig_batch_len * self.max_packed_segments]
+            out_lls = np.array(out_lls.array)[0 : orig_batch_len * self.max_packed_segments]
+            out_correct = np.array(out_correct.array)[0 : orig_batch_len * self.max_packed_segments]
             valid_indices = out_ids != -1
+
+            out_ids_this_batch = out_ids[valid_indices].tolist()
+
+            assert len(out_ids_this_batch) == len(
+                segments_this_batch
+            ), f"Batch {q} had {len(segments_this_batch)} segments, but {len(out_ids_this_batch)} loglikelihoods"
+
             result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
             result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
+            covered_points[out_ids[valid_indices]] = True
+
+            time_ll = time.time()
+
+            if jax.process_index() == 0:
+                print(f"Batch time: {time_batch - time_in}, LL time: {time_ll - time_batch}")
+            time_in = time.time()
+
+        missing_points = np.where(~covered_points)[0]
+        assert len(missing_points) == 0, f"Missing points: {missing_points}"
 
         result = list(zip(result_probs[:initial_length], result_greedy[:initial_length]))
 
         logger.info(f"Finished running {len(requests)} loglikelihoods.")
 
         return result
+
+    def _make_dummy_instance(self, batch):
+        dummy_instance: LmExample = tree_zeros_like(batch[0])
+        dummy_segment_mask = hax.full(self.EvalPos, -1, dtype=jnp.int32)
+        dummy_attn = AttentionMask.causal().with_segment_ids(dummy_segment_mask)
+        dummy_instance = dataclasses.replace(dummy_instance, attn_mask=dummy_attn)
+        return dummy_instance
 
     def _pad_dataset_to_batch_size(self, requests):
         dummy_instance = dataclasses.replace(requests[0], arguments=("hello", " there"), idx=len(requests))
