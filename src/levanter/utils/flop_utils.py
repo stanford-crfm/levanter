@@ -146,6 +146,11 @@ DEVICE_AVAILABLE_FLOPS = {
     "tpu v5p": {
         "bf16": 459e12,
     },
+    # Source: https://cloud.google.com/tpu/docs/v6e
+    "tpu v6 lite": {
+        "bf16": 918e12,
+        "int8": 1836e12,
+    },
 }
 
 
@@ -175,6 +180,7 @@ def _simplify_device_kind(kind: str) -> str:
 
     # TPU looks like 'TPU v4'
     if kind.startswith("tpu"):
+        print(f"TPU kind: {kind}")
         return kind
 
     if "h100" in kind and ("sxm" in kind or "hbm3" in kind):
@@ -193,6 +199,8 @@ def _simplify_device_kind(kind: str) -> str:
         return "t4"
     if "a6000" in kind:
         return "a6000"
+
+
 
     return kind
 

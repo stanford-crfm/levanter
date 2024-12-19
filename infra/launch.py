@@ -11,6 +11,13 @@ import levanter.infra.docker as docker
 import levanter.infra.tpus
 from levanter.infra.tpus import launch_job
 
+# default: tpu-ubuntu2204-base
+TPU_TYPE_TO_VM_IMAGE = {
+    "v5litepod": "v2-alpha-tpuv5-lite",
+    "v5p": "v2-alpha-tpuv5",
+    "v6e": "v2-alpha-tpuv6e",
+}
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -28,7 +35,7 @@ def main():
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
     cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
-    cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
+    cli.add_arg(parser, config, ["--version"], default=None)
     cli.add_arg(parser, config, ["--zone"], default=None, type=str, required=False)
     cli.add_arg(parser, config, ["--retries"], default=10, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=cli.default_run_id(), type=str)
@@ -57,8 +64,11 @@ def main():
         retries = args.retries
     tpu_name = args.tpu_name
     tpu_type = args.tpu_type
+
+    tpu_gen = tpu_type.split("-")[0]
+    version = args.version or TPU_TYPE_TO_VM_IMAGE.get(tpu_gen, "tpu-ubuntu2204-base")
+
     node_count = args.node_count
-    version = args.version
     zone = args.zone
     run_id = args.run_id
     registry = args.docker_registry
