@@ -116,12 +116,12 @@ class KronConfig(OptimizerConfig):
                     scanned_layers=self.scanned_layers,
                     lax_map_scanned_layers=self.lax_map_scanned_layers,
                     lax_map_batch_size=self.lax_map_batch_size,
-                    merge_small_dims=self.merge_small_dims,
-                    target_merged_dim_size=self.target_merged_dim_size,
-                    partition_grads_into_blocks=self.partition_grads_into_blocks,
-                    block_size=self.block_size,
-                    params_sharding=self.params_sharding,
-                    preconditioner_sharding=precond_partition_spec,
+                    # merge_small_dims=self.merge_small_dims,
+                    # target_merged_dim_size=self.target_merged_dim_size,
+                    # partition_grads_into_blocks=self.partition_grads_into_blocks,
+                    # block_size=self.block_size,
+                    # params_sharding=self.params_sharding,
+                    # preconditioner_sharding=precond_partition_spec,
                 )
             )
             if self.weight_decay > 0:
