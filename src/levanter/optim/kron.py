@@ -497,7 +497,7 @@ def scale_by_kron(
         updates = grads_structure.unflatten(precond_gs)
         Qs = grads_structure.unflatten(Qs)
 
-        precond_gs = updates_struct.unflatten(precond_gs)
+        updates = updates_struct.unflatten(updates)
 
         # dtypes and new state
         mu = otu.tree_cast(mu, mu_dtype)
