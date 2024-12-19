@@ -254,11 +254,11 @@ def scale_by_kron(
             return fn(*args)
 
     def init_fn(params):
-        params = jax.tree.map(
-            lambda x: x.unbox() if isinstance(x, nn.Partitioned) else x,
-            params,
-            is_leaf=lambda v: isinstance(v, (chex.Array, nn.Partitioned)),
-        )
+        # params = jax.tree.map(
+        #     lambda x: x.unbox() if isinstance(x, nn.Partitioned) else x,
+        #     params,
+        #     is_leaf=lambda v: isinstance(v, (chex.Array, nn.Partitioned)),
+        # )
 
         scanned_layers_ = scanned_layers
         if scanned_layers_ is None:
@@ -340,6 +340,16 @@ def scale_by_kron(
         count_inc = safe_int32_increment(state["count"])
         key = jax.random.fold_in(jax.random.PRNGKey(5318008), state["count"])
 
+        # account for flax.linen.Partitioned grads and params
+        # boxed_updates, grads_structure = jax.tree.flatten(
+        #     updates, is_leaf=lambda v: isinstance(v, (chex.Array, nn.Partitioned))
+        # )
+        # flax_partitioned = False
+        # if isinstance(boxed_updates[0], nn.Partitioned):
+        #     flax_partitioned = True
+        #     updates = [u.unbox() for u in boxed_updates]
+        #     updates = grads_structure.unflatten(updates)
+
         scanned_layers_ = scanned_layers
         if scanned_layers_ is None:
             scanned_layers_ = jax.tree.map(
@@ -354,16 +364,6 @@ def scale_by_kron(
         updates, updates_struct = jax.tree.flatten(updates)
         scanned_layers_ = jax.tree.leaves(scanned_layers_)
         print(f"kron scanned_layers_: {scanned_layers_}")
-
-        # account for flax.linen.Partitioned grads and params
-        boxed_updates, grads_structure = jax.tree.flatten(
-            updates, is_leaf=lambda v: isinstance(v, (chex.Array, nn.Partitioned))
-        )
-        flax_partitioned = False
-        if isinstance(boxed_updates[0], nn.Partitioned):
-            flax_partitioned = True
-            updates = [u.unbox() for u in boxed_updates]
-            updates = grads_structure.unflatten(updates)
 
         update_prob_in = preconditioner_update_probability
         if isinstance(preconditioner_update_probability, Callable):
@@ -488,10 +488,10 @@ def scale_by_kron(
             ]
 
         # box preconditioned grads
-        if flax_partitioned:
-            precond_gs = [
-                u.replace_boxed(pg) for u, pg in zip(boxed_updates, precond_gs)
-            ]
+        # if flax_partitioned:
+        #     precond_gs = [
+        #         u.replace_boxed(pg) for u, pg in zip(boxed_updates, precond_gs)
+        #     ]
 
         # unflatten pytrees
         updates = grads_structure.unflatten(precond_gs)
