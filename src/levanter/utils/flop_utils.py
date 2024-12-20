@@ -146,6 +146,11 @@ DEVICE_AVAILABLE_FLOPS = {
     "tpu v5p": {
         "bf16": 459e12,
     },
+    # Source: https://cloud.google.com/tpu/docs/v6e
+    "tpu v6 lite": {
+        "bf16": 918e12,
+        "int8": 1836e12,
+    },
 }
 
 

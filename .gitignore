@@ -1,7 +1,8 @@
 /scratch
 
 # Configuration for TPU launches/secrets
-.config
+.levanter.yaml
+.levanter.yaml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

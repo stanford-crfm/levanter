@@ -1,6 +1,7 @@
 import json
 import os
 import pty
+import shlex
 import shutil
 import subprocess
 import sys
@@ -236,3 +237,33 @@ def split_image_and_tag(docker_base_image):
         base_image = docker_base_image
         base_tag = "latest"
     return base_image, base_tag
+
+
+def make_docker_run_command(image_id, command, *, foreground, env, name="levanter"):
+    docker_command = [
+        "docker",
+        "run",
+        "-t" if foreground else "-d",
+        f"--name={shlex.quote(name)}",
+        "--privileged",
+        "--shm-size=32gb",
+        "--net=host",
+        "--init",
+        "--mount",
+        "type=volume,source=levanter,target=/home/levanter",
+        "-v",
+        "/tmp:/tmp",
+    ]
+
+    # optionally add multislice env vars (if set by ray runtime env vars)
+    for v in ["MEGASCALE_COORDINATOR_ADDRESS", "MEGASCALE_NUM_SLICES", "MEGASCALE_PORT", "MEGASCALE_SLICE_ID"]:
+        v = shlex.quote(str(v))
+        docker_command.extend(["-e", v])
+
+    for k, v in env.items():
+        v = shlex.quote(str(v))
+        k = shlex.quote(str(k))
+        docker_command.extend(["-e", f"{k}={v}"])
+
+    docker_command.extend([image_id, *command])
+    return docker_command
