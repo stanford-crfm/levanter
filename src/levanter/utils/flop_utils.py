@@ -180,7 +180,6 @@ def _simplify_device_kind(kind: str) -> str:
 
     # TPU looks like 'TPU v4'
     if kind.startswith("tpu"):
-        print(f"TPU kind: {kind}")
         return kind
 
     if "h100" in kind and ("sxm" in kind or "hbm3" in kind):
@@ -199,8 +198,6 @@ def _simplify_device_kind(kind: str) -> str:
         return "t4"
     if "a6000" in kind:
         return "a6000"
-
-
 
     return kind
 

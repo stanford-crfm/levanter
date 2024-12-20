@@ -10,7 +10,7 @@ from typing import Optional
 
 import requests  # type: ignore
 
-from levanter.infra.cli_helpers import make_docker_run_command
+from levanter.infra.docker import make_docker_run_command
 
 
 logger = logging.getLogger(__name__)
