@@ -288,7 +288,10 @@ class TaskConfig:
 
     def to_dict(self):
         base_dict = dataclasses.asdict(self)
-        return {k: v for k, v in base_dict.items() if v is not None}
+        print("Base dict: ", base_dict)
+        return_result = {k: v for k, v in base_dict.items() if v is not None}
+        print("Return dict: ", return_result)
+        return return_result
 
 
 @dataclass(frozen=True)
@@ -321,10 +324,16 @@ class LmEvalHarnessConfig:
                 if isinstance(task, str):
                     this_tasks.update(tasks.get_task_dict(task, manager))
                 else:
+
+                    print("Task: ", task)
                     our_name = task.get("task_alias", task["task"]) if isinstance(task, dict) else task
+                    print("Our name: ", our_name)
                     our_name = our_name.replace(" ", "_")
+                    print("Our name: ", our_name)
                     this_task = self._get_task_and_rename(manager, our_name, task)
+                    print("This task: ", this_task)
                     this_tasks[our_name] = this_task
+                    print("This tasks: ", this_tasks)
             except Exception:
                 logger.exception(f"Failed to load task {task}")
                 raise ValueError(f"Failed to load task {task}")
@@ -340,10 +349,24 @@ class LmEvalHarnessConfig:
         """
         import lm_eval.tasks as tasks
 
+        print("Inside get task and rename")
+        print("Task: ", task)
+        print("Our name: ", our_name)
+
         task_dict = tasks.get_task_dict([task], manager)
+
+        print("Task dict: ", task_dict)
+        print("Type: ", type(task_dict))
+        print("Keys: ", task_dict.keys())
+        print("Values: ", task_dict.values())
         this_task = task_dict.popitem()[1]
+
+        print("this_task after pop: ", this_task)
+        print("this_task type after pop: ", type(this_task))
         # hacky, but this allows us to run multiple instances of the same task with different fewshot settings
         this_task.config.task = our_name
+
+        print("this_task after config change: ", this_task)
         return this_task
 
 
