@@ -83,7 +83,7 @@ on your development machine to build and run images on TPUs.
 First create a configuration file for future launches in your Levanter directory:
 
 ```bash
-cat > .config <<EOF
+cat > .levanter.yaml <<EOF
 env:
     WANDB_API_KEY:
     WANDB_ENTITY:
@@ -93,15 +93,18 @@ env:
     TPU_MIN_LOG_LEVEL: 0
     LIBTPU_INIT_ARGS: <extra args to libtpu>  # Optional
 
+# Optional: specific environment variables for TPUs based on the TPU type
+accel_env:
+  v6e:
+     # If you're lucky enough to have a v6e, you can set the following, which is pretty important for performance
+     LIBTPU_INIT_ARGS: "--xla_tpu_scoped_vmem_limit_kib=98304"
+
 docker_repository: levanter  # default
 zone: us-west4-a  # if not set, will use your default zone
 tpu_name: test-spin-up-32
 tpu_type: "v5litepod-16"
-vm_image: "tpu-ubuntu2204-base"  # default
 capacity_type: "preemptible"
-autodelete: false
 subnetwork: "default"  # default
-
 EOF
 ```
 
@@ -155,6 +158,8 @@ a new file:
 If you're using `launch.py`, the config will be automatically uploaded as part of your Docker image, so you
 can just reference the local config path in your command line:
 
+```bash
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/my_config.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 Afterward, you can use the config directly from the TPU VM instance, e.g.:

@@ -37,9 +37,8 @@ def main():
     cli.add_arg(parser, config, ["--extra_context"], type=Path, required=False, default=None)
     cli.add_arg(parser, config, ["--zone"], default=None, type=str, required=False)
 
-    parser.add_argument(
-        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
-    )
+    parser.add_argument("-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"))
+
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
     args = parser.parse_args()
@@ -61,6 +60,10 @@ def main():
     github_user = args.github_user
     github_token = args.github_token
     extra_context = args.extra_context
+
+    env = config.env_for_accel(tpu_type)
+    for key, value in args.env or []:
+        env[key] = value
 
     if zone is None:
         zone = cli.gcloud_config()["zone"]

@@ -1,8 +1,8 @@
 #!/usr/bin/python
-
 import argparse
 import getpass
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -10,6 +10,14 @@ import levanter.infra.cli_helpers as cli
 import levanter.infra.docker as docker
 import levanter.infra.tpus
 from levanter.infra.tpus import launch_job
+
+
+# default: tpu-ubuntu2204-base
+TPU_TYPE_TO_VM_IMAGE = {
+    "v5litepod": "v2-alpha-tpuv5-lite",
+    "v5p": "v2-alpha-tpuv5",
+    "v6e": "v2-alpha-tpuv6e",
+}
 
 
 def main():
@@ -28,7 +36,7 @@ def main():
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
     cli.add_arg(parser, config, ["--tpu_type"], required=True)
     cli.add_arg(parser, config, ["--node_count"], default=1, type=int)
-    cli.add_arg(parser, config, ["--version"], default="tpu-ubuntu2204-base")
+    cli.add_arg(parser, config, ["--version"], default=None)
     cli.add_arg(parser, config, ["--zone"], default=None, type=str, required=False)
     cli.add_arg(parser, config, ["--retries"], default=10, type=int)
     cli.add_arg(parser, config, ["--run_id"], default=cli.default_run_id(), type=str)
@@ -37,9 +45,7 @@ def main():
     cli.add_arg(parser, config, ["--github_token"], type=str)
     cli.add_arg(parser, config, ["--extra_context"], type=Path, required=False, default=None)
 
-    parser.add_argument(
-        "-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"), default=list(config.get("env", {}).items())
-    )
+    parser.add_argument("-e", "--env", action="append", nargs=2, metavar=("KEY", "VALUE"))
     parser.add_argument("command", nargs=argparse.REMAINDER)
 
     args = parser.parse_args()
@@ -57,8 +63,14 @@ def main():
         retries = args.retries
     tpu_name = args.tpu_name
     tpu_type = args.tpu_type
+
+    tpu_gen = tpu_type.split("-")[0]
+    version = args.version or TPU_TYPE_TO_VM_IMAGE.get(tpu_gen, "tpu-ubuntu2204-base")
+
+    if not args.version:
+        print(f"Using default version: {version}", file=sys.stderr)
+
     node_count = args.node_count
-    version = args.version
     zone = args.zone
     run_id = args.run_id
     registry = args.docker_registry
@@ -73,7 +85,10 @@ def main():
         raise ValueError("Zone must be specified or set in gcloud config.")
 
     region = "-".join(zone.split("-")[:-1])
-    env = {k: v for k, v in args.env}
+
+    env = config.env_for_accel(tpu_type)
+    for key, value in args.env or []:
+        env[key] = value
 
     if "WANDB_PROJECT" not in env:
         env["WANDB_PROJECT"] = "levanter"
