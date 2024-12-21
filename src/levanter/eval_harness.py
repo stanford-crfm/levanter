@@ -348,6 +348,7 @@ class LmEvalHarnessConfig:
         (or other differences) so we need to hack around that.
         """
         import lm_eval.tasks as tasks
+        from lm_eval.api.task import ConfigurableTask, Task
 
         print("Inside get task and rename")
         print("Task: ", task)
@@ -365,24 +366,23 @@ class LmEvalHarnessConfig:
         print("this_task type after pop: ", type(this_task))
         # hacky, but this allows us to run multiple instances of the same task with different fewshot settings
         
-        if not isinstance(this_task, dict):
-            # if it is a task, change the config to rename
+        if isinstance(this_task, ConfigurableTask):
+            # if it is already task, just change the task name
             this_task.config.task = our_name
         else:
-            # if it is a group, we now have a dict of group : tasks
+            # if it is a group, we now have a dict of group1 : tasks, group2 : tasks, ...
+            # we'll create a new dict with the group names and task names renamed
+            this_task_modified = {}
 
-            # first rename the group by using the key
-            group = list(this_task.keys())[0]
-            this_task.config.group = our_name
-
-            print("this_task after group change: ", this_task)
-
-            # then rename the tasks
-            for group, group_tasks in this_task.items():
-                for task in group_tasks:
-
+            # rename the group, and rename the tasks in that group
+            for this_group, group_tasks in this_task.items():
+                this_group.config.group = our_name
+                this_group.config.group_alias = our_name
+                for group_task in group_tasks:
                     # this is a bit hacky, but distinguishes the tasks without possible collisions
-                    task.config.task = f"{task.config.task}_{our_name}"
+                    group_task.config.task = f"{group_task.config.task}_{our_name}"
+                this_task_modified[this_group] = group_tasks
+            this_task = this_task_modified
 
         print("this_task after config change: ", this_task)
         return this_task
