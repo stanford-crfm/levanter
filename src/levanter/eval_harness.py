@@ -379,8 +379,8 @@ class LmEvalHarnessConfig:
 
                 print("This group: ", this_group)
                 print("Number of group tasks: ", len(group_tasks))
-                this_group.config.group = our_name
-                this_group.config.group_alias = our_name
+                this_group._config.group = our_name
+                this_group._config.group_alias = our_name
                 for group_task in group_tasks:
                     # this is a bit hacky, but distinguishes the tasks without possible collisions
                     group_task = group_task[1]
