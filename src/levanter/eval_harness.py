@@ -376,10 +376,14 @@ class LmEvalHarnessConfig:
 
             # rename the group, and rename the tasks in that group
             for this_group, group_tasks in this_task.items():
+
+                print("This group: ", this_group)
+                print("Number of group tasks: ", len(group_tasks))
                 this_group.config.group = our_name
                 this_group.config.group_alias = our_name
                 for group_task in group_tasks:
                     # this is a bit hacky, but distinguishes the tasks without possible collisions
+                    group_task = group_task[1]
                     group_task.config.task = f"{group_task.config.task}_{our_name}"
                 this_task_modified[this_group] = group_tasks
             this_task = this_task_modified
