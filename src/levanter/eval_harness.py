@@ -365,7 +365,7 @@ class LmEvalHarnessConfig:
         print("this_task type after pop: ", type(this_task))
         # hacky, but this allows us to run multiple instances of the same task with different fewshot settings
         
-        if not isinstance(task, dict):
+        if not isinstance(this_task, dict):
             # if it is a task, change the config to rename
             this_task.config.task = our_name
         else:
