@@ -364,7 +364,25 @@ class LmEvalHarnessConfig:
         print("this_task after pop: ", this_task)
         print("this_task type after pop: ", type(this_task))
         # hacky, but this allows us to run multiple instances of the same task with different fewshot settings
-        this_task.config.task = our_name
+        
+        if not isinstance(task, dict):
+            # if it is a task, change the config to rename
+            this_task.config.task = our_name
+        else:
+            # if it is a group, we now have a dict of group : tasks
+
+            # first rename the group by using the key
+            group = list(this_task.keys())[0]
+            this_task.config.group = our_name
+
+            print("this_task after group change: ", this_task)
+
+            # then rename the tasks
+            for group, group_tasks in this_task.items():
+                for task in group_tasks:
+
+                    # this is a bit hacky, but distinguishes the tasks without possible collisions
+                    task.config.task = f"{task.config.task}_{our_name}"
 
         print("this_task after config change: ", this_task)
         return this_task
