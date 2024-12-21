@@ -348,7 +348,7 @@ class LmEvalHarnessConfig:
         (or other differences) so we need to hack around that.
         """
         import lm_eval.tasks as tasks
-        from lm_eval.api.task import ConfigurableTask, Task
+        from lm_eval.api.task import ConfigurableTask
 
         print("Inside get task and rename")
         print("Task: ", task)
