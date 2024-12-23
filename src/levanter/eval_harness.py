@@ -250,7 +250,7 @@ class LevanterHarnessLM(LM):
             jax.debug.inspect_array_sharding(
                 batched_segment_ids, callback=lambda x: print(f"batched Segment ids: {x}")
             )
-            jax.debug.inspect_array_sharding(batched_segment_ids, callback=lambda x: print(f"Segment ids: {x}"))
+            jax.debug.inspect_array_sharding(segments, callback=lambda x: print(f"Segment ids: {x}"))
 
             return segments, -losses, correct
 
@@ -268,11 +268,26 @@ class LevanterHarnessLM(LM):
         # pad requests to be a multiple of the batch size
         initial_length = len(requests)
 
+        # so, infuriatingly, lm_eval_harness (or maybe it's hf datasets) isn't deterministic
+        # and so when this gets called from different workers, we get different request orderings.
+        # (Requests should be the same?!?)
+        # So we need to sort them to make sure they're in the same order.
+        # we can't trust the idx, so we hash the args. we have to be able to unsort, so we need an argsort
+        # built-in hash isn't deterministic, so we have to hash it ourselves
+        import hashlib
+        indices = np.argsort([hashlib.md5(json.dumps(req.args).encode()).digest() for req in requests])
+        inverse = np.argsort(indices)
+        print(f"{jax.process_index()} {indices}")
+
+        requests_for_packing = [requests[i] for i in indices]
+
+        print(f"{jax.process_index()} {indices}")
+
         if self.tokenizer.pad_token_id is None:
             logger.warning("No pad token set. Setting to eos token.")
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        packed_iterator = _pack_requests(requests, self.tokenizer, self.EvalPos, self.max_packed_segments)
+        packed_iterator = _pack_requests(requests_for_packing, self.tokenizer, self.EvalPos, self.max_packed_segments)
         packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
         result_probs = np.zeros(len(requests))
@@ -292,33 +307,40 @@ class LevanterHarnessLM(LM):
             except KeyError:
                 pass
 
+            # compute a checksum of this batch so we can compare to the other workers
+            batch_checksum = hashlib.md5(json.dumps([np.array(batch[i].tokens.array).tolist() for i in range(len(batch))]).encode()).digest()
+            print(f"check {q} {jax.process_index()} {batch_checksum}")
+
             orig_batch_len = len(batch)
-            print(f"{q} {jax.process_index()} tokens: {np.array(batch[0].tokens.array).tolist()}")
+            # print(f"{q} {jax.process_index()} tokens: {np.array(batch[0].tokens.array).tolist()}")
             # print(f"{q} {jax.process_index()} mask: {np.array(batch[0].loss_mask.array).tolist()}")
             print(
-                f"{q} {jax.process_index()} attn: {np.unique(np.array(batch[0].attn_mask.segment_ids.array)).tolist()}"
+                f"{q} {jax.process_index()} seg: {segments_this_batch} {len(segments_this_batch)} {len(batch)} {len(requests)}"
             )
             if len(batch) < self.EvalBatch.size:
                 dummy_instance = self._make_dummy_instance(batch)
                 batch.extend([dummy_instance] * (self.EvalBatch.size - len(batch)))
 
             stacked = stack_tree(self.EvalBatch, batch)
-            stacked = hax.shard(stacked, self.axis_resources)
+            # stacked = hax.shard(stacked, self.axis_resources)
             time_batch = time.time()
 
             out_ids, out_lls, out_correct = self._jit_loglikelihood(self.model, stacked)
             # result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
             # -1's are going to be where we had too few sequences to fill a batch
-            out_ids = np.array(out_ids.array)[0 : orig_batch_len * self.max_packed_segments]
-            out_lls = np.array(out_lls.array)[0 : orig_batch_len * self.max_packed_segments]
-            out_correct = np.array(out_correct.array)[0 : orig_batch_len * self.max_packed_segments]
+            out_ids = np.array(out_ids.array)
+            out_lls = np.array(out_lls.array)
+            out_correct = np.array(out_correct.array)
             valid_indices = out_ids != -1
 
             out_ids_this_batch = out_ids[valid_indices].tolist()
 
-            assert len(out_ids_this_batch) == len(
-                segments_this_batch
-            ), f"Batch {q} had {len(segments_this_batch)} segments, but {len(out_ids_this_batch)} loglikelihoods"
+            missing_ids = set(segments_this_batch) - set(out_ids_this_batch)
+
+            # assert len(out_ids_this_batch) == len(
+            #     segments_this_batch
+            # ), f"Batch {q} had {len(segments_this_batch)} segments, but {len(out_ids_this_batch)} loglikelihoods"
+            assert len(missing_ids) == 0, f"Missing segments: {missing_ids}"
 
             result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
             result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
@@ -334,6 +356,9 @@ class LevanterHarnessLM(LM):
         assert len(missing_points) == 0, f"Missing points: {missing_points}"
 
         result = list(zip(result_probs[:initial_length], result_greedy[:initial_length]))
+
+        # unsort the results
+        result = [result[i] for i in inverse]
 
         logger.info(f"Finished running {len(requests)} loglikelihoods.")
 

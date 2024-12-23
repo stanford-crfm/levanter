@@ -33,14 +33,14 @@ def schedule_gcs_deletion_job(project_id, gcs_bucket_name, path_to_delete):
             gcs_data_source=storage_transfer_v1.types.GcsData(bucket_name=EMPTY_BUCKET),
             transfer_options=storage_transfer_v1.types.TransferOptions(delete_objects_unique_in_sink=True),
         ),
-        schedule=storage_transfer_v1.types.Schedule(
-            schedule_start_date=Date(
-                year=datetime.utcnow().year, month=datetime.utcnow().month, day=datetime.utcnow().day
-            ),
-            start_time_of_day=TimeOfDay(
-                hours=datetime.utcnow().hour, minutes=datetime.utcnow().minute + 2  # Start in 2 minutes
-            ),
-        ),
+        # schedule=storage_transfer_v1.types.Schedule(
+        #     schedule_start_date=Date(
+        #         year=datetime.utcnow().year, month=datetime.utcnow().month, day=datetime.utcnow().day
+        #     ),
+        #     start_time_of_day=TimeOfDay(
+        #         hours=datetime.utcnow().hour, minutes=datetime.utcnow().minute + 2  # Start in 2 minutes
+        #     ),
+        # ),
         status=storage_transfer_v1.types.TransferJob.Status.ENABLED,
         description=f"Delete all files in {gcs_bucket_name}/{path_to_delete}",
     )
@@ -48,6 +48,7 @@ def schedule_gcs_deletion_job(project_id, gcs_bucket_name, path_to_delete):
     # Create the transfer job
     response = client.create_transfer_job(request={"transfer_job": transfer_job})
     print(f"Created transfer job: {response.name}")
+    client.run_transfer_job({"job_name": response.name, "project_id": project_id})
 
     # Wait for job completion
     wait_for_transfer_job(response.name, timeout=3600, poll_interval=2, project_id=project_id)
