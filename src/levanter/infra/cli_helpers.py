@@ -1,12 +1,60 @@
 import argparse
 import base64
+import dataclasses
 import os
-import shlex
 import subprocess
+import warnings
+from dataclasses import dataclass
+from functools import cached_property
 from typing import Optional
 
+import draccus
 import yaml
 from google.cloud import storage
+
+
+@dataclass(frozen=True)
+class CliConfig:
+    project: str | None = None
+    zone: str | None = None
+    tpu: str | None = None
+    repository: str | None = None
+    image: str | None = None
+    tag: str | None = None
+    github_user: str | None = None
+    github_token: str | None = None
+    docker_file: str | None = None
+    extra_context: str | None = None
+    docker_target: str | None = None
+    docker_repository: str | None = None
+    subnetwork: str | None = None
+
+    env: dict[str, str] = dataclasses.field(default_factory=dict)
+
+    accel_env: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
+    """
+    Environment variables specific to a type of accelerator. The keys are the accelerator type (e.g. v5litepod-256) or
+    generation (e.g. v5litepod), with priority given to the more specific key. The values are dictionaries of environment
+    variables to set. These take priority over the general `env` field.
+    """
+
+    def env_for_accel(self, accel_type: str) -> dict[str, str]:
+
+        base_env = self.env.copy()
+
+        if "-" in accel_type:
+            base_env.update(self.accel_env.get(accel_type.split("-")[0], {}))
+
+        if accel_type in self.accel_env:
+            base_env.update(self.accel_env[accel_type])
+
+        return base_env
+
+    @cached_property
+    def as_dict(self):
+        dict = dataclasses.asdict(self)
+        # remove Nones
+        return {k: v for k, v in dict.items() if v is not None}
 
 
 # Oddly enough, there's no API to simply fetch the current gcloud configuration...
@@ -31,11 +79,11 @@ def get_default_zone() -> Optional[str]:
         return None
 
 
-def add_arg(parser: argparse.ArgumentParser, config: dict, flags: list[str], required=False, default=None, **kw):
+def add_arg(parser: argparse.ArgumentParser, config: CliConfig, flags: list[str], required=False, default=None, **kw):
     """Add an argument to the parser, using `config` or the environment to resolve default values."""
     key = flags[0].lstrip("-").replace("-", "_")
-    if key in config:
-        default = config[key]
+    if key in config.as_dict:
+        default = config.as_dict[key]
 
     if key.upper() in os.environ:
         default = os.environ[key.upper()]
@@ -48,46 +96,21 @@ def add_arg(parser: argparse.ArgumentParser, config: dict, flags: list[str], req
     parser.add_argument(*flags, **kw)
 
 
-def load_config():
-    if os.path.exists(".config"):
-        return yaml.load(open(".config", "r"), Loader=yaml.SafeLoader)
+def load_config() -> CliConfig:
+    if os.path.exists(".levanter.yaml"):
+        d = yaml.load(open(".levanter.yaml", "r"), Loader=yaml.SafeLoader)
+    elif os.path.exists(".config"):
+        warnings.warn("Using deprecated .config file. Please rename to .levanter.yaml")
+        d = yaml.load(open(".config", "r"), Loader=yaml.SafeLoader)
     else:
-        return {}
+        d = {}
+
+    return draccus.decode(CliConfig, d)
 
 
 def get_git_commit():
     """Get the current git commit hash."""
     return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
-
-
-def make_docker_run_command(image_id, command, *, foreground, env, name="levanter"):
-    docker_command = [
-        "docker",
-        "run",
-        "-t" if foreground else "-d",
-        f"--name={shlex.quote(name)}",
-        "--privileged",
-        "--shm-size=32gb",
-        "--net=host",
-        "--init",
-        "--mount",
-        "type=volume,source=levanter,target=/home/levanter",
-        "-v",
-        "/tmp:/tmp",
-    ]
-
-    # optionally add multislice env vars (if set by ray runtime env vars)
-    for v in ["MEGASCALE_COORDINATOR_ADDRESS", "MEGASCALE_NUM_SLICES", "MEGASCALE_PORT", "MEGASCALE_SLICE_ID"]:
-        v = shlex.quote(str(v))
-        docker_command.extend(["-e", v])
-
-    for k, v in env.items():
-        v = shlex.quote(str(v))
-        k = shlex.quote(str(k))
-        docker_command.extend(["-e", f"{k}={v}"])
-
-    docker_command.extend([image_id, *command])
-    return docker_command
 
 
 def default_run_id():

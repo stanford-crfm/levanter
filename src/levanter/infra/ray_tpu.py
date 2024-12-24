@@ -18,7 +18,7 @@ from ray.dashboard.modules.job.sdk import JobSubmissionClient
 from ray.exceptions import NodeDiedError, RayError, RaySystemError, RayTaskError, WorkerCrashedError
 from ray.remote_function import RemoteFunction
 
-from levanter.infra.cli_helpers import make_docker_run_command
+from levanter.infra.docker import make_docker_run_command
 from levanter.utils.ray_utils import ser_exc_info
 
 
