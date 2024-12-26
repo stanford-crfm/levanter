@@ -17,7 +17,6 @@ References:
 
 """
 import dataclasses
-import functools
 import json
 import logging
 import tempfile
@@ -25,7 +24,7 @@ import time
 import typing
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Iterator, List, Optional, Sequence, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -64,10 +63,10 @@ from haliax.partitioning import ResourceMapping, round_axis_for_partitioning
 
 import levanter.config
 from levanter.checkpoint import load_checkpoint
-from levanter.data import AsyncDataset, batched
+from levanter.data import batched
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import StepInfo, TrainerConfig
-from levanter.utils.jax_utils import use_cpu_device
+from levanter.utils.jax_utils import jnp_broadcast_one_to_all, use_cpu_device
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -110,96 +109,36 @@ def _pack_requests(
     )
 
 
-class EvalDataset(AsyncDataset[LmExample]):
-    def __init__(self, Pos, tokenizer, examples: list[Instance]):
-        super().__init__()
-        self.examples = examples
-        self.Pos = Pos
+# OK, so LM-Eval-Harness is not deterministic. This means we can't just run it on different workers and expect the
+# order of requests to be the same. Sorting doesn't even seem to be correct (?!?!?) so we need to only run it on one
+# process.
+# This is our design:
+# 1. Process 0 creates an LevanterHarnessLM object.
+# 2. On all processes, we start a loop that waits for a request using jnp_broadcast_one_to_all
+# 3. When a request is received (and it's not STOP) we process the request. The results are broadcast to all
+#    devices, and process 0 records htem.
+# 4. When a STOP request is received, we stop the loop and process 0 returns the results.
+
+
+def _make_dummy_batch(EvalBatch, EvalPos):
+    dummy_batch = hax.vmap(LmExample.causal, EvalBatch)(hax.zeros(EvalPos, dtype=jnp.int32),
+                                                        loss_mask=hax.zeros(EvalPos, dtype=jnp.int32),
+                                                        segment_ids=hax.zeros(EvalPos, dtype=jnp.int32))
+    return dummy_batch
+
+
+class _LmEvalHarnessWorker:
+    def __init__(self, EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments):
         self.tokenizer = tokenizer
-
-    async def async_len(self) -> int:
-        return len(self.examples)
-
-    async def final_length_is_known(self) -> bool:
-        return True
-
-    def is_finite(self) -> bool:
-        return True
-
-    async def current_len(self) -> Optional[int]:
-        return len(self.examples)
-
-    async def get_batch(self, indices: Sequence[int]) -> List[LmExample]:
-        out = []
-        pad_token_id = self.tokenizer.pad_token_id
-
-        # lm-harness specs that args are (context, completion)
-        reqs = [(self.examples[i].args[0], self.examples[i].args[1]) for i in indices]
-
-        for context, completion in reqs:
-            # it's kinda annoying we run tokenization twice, but it's the easiest way to get the prompt length
-            # CF: https://github.com/EleutherAI/lm-evaluation-harness/blob/main/lm_eval/api/model.py#L354
-            whole_enc = self.tokenizer(context + completion)
-            context_enc = self.tokenizer(context)
-
-            context_enc_len = len(context_enc["input_ids"])
-
-            tokens, length = self._truncate_or_pad(whole_enc, context_enc_len)
-            example = _jit_create_example(self.Pos, tokens, length, pad_token_id)
-
-            out.append(example)
-
-        return out
-
-    def _truncate_or_pad(self, encoded: list[int], prompt_length: int):
-        """
-        Truncate or pad the encoded sequence to the maximum length of the model.
-        Truncates from the beginning of the sequence, so that the completion is preserved.
-
-        Returns:
-            Truncated or padded sequence and the prompt length. The prompt length can be shorter than the original
-            length if the input was truncated.
-        """
-        if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
-
-        ex_pad = self.tokenizer.pad(
-            encoded,
-            padding="max_length",
-            max_length=self.Pos.size,
-            return_tensors="np",
-        )
-
-        truncated = ex_pad["input_ids"][-self.Pos.size :]
-        # if we truncated the prompt, we need to adjust the prompt length
-        if len(truncated) < len(encoded):
-            prompt_length -= len(encoded) - len(truncated)
-            if prompt_length < 0:
-                prompt_length = 0
-                logger.warning("Prompt length is negative after truncation. Setting to 0.")
-
-        return truncated, prompt_length
-
-
-class LevanterHarnessLM(LM):
-    def __init__(
-        self,
-        EvalBatch: hax.Axis,
-        EvalPos: hax.Axis,
-        model: LmHeadModel,
-        axis_resources,
-        tokenizer,
-        mp: jmp.Policy | None,
-        max_packed_segments: int = 64,
-    ):
-        super().__init__()
+        self.max_packed_segments = max_packed_segments
         self.EvalBatch = EvalBatch
         self.EvalPos = EvalPos
         self.model = model
         self.axis_resources = axis_resources
-        self.tokenizer = tokenizer
         self.mp = mp
         self.max_packed_segments = max_packed_segments
+
+        self._dummy_batch = _make_dummy_batch(EvalBatch, EvalPos)
 
         def _eval_loglikelihood(
             model: LmHeadModel, packed_example: LmExample
@@ -254,10 +193,77 @@ class LevanterHarnessLM(LM):
 
             return segments, -losses, correct
 
+        # def _do_message(model, message, maybe_batch):
+        #     dummy_result = eqx.filter_eval_shape(_eval_loglikelihood, self._dummy_batch)
+        #     dummy_result = tree_zeros_like(dummy_result)
+        #
+        #     message, my_batch =
+        #
+        #     jax.lax.cond(message == _Message.LOGLIKELIHOOD,
+        #                  self._jit_loglikelihood,
+        #                  lambda *args: dummy_result,
+        #                  model, maybe_batch
+        #                 )
+
+
+
         # no sharded outputs
         self._jit_loglikelihood = hax.named_jit(
             _eval_loglikelihood, axis_resources=axis_resources, out_axis_resources={}
         )
+
+    def make_harness_lm(self):
+        if jax.process_index() == 0:
+            return LevanterHarnessLM(self)
+        else:
+            raise ValueError("Only process 0 can create the harness")
+
+    def worker_message_loop(self):
+        while True:
+            message, payload = self._receive_message()
+
+            if message == _Message.STOP:
+                return
+            elif message == _Message.LOGLIKELIHOOD:
+                self.process_loglikelihood(payload)
+            else:
+                raise ValueError(f"Unknown message type: {message}")
+
+    def _receive_message(self):
+        stop_message = jnp.array(_Message.STOP)
+        mesh = hax.partitioning._get_mesh()
+        stop_message = jax.device_put(stop_message, jax.NamedSharding(mesh, jax.sharding.PartitionSpec()))
+        message, payload = jnp_broadcast_one_to_all((stop_message, self._dummy_batch))
+        return message.item(), payload
+
+    def _send_message(self, message, payload):
+        assert jax.process_index() == 0
+        return jnp_broadcast_one_to_all((message, payload))
+
+    def process_loglikelihood(self, packed_request):
+        return self._jit_loglikelihood(self.model, packed_request)
+
+    def dispatch_loglikelihood(self, packed_request):
+        self._send_message(_Message.LOGLIKELIHOOD, packed_request)
+        return self.process_loglikelihood(packed_request)
+
+    def stop(self):
+        self._send_message(_Message.STOP, self._dummy_batch)
+
+
+class _Message:
+    STOP = 0
+    LOGLIKELIHOOD = 1
+
+
+class LevanterHarnessLM(LM):
+    def __init__(self, leader: _LmEvalHarnessWorker):
+        super().__init__()
+        self.leader = leader
+
+    tokenizer = property(lambda self: self.leader.tokenizer)
+    EvalBatch = property(lambda self: self.leader.EvalBatch)
+    EvalPos = property(lambda self: self.leader.EvalPos)
 
     def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
         """
@@ -265,29 +271,11 @@ class LevanterHarnessLM(LM):
         Downstream tasks should attempt to use loglikelihood instead of other
         LM calls whenever possible.
         """
-        # pad requests to be a multiple of the batch size
-        initial_length = len(requests)
-
-        # so, infuriatingly, lm_eval_harness (or maybe it's hf datasets) isn't deterministic
-        # and so when this gets called from different workers, we get different request orderings.
-        # (Requests should be the same?!?)
-        # So we need to sort them to make sure they're in the same order.
-        # we can't trust the idx, so we hash the args. we have to be able to unsort, so we need an argsort
-        # built-in hash isn't deterministic, so we have to hash it ourselves
-        import hashlib
-        indices = np.argsort([hashlib.md5(json.dumps(req.args).encode()).digest() for req in requests])
-        inverse = np.argsort(indices)
-        print(f"{jax.process_index()} {indices}")
-
-        requests_for_packing = [requests[i] for i in indices]
-
-        print(f"{jax.process_index()} {indices}")
-
         if self.tokenizer.pad_token_id is None:
             logger.warning("No pad token set. Setting to eos token.")
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        packed_iterator = _pack_requests(requests_for_packing, self.tokenizer, self.EvalPos, self.max_packed_segments)
+        packed_iterator = _pack_requests(requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments)
         packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
         result_probs = np.zeros(len(requests))
@@ -307,16 +295,6 @@ class LevanterHarnessLM(LM):
             except KeyError:
                 pass
 
-            # compute a checksum of this batch so we can compare to the other workers
-            batch_checksum = hashlib.md5(json.dumps([np.array(batch[i].tokens.array).tolist() for i in range(len(batch))]).encode()).digest()
-            print(f"check {q} {jax.process_index()} {batch_checksum}")
-
-            orig_batch_len = len(batch)
-            # print(f"{q} {jax.process_index()} tokens: {np.array(batch[0].tokens.array).tolist()}")
-            # print(f"{q} {jax.process_index()} mask: {np.array(batch[0].loss_mask.array).tolist()}")
-            print(
-                f"{q} {jax.process_index()} seg: {segments_this_batch} {len(segments_this_batch)} {len(batch)} {len(requests)}"
-            )
             if len(batch) < self.EvalBatch.size:
                 dummy_instance = self._make_dummy_instance(batch)
                 batch.extend([dummy_instance] * (self.EvalBatch.size - len(batch)))
@@ -325,7 +303,7 @@ class LevanterHarnessLM(LM):
             # stacked = hax.shard(stacked, self.axis_resources)
             time_batch = time.time()
 
-            out_ids, out_lls, out_correct = self._jit_loglikelihood(self.model, stacked)
+            out_ids, out_lls, out_correct = self.leader.dispatch_loglikelihood(stacked)
             # result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
             # -1's are going to be where we had too few sequences to fill a batch
             out_ids = np.array(out_ids.array)
@@ -355,11 +333,7 @@ class LevanterHarnessLM(LM):
         missing_points = np.where(~covered_points)[0]
         assert len(missing_points) == 0, f"Missing points: {missing_points}"
 
-        result = list(zip(result_probs[:initial_length], result_greedy[:initial_length]))
-
-        # unsort the results
-        result = [result[i] for i in inverse]
-
+        result = list(zip(result_probs, result_greedy))
         logger.info(f"Finished running {len(requests)} loglikelihoods.")
 
         return result
@@ -371,24 +345,11 @@ class LevanterHarnessLM(LM):
         dummy_instance = dataclasses.replace(dummy_instance, attn_mask=dummy_attn)
         return dummy_instance
 
-    def _pad_dataset_to_batch_size(self, requests):
-        dummy_instance = dataclasses.replace(requests[0], arguments=("hello", " there"), idx=len(requests))
-        requests = requests + [dummy_instance] * (self.EvalBatch.size - len(requests) % self.EvalBatch.size)
-        assert len(requests) % self.EvalBatch.size == 0
-        dataset = EvalDataset(self.EvalPos, self.tokenizer, requests)
-        return dataset
-
     def loglikelihood_rolling(self, requests) -> List[Tuple[float]]:
         raise NotImplementedError()
 
     def generate_until(self, requests) -> List[str]:
         raise NotImplementedError()
-
-
-@functools.partial(jax.jit, static_argnums=(0, 3))
-def _jit_create_example(Pos, tokens, prompt_len, pad_token_id):
-    tokens = hax.named(tokens, Pos)
-    return LmExample.from_prompt_and_completion(Pos, tokens, prompt_len, ignore_id=pad_token_id)
 
 
 @dataclass(frozen=True)
@@ -555,15 +516,23 @@ def _actually_run_eval_harness(
         f"Evaluating with max eval length {EvalPos.size} and batch size {EvalBatch.size}. There are"
         f" {num_parameters} parameters in the model."
     )
-    harness = LevanterHarnessLM(EvalBatch, EvalPos, model, axis_resources, tokenizer, mp)
     logger.info("Running eval harness...")
-    outputs = evaluator.evaluate(
-        harness,
-        tasks_to_run,
-        limit=max_examples,
-        log_samples=config.log_samples,
-        bootstrap_iters=config.bootstrap_iters,
-    )
+
+    worker = _LmEvalHarnessWorker(EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments=64)
+
+    if jax.process_index() == 0:
+        harness = worker.make_harness_lm()
+        outputs = evaluator.evaluate(
+            harness,
+            tasks_to_run,
+            limit=max_examples,
+            log_samples=config.log_samples,
+            bootstrap_iters=config.bootstrap_iters,
+        )
+        worker.stop()
+    else:
+        worker.worker_message_loop()
+
     logger.info("Finished running eval harness.")
 
     averages = _compute_averages(outputs)
@@ -616,100 +585,6 @@ def _compute_averages(outputs):
             averages["micro_avg_" + metric] = np.average(metric_values, weights=this_examples_per_task)
 
     return averages
-
-
-BITS_PER_NAT = 1 / np.log(2)
-
-# eval_harness isn't consistent enough for this to actually be workable
-# def _compute_extra_metrics(samples):
-#     """
-#     Compute a few "soft" measures of accuracy for each task, based on the outputs of the eval harness.
-#
-#     Specifically, we compute:
-#        - "bpb": bits per byte of the correct completion
-#        - "logprob": log probability of the correct completion
-#        - "choice_logprob": log probability of the correct choice normalized w.r.t. the other choices
-#        - "choice_prob_norm": probability of the length-normalized correct choice normalized w.r.t. the other choices
-#
-#     Args:
-#         samples: Dictionary with task data, where each task has a list of samples. Each sample contains:
-#                  - "doc": The original task document (can include metadata such as the answer key)
-#                  - "target": Index of the correct answer (0-indexed), or
-#                              "doc.answer" for 1-indexed answers.
-#                  - "arguments": List of [input, completion] pairs
-#                  - "resps": List of [log probability, is_correct] pairs for completions
-#
-#     Returns:
-#         A dictionary with per-task aggregated metrics.
-#     """
-#     # TODO: move to eval harness and use more sane logic
-#     # uses the samples which has one of two structures (that I've seen)
-#     # { "<task>": [ {"doc": {...,}, "target": <0-indexed answer>, "arguments": [[input, completion], "resps": [[score, is_correct], ...], ...}, ...] }
-#     # { "<task>": [ {"doc": {..., "answer": "[1-indexed answer]"}, "target": "<useless string>", "arguments": [input, completion], "resps": [[score, is_correct], ...], ...}, ...] }
-#     metrics = {}
-#
-#     for task, samples in samples.items():
-#         bpb_list = []
-#         logprob_list = []
-#         choice_logprob_list = []
-#         choice_prob_norm_list = []
-#
-#         for sample in samples:
-#             # Extract the correct answer index (supporting both 0-indexed `target` and 1-indexed `doc.answer`)
-#             if "answer" in sample["doc"]:
-#                 target = int(sample["doc"]["answer"]) - 1  # Convert 1-indexed to 0-indexed
-#             elif "label" in sample["doc"]:
-#                 target = int(sample["doc"]["label"])
-#             elif "target" in sample and isinstance(sample["target"], int):
-#                 target = sample["target"]  # 0-indexed target
-#             elif "target" in sample and isinstance(sample["target"], str):
-#                 # see if it's A-Z:
-#                 if len(sample["target"]) == 1 and "A" <= sample["target"] <= "Z":
-#                     target = ord(sample["target"]) - ord("A")
-#                 else:
-#                     raise ValueError(f"Invalid target: {sample['target']}. {sample}")
-#             elif "target" in sample and isinstance(sample["target"], list):
-#                 target = sample["target"][0]
-#             else:
-#                 raise KeyError(f"Missing `target` or `doc.answer` in sample. doc id: {sample['doc_id']}. Hash: {sample['doc_hash']}\n\n{sample}")
-#
-#             resps = sample["filtered_resps"]  # List of [log probability, is_correct]
-#             arguments = sample["arguments"]  # [input, completion] pairs
-#
-#             # Compute byte lengths for each choice
-#             byte_lengths = [max(1, len(completion.encode("utf-8"))) for _, completion in arguments]
-#
-#             # Compute log probabilities for each choice
-#             log_probs = np.array([resp[0] for resp in resps])  # Extract log probabilities
-#             assert log_probs.shape == (len(arguments),), f"Log probs shape: {log_probs.shape}, arguments: {len(arguments)}. doc: {sample}"
-#             normalized_log_probs = log_probs - np.logaddexp.reduce(log_probs)
-#
-#             # Metrics for the correct answer
-#             correct_logprob = log_probs[target]
-#             correct_bpb = -correct_logprob / byte_lengths[target] * NAT_TO_BIT
-#             correct_choice_logprob = normalized_log_probs[target]
-#
-#             # Compute length-normalized weights (w_i)
-#             bpb_values = -log_probs / np.array(byte_lengths) * NAT_TO_BIT
-#             bpb_weights = np.exp(-bpb_values)
-#             bpb_weights /= max(bpb_weights.sum(), 1e-8)  # Avoid division by zero
-#             correct_choice_prob_norm = bpb_weights[target]
-#
-#             # Append metrics
-#             bpb_list.append(correct_bpb)
-#             logprob_list.append(correct_logprob)
-#             choice_logprob_list.append(correct_choice_logprob)
-#             choice_prob_norm_list.append(correct_choice_prob_norm)
-#
-#         # Aggregate metrics for the task
-#         metrics[task] = {
-#             "bpb": np.mean(bpb_list) if bpb_list else 0.0,
-#             "logprob": np.mean(logprob_list) if logprob_list else 0.0,
-#             "choice_logprob": np.mean(choice_logprob_list) if choice_logprob_list else 0.0,
-#             "choice_prob_norm": np.mean(choice_prob_norm_list)  if choice_prob_norm_list else 0.0,
-#         }
-#
-#     return metrics
 
 
 def run_eval_harness_main(config: EvalHarnessMainConfig):
