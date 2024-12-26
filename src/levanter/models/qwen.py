@@ -15,7 +15,14 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.attention import AttentionMask, dot_product_attention
-from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaRMSNorm, LlamaTransformer
+from levanter.models.llama import (
+    LlamaConfig,
+    LlamaEmbedding,
+    LlamaMlp,
+    LlamaRMSNorm,
+    LlamaTransformer,
+    LlamaLMHeadModel,
+)
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import RotaryEmbeddingsConfig
 from levanter.utils.flop_utils import lm_flops_per_token
@@ -265,7 +272,7 @@ class QwenTransformer(LlamaTransformer):
 
 
 # Modified LM head model for Qwen
-class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization):
+class QwenLMHeadModel(LlamaLMHeadModel, ModuleWithStateDictSerialization):
     transformer: QwenTransformer
     embeddings: LlamaEmbedding  # Can reuse Llama embeddings
     lm_head: Optional[hnn.Linear]
