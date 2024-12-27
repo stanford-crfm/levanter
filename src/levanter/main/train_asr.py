@@ -88,10 +88,8 @@ def main(config: TrainASRConfig):
         example: AudioTextExample,
         *,
         key=None,
-        reduction: Optional[hax.ReductionFunction] = hax.mean,
-        reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> jax.numpy.ndarray | hax.NamedArray:
-        return m.compute_loss(example, key=key, reduction=reduction, reduction_axis=reduction_axis)
+        return m.compute_loss(example, key=key)
 
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh

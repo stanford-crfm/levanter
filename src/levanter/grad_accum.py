@@ -1,4 +1,3 @@
-import enum
 import functools
 from typing import Callable, Optional, ParamSpec, TypeVar
 
@@ -9,34 +8,31 @@ from jax.lax import with_sharding_constraint
 from jax.sharding import PartitionSpec
 
 import haliax as hax
+import haliax.quantization as hq
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
 from haliax.util import is_named_array
 
 from levanter.utils.jax_utils import zeros_like_tree
+from levanter.utils.types import ComputeLossFunction
 
 
 Args = ParamSpec("Args")
 R = TypeVar("R")
-
-
-class ReductionType(enum.Enum):
-    SUM = enum.auto()
-    MEAN = enum.auto()
-    # TODO: add MAX?
+M_con = TypeVar("M_con", contravariant=True)  # Model
+X = TypeVar("X", contravariant=True)  # Input
 
 
 # TODO: should we use a custom_jvp on microbatched?
 
 # cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617
 def microbatched(
-    fn: Callable[Args, R],
+    loss_fn: ComputeLossFunction[M_con, X],
     Batch: Axis,
     microbatch_size: int,
     accum_axis_mapping,
     compute_axis_mapping,
     patch_in_rng_key: Optional[str] = "key",
-    reduce: ReductionType = ReductionType.MEAN,
     accum_dtype: Optional[jnp.dtype] = None,
 ) -> Callable[Args, R]:
     """
@@ -78,20 +74,32 @@ def microbatched(
     num_micro_steps = batch_size // microbatch_size
 
     if num_micro_steps == 1:
-        return fn
+
+        @functools.wraps(loss_fn)
+        def no_accum_loss_fn(*args, **kwargs):
+            losses, where, extras = loss_fn(*args, **kwargs)
+            seen_tokens = where.sum().scalar()
+            extras["seen_tokens"] = seen_tokens
+            return hax.mean(losses, where=where).scalar(), extras
+
+        return eqx.filter_value_and_grad(no_accum_loss_fn, has_aux=True)
 
     Microbatch = Batch.resize(microbatch_size)
     AccumStep = Axis("accum_step", num_micro_steps)
     assert num_micro_steps * microbatch_size == batch_size
 
-    if reduce not in ReductionType:
-        raise ValueError(f"accum_type must be one of {ReductionType}")
+    @functools.wraps(loss_fn)
+    def accum_loss_fn(*args, **kwargs):
+        losses, where, extras = loss_fn(*args, **kwargs)
+        return hax.sum(losses, where=where).scalar(), (where.sum(), extras)
 
-    @functools.wraps(fn)
+    grad_fn = eqx.filter_value_and_grad(accum_loss_fn, has_aux=True)
+
+    @functools.wraps(grad_fn)
     def wrapped_fn(*args, **kwargs):
 
         # first, determine the shape and make accumulator arrays
-        r_shape = eqx.filter_eval_shape(fn, *args, **kwargs)
+        r_shape = eqx.filter_eval_shape(grad_fn, *args, **kwargs)
         acc = zeros_like_tree(r_shape, accum_axis_mapping, accum_dtype)
 
         # then, reshape the inputs from (Batch, ...) to (AccumStep, Microbatch, ...)
@@ -106,30 +114,34 @@ def microbatched(
         args = _reshape_for_microbatch(Batch, Microbatch, AccumStep, args, compute_axis_mapping)
 
         def loop(acc, microbatch_and_key):
+            (loss, (total, extras)), grads = acc
             microbatch, microbatch_kwargs, key = microbatch_and_key
             with jax.named_scope("compute"):
                 microbatch_kwargs = microbatch_kwargs.copy()
                 if key is not None:
                     microbatch_kwargs[patch_in_rng_key] = key
-                this_r = fn(*microbatch, **microbatch_kwargs)
+                (loss_mb, (n_mb, extras_mb)), grads_mb = grad_fn(*microbatch, **microbatch_kwargs)
 
             with jax.named_scope("accum"):
-                import haliax.quantization as hq
 
                 # TODO: this uses the latest value for the scale for fp8, which seems not ideal but probably ok?
-                overwrites, updates = hq.partition_for_grad_overwrite(this_r)
-                acc = hq.apply_updates(acc, updates, overwrites)
-                acc = hax.shard_with_axis_mapping(acc, accum_axis_mapping)
+                overwrites, updates = hq.partition_for_grad_overwrite(grads_mb)
+                grads = hq.apply_updates(grads, updates, overwrites)
+                grads = hax.shard_with_axis_mapping(grads, accum_axis_mapping)
+                loss += loss_mb
+                total += n_mb
 
-            return acc
+            return (loss, (total, {k: v + extras_mb[k] for k, v in extras.items()})), grads
 
         with jax.named_scope("microbatched"):
-            acc = hax.fold(loop, AccumStep)(acc, (args, kwargs, key))
+            (loss, (total, extras)), grads, = hax.fold(
+                loop, AccumStep
+            )(acc, (args, kwargs, key))
+            grads = jax.tree_util.tree_map(lambda x: x / total, grads)
+            loss /= total
+            extras["seen_tokens"] = total
 
-            if reduce == ReductionType.MEAN:
-                acc = jax.tree_util.tree_map(lambda x: x / num_micro_steps, acc)
-
-        return acc
+        return (loss, extras), grads
 
     return wrapped_fn
 
