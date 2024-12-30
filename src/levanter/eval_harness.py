@@ -46,6 +46,7 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.loss import next_token_loss
 from levanter.utils.background_iterable import BackgroundIterator
 from levanter.utils.hf_utils import HfTokenizer
+from levanter.utils.py_utils import set_global_rng_seeds
 
 
 try:
@@ -546,15 +547,19 @@ def _actually_run_eval_harness(
     worker = _LmEvalHarnessWorker(EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments=64)
 
     if jax.process_index() == 0:
-        print("Running eval harness on process 0", flush=True)
+        logger.info("Process 0 is running the eval harness.")
         harness = worker.make_harness_lm()
-        outputs = evaluator.evaluate(
-            harness,
-            tasks_to_run,
-            limit=max_examples,
-            log_samples=config.log_samples,
-            bootstrap_iters=config.bootstrap_iters,
-        )
+
+        # eval_harness only sets seeds in simple_evaluate, which we can't use (I think?)
+        tasks_to_run = _adjust_config(tasks_to_run, 0)
+        with set_global_rng_seeds(0):
+            outputs = evaluator.evaluate(
+                harness,
+                tasks_to_run,
+                limit=max_examples,
+                log_samples=config.log_samples,
+                bootstrap_iters=config.bootstrap_iters,
+            )
         worker.stop()
 
         averages = _compute_averages(outputs)
@@ -562,7 +567,7 @@ def _actually_run_eval_harness(
 
         return outputs
     else:
-        print("Running worker message loop", flush=True)
+        logger.info(f"Process {jax.process_index()} is waiting for eval harness requests from process 0.")
         worker.worker_message_loop()
 
         logger.info("Finished running eval harness.")
@@ -743,6 +748,25 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
                 logger.info("Uploaded results to tracker")
 
     return lm_eval_harness
+
+
+# lifted from lm-eval simple_evaluate
+def _adjust_config(task_dict, fewshot_random_seed=0):
+    adjusted_task_dict = {}
+    for task_name, task_obj in task_dict.items():
+        if isinstance(task_obj, dict):
+            adjusted_task_dict = {
+                **adjusted_task_dict,
+                **{task_name: _adjust_config(task_obj, fewshot_random_seed=fewshot_random_seed)},
+            }
+
+        else:
+            # fewshot_random_seed set for tasks, even with a default num_fewshot (e.g. in the YAML file)
+            task_obj.set_fewshot_seed(seed=fewshot_random_seed)
+
+            adjusted_task_dict[task_name] = task_obj
+
+    return adjusted_task_dict
 
 
 if __name__ == "__main__":
