@@ -43,7 +43,7 @@ class LmExample(eqx.Module):
         causal_loss_mask = LmExample.causal_loss_mask(Pos)
 
         if loss_mask is not None:
-            loss_mask = loss_mask & causal_loss_mask
+            loss_mask = loss_mask & causal_loss_mask.astype(loss_mask.dtype)
         else:
             loss_mask = causal_loss_mask
 
@@ -60,6 +60,8 @@ class LmExample(eqx.Module):
             # first token is always in segment 0
             eos_mask = eos_mask.at[Pos, 0].set(False).astype(jnp.int32)
             segment_ids = hax.cumsum(eos_mask, axis=Pos)
+            attn_mask = attn_mask.with_segment_ids(segment_ids)
+        elif segment_ids is not None:
             attn_mask = attn_mask.with_segment_ids(segment_ids)
 
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)

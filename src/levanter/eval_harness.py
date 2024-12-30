@@ -31,6 +31,7 @@ import jax
 import jax.numpy as jnp
 import jmp
 import numpy as np
+from jax.sharding import PartitionSpec
 from optax.tree_utils import tree_zeros_like
 
 import haliax
@@ -66,7 +67,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.data import batched
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import StepInfo, TrainerConfig
-from levanter.utils.jax_utils import jnp_broadcast_one_to_all, use_cpu_device
+from levanter.utils.jax_utils import broadcast_shard, use_cpu_device
 from levanter.utils.tree_utils import inference_mode
 
 
@@ -121,10 +122,13 @@ def _pack_requests(
 
 
 def _make_dummy_batch(EvalBatch, EvalPos):
-    dummy_batch = hax.vmap(LmExample.causal, EvalBatch)(hax.zeros(EvalPos, dtype=jnp.int32),
-                                                        loss_mask=hax.zeros(EvalPos, dtype=jnp.int32),
-                                                        segment_ids=hax.zeros(EvalPos, dtype=jnp.int32))
-    return dummy_batch
+    dummy_batch = hax.vmap(LmExample.causal, EvalBatch)(
+        hax.zeros(EvalPos, dtype=jnp.int32),
+        loss_mask=hax.zeros(EvalPos, dtype=jnp.int32),
+        segment_ids=hax.zeros(EvalPos, dtype=jnp.int32),
+    )
+    out = hax.shard(dummy_batch, {})
+    return out
 
 
 class _LmEvalHarnessWorker:
@@ -186,11 +190,6 @@ class _LmEvalHarnessWorker:
             losses = hax.flatten(batched_per_segment_losses, "segment")
             correct = hax.flatten(batched_per_segment_correct, "segment")
 
-            jax.debug.inspect_array_sharding(
-                batched_segment_ids, callback=lambda x: print(f"batched Segment ids: {x}")
-            )
-            jax.debug.inspect_array_sharding(segments, callback=lambda x: print(f"Segment ids: {x}"))
-
             return segments, -losses, correct
 
         # def _do_message(model, message, maybe_batch):
@@ -205,8 +204,6 @@ class _LmEvalHarnessWorker:
         #                  model, maybe_batch
         #                 )
 
-
-
         # no sharded outputs
         self._jit_loglikelihood = hax.named_jit(
             _eval_loglikelihood, axis_resources=axis_resources, out_axis_resources={}
@@ -220,40 +217,67 @@ class _LmEvalHarnessWorker:
 
     def worker_message_loop(self):
         while True:
-            message, payload = self._receive_message()
+            message = self._receive_message()
 
             if message == _Message.STOP:
                 return
             elif message == _Message.LOGLIKELIHOOD:
+                payload = self._receive_payload()
                 self.process_loglikelihood(payload)
             else:
                 raise ValueError(f"Unknown message type: {message}")
 
     def _receive_message(self):
         stop_message = jnp.array(_Message.STOP)
-        mesh = hax.partitioning._get_mesh()
-        stop_message = jax.device_put(stop_message, jax.NamedSharding(mesh, jax.sharding.PartitionSpec()))
-        message, payload = jnp_broadcast_one_to_all((stop_message, self._dummy_batch))
-        return message.item(), payload
+        message = broadcast_shard(stop_message, PartitionSpec())
+        return message.item()
 
-    def _send_message(self, message, payload):
+    def _receive_payload(self):
+        payload = broadcast_shard(
+            self._dummy_batch,
+            hax.partitioning.infer_resource_partitions(self._dummy_batch, preserve_existing_shardings=False),
+        )
+        return payload
+
+    def _send_message(self, message):
         assert jax.process_index() == 0
-        return jnp_broadcast_one_to_all((message, payload))
+        out = broadcast_shard(jnp.array(message), PartitionSpec())
+        return out
+
+    def _send_payload(self, payload):
+        assert jax.process_index() == 0
+        out = broadcast_shard(
+            payload, hax.partitioning.infer_resource_partitions(payload, preserve_existing_shardings=False)
+        )
+        return out
 
     def process_loglikelihood(self, packed_request):
-        return self._jit_loglikelihood(self.model, packed_request)
+        out = self._jit_loglikelihood(self.model, packed_request)
+        return out
 
     def dispatch_loglikelihood(self, packed_request):
-        self._send_message(_Message.LOGLIKELIHOOD, packed_request)
+        self._send_message(_Message.LOGLIKELIHOOD)
+        self._send_payload(packed_request)
         return self.process_loglikelihood(packed_request)
 
     def stop(self):
-        self._send_message(_Message.STOP, self._dummy_batch)
+        self._send_message(_Message.STOP)
 
 
 class _Message:
     STOP = 0
     LOGLIKELIHOOD = 1
+
+
+def _get_segments_this_batch(batch):
+    segments_this_batch = set()
+    for i in range(len(batch)):
+        segments_this_batch.update(np.unique(batch[i].attn_mask.segment_ids.array).tolist())
+    try:
+        segments_this_batch.remove(-1)
+    except KeyError:
+        pass
+    return segments_this_batch
 
 
 class LevanterHarnessLM(LM):
@@ -283,42 +307,32 @@ class LevanterHarnessLM(LM):
         covered_points = np.zeros(len(requests), dtype=bool)
 
         time_in = time.time()
-        for q, batch in enumerate(
-            tqdm(batched(packed_iterator, self.EvalBatch.size), desc="Loglikelihood", unit="ba")
-        ):
-            segments_this_batch = set()
-            for i in range(len(batch)):
-                segments_this_batch.update(np.unique(batch[i].attn_mask.segment_ids.array).tolist())
-
-            try:
-                segments_this_batch.remove(-1)
-            except KeyError:
-                pass
+        pbar = tqdm(total=len(requests), desc="Loglikelihood", unit="req")
+        for q, batch in enumerate(batched(packed_iterator, self.EvalBatch.size)):
+            segments_this_batch = _get_segments_this_batch(batch)
 
             if len(batch) < self.EvalBatch.size:
                 dummy_instance = self._make_dummy_instance(batch)
                 batch.extend([dummy_instance] * (self.EvalBatch.size - len(batch)))
 
-            stacked = stack_tree(self.EvalBatch, batch)
-            # stacked = hax.shard(stacked, self.axis_resources)
+            with use_cpu_device():
+                stacked = stack_tree(self.EvalBatch, batch)
             time_batch = time.time()
 
             out_ids, out_lls, out_correct = self.leader.dispatch_loglikelihood(stacked)
-            # result.extend((ll.item(), correct.item()) for ll, correct in zip(out_lls.array, out_correct.array))
-            # -1's are going to be where we had too few sequences to fill a batch
+
             out_ids = np.array(out_ids.array)
             out_lls = np.array(out_lls.array)
             out_correct = np.array(out_correct.array)
+            # -1's are going to be where we had too few sequences to fill a batch
             valid_indices = out_ids != -1
 
             out_ids_this_batch = out_ids[valid_indices].tolist()
 
             missing_ids = set(segments_this_batch) - set(out_ids_this_batch)
-
-            # assert len(out_ids_this_batch) == len(
-            #     segments_this_batch
-            # ), f"Batch {q} had {len(segments_this_batch)} segments, but {len(out_ids_this_batch)} loglikelihoods"
+            extra_ids = set(out_ids_this_batch) - set(segments_this_batch)
             assert len(missing_ids) == 0, f"Missing segments: {missing_ids}"
+            assert len(extra_ids) == 0, f"Extra segments: {extra_ids}"
 
             result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
             result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
@@ -326,8 +340,11 @@ class LevanterHarnessLM(LM):
 
             time_ll = time.time()
 
+            pbar.update(len(segments_this_batch))
+
             if jax.process_index() == 0:
                 print(f"Batch time: {time_batch - time_in}, LL time: {time_ll - time_batch}")
+
             time_in = time.time()
 
         missing_points = np.where(~covered_points)[0]
@@ -481,7 +498,15 @@ def run_lm_eval_harness(
     EvalBatch,
     axis_resources,
     mp: jmp.Policy | None,
-) -> dict:
+) -> dict | None:
+    """
+    Run the LM Eval Harness on the given model and tasks.
+
+    Returns:
+        If running on process 0, returns the outputs of the LM Eval Harness with the following extra keys.
+        - "averages": A dictionary with macro and micro averages for all metrics.
+        Otherwise, returns None.
+    """
     tasks_to_run = config.to_task_dict()
 
     outputs = _actually_run_eval_harness(config, model, tasks_to_run, tokenizer, EvalBatch, axis_resources, mp)
@@ -497,7 +522,7 @@ def _actually_run_eval_harness(
     EvalBatch: haliax.Axis,
     axis_resources: ResourceMapping,
     mp: jmp.Policy | None,
-):
+) -> dict | None:
     """
     Actually run the LM Eval Harness on the given model and tasks. This is a separate function so that it can be used
     by the main function and the callback function.
@@ -521,6 +546,7 @@ def _actually_run_eval_harness(
     worker = _LmEvalHarnessWorker(EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments=64)
 
     if jax.process_index() == 0:
+        print("Running eval harness on process 0", flush=True)
         harness = worker.make_harness_lm()
         outputs = evaluator.evaluate(
             harness,
@@ -530,15 +556,18 @@ def _actually_run_eval_harness(
             bootstrap_iters=config.bootstrap_iters,
         )
         worker.stop()
+
+        averages = _compute_averages(outputs)
+        outputs["averages"] = averages
+
+        return outputs
     else:
+        print("Running worker message loop", flush=True)
         worker.worker_message_loop()
 
-    logger.info("Finished running eval harness.")
+        logger.info("Finished running eval harness.")
 
-    averages = _compute_averages(outputs)
-    outputs["averages"] = averages
-
-    return outputs
+        return None
 
 
 def _compute_averages(outputs):
@@ -633,20 +662,20 @@ def run_eval_harness_main(config: EvalHarnessMainConfig):
         logger.info("Finished running LM eval harness")
 
         # log the results
-        logger.info("Logging results to tracker")
-        log_report_to_tracker("lm_eval", outputs, levanter.tracker.current_tracker())
-        logger.info("Finished logging results to tracker")
-
-        # log the results as json
-        logger.info("uploading artifacts...")
-        with open("lm_eval_harness_results.json", "w") as f:
-            json.dump(outputs, f, indent=2)
-            f.flush()
-            f_path = f.name
-            levanter.tracker.current_tracker().log_artifact(f_path, name="lm_eval_harness_results")
-
-        # also write to stdout
         if jax.process_index() == 0:
+            logger.info("Logging results to tracker")
+            assert outputs is not None
+            log_report_to_tracker("lm_eval", outputs, levanter.tracker.current_tracker())
+            logger.info("Finished logging results to tracker")
+
+            # log the results as json
+            logger.info("uploading artifacts...")
+            with open("lm_eval_harness_results.json", "w") as f:
+                json.dump(outputs, f, indent=2)
+                f.flush()
+                f_path = f.name
+                levanter.tracker.current_tracker().log_artifact(f_path, name="lm_eval_harness_results")
+
             print(json.dumps(outputs, indent=2), flush=True)
 
         return outputs
@@ -681,8 +710,8 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
     tasks_to_run = config.to_task_dict()
 
     def lm_eval_harness(step: StepInfo, force=False):
-        # if step.step == 0 and not force:
-        #     return  # don't run eval on the first step
+        if step.step == 0 and not force:
+            return
 
         model = inference_mode(step.model, True)
         logger.info("Running eval harness...")
@@ -698,6 +727,7 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
         logger.info("Finished running eval harness.")
 
         if jax.process_index() == 0:
+            assert outputs is not None
             log_report_to_tracker("lm_eval", outputs, levanter.tracker.current_tracker())
             logger.info("Logged report to tracker")
 

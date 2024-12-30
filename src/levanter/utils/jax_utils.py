@@ -15,6 +15,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 import haliax as hax
 from haliax import is_named_array
+from haliax._src.util import index_where
 from haliax.jax_utils import is_jax_array_like
 from haliax.partitioning import ResourceAxis, ResourceMapping
 
@@ -369,3 +370,62 @@ def _zeros_like(mapping, dtype, n):
             return n - n
         else:
             return jnp.zeros((), dtype=dtype)
+
+
+def broadcast_shard(x: T, out_axis_specs: Any, source: int = 0) -> T:
+    """
+    Given a tree of arrays that are on a single source host, and other data (e.g. zeros) with
+    the same structure, broadcast and shard the data to all hosts, using the axis mapping provided.
+
+    For some reason, I had a ton of trouble figuring this out.
+
+    Our strategy is, for each leaf:
+     1. create a host_local_array_to_global_array with the data if we're the source, or zeros if we're not.
+        This gives us an array [num_devices, ...]
+     2. Then, inside jit, we select the source'th element of the array, then reshard with the out_axis_specs
+
+    """
+    if jax.process_count() == 1:
+        return x
+
+    current_mesh: jax.sharding.Mesh = hax.partitioning._get_mesh()
+
+    axis_names = current_mesh.axis_names
+
+    valid_device_for_process = index_where(lambda d: d.host_id == source, current_mesh.devices.flatten())
+    sharding = NamedSharding(
+        current_mesh,
+        PartitionSpec(
+            axis_names,
+        ),
+    )
+
+    def pre_jit(x):
+        if jax.process_index() == source:
+            inp = np.array(x)
+        else:
+            inp = jnp.zeros(x.shape, dtype=x.dtype)
+
+        shape = (len(jax.devices()),) + inp.shape
+        inp = jnp.expand_dims(inp, axis=0)
+        out = jax.make_array_from_callback(shape, sharding, lambda _: inp)
+
+        return out
+
+    def in_jit(x, pspec):
+        if isinstance(x, hax.NamedArray):
+            arr = x.array
+        else:
+            arr = x
+        arr = jax.lax.with_sharding_constraint(arr[valid_device_for_process], pspec)
+
+        if isinstance(x, hax.NamedArray):
+            return hax.named(arr, x.axes)
+        else:
+            return arr
+
+    x = jax.tree.map(pre_jit, x)
+    # q = eqx.filter_jit(jax.tree.map).lower(in_jit, x, out_axis_specs, is_leaf=is_named_array).as_text()
+    out = eqx.filter_jit(jax.tree.map)(in_jit, x, out_axis_specs, is_leaf=is_named_array)
+
+    return out
