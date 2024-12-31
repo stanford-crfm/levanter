@@ -15,11 +15,9 @@ class KronConfig(OptimizerConfig):
     Attributes:
         beta1: Momentum parameter. 0.9 or 0.95 are common values.
         weight_decay: Weight decay coefficient.
-        max_grad_norm: Optional gradient norm clipping value.
-        normalize_grads: Whether to normalize the incoming gradients to unit norm layer-wise.
-            Can help with stability but likely not necessary in this scenario.
+        max_grad_norm: Unused.
         preconditioner_update_probability: Final probability of updating the preconditioner. Default
-            is 0.05 (update every 20 steps). The `precond_update_prob_schedule` holds probability at
+            is 0.03 (update every 33 steps). The `precond_update_prob_schedule` holds probability at
             1.0 for `update_prob_flat_start` steps before annealing exponentially down to this
             value within ~3000 steps. Training is slower while updates are done every step, but
             training speeds up after update probability decays.
@@ -50,10 +48,9 @@ class KronConfig(OptimizerConfig):
     beta1: float = 0.9
     weight_decay: float = 0.1
     max_grad_norm: Optional[float] = None
-    normalize_grads: bool = False
-    preconditioner_update_probability: float = 0.05
+    preconditioner_update_probability: float = 0.03
     update_prob_flat_start: int = 1000
-    max_size_triangular: int = 25000
+    max_size_triangular: int = 16384
     min_ndim_triangular: int = 2
     memory_save_mode: Optional[str] = None
     preconditioner_lr: float = 0.1
@@ -67,15 +64,14 @@ class KronConfig(OptimizerConfig):
 
     def build(self, num_train_steps):
         """Creates the optimizer."""
+        if self.max_grad_norm is not None and jax.process_index() == 0:
+            print("WARNING: max_grad_norm is unused in PSGD Kron optimizer")
 
         def _optimizer(learning_rate) -> optax.GradientTransformation:
             components = []
-            if self.max_grad_norm and not self.normalize_grads:
-                components.append(optax.clip_by_global_norm(self.max_grad_norm))
             components.append(
                 scale_by_kron_for_levanter(
                     b1=self.beta1,
-                    normalize_grads=self.normalize_grads,
                     preconditioner_update_probability=precond_update_prob_schedule(
                         min_prob=self.preconditioner_update_probability,
                         flat_start=self.update_prob_flat_start,
@@ -157,7 +153,6 @@ def precond_update_prob_schedule(
 
 def scale_by_kron_for_levanter(
     b1: float = 0.9,
-    normalize_grads: bool = False,
     preconditioner_update_probability: Union[
         float, Callable[[int], float]
     ] = precond_update_prob_schedule(),
@@ -182,7 +177,6 @@ def scale_by_kron_for_levanter(
 
     Args:
         b1: float, momentum parameter.
-        normalize_grads: bool, whether to normalize gradients to unit norm layer-wise.
         preconditioner_update_probability: float, probability of updating the
             preconditioner. Default anneals from 1.0 to 0.03 by 4000 steps.
         max_size_triangular: int, max size for dim's preconditioner to be triangular.
@@ -361,13 +355,6 @@ def scale_by_kron_for_levanter(
         if isinstance(preconditioner_update_probability, Callable):
             update_prob_in = preconditioner_update_probability(count_inc)
 
-        # normalize grads
-        if normalize_grads:
-            updates = jax.tree.map(
-                lambda g: g / (jnp.linalg.norm(g) + 1e-16),
-                updates,
-            )
-
         # momentum
         mu = None
         momentum_updates = updates
@@ -512,7 +499,6 @@ def scale_by_kron_for_levanter(
 def kron(
     learning_rate: Union[float, Callable[[int], float]] = 0.001,
     b1: float = 0.9,
-    normalize_grads: bool = False,
     weight_decay: float = 0.0,
     weight_decay_mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
     preconditioner_update_probability: Union[
@@ -537,7 +523,6 @@ def kron(
     Args:
         learning_rate: float or callable, learning rate.
         b1: float, momentum parameter.
-        normalize_grads: bool, whether to normalize gradients to unit norm layer-wise.
         weight_decay: float, weight decay.
         weight_decay_mask: optional Any or callable, pytree of bool same structure
             as params with weight decay applied to True elements.
@@ -571,7 +556,6 @@ def kron(
     optimizer = [
         scale_by_kron_for_levanter(
             b1=b1,
-            normalize_grads=normalize_grads,
             preconditioner_update_probability=preconditioner_update_probability,
             max_size_triangular=max_size_triangular,
             min_ndim_triangular=min_ndim_triangular,
