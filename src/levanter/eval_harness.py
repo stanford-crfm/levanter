@@ -106,8 +106,14 @@ def _pack_requests(
     requests: list[Instance], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
 ) -> Iterator[LmExample]:
     packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size)
+    # max_capacity shouln't be too big or we spend all our time lookign for packing
+    # TODO: use a better packing algorithm
     yield from pack_prompt_completions(
-        Pos, packed_iterator, max_segments_per_example=max_pack_size, pad_token=tokenizer.pad_token_id
+        Pos,
+        packed_iterator,
+        max_segments_per_example=max_pack_size,
+        pad_token=tokenizer.pad_token_id,
+        max_buffered_examples=16,
     )
 
 
@@ -177,7 +183,8 @@ class _LmEvalHarnessWorker:
             targets = hax.roll(packed_example.tokens, -1, axis=Pos)
             is_correct = targets == pred_targets
 
-            max_Segments = hax.Axis("Segments", size=self.max_packed_segments)
+            # we need + 1 because we use -1 as a padding value for segments
+            max_Segments = hax.Axis("Segments", size=self.max_packed_segments + 1)
 
             batched_segment_ids, batched_per_segment_losses = hax.vmap(per_segment_loss, self.EvalBatch)(
                 packed_example, loss, max_Segments
@@ -192,18 +199,6 @@ class _LmEvalHarnessWorker:
             correct = hax.flatten(batched_per_segment_correct, "segment")
 
             return segments, -losses, correct
-
-        # def _do_message(model, message, maybe_batch):
-        #     dummy_result = eqx.filter_eval_shape(_eval_loglikelihood, self._dummy_batch)
-        #     dummy_result = tree_zeros_like(dummy_result)
-        #
-        #     message, my_batch =
-        #
-        #     jax.lax.cond(message == _Message.LOGLIKELIHOOD,
-        #                  self._jit_loglikelihood,
-        #                  lambda *args: dummy_result,
-        #                  model, maybe_batch
-        #                 )
 
         # no sharded outputs
         self._jit_loglikelihood = hax.named_jit(
@@ -270,10 +265,14 @@ class _Message:
     LOGLIKELIHOOD = 1
 
 
-def _get_segments_this_batch(batch):
+def _get_segments_this_batch(batch, max_segments_per_ex):
     segments_this_batch = set()
     for i in range(len(batch)):
-        segments_this_batch.update(np.unique(batch[i].attn_mask.segment_ids.array).tolist())
+        unique_segs = np.unique(batch[i].attn_mask.segment_ids.array).tolist()
+        # + 1 because we use -1 as a padding value for segments and allow that
+        if len(unique_segs) > max_segments_per_ex + 1:
+            raise ValueError(f"Too many segments in example {i}: {len(unique_segs)}")
+        segments_this_batch.update(unique_segs)
     try:
         segments_this_batch.remove(-1)
     except KeyError:
@@ -310,7 +309,7 @@ class LevanterHarnessLM(LM):
         time_in = time.time()
         pbar = tqdm(total=len(requests), desc="Loglikelihood", unit="req")
         for q, batch in enumerate(batched(packed_iterator, self.EvalBatch.size)):
-            segments_this_batch = _get_segments_this_batch(batch)
+            segments_this_batch = _get_segments_this_batch(batch, self.leader.max_packed_segments)
 
             if len(batch) < self.EvalBatch.size:
                 dummy_instance = self._make_dummy_instance(batch)
