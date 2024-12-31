@@ -594,7 +594,7 @@ class LMDatasetSourceConfig:
 
     def doc_iterator(self, split: str):
         if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
+            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, trust_remote_code=True)
             data = dataset[split]
             for doc in data:
                 yield doc[self.text_key]
@@ -1065,7 +1065,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             return True
 
         if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
+            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation", trust_remote_code=True)
             try:
                 next(iter(dataset))
                 return True
