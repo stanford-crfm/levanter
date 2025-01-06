@@ -76,38 +76,52 @@ logger = logging.getLogger(__name__)
 
 
 def _iterate_tokenized_requests(
-    requests: list[Instance], tokenizer: HfTokenizer, max_len: int
+    requests: list[Instance], tokenizer: HfTokenizer, max_len: int, batch_size: int
 ) -> Iterator[PromptCompletion]:
     """
     Tokenize the requests and yield them as PromptCompletions, for packing into LmExamples.
     """
-    for i, request in enumerate(requests):
-        # it's kinda annoying we run tokenization twice, but it's the easiest way to get the prompt length
-        # CF: https://github.com/EleutherAI/lm-evaluation-harness/blob/main/lm_eval/api/model.py#L354
-        context, completion = request.args
-        whole_enc = tokenizer(context + completion)
-        context_enc = tokenizer(context)
+    # Separate contexts and completions
+    contexts = [request.args[0] for request in requests]
+    completions = [request.args[1] for request in requests]
 
-        context_enc_len = len(context_enc["input_ids"])
-        whole_ids = whole_enc["input_ids"]
-        if len(whole_ids) > max_len:
-            logger.warning(f"Request {i} is too long. Truncating.")
-            # truncate from the left
-            whole_ids = whole_ids[-max_len:]
-            context_enc_len = max_len - len(completion)
-            if context_enc_len < 0:
-                context_enc_len = 0
-                logger.warning("Prompt length is negative after truncation. Setting to 0.")
+    # Combine contexts and completions for full tokenization
+    combined_texts = [context + completion for context, completion in zip(contexts, completions)]
 
-        yield PromptCompletion(ids=whole_ids, prompt_length=context_enc_len, segment_id=i)
+    # Batch tokenization for combined and context separately
+    for batch_indices in batched(range(len(requests)), batch_size):
+        # Extract batch data
+        combined_batch = [combined_texts[i] for i in batch_indices]
+        context_batch = [contexts[i] for i in batch_indices]
+
+        # Tokenize batched inputs
+        combined_encodings = tokenizer(combined_batch, truncation=False, padding=False)
+        context_encodings = tokenizer(context_batch, truncation=False, padding=False)
+
+        for off in range(len(batch_indices)):
+            i = batch_indices[off]
+            context_enc = context_encodings["input_ids"][off]
+            whole_ids = combined_encodings["input_ids"][off]
+
+            context_enc_len = len(context_enc)
+
+            if len(whole_ids) > max_len:
+                logger.warning(f"Request {i} is too long. Truncating.")
+                # Truncate from the left
+                whole_ids = whole_ids[-max_len:]
+                context_enc_len = max_len - len(whole_ids) + context_enc_len
+                if context_enc_len < 0:
+                    context_enc_len = 0
+                    logger.warning("Prompt length is negative after truncation. Setting to 0.")
+
+            yield PromptCompletion(ids=whole_ids, prompt_length=context_enc_len, segment_id=i)
 
 
 def _pack_requests(
     requests: list[Instance], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
 ) -> Iterator[LmExample]:
-    packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size)
-    # max_capacity shouln't be too big or we spend all our time lookign for packing
-    # TODO: use a better packing algorithm
+    packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size, batch_size=128)
+    # TODO: use a better packing algorithm?
     yield from pack_prompt_completions(
         Pos,
         packed_iterator,
