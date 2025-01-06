@@ -1,13 +1,26 @@
-import typing
+from typing import TypeAlias
 
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
+from typing_extensions import Self
 
 import haliax as hax
 
+from levanter.utils.types import Accumulatable
 
-Arrayish: typing.TypeAlias = hax.NamedArray | np.ndarray | jnp.ndarray
+
+Arrayish: TypeAlias = hax.NamedArray | np.ndarray | jnp.ndarray
+
+
+class SumScalar(Accumulatable):
+    value: jnp.ndarray
+
+    def item(self) -> float:
+        return self.value.item()
+
+    def __add__(self, other: Self) -> Self:
+        return SumScalar(self.value + other.value)
 
 
 class RunningMean(eqx.Module):
@@ -26,6 +39,9 @@ class RunningMean(eqx.Module):
         new_mean = self.mean + delta * ratio
         new_total = self.total + total
         return RunningMean(new_mean, new_total)
+
+    def item(self) -> float:
+        return self.mean.item()
 
     def __add__(self, other: "RunningMean"):
         return self.add(other.mean, other.total)

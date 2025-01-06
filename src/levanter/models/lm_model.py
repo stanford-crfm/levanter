@@ -88,6 +88,9 @@ class LmExample(eqx.Module):
 
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
+    def num_elements(self):
+        return self.loss_mask.sum()
+
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?
 @dataclass(frozen=True)
@@ -219,19 +222,21 @@ def compute_next_token_loss(
     example: LmExample,
     *,
     key=None,
-    reduction: Optional[hax.ReductionFunction] = hax.mean,
-    reduction_axis: Optional[hax.AxisSelection] = None,
     logsumexp_weight: Optional[float] = None,
     loss_dtype: Optional[Type[jnp.dtype]] = jnp.float32,
-) -> jnp.ndarray | NamedArray:
+) -> tuple[NamedArray, NamedArray, dict]:
     """
     Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
     across the reduction axis (with reduction_axis=None meaning all axes). If reduction is None, the loss is not
     reduced, and the result is a named array with axes (*batch axes, sequence_length).
     """
     activations = model.activations(example.tokens, example.attn_mask, key=key)
+    if isinstance(activations, tuple):
+        activations, extras = activations
+    else:
+        extras = {}
 
-    loss = maybe_fused_next_token_loss(
+    loss, where = maybe_fused_next_token_loss(
         model.Pos,
         model.Embed,
         model.Vocab,
@@ -239,11 +244,9 @@ def compute_next_token_loss(
         model.get_lm_head(),
         example.tokens,
         loss_mask=example.loss_mask,
-        reduction=reduction,
-        reduction_axis=reduction_axis,
         logsumexp_weight=logsumexp_weight,
         dtype=loss_dtype,
         block_size=model.config.cross_entropy_block_size,
     )
 
-    return loss
+    return loss, where, extras

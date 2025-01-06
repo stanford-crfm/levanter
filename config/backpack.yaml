@@ -12,7 +12,7 @@ model:
 trainer:
   tracker:
     project: "levanter"
-    tags: [ "openwebtext", "backpack" ]
+    tags: ["openwebtext", "backpack"]
 
   mp: p=f32,c=bfloat16
 
@@ -21,5 +21,5 @@ trainer:
   model_axis_size: 1
 
 optimizer:
-  learning_rate: 6E-4
+  learning_rate: 6e-4
   weight_decay: 0.1
