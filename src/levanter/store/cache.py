@@ -1253,6 +1253,8 @@ async def _extend_cache_with_other_cache(
                         logger.info("Rate limit exceeded. Retrying.")
                         await asyncio.sleep(delay)
                         delay *= 2
+                        if delay > 60:
+                            raise
 
             futures.append(offset_future)
 
