@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from typing import AsyncIterator, Callable, Iterable, Iterator, Optional, Tuple, TypeVar
 
+import equinox
 import jax
 from jax import Array
 from jax import numpy as jnp
@@ -267,7 +268,7 @@ class _JaxCpuBackgroundIterator(BackgroundIterator[Ex]):
             super()._fill_queue_with_batches()
 
 
-@functools.partial(jax.jit, static_argnums=(0,))
+@equinox.filter_jit
 def stack_tree(batch_name, individual_datums):
     def _stack_leaves_unchecked(*leaves):
         if is_named_array(leaves[0]):

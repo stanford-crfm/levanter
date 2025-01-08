@@ -75,62 +75,6 @@ from levanter.utils.tree_utils import inference_mode
 logger = logging.getLogger(__name__)
 
 
-def _iterate_tokenized_requests(
-    requests: list[Instance], tokenizer: HfTokenizer, max_len: int, batch_size: int
-) -> Iterator[PromptCompletion]:
-    """
-    Tokenize the requests and yield them as PromptCompletions, for packing into LmExamples.
-    """
-    # Separate contexts and completions
-    contexts = [request.args[0] for request in requests]
-    completions = [request.args[1] for request in requests]
-
-    # Combine contexts and completions for full tokenization
-    combined_texts = [context + completion for context, completion in zip(contexts, completions)]
-
-    # Batch tokenization for combined and context separately
-    for batch_indices in batched(range(len(requests)), batch_size):
-        # Extract batch data
-        combined_batch = [combined_texts[i] for i in batch_indices]
-        context_batch = [contexts[i] for i in batch_indices]
-
-        # Tokenize batched inputs
-        combined_encodings = tokenizer(combined_batch, truncation=False, padding=False)
-        context_encodings = tokenizer(context_batch, truncation=False, padding=False)
-
-        for off in range(len(batch_indices)):
-            i = batch_indices[off]
-            context_enc = context_encodings["input_ids"][off]
-            whole_ids = combined_encodings["input_ids"][off]
-
-            context_enc_len = len(context_enc)
-
-            if len(whole_ids) > max_len:
-                logger.warning(f"Request {i} is too long. Truncating.")
-                # Truncate from the left
-                whole_ids = whole_ids[-max_len:]
-                context_enc_len = max_len - len(whole_ids) + context_enc_len
-                if context_enc_len < 0:
-                    context_enc_len = 0
-                    logger.warning("Prompt length is negative after truncation. Setting to 0.")
-
-            yield PromptCompletion(ids=whole_ids, prompt_length=context_enc_len, segment_id=i)
-
-
-def _pack_requests(
-    requests: list[Instance], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
-) -> Iterator[LmExample]:
-    packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size, batch_size=128)
-    # TODO: use a better packing algorithm?
-    yield from pack_prompt_completions(
-        Pos,
-        packed_iterator,
-        max_segments_per_example=max_pack_size,
-        pad_token=tokenizer.pad_token_id,
-        max_buffered_examples=16,
-    )
-
-
 # OK, so LM-Eval-Harness is not deterministic. This means we can't just run it on different workers and expect the
 # order of requests to be the same. Sorting doesn't even seem to be correct (?!?!?) so we need to only run it on one
 # process.
@@ -142,17 +86,12 @@ def _pack_requests(
 # 4. When a STOP request is received, we stop the loop and process 0 returns the results.
 
 
-def _make_dummy_batch(EvalBatch, EvalPos):
-    dummy_batch = hax.vmap(LmExample.causal, EvalBatch)(
-        hax.zeros(EvalPos, dtype=jnp.int32),
-        loss_mask=hax.zeros(EvalPos, dtype=jnp.int32),
-        segment_ids=hax.zeros(EvalPos, dtype=jnp.int32),
-    )
-    out = hax.shard(dummy_batch, {})
-    return out
-
-
 class _LmEvalHarnessWorker:
+    """
+    Worker for running the LM Eval Harness. Each worker process will run a copy of this class.
+    The head process will run the main harness and dispatch requests to the workers while the
+    others run in a loop waiting for requests.
+    """
     def __init__(self, EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments):
         self.tokenizer = tokenizer
         self.max_packed_segments = max_packed_segments
@@ -280,18 +219,21 @@ class _Message:
 
 
 def _get_segments_this_batch(batch, max_segments_per_ex):
-    segments_this_batch = set()
-    for i in range(len(batch)):
-        unique_segs = np.unique(batch[i].attn_mask.segment_ids.array).tolist()
-        # + 1 because we use -1 as a padding value for segments and allow that
-        if len(unique_segs) > max_segments_per_ex + 1:
-            raise ValueError(f"Too many segments in example {i}: {len(unique_segs)}")
-        segments_this_batch.update(unique_segs)
-    try:
-        segments_this_batch.remove(-1)
-    except KeyError:
-        pass
-    return segments_this_batch
+    unique_segs = np.unique(batch.attn_mask.segment_ids.array).tolist()
+    # + 1 because we use -1 as a padding value for segments and allow that
+    if len(unique_segs) > max_segments_per_ex + 1:
+        raise ValueError(f"Too many segments in batch: {len(unique_segs)}")
+    if -1 in unique_segs:
+        unique_segs.remove(-1)
+
+    return unique_segs
+
+
+def _get_padding_count(batch, pad_token_id):
+    # returns the total amount of padding in the batch
+    padding_count = np.sum(batch.tokens.array == pad_token_id)
+    total_tokens = batch.tokens.size
+    return padding_count, total_tokens
 
 
 class LevanterHarnessLM(LM):
@@ -314,26 +256,27 @@ class LevanterHarnessLM(LM):
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
         packed_iterator = _pack_requests(requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments)
+        packed_iterator = self.stack_batches(packed_iterator, self.EvalBatch)
         packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
         result_probs = np.zeros(len(requests))
         result_greedy = np.zeros(len(requests))
         covered_points = np.zeros(len(requests), dtype=bool)
 
+        total_padding = 0
+        total_tokens = 0
         time_in = time.time()
         pbar = tqdm(total=len(requests), desc="Loglikelihood", unit="req")
-        for q, batch in enumerate(batched(packed_iterator, self.EvalBatch.size)):
-            segments_this_batch = _get_segments_this_batch(batch, self.leader.max_packed_segments)
+        for q, batch in enumerate(packed_iterator):
+            time_data_available = time.time()
+            segments_this_batch = _get_segments_this_batch(batch, self.leader.max_packed_segments * self.EvalBatch.size)
+            time_segments = time.time()
 
-            if len(batch) < self.EvalBatch.size:
-                dummy_instance = self._make_dummy_instance(batch)
-                batch.extend([dummy_instance] * (self.EvalBatch.size - len(batch)))
+            padding_count, batch_tokens = _get_padding_count(batch, self.tokenizer.pad_token_id)
 
-            with use_cpu_device():
-                stacked = stack_tree(self.EvalBatch, batch)
             time_batch = time.time()
 
-            out_ids, out_lls, out_correct = self.leader.dispatch_loglikelihood(stacked)
+            out_ids, out_lls, out_correct = self.leader.dispatch_loglikelihood(batch)
 
             out_ids = np.array(out_ids.array)
             out_lls = np.array(out_lls.array)
@@ -354,10 +297,15 @@ class LevanterHarnessLM(LM):
 
             time_ll = time.time()
 
+            pbar.set_postfix(
+                padding=f"{total_padding + padding_count}/{total_tokens + batch_tokens} = {(total_padding + padding_count) / (total_tokens + batch_tokens):.2f}",
+                this_padding=f"{padding_count}/{batch_tokens}= {padding_count / batch_tokens:.2f}",
+            )
             pbar.update(len(segments_this_batch))
 
             if jax.process_index() == 0:
                 print(f"Batch time: {time_batch - time_in}, LL time: {time_ll - time_batch}")
+                print(f"Data available: {time_data_available - time_in}, Segments: {time_segments - time_data_available}, Stack: {time_batch - time_segments}")
 
             time_in = time.time()
 
@@ -368,6 +316,24 @@ class LevanterHarnessLM(LM):
         logger.info(f"Finished running {len(requests)} loglikelihoods.")
 
         return result
+
+    def stack_batches(self, example_iterator, EvalBatch):
+        """
+        Stack examples from an iterator into a batch.
+
+        Args:
+            EvalBatch: The batch axis.
+            example_iterator: An iterator of examples.
+
+        Returns:
+            A batch of examples.
+        """
+        with use_cpu_device():
+            for batch in batched(example_iterator, EvalBatch.size):
+                if len(batch) < EvalBatch.size:
+                    dummy_instance = self._make_dummy_instance(batch)
+                    batch.extend([dummy_instance] * (EvalBatch.size - len(batch)))
+                yield stack_tree(EvalBatch, batch)
 
     def _make_dummy_instance(self, batch):
         dummy_instance: LmExample = tree_zeros_like(batch[0])
@@ -780,6 +746,75 @@ def _adjust_config(task_dict, fewshot_random_seed=0):
             adjusted_task_dict[task_name] = task_obj
 
     return adjusted_task_dict
+
+
+def _iterate_tokenized_requests(
+    requests: list[Instance], tokenizer: HfTokenizer, max_len: int, batch_size: int
+) -> Iterator[PromptCompletion]:
+    """
+    Tokenize the requests and yield them as PromptCompletions, for packing into LmExamples.
+    """
+    # Separate contexts and completions
+    contexts = [request.args[0] for request in requests]
+    completions = [request.args[1] for request in requests]
+
+    # Combine contexts and completions for full tokenization
+    combined_texts = [context + completion for context, completion in zip(contexts, completions)]
+
+    # Batch tokenization for combined and context separately
+    for batch_indices in batched(range(len(requests)), batch_size):
+        # Extract batch data
+        combined_batch = [combined_texts[i] for i in batch_indices]
+        context_batch = [contexts[i] for i in batch_indices]
+
+        # Tokenize batched inputs
+        combined_encodings = tokenizer(combined_batch, truncation=False, padding=False)
+        context_encodings = tokenizer(context_batch, truncation=False, padding=False)
+
+        for off in range(len(batch_indices)):
+            i = batch_indices[off]
+            context_enc = context_encodings["input_ids"][off]
+            whole_ids = combined_encodings["input_ids"][off]
+
+            context_enc_len = len(context_enc)
+
+            if len(whole_ids) > max_len:
+                logger.warning(f"Request {i} is too long. Truncating.")
+                # Truncate from the left
+                whole_ids = whole_ids[-max_len:]
+                context_enc_len = max_len - len(whole_ids) + context_enc_len
+                if context_enc_len < 0:
+                    context_enc_len = 0
+                    logger.warning("Prompt length is negative after truncation. Setting to 0.")
+
+            yield PromptCompletion(ids=whole_ids, prompt_length=context_enc_len, segment_id=i)
+
+
+def _pack_requests(
+    requests: list[Instance], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
+) -> Iterator[LmExample]:
+    packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size, batch_size=128)
+    # TODO: use a better packing algorithm?
+    yield from pack_prompt_completions(
+        Pos,
+        packed_iterator,
+        max_segments_per_example=max_pack_size,
+        pad_token=tokenizer.pad_token_id,
+        max_buffered_examples=16,
+    )
+
+
+def _make_dummy_batch(EvalBatch, EvalPos):
+    dummy_batch = hax.vmap(LmExample.causal, EvalBatch)(
+        hax.zeros(EvalPos, dtype=jnp.int32),
+        loss_mask=hax.zeros(EvalPos, dtype=jnp.int32),
+        segment_ids=hax.zeros(EvalPos, dtype=jnp.int32),
+    )
+    out = hax.shard(dummy_batch, {})
+    return out
+
+
+
 
 
 if __name__ == "__main__":

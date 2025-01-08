@@ -52,6 +52,8 @@ class LmExample(eqx.Module):
             ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
             loss_mask = loss_mask * ignore_mask
 
+        loss_mask = loss_mask.astype(jnp.int32)
+
         attn_mask = AttentionMask.causal()
 
         if eos_id is not None and segment_ids is None:

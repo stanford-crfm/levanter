@@ -66,9 +66,9 @@ class SequencePacker:
         loss_mask = self._loss_mask + [0] * (self.Pos.size - len(self._loss_mask))
 
         with local_cpu_mesh():
-            tokens = hax.named(ids, self.Pos)
-            segment_ids = hax.named(segment_ids, self.Pos)
-            loss_mask = hax.named(loss_mask, self.Pos)
+            tokens = hax.named(ids, self.Pos).astype(jnp.int32)
+            segment_ids = hax.named(segment_ids, self.Pos).astype(jnp.int32)
+            loss_mask = hax.named(loss_mask, self.Pos).astype(jnp.int32)
 
             attn_mask = AttentionMask.causal().with_segment_ids(segment_ids)
 
