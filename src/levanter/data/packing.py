@@ -75,7 +75,7 @@ class SequencePacker:
             return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
 
 
-@dataclass
+@dataclass(frozen=True)
 class PromptCompletion:
     ids: list[int]
     prompt_length: int
