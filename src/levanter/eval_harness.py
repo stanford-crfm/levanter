@@ -20,7 +20,6 @@ import dataclasses
 import json
 import logging
 import tempfile
-import time
 import typing
 from dataclasses import dataclass
 from functools import cached_property
@@ -92,6 +91,7 @@ class _LmEvalHarnessWorker:
     The head process will run the main harness and dispatch requests to the workers while the
     others run in a loop waiting for requests.
     """
+
     def __init__(self, EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments):
         self.tokenizer = tokenizer
         self.max_packed_segments = max_packed_segments
@@ -265,16 +265,13 @@ class LevanterHarnessLM(LM):
 
         total_padding = 0
         total_tokens = 0
-        time_in = time.time()
         pbar = tqdm(total=len(requests), desc="Loglikelihood", unit="req")
         for q, batch in enumerate(packed_iterator):
-            time_data_available = time.time()
-            segments_this_batch = _get_segments_this_batch(batch, self.leader.max_packed_segments * self.EvalBatch.size)
-            time_segments = time.time()
+            segments_this_batch = _get_segments_this_batch(
+                batch, self.leader.max_packed_segments * self.EvalBatch.size
+            )
 
             padding_count, batch_tokens = _get_padding_count(batch, self.tokenizer.pad_token_id)
-
-            time_batch = time.time()
 
             out_ids, out_lls, out_correct = self.leader.dispatch_loglikelihood(batch)
 
@@ -295,19 +292,14 @@ class LevanterHarnessLM(LM):
             result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
             covered_points[out_ids[valid_indices]] = True
 
-            time_ll = time.time()
-
             pbar.set_postfix(
-                padding=f"{total_padding + padding_count}/{total_tokens + batch_tokens} = {(total_padding + padding_count) / (total_tokens + batch_tokens):.2f}",
+                padding=(
+                    f"{total_padding + padding_count}/{total_tokens + batch_tokens} ="
+                    f" {(total_padding + padding_count) / (total_tokens + batch_tokens):.2f}"
+                ),
                 this_padding=f"{padding_count}/{batch_tokens}= {padding_count / batch_tokens:.2f}",
             )
             pbar.update(len(segments_this_batch))
-
-            if jax.process_index() == 0:
-                print(f"Batch time: {time_batch - time_in}, LL time: {time_ll - time_batch}")
-                print(f"Data available: {time_data_available - time_in}, Segments: {time_segments - time_data_available}, Stack: {time_batch - time_segments}")
-
-            time_in = time.time()
 
         missing_points = np.where(~covered_points)[0]
         assert len(missing_points) == 0, f"Missing points: {missing_points}"
@@ -812,9 +804,6 @@ def _make_dummy_batch(EvalBatch, EvalPos):
     )
     out = hax.shard(dummy_batch, {})
     return out
-
-
-
 
 
 if __name__ == "__main__":

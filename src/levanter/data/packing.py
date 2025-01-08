@@ -1,4 +1,12 @@
-# Implements sequence packing
+"""
+Implements sequence packing, mostly for doing evaluation on lots of short sequences.
+
+Our strategy is basically to maintain a pool of SequencePackers, each of which can hold a fixed number of tokens
+(and a maximum number of segments). We then iterate over the sequences, adding them to the packers if they fit, and
+yielding the packed examples when they are full.
+
+This achieves about a 90% "real token" rate, compared to like 10% without packing.
+"""
 from dataclasses import dataclass
 from typing import Iterable, Iterator
 
