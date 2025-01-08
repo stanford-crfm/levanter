@@ -165,17 +165,7 @@ def main(config: TrainLmConfig):
             )
             trainer.add_hook(epoch_checkpointer, every=1)
 
-        def init_model():
-            return config.model.build(Vocab, key=model_key)
-
-        if use_mup:
-            def mupify_model():
-                model = init_model()
-                return mupify(model, Pos, KeyPos)
-
-            init_model = mupify_model
-
-        state = trainer.initial_state(training_key, model_init=lambda: init_model)
+        state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
         seek_dataloader = True
         if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
