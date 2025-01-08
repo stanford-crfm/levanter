@@ -4,7 +4,6 @@ from typing import Generic, Optional, Type, TypeVar
 
 import draccus
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 from jax.random import PRNGKey
 
@@ -31,6 +30,7 @@ class LmExample(eqx.Module):
         loss_mask: Optional[hax.NamedArray] = None,
         ignore_id: Optional[int] = None,
         eos_id: Optional[int] = None,
+        segment_ids: Optional[hax.NamedArray] = None,
     ) -> "LmExample":
         if tokens.ndim != 1:
             raise ValueError("tokens must be a 1D array")
@@ -40,23 +40,30 @@ class LmExample(eqx.Module):
 
         Pos = tokens.axes[0]
 
-        # don't predict the last token.
-        if loss_mask is None:
-            loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
+        causal_loss_mask = LmExample.causal_loss_mask(Pos)
+
+        if loss_mask is not None:
+            loss_mask = loss_mask & causal_loss_mask.astype(loss_mask.dtype)
+        else:
+            loss_mask = causal_loss_mask
 
         if ignore_id is not None:
             # we don't compute loss for any tokens matching the ignore index
             ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
             loss_mask = loss_mask * ignore_mask
 
+        loss_mask = loss_mask.astype(jnp.int32)
+
         attn_mask = AttentionMask.causal()
 
-        if eos_id is not None:
+        if eos_id is not None and segment_ids is None:
             # the next token after an eos token is in a new segment
             eos_mask = hax.roll(tokens, 1, Pos) == eos_id
             # first token is always in segment 0
             eos_mask = eos_mask.at[Pos, 0].set(False).astype(jnp.int32)
             segment_ids = hax.cumsum(eos_mask, axis=Pos)
+            attn_mask = attn_mask.with_segment_ids(segment_ids)
+        elif segment_ids is not None:
             attn_mask = attn_mask.with_segment_ids(segment_ids)
 
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
@@ -70,23 +77,32 @@ class LmExample(eqx.Module):
         ignore_id: Optional[int] = None,
         all_causal: bool = True,
     ) -> "LmExample":
-        # mask out the prompt tokens
-        loss_mask = hax.arange(Pos) >= prompt_length - 1
-        # don't predict the padding
-        if ignore_id is not None:
-            targets = hax.roll(tokens, -1, Pos)
-            loss_mask = loss_mask & (targets != ignore_id)
-
-        # don't predict the last token
-        loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
-
         if all_causal:
             attn_mask = AttentionMask.causal()
         else:
             # causal just for the completion part. We don't have a special structured mask for this, so we just
             raise NotImplementedError("Not implemented yet")
 
+        # mask out the prompt tokens
+        loss_mask = LmExample.causal_loss_mask(Pos, prompt_length=prompt_length)
+
+        if ignore_id is not None:
+            # we don't compute loss for any tokens matching the ignore index
+            ignore_mask = hax.roll(tokens, -1, Pos) != ignore_id
+            loss_mask = loss_mask * ignore_mask
+
         return LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+    @staticmethod
+    def causal_loss_mask(Pos: Axis, prompt_length: Optional[int] = None) -> NamedArray:
+        loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jnp.float32)
+
+        if prompt_length is not None:
+            # don't predict the prompt tokens
+            prompt_mask = hax.arange(Pos) >= prompt_length - 1
+            loss_mask = loss_mask * prompt_mask
+
+        return loss_mask
 
 
 # TODO: for some reason, mypy doesn't like the discover_packages_path argument?
