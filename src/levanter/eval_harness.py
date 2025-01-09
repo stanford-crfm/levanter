@@ -483,6 +483,12 @@ def _compute_averages(outputs):
     Returns:
         Averages dictionary with macro and micro averages for all metrics.
     """
+
+    print("Outputs: ", outputs)
+    logger.info("Computing averages...")
+    logger.info("Outputs: ", outputs)
+    logger.info("Results: ", outputs["results"])
+    
     averages = {}
     metric_keys = set()
 
