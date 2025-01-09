@@ -56,7 +56,6 @@ class StepInfo(Generic[S]):
 
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
-
     step = property(lambda self: int(self.state.step) - 1)
     use_ema = property(lambda self: self.state.use_ema)
 
