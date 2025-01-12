@@ -107,11 +107,11 @@ def pack_prompt_completions(
         loss_mask = np.arange(len(sequence.ids)) >= sequence.prompt_length - 1
         loss_mask[-1] = 0
 
-        if not np.any(loss_mask):
-            logger.error(f"Invalid loss_mask: all zeros for sequence with prompt_length={sequence.prompt_length} and len(ids)={len(sequence.ids)}")
-            raise ValueError("Loss mask has no active tokens for loss computation.")
+        # if not np.any(loss_mask):
+        #     logger.error(f"Invalid loss_mask: all zeros for sequence with prompt_length={sequence.prompt_length} and len(ids)={len(sequence.ids)}")
+        #     raise ValueError("Loss mask has no active tokens for loss computation.")
         
-        assert np.any(loss_mask)
+        assert np.any(loss_mask), f"Loss mask has no active tokens for loss computation. Prompt length: {sequence.prompt_length}, len(ids): {len(sequence.ids)}"
 
         for packer in packers:
             if packer.can_pack(sequence.ids):
