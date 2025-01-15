@@ -95,7 +95,7 @@ def _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths):
 
 def _sharding_from_leaf(leaf, axis_mapping, mesh) -> Optional[jax.sharding.Sharding]:
     if is_named_array(leaf):
-        if leaf.array is None:
+        if not is_jax_array_like(leaf.array):
             return None
         return hax.partitioning.sharding_for_axis(leaf.axes, axis_mapping, mesh)
     elif hasattr(leaf, "sharding") and getattr(leaf, "sharding") is not None:
@@ -140,11 +140,11 @@ def tree_deserialize_leaves_tensorstore(
         manager = array_ser.GlobalAsyncCheckpointManager()
 
     shardings: PyTree[Optional[Sharding]] = jtu.tree_map(
-        partial(_sharding_from_leaf, axis_mapping=axis_mapping, mesh=mesh), pytree, is_leaf=is_named_array
+        partial(_sharding_from_leaf, axis_mapping=axis_mapping, mesh=mesh), pytree, is_leaf=_is_named_or_none
     )
 
     # TODO: support ShapeDtypeStructs that are not NamedArrays
-    leaf_key_paths = jax_utils.leaf_key_paths(shardings, is_leaf=is_named_array)
+    leaf_key_paths = jax_utils.leaf_key_paths(shardings, is_leaf=_is_named_or_none)
     paths = _fs_paths_from_key_paths(checkpoint_dir, leaf_key_paths)
     paths = jtu.tree_leaves(paths, is_leaf=lambda x: x is None)
 
@@ -156,6 +156,8 @@ def tree_deserialize_leaves_tensorstore(
     real_indices = [i for i, x in enumerate(shardings_leaves) if x is not None]
     real_leaves = [x for x in shardings_leaves if x is not None]
     real_paths = [paths[i] for i in real_indices]
+
+    assert len(real_leaves) == len(real_paths), f"{len(real_leaves)} != {len(real_paths)}"
 
     deser_leaves = manager.deserialize_with_paths(shardings=real_leaves, paths=real_paths)
     # now we need to recreate the original structure

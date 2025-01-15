@@ -34,9 +34,16 @@ class BackgroundIterable(Iterable[Ex]):
 
 
 class BackgroundIterator(Iterator[Ex]):
-    def __init__(self, producer_fn: Callable[[], Union[Iterator[Ex], AsyncIterator[Ex]]], max_capacity: Optional[int]):
+    def __init__(
+        self,
+        producer_fn: Callable[[], Iterator[Ex] | AsyncIterator[Ex]] | Iterator[Ex] | AsyncIterator[Ex],
+        max_capacity: Optional[int],
+    ):
         self.max_capacity = max_capacity
-        self._producer_fn = producer_fn
+        if not callable(producer_fn):
+            self._producer_fn = lambda: producer_fn
+        else:
+            self._producer_fn = producer_fn
         self._stop_event = threading.Event()
 
         if self.max_capacity is None or self.max_capacity >= 0:
