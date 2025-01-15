@@ -766,20 +766,20 @@ def _iterate_tokenized_requests(
         for off in range(len(batch_indices)):
             i = batch_indices[off]
             context_enc = context_encodings["input_ids"][off]
-            whole_ids = combined_encodings["input_ids"][off]
+            all_enc = combined_encodings["input_ids"][off]
 
             context_enc_len = len(context_enc)
 
-            if len(whole_ids) > max_len:
+            if len(all_enc) > max_len:
                 logger.warning(f"Request {i} is too long. Truncating.")
                 # Truncate from the left
-                whole_ids = whole_ids[-max_len:]
-                context_enc_len = max_len - len(whole_ids) + context_enc_len
+                context_enc_len = len(context_enc) - (len(all_enc) - max_len)
+                all_enc = all_enc[-max_len:]
                 if context_enc_len < 0:
                     context_enc_len = 0
                     logger.warning("Prompt length is negative after truncation. Setting to 0.")
 
-            yield PromptCompletion(ids=whole_ids, prompt_length=context_enc_len, segment_id=i)
+            yield PromptCompletion(ids=all_enc, prompt_length=context_enc_len, segment_id=i)
 
 
 def _pack_requests(
