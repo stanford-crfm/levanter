@@ -89,6 +89,17 @@ class PromptCompletion:
     prompt_length: int
     segment_id: int | None = None
 
+    def __post_init__(self):
+        if len(self.ids) == 0:
+            raise ValueError("PromptCompletion must have at least one token")
+
+        # check that there is at least one token in the response
+        if len(self.ids) <= self.prompt_length:
+            raise ValueError(
+                f"PromptCompletion must have strictly more tokens than the prompt length. Got {len(self.ids)} tokens"
+                f" and prompt length {self.prompt_length}"
+            )
+
 
 def pack_prompt_completions(
     Pos: hax.Axis,
