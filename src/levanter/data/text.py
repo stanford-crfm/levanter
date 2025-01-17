@@ -955,6 +955,9 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     
     # Tokenize sources to get lengths
     sources_tokenized = tokenizer(sources, padding=False, truncation=True)
+
+    if should_append_eos:
+        targets = [t + tokenizer.eos_token for t in targets]
     
     # Combine for full examples
     full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
