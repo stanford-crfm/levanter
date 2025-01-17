@@ -265,7 +265,6 @@ class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
     async def async_len(self) -> int:
         return await self.dataset.async_len()
 
-
 def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
     if tokenizer.is_fast and os.getenv("TOKENIZERS_PARALLELISM") is None:
         # if we're using a fast tokenizer, we want to force parallelism
@@ -276,441 +275,6 @@ def _maybe_force_tokenizer_parallelism(tokenizer: PreTrainedTokenizerBase):
 LONG_STRING_WORKAROUND = 10_000
 
 ws = regex.compile(r"\s")
-
-class PassthroughTokenizer(PreTrainedTokenizer):
-    def __init__(self, vocab_size, **kwargs):
-        self._vocab = {i: i for i in range(vocab_size)}
-        self._vocab_size = vocab_size
-        super().__init__(**kwargs)
-
-    @property
-    def vocab_size(self) -> int:
-        return self._vocab_size
-
-    def get_vocab(self):
-        return self._vocab
-
-    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
-        return ()
-
-    def _tokenize(self, text, **kwargs):
-        tokens = np.fromstring(text, dtype=int, sep=" ")
-        return tokens
-
-    def _convert_token_to_id(self, token: str) -> int:
-        return int(token)
-
-    def _convert_id_to_token(self, index: int) -> str:
-        return str(index)
-
-@dataclass
-class LMDatasetSourceConfig:
-    """This class represents a dataset source with URLs or hf name/id."""
-
-    tags: Optional[List[str]] = None
-    """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
-
-    id: Optional[str] = None  # id (or path) for hf dataset
-    name: Optional[str] = None  # name for hf dataset
-
-    plaintext: bool = False
-    stream: bool = True  # whether to use streaming when doing hf
-    text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
-
-    train_urls: List[str] = ()  # type: ignore
-    validation_urls: List[str] = ()  # type:ignore
-    cache_dir: Optional[str] = None  # Optionally override the cache dir for this component
-
-    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
-        if self.id is not None:
-            try:
-                ds = WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.stream)
-            except ValueError as e:
-                # if the message starts with Bad split, then just return None
-                if str(e).startswith("Bad split"):
-                    logger.warning(f"Splits {split} not found for {self.id} {self.name}")
-                    return None
-                else:
-                    raise
-
-            if len(ds.shard_names) == 0:
-                return None
-
-            return ds.map(lambda x: x[self.text_key])
-        else:
-            split_urls = self.urls_for_split(split)
-            if len(split_urls) == 0:
-                return None
-            return TextUrlDataSource(split_urls, self.text_key)
-
-    def doc_iterator(self, split: str):
-        if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
-            data = dataset[split]
-            for doc in data:
-                yield doc[self.text_key]
-        else:
-            urls = self.urls_for_split(split)
-
-            yield from TextUrlDataSource(urls, self.text_key)
-
-    def urls_for_split(self, split):
-        if split == "train":
-            urls = self.train_urls
-        elif split == "validation":
-            urls = self.validation_urls
-        else:
-            raise ValueError(f"Unknown split {split}")
-
-        urls = [globbed for url in urls for globbed in expand_glob(url)]
-        return urls
-
-
-@dataclass
-class LMTaskConfig(abc.ABC):
-    tokenizer: str = "gpt2"
-    vocab_size: Optional[int] = None  # if using the passthrough tokenizer, this is required
-
-    # config related to caching
-    cache_dir: Optional[str] = "cache/"
-    cache_options: CacheOptions = field(default_factory=CacheOptions)
-    enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
-
-    ignore_token_id: Optional[int] = None
-    shuffle: bool | int = False
-    """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
-    If you want to shuffle in eras, set this to the era length"""
-
-    @cached_property
-    def the_tokenizer(self) -> HfTokenizer:
-        if self.tokenizer == "passthrough":
-            return PassthroughTokenizer(self.vocab_size)
-        else:
-            return load_tokenizer(self.tokenizer)
-
-    @abc.abstractmethod
-    def train_set(
-        self,
-        seq_len: int,
-        monitors: Union[bool, List[MetricsMonitor]] = True,
-        *,
-        key: Optional[PRNGKeyArray],
-        epochs: Optional[int] = None,
-    ) -> AsyncDataset[np.ndarray]:
-        pass
-
-    @abc.abstractmethod
-    def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
-        pass
-
-    @property
-    @abc.abstractmethod
-    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
-        pass
-
-    def tagged_eval_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> list[Tuple[AsyncDataset[np.ndarray], List[str]]]:
-        tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
-        eval_sets = self.validation_sets(seq_len, monitors)
-
-        return [(eval_sets[name], tags[name]) for name in eval_sets]
-
-
-CANONICAL_INPUT_FIELD = "prompt"
-CANONICAL_OUTPUT_FIELD = "response"
-
-
-@dataclass
-class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
-    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
-
-    cache_dir: Optional[str] = "cache/"
-
-    def train_set(
-        self,
-        seq_len: int,
-        monitors: Union[bool, List[MetricsMonitor]] = True,
-        *,
-        key: Optional[PRNGKeyArray] = None,
-        epochs: Optional[int] = None,
-    ) -> AsyncDataset[np.ndarray]:
-
-        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
-
-        # add epoch flag here.
-        if ds is None:
-            raise ValueError("No training set!")
-
-        if epochs:
-            logger.info("Wrapping dataset in epoch dataset")
-            ds = EpochDataset(ds, max_epochs=epochs)
-
-        if self.shuffle is True:
-            ds = ds.shuffle(key)
-        elif isinstance(self.shuffle, int) and self.shuffle > 0:
-            ds = ds.era_shuffle(self.shuffle, key=key)
-
-        return ds  # type: ignore
-
-    def validation_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        return self.token_seq_dataset("validation", seq_len, monitors)
-
-    def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
-        validation_set = self.validation_set(seq_len, monitors)
-        if validation_set is not None:
-            return {"": validation_set}
-        else:
-            return {}
-
-    @property
-    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
-        return {"": self}
-
-    @cached_property
-    def _has_validation_set(self):
-        if len(self.validation_urls) > 0:
-            return True
-
-        if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
-            try:
-                next(iter(dataset))
-                return True
-            except StopIteration:
-                return False
-
-        return False
-
-    def token_seq_dataset(
-        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        cache = self.build_or_load_cache(split, monitors=monitors)
-        if cache is None:
-            return None
-        return TokenSeqDataset(cache, seq_len)
-
-    def build_or_load_cache(
-        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
-    ) -> Optional[TreeCache[BatchEncoding]]:
-        if self.cache_dir is None:
-            raise ValueError("cache_dir cannot be None")
-
-        split_cache_dir = os.path.join(self.cache_dir, split)
-        name = logger_name or os.path.basename(self.cache_dir)
-
-        try:
-            # TODO: pass in options
-            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
-        except FileNotFoundError:
-            pass
-
-        source = self.get_shard_source(split)
-        if source is None:
-            logger.info(f"No data for {split}")
-            return None
-
-        logger.info(f"Building cache for {split}...")
-
-        if monitors is True:
-            monitors = [
-                LoggingMetricsMonitor(prefix=f"preprocessing/{name}/{split}", commit=False),
-                LoggerMetricsMonitor(f"preprocessing.{name}.{split}"),
-            ]
-        elif monitors is False:
-            monitors = []
-
-        bt = BatchTokenizer(self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos)
-
-        return build_or_load_cache(
-            split_cache_dir,
-            source,
-            bt,
-            monitors=monitors,
-            await_finished=False,
-            options=self.cache_options,
-            split=split,
-        )
-
-
-class SupervisedSourceConfigBase(Protocol):
-    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
-        raise NotImplementedError
-
-    input_field: str
-    output_field: str
-    tags: Optional[List[str]]
-    cache_dir: str
-
-
-@dataclass
-class LMMixtureDatasetConfig(LMTaskConfig):
-    """This class represents a mixture of datasets with their associated weights."""
-
-    cache_dir: Optional[str] = "cache/"
-
-    # data source configs and weights
-    configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
-    """ configuration of each dataset source (urls, hf dataset id, etc.) """
-    train_weights: Dict[str, float] = field(default_factory=dict)
-    """ weights for each dataset source. They will be normalized to sum to 1. """
-    stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
-    mixture_block_size: int = 2048
-    """ block size for the mixture dataset."""
-
-    def __post_init__(self):
-        if len(self.configs) == 0:
-            raise ValueError("At least one dataset must be provided")
-
-        if set(self.configs.keys()) != set(self.train_weights.keys()):
-            raise ValueError(
-                f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
-                f" {self.train_weights.keys()}"
-            )
-
-    def train_set(
-        self,
-        seq_len: int,
-        monitors: Union[bool, List[MetricsMonitor]] = True,
-        *,
-        key: Optional[PRNGKeyArray],
-        epochs: Optional[int] = None,
-    ) -> AsyncDataset[np.ndarray]:
-        doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
-
-        if epochs:
-            raise ValueError("Epochs are not supported for mixture datasets")
-
-        if key is None:
-            key = jax.random.PRNGKey(0)
-
-        mix_key, shuffle_key = jax.random.split(key)
-
-        # We shuffle the components and not the overall mixture because this lets us preserve
-        # the "stable batch" property of the mixture dataset.
-        def shuffle_ds(ds, key):
-            if self.shuffle is True:
-                ds = ds.shuffle(key)
-            elif isinstance(self.shuffle, int):
-                ds = ds.era_shuffle(self.shuffle, key=key)
-
-            return ds
-
-        if self.shuffle:
-            out_token_datasets = {}
-            key_iter = key_iterator(shuffle_key)
-            for name, ds in token_datasets.items():
-                out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
-            token_datasets = out_token_datasets
-
-        mixture = MixtureDataset(
-            datasets=token_datasets,
-            weights=self.train_weights,
-            stop_strategy=self.stop_strategy,
-            key=mix_key,
-            block_size=2048,
-        )
-
-        return mixture
-
-    def training_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, TokenSeqDataset]:
-        doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
-        return token_datasets
-
-    def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
-        doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
-        return token_datasets
-
-    def build_caches(
-        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Dict[str, TreeCache[dict]]:
-        # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
-        # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the
-        # LMDatasetConfig.build_or_load_cache method. We exclude the cache_dir field.
-        task_config_fields = set(x.name for x in dataclasses.fields(LMTaskConfig))
-        task_config_dict = {k: v for k, v in self.__dict__.items() if k in task_config_fields and k != "cache_dir"}
-
-        caches = {}
-        for name, source_config in self.configs.items():
-            weight = self.train_weights.get(name, 0)
-
-            if weight == 0 and split == "train":
-                continue
-
-            source_config_dict = dict(**source_config.__dict__)
-
-            if source_config.cache_dir is None:
-                # replace with the main cache dir/{name}
-                if self.cache_dir is None:
-                    raise ValueError(
-                        "If the 'main' cache_dir is None, then all component cache_dirs must be non-None, but"
-                        f"{name}'s cache_dir is None."
-                    )
-                cache_dir = os.path.join(self.cache_dir, name)
-                source_config_dict["cache_dir"] = cache_dir
-
-            dataset = LMDatasetConfig(
-                **source_config_dict,
-                **task_config_dict,
-            )
-            cache = dataset.build_or_load_cache(split, monitors)
-            # drop the data source and corresponding weight if the cache is not built
-            if cache is None:
-                logger.warning(f"Skipping {name} for split {split} because no source was provided")
-            else:
-                caches[name] = cache
-
-        # in practice it works best if we block on validation caches
-        if split == "validation":
-            for cache in caches.values():
-                cache.await_finished()
-
-        else:
-            logger.info(f"Not waiting for {split} caches to finish building")
-
-        return caches
-
-    @property
-    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
-        return self.configs
-
-
-def datasource_from_chat_jsonl(
-    urls: Sequence[str], messages_field: str = "messages", input_role: str = "user", output_role: str = "assistant"
-) -> "ShardedDataSource[dict]":
-    """Creates a ShardedDataSource from JSONL files containing chat messages.
-
-    Args:
-        urls: Sequence of URLs or glob patterns pointing to JSONL files
-        messages_field: Field name containing the messages in each JSON object
-        input_role: Role identifier for input messages
-        output_role: Role identifier for output messages
-
-    Returns:
-        ShardedDataSource configured for chat data
-    """
-    # Expand any glob patterns in the URLs
-    expanded_urls = []
-    for url in urls:
-        if any(c in url for c in "*?[]"):
-            expanded_urls.extend(gcs_glob(url))
-        else:
-            expanded_urls.append(url)
-
-    return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
 
 
 class BatchTokenizer(BatchProcessor[str, dict]):
@@ -1232,7 +796,6 @@ def _prepare_supervised_examples(ex: list[dict], tokenizer: PreTrainedTokenizerB
     
     return out
 
-
 @functools.partial(jax.jit, static_argnums=(0, 3, 4))
 def _mk_sup_example_jit(Pos, input_ids: hax.NamedArray, sources_len, pad_token_id, eos_id):
     # mask out padding and anything before the start of the target
@@ -1242,6 +805,22 @@ def _mk_sup_example_jit(Pos, input_ids: hax.NamedArray, sources_len, pad_token_i
     loss_mask = loss_mask & (targets != pad_token_id)
     loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
     return LmExample.causal(input_ids, loss_mask=loss_mask, eos_id=eos_id)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def mk_supervised_datasets(
@@ -1388,6 +967,14 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     }
 
 
+
+
+
+
+
+
+
+
 def mk_chat_sft_dataset(
     config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
 ) -> AsyncDataset[LmExample]:
@@ -1421,6 +1008,312 @@ def mk_chat_sft_dataset(
     # Reuse the supervised prepare function directly
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
+
+@dataclass
+class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
+    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+
+    cache_dir: Optional[str] = "cache/"
+
+    def train_set(
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray] = None,
+        epochs: Optional[int] = None,
+    ) -> AsyncDataset[np.ndarray]:
+
+        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
+
+        # add epoch flag here.
+        if ds is None:
+            raise ValueError("No training set!")
+
+        if epochs:
+            logger.info("Wrapping dataset in epoch dataset")
+            ds = EpochDataset(ds, max_epochs=epochs)
+
+        if self.shuffle is True:
+            ds = ds.shuffle(key)
+        elif isinstance(self.shuffle, int) and self.shuffle > 0:
+            ds = ds.era_shuffle(self.shuffle, key=key)
+
+        return ds  # type: ignore
+
+    def validation_set(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TokenSeqDataset]:
+        return self.token_seq_dataset("validation", seq_len, monitors)
+
+    def validation_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+        validation_set = self.validation_set(seq_len, monitors)
+        if validation_set is not None:
+            return {"": validation_set}
+        else:
+            return {}
+
+    @property
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
+        return {"": self}
+
+    @cached_property
+    def _has_validation_set(self):
+        if len(self.validation_urls) > 0:
+            return True
+
+        if self.id is not None:
+            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
+            try:
+                next(iter(dataset))
+                return True
+            except StopIteration:
+                return False
+
+        return False
+
+    def token_seq_dataset(
+        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TokenSeqDataset]:
+        cache = self.build_or_load_cache(split, monitors=monitors)
+        if cache is None:
+            return None
+        return TokenSeqDataset(cache, seq_len)
+
+    def build_or_load_cache(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
+    ) -> Optional[TreeCache[BatchEncoding]]:
+        if self.cache_dir is None:
+            raise ValueError("cache_dir cannot be None")
+
+        split_cache_dir = os.path.join(self.cache_dir, split)
+        name = logger_name or os.path.basename(self.cache_dir)
+
+        try:
+            # TODO: pass in options
+            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
+        except FileNotFoundError:
+            pass
+
+        source = self.get_shard_source(split)
+        if source is None:
+            logger.info(f"No data for {split}")
+            return None
+
+        logger.info(f"Building cache for {split}...")
+
+        if monitors is True:
+            monitors = [
+                LoggingMetricsMonitor(prefix=f"preprocessing/{name}/{split}", commit=False),
+                LoggerMetricsMonitor(f"preprocessing.{name}.{split}"),
+            ]
+        elif monitors is False:
+            monitors = []
+
+        bt = BatchTokenizer(self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos)
+
+        return build_or_load_cache(
+            split_cache_dir,
+            source,
+            bt,
+            monitors=monitors,
+            await_finished=False,
+            options=self.cache_options,
+            split=split,
+        )
+
+
+class PassthroughTokenizer(PreTrainedTokenizer):
+    def __init__(self, vocab_size, **kwargs):
+        self._vocab = {i: i for i in range(vocab_size)}
+        self._vocab_size = vocab_size
+        super().__init__(**kwargs)
+
+    @property
+    def vocab_size(self) -> int:
+        return self._vocab_size
+
+    def get_vocab(self):
+        return self._vocab
+
+    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
+        return ()
+
+    def _tokenize(self, text, **kwargs):
+        tokens = np.fromstring(text, dtype=int, sep=" ")
+        return tokens
+
+    def _convert_token_to_id(self, token: str) -> int:
+        return int(token)
+
+    def _convert_id_to_token(self, index: int) -> str:
+        return str(index)
+    
+@dataclass
+class LMMixtureDatasetConfig(LMTaskConfig):
+    """This class represents a mixture of datasets with their associated weights."""
+
+    cache_dir: Optional[str] = "cache/"
+
+    # data source configs and weights
+    configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
+    """ configuration of each dataset source (urls, hf dataset id, etc.) """
+    train_weights: Dict[str, float] = field(default_factory=dict)
+    """ weights for each dataset source. They will be normalized to sum to 1. """
+    stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+    mixture_block_size: int = 2048
+    """ block size for the mixture dataset."""
+
+    def __post_init__(self):
+        if len(self.configs) == 0:
+            raise ValueError("At least one dataset must be provided")
+
+        if set(self.configs.keys()) != set(self.train_weights.keys()):
+            raise ValueError(
+                f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
+                f" {self.train_weights.keys()}"
+            )
+
+    def train_set(
+        self,
+        seq_len: int,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: Optional[PRNGKeyArray],
+        epochs: Optional[int] = None,
+    ) -> AsyncDataset[np.ndarray]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+
+        if epochs:
+            raise ValueError("Epochs are not supported for mixture datasets")
+
+        if key is None:
+            key = jax.random.PRNGKey(0)
+
+        mix_key, shuffle_key = jax.random.split(key)
+
+        # We shuffle the components and not the overall mixture because this lets us preserve
+        # the "stable batch" property of the mixture dataset.
+        def shuffle_ds(ds, key):
+            if self.shuffle is True:
+                ds = ds.shuffle(key)
+            elif isinstance(self.shuffle, int):
+                ds = ds.era_shuffle(self.shuffle, key=key)
+
+            return ds
+
+        if self.shuffle:
+            out_token_datasets = {}
+            key_iter = key_iterator(shuffle_key)
+            for name, ds in token_datasets.items():
+                out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
+            token_datasets = out_token_datasets
+
+        mixture = MixtureDataset(
+            datasets=token_datasets,
+            weights=self.train_weights,
+            stop_strategy=self.stop_strategy,
+            key=mix_key,
+            block_size=2048,
+        )
+
+        return mixture
+
+    def training_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, TokenSeqDataset]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+        return token_datasets
+
+    def validation_sets(
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+        doc_caches = self.build_caches("validation", monitors=monitors)
+        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+        return token_datasets
+
+    def build_caches(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Dict[str, TreeCache[dict]]:
+        # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
+        # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the
+        # LMDatasetConfig.build_or_load_cache method. We exclude the cache_dir field.
+        task_config_fields = set(x.name for x in dataclasses.fields(LMTaskConfig))
+        task_config_dict = {k: v for k, v in self.__dict__.items() if k in task_config_fields and k != "cache_dir"}
+
+        caches = {}
+        for name, source_config in self.configs.items():
+            weight = self.train_weights.get(name, 0)
+
+            if weight == 0 and split == "train":
+                continue
+
+            source_config_dict = dict(**source_config.__dict__)
+
+            if source_config.cache_dir is None:
+                # replace with the main cache dir/{name}
+                if self.cache_dir is None:
+                    raise ValueError(
+                        "If the 'main' cache_dir is None, then all component cache_dirs must be non-None, but"
+                        f"{name}'s cache_dir is None."
+                    )
+                cache_dir = os.path.join(self.cache_dir, name)
+                source_config_dict["cache_dir"] = cache_dir
+
+            dataset = LMDatasetConfig(
+                **source_config_dict,
+                **task_config_dict,
+            )
+            cache = dataset.build_or_load_cache(split, monitors)
+            # drop the data source and corresponding weight if the cache is not built
+            if cache is None:
+                logger.warning(f"Skipping {name} for split {split} because no source was provided")
+            else:
+                caches[name] = cache
+
+        # in practice it works best if we block on validation caches
+        if split == "validation":
+            for cache in caches.values():
+                cache.await_finished()
+
+        else:
+            logger.info(f"Not waiting for {split} caches to finish building")
+
+        return caches
+
+    @property
+    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
+        return self.configs
+
+
+
+def datasource_from_chat_jsonl(
+    urls: Sequence[str], messages_field: str = "messages", input_role: str = "user", output_role: str = "assistant"
+) -> "ShardedDataSource[dict]":
+    """Creates a ShardedDataSource from JSONL files containing chat messages.
+
+    Args:
+        urls: Sequence of URLs or glob patterns pointing to JSONL files
+        messages_field: Field name containing the messages in each JSON object
+        input_role: Role identifier for input messages
+        output_role: Role identifier for output messages
+
+    Returns:
+        ShardedDataSource configured for chat data
+    """
+    # Expand any glob patterns in the URLs
+    expanded_urls = []
+    for url in urls:
+        if any(c in url for c in "*?[]"):
+            expanded_urls.extend(gcs_glob(url))
+        else:
+            expanded_urls.append(url)
+
+    return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
 
 def preprocess_chat_example_for_packing(
     batch, 
