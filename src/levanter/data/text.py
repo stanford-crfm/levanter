@@ -1449,12 +1449,32 @@ def mk_chat_sft_packed_dataset(
 
     # Convert cached dictionaries to PromptCompletions and pack them
     def prepare_and_pack(examples: list[dict]) -> list[LmExample]:
-        completions = [
-            PromptCompletion(
-                ids=ex["input_ids"].tolist(),
-                prompt_length=int(ex["prompt_length"])
-            ) for ex in examples
-        ]
+        completions = []
+        for ex in examples:
+            ids = ex["input_ids"].tolist()
+            prompt_length = int(ex["prompt_length"])
+            
+            # Ensure we have at least one token for completion
+            if prompt_length >= len(ids):
+                prompt_length = len(ids) - 1
+            
+            try:
+                completion = PromptCompletion(
+                    ids=ids,
+                    prompt_length=prompt_length
+                )
+                completions.append(completion)
+            except ValueError as e:
+                # Log the error for debugging but don't drop data silently
+                logger.warning(f"Invalid completion: {e}. ids_len={len(ids)}, prompt_len={prompt_length}")
+                # Create a minimal valid completion instead of dropping
+                if len(ids) > 1:
+                    completion = PromptCompletion(
+                        ids=ids,
+                        prompt_length=len(ids)-1  # Use all but last token as prompt
+                    )
+                    completions.append(completion)
+            
         return list(pack_prompt_completions(
             Pos=Pos,
             sequences=completions,
