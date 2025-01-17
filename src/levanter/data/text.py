@@ -1451,29 +1451,25 @@ def mk_chat_sft_packed_dataset(
     def prepare_and_pack(examples: list[dict]) -> list[LmExample]:
         completions = []
         for ex in examples:
-            ids = ex["input_ids"].tolist()
+            ids = ex["input_ids"]
             prompt_length = int(ex["prompt_length"])
             
-            # Ensure we have at least one token for completion
-            if prompt_length >= len(ids):
-                prompt_length = len(ids) - 1
+            # Truncate if sequence is too long
+            if len(ids) > Pos.size:
+                # Keep as much context as possible while ensuring at least one target token
+                if prompt_length >= Pos.size:
+                    prompt_length = Pos.size - 1
+                ids = ids[-Pos.size:]
             
             try:
                 completion = PromptCompletion(
-                    ids=ids,
+                    ids=ids.tolist(),  # Convert from numpy to list
                     prompt_length=prompt_length
                 )
                 completions.append(completion)
             except ValueError as e:
-                # Log the error for debugging but don't drop data silently
-                logger.warning(f"Invalid completion: {e}. ids_len={len(ids)}, prompt_len={prompt_length}")
-                # Create a minimal valid completion instead of dropping
-                if len(ids) > 1:
-                    completion = PromptCompletion(
-                        ids=ids,
-                        prompt_length=len(ids)-1  # Use all but last token as prompt
-                    )
-                    completions.append(completion)
+                logger.warning(f"Skipping invalid completion: {e}. ids_len={len(ids)}, prompt_len={prompt_length}")
+                continue
             
         return list(pack_prompt_completions(
             Pos=Pos,
