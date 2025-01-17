@@ -783,32 +783,17 @@ def _preprocess_supervised_example(
 
 
 def _prepare_supervised_examples(ex: list[dict], tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis) -> list[LmExample]:
-    """
-    Prepare examples for training. This function converts the (cached) encodings into an LmExample.
-
-    It goes through the following steps:
-
-    1. Pad the batch to the maximum length.
-    2. Mask out the input and prompt if requested.
-    3. Create an LmExample with the input_ids as the input and the next token as the target.
-    """
     lens = np.array([ex["sources_len"] for ex in ex])
-
-    ex_pad = tokenizer.pad(
-        ex,
-        padding="max_length",
-        max_length=Pos.size,
-    )
-
-    input_ids = ex_pad["input_ids"]
-    truncated = [ids[-Pos.size :] for ids in input_ids]
-
+    
+    # Pad to max length
+    ex_pad = tokenizer.pad(ex, padding="max_length", max_length=Pos.size)
+    
+    # Create examples with appropriate loss masking
     out = []
-    for ids, len in zip(truncated, lens):
+    for ids, len in zip(ex_pad["input_ids"], lens):
         causal = _mk_sup_example_jit(Pos, hax.named(ids, Pos), len, tokenizer.pad_token_id, tokenizer.eos_token_id)
-
         out.append(causal)
-
+    
     return out
 
 
@@ -951,27 +936,19 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
         tokenizer: HuggingFace tokenizer
         should_append_eos: Whether we need to manually add EOS (True if tokenizer doesn't do it automatically)
     """
-    # Get sources (inputs) and targets (outputs) from the batch
     sources = [example["input"] for example in batch]
     targets = [example["output"] for example in batch]
-
-    # Add EOS only if needed (tokenizer doesn't do it automatically)
-    if should_append_eos:
-        targets = [t + tokenizer.eos_token for t in targets]
-
-    # Tokenize sources alone first to get the source lengths
+    
+    # Tokenize sources to get lengths
     sources_tokenized = tokenizer(sources, padding=False, truncation=True)
-
-    # Combine source and target for full examples
+    
+    # Combine for full examples
     full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
     examples_tokenized = tokenizer(full_examples, padding=False, truncation=True)
-
-    # Get source lengths to mask loss appropriately
-    source_lens = [len(s) for s in sources_tokenized["input_ids"]]
-
+    
     return {
         "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
-        "sources_len": np.array(source_lens, dtype=np.int32),
+        "sources_len": np.array([len(s) for s in sources_tokenized["input_ids"]], dtype=np.int32),
     }
 
 
@@ -1007,6 +984,32 @@ def mk_chat_sft_dataset(
 
     # Reuse the supervised prepare function directly
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
+
+
+def preprocess_chat_example_for_packing(
+    batch, 
+    tokenizer: PreTrainedTokenizerBase, 
+    should_append_eos: bool
+) -> list[PromptCompletion]:
+    """Preprocesses chat examples into PromptCompletion objects for packing."""
+    outputs = []
+    for example in batch:
+        # Tokenize input (prompt) separately to get length
+        input_ids = tokenizer(example["input"], truncation=True)["input_ids"]
+        
+        # Tokenize full sequence (input + output)
+        target = example["output"]
+        if should_append_eos:
+            target = target + tokenizer.eos_token
+            
+        full_sequence = example["input"] + target
+        full_ids = tokenizer(full_sequence, truncation=True)["input_ids"]
+        
+        outputs.append(PromptCompletion(
+            ids=full_ids,
+            prompt_length=len(input_ids)
+        ))
+    return outputs
 
 
 @dataclass
@@ -1341,3 +1344,50 @@ class ChatJsonlDataSource(JsonlDataSource):
 
                     yield {"input": input_msg, "output": output_msg}
                 i += 1
+
+
+def mk_chat_sft_packed_dataset(
+    config: ChatUrlDataSourceConfig, 
+    tokenizer: PreTrainedTokenizerBase, 
+    Pos: hax.Axis,
+    *,
+    max_segments_per_example: int = 4,  # How many sequences to pack into one example
+) -> AsyncDataset[LmExample]:
+    """Creates a packed dataset from chat data for more efficient training."""
+    source = config.get_shard_source("train")
+    if source is None:
+        raise ValueError("No training data source found")
+
+    # Check if we need to manually append EOS
+    input_ids = tokenizer("hi there")["input_ids"]
+    should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+    logger.info(f"Manual EOS Needed: {should_append_eos}")
+
+    # Ensure padding token is set
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # First process into PromptCompletion objects
+    dataset = source.map_batches(
+        lambda ex: preprocess_chat_example_for_packing(ex, tokenizer, should_append_eos),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+    )
+
+    # Cache the processed data
+    cached_dataset: AsyncDataset[list[PromptCompletion]] = dataset.build_or_load_cache(
+        config.cache_dir, 
+        await_finished=True
+    )
+
+    # Function to pack completions into LmExamples
+    def pack_batch(completions: list[PromptCompletion]) -> list[LmExample]:
+        return list(pack_prompt_completions(
+            Pos=Pos,
+            sequences=completions,
+            pad_token=tokenizer.pad_token_id,
+            max_segments_per_example=max_segments_per_example,
+        ))
+
+    # Pack the examples
+    return cached_dataset.map_batches(pack_batch)

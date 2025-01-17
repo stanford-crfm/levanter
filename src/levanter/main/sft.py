@@ -22,6 +22,7 @@ from levanter.data.text import (
     SupervisedSourceConfig,
     mk_chat_sft_dataset,
     mk_supervised_dataset,
+    mk_chat_sft_packed_dataset,
 )
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
@@ -74,6 +75,9 @@ class SFTConfig:
 
     # if provided, will initialize from this checkpoint, used for llama style data mixture
     epoch: int = 0
+
+    enable_packing: bool = False
+    max_segments_per_example: int = 4
 
 
 def train(config: SFTConfig):
@@ -139,12 +143,21 @@ def train(config: SFTConfig):
 
         chat_config = ChatUrlDataSourceConfig(
             cache_dir=cache_dir,
-            train_urls=config.chat_train_urls,  # No validation in this config
+            train_urls=config.chat_train_urls,
             messages_field=config.messages_field,
             input_role=config.input_role,
             output_role=config.output_role,
         )
-        train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
+        
+        if config.enable_packing:
+            train_dataset = mk_chat_sft_packed_dataset(
+                chat_config, 
+                tokenizer, 
+                model_config.Pos,
+                max_segments_per_example=config.max_segments_per_example
+            )
+        else:
+            train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
         if isinstance(config.supervised_data, dict):
