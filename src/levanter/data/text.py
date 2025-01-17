@@ -37,6 +37,7 @@ from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
+from levanter.data.packing import PromptCompletion, pack_prompt_completions
 
 # intercept the logging nonsense here
 from levanter.utils.logging import silence_transformer_nag  # noqa
