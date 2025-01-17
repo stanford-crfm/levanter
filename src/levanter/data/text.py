@@ -955,9 +955,6 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     
     # Tokenize sources to get lengths
     sources_tokenized = tokenizer(sources, padding=False, truncation=True)
-
-    if should_append_eos:
-        targets = [t + tokenizer.eos_token for t in targets]
     
     # Combine for full examples
     full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
@@ -1449,28 +1446,12 @@ def mk_chat_sft_packed_dataset(
 
     # Convert cached dictionaries to PromptCompletions and pack them
     def prepare_and_pack(examples: list[dict]) -> list[LmExample]:
-        completions = []
-        for ex in examples:
-            ids = ex["input_ids"]
-            prompt_length = int(ex["prompt_length"])
-            
-            # Truncate if sequence is too long
-            if len(ids) > Pos.size:
-                # Keep as much context as possible while ensuring at least one target token
-                if prompt_length >= Pos.size:
-                    prompt_length = Pos.size - 1
-                ids = ids[-Pos.size:]
-            
-            try:
-                completion = PromptCompletion(
-                    ids=ids.tolist(),  # Convert from numpy to list
-                    prompt_length=prompt_length
-                )
-                completions.append(completion)
-            except ValueError as e:
-                logger.warning(f"Skipping invalid completion: {e}. ids_len={len(ids)}, prompt_len={prompt_length}")
-                continue
-            
+        completions = [
+            PromptCompletion(
+                ids=ex["input_ids"].tolist(),
+                prompt_length=int(ex["prompt_length"])
+            ) for ex in examples
+        ]
         return list(pack_prompt_completions(
             Pos=Pos,
             sequences=completions,
