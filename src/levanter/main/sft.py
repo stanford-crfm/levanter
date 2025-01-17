@@ -149,15 +149,15 @@ def train(config: SFTConfig):
             output_role=config.output_role,
         )
         
-        if config.enable_packing:
-            train_dataset = mk_chat_sft_packed_dataset(
-                chat_config, 
-                tokenizer, 
-                model_config.Pos,
-                max_segments_per_example=config.max_segments_per_example
-            )
-        else:
-            train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
+        # if config.enable_packing:
+        train_dataset = mk_chat_sft_packed_dataset(
+            chat_config, 
+            tokenizer, 
+            model_config.Pos,
+            max_segments_per_example=4
+        )
+        # else:
+        #     train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
         if isinstance(config.supervised_data, dict):
