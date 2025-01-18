@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import time
@@ -121,3 +122,34 @@ class Stopwatch:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
+
+
+@contextlib.contextmanager
+def set_global_rng_seeds(seed):
+    import numpy as np
+
+    current_np_seed = np.random.get_state()
+    np.random.seed(seed)
+
+    import random
+
+    current_random_seed = random.getstate()
+    random.seed(seed)
+
+    try:
+        import torch
+
+        current_torch_seed = torch.random.get_rng_state()
+        torch.manual_seed(seed)
+    except ImportError:
+        torch = None
+        current_torch_seed = None
+        pass
+
+    try:
+        yield
+    finally:
+        np.random.set_state(current_np_seed)
+        random.setstate(current_random_seed)
+        if current_torch_seed is not None:
+            torch.random.set_rng_state(current_torch_seed)
