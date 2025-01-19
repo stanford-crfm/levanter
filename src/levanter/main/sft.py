@@ -150,11 +150,13 @@ def train(config: SFTConfig):
         )
         
         # if config.enable_packing:
+        logger.info('\n\npacking!!\n\n')
+        import haliax
         train_dataset = mk_chat_sft_packed_dataset(
             chat_config, 
             tokenizer, 
-            model_config.Pos,
-            max_segments_per_example=4
+            haliax.Axis("position", 4096),
+            max_segments_per_example=8
         )
         # else:
         #     train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)

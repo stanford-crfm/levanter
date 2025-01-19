@@ -19,6 +19,9 @@ from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.utils.jax_utils import local_cpu_mesh
 
+import logging
+
+logger = logging.getLogger("levanter.data.text")
 
 # cf https://github.com/tensorflow/tensor2tensor/blob/bafdc1b67730430d38d6ab802cbd51f9d053ba2e/tensor2tensor/data_generators/generator_utils.py#L623
 
@@ -32,6 +35,7 @@ class SequencePacker:
 
     def __init__(self, Pos: hax.Axis, max_pack_size: int, pad_token: int):
         self.Pos = Pos
+        logger.info(f" Pos in packer is {Pos}")
         self._ids: list[int] = []
         self._segment_ids: list[int] = []
         self._loss_mask: list[int] = []
@@ -51,6 +55,8 @@ class SequencePacker:
             return
 
         if len(ids) + len(self._ids) > self.Pos.size:
+            logger.info(f"length of new id is ids: {len(ids)}")
+            logger.info(f"length of old list is ids: {len(self._ids)}")
             raise ValueError("Too many tokens")
 
         if self.num_segments >= self.max_pack_size:
@@ -61,6 +67,8 @@ class SequencePacker:
             segment_id = self.num_segments
 
         self.num_segments += 1
+        logger.info(f"segment_id is {segment_id}")
+        logger.info(f"ids total is now {len(self._ids)}")
 
         self._segment_ids.extend([segment_id] * len(ids))
 
@@ -107,6 +115,7 @@ def pack_prompt_completions(
     pad_token: int,
     max_segments_per_example: int = 64,
     max_buffered_examples: int = 64,
+    tokenizer=None,
 ) -> Iterator[LmExample]:
     """
     Packs a list of prompt completions into LmExamples using the SequencePacker
@@ -119,6 +128,8 @@ def pack_prompt_completions(
         loss_mask[-1] = 0
         assert np.any(loss_mask)
 
+        if len(sequence.ids) > Pos.size:
+            logger.info(f" id is {tokenizer.decode(sequence.ids)}")
         for packer in packers:
             if packer.can_pack(sequence.ids):
                 packer.add_example(sequence.ids, loss_mask, sequence.segment_id)

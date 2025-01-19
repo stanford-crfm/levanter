@@ -1460,18 +1460,38 @@ def mk_chat_sft_packed_dataset(
 
     # Convert cached dictionaries to PromptCompletions and pack them
     def prepare_and_pack(examples: list[dict]) -> list[LmExample]:
-        completions = [
-            PromptCompletion(
-                ids=ex["input_ids"].tolist(),
-                prompt_length=int(ex["sources_len"])
-            ) for ex in examples
-        ]
-        return list(pack_prompt_completions(
+        completions = []
+        for idx, ex in enumerate(examples):
+            logger.info(f" pos {Pos}")
+            logger.info(f"length of examples is {len(examples)}")
+            if int(ex["sources_len"]) > Pos.size - 1:
+                # if the prompt itself is larger than our context
+                # length we need to skip this example
+                logger.info(f"Skipping example {idx} because prompt is too long")
+                continue
+            if len(ex["input_ids"]) > Pos.size:
+                logger.info(f"Shortening example {idx} from {len(ex['input_ids'])} to {Pos.size}")
+                ex["input_ids"] = ex["input_ids"][Pos.size:]
+            completions.append(
+                PromptCompletion(
+                    ids=ex["input_ids"].tolist(),
+                    prompt_length=int(ex["sources_len"])
+                )
+            )
+            logger.info(f"\n\n at example {idx}")
+            logger.info(f"Prompt Length: {ex['sources_len']}")
+            #logger.info(f"Prompt: {tokenizer.decode(ex['input_ids'])}")
+            logger.info(f"Total completion length {len(ex['input_ids'])}")
+        #import os; os._exit(1)
+        logger.info(f"completions: {len(completions)}")
+        iterator = pack_prompt_completions(
             Pos=Pos,
             sequences=completions,
             pad_token=tokenizer.pad_token_id,
             max_segments_per_example=max_segments_per_example,
-        ))
+            tokenizer=tokenizer,
+        )
+        return list(iterator)
 
     # Pack the examples
     return cached_dataset.map_batches(prepare_and_pack)
