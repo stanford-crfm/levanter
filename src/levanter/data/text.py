@@ -950,19 +950,27 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
         tokenizer: HuggingFace tokenizer
         should_append_eos: Whether we need to manually add EOS (True if tokenizer doesn't do it automatically)
     """
+    # Get sources (inputs) and targets (outputs) from the batch
     sources = [example["input"] for example in batch]
     targets = [example["output"] for example in batch]
-    
-    # Tokenize sources to get lengths
+
+    # Add EOS only if needed (tokenizer doesn't do it automatically)
+    if should_append_eos:
+        targets = [t + tokenizer.eos_token for t in targets]
+
+    # Tokenize sources alone first to get the source lengths
     sources_tokenized = tokenizer(sources, padding=False, truncation=True)
-    
-    # Combine for full examples
+
+    # Combine source and target for full examples
     full_examples = [f"{s}{t}" for s, t in zip(sources, targets)]
     examples_tokenized = tokenizer(full_examples, padding=False, truncation=True)
-    
+
+    # Get source lengths to mask loss appropriately
+    source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
     return {
         "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
-        "sources_len": np.array([len(s) for s in sources_tokenized["input_ids"]], dtype=np.int32),
+        "sources_len": np.array(source_lens, dtype=np.int32),
     }
 
 
@@ -1335,7 +1343,6 @@ def preprocess_chat_example_for_packing(
             
         full_sequence = example["input"] + target
         full_ids = tokenizer(full_sequence, truncation=True)["input_ids"]
-        
         # Take last Pos.size tokens if sequence is too long
         if len(full_ids) > Pos.size:
             full_ids = full_ids[-Pos.size:]
@@ -1423,19 +1430,26 @@ def mk_chat_sft_packed_dataset(
     should_append_eos = input_ids[-1] != tokenizer.eos_token_id
 
     # First process into cacheable format
+    # dataset = source.map_batches(
+    #     lambda ex: preprocess_chat_example_for_packing(
+    #         ex, 
+    #         tokenizer, 
+    #         should_append_eos,
+    #         Pos=Pos
+    #     ),
+    #     batch_size=128,
+    #     num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+    #     output_exemplar={
+    #         "input_ids": np.zeros(0, dtype=np.int32),
+    #         "prompt_length": np.zeros(0, dtype=np.int32)
+    #     }
+    # )
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
     dataset = source.map_batches(
-        lambda ex: preprocess_chat_example_for_packing(
-            ex, 
-            tokenizer, 
-            should_append_eos,
-            Pos=Pos
-        ),
+        lambda ex: preprocess_chat_example(ex, tokenizer, should_append_eos),
         batch_size=128,
         num_cpus=num_cpus_used_by_tokenizer(tokenizer),
-        output_exemplar={
-            "input_ids": np.zeros(0, dtype=np.int32),
-            "prompt_length": np.zeros(0, dtype=np.int32)
-        }
+        output_exemplar=output_exemplar,
     )
 
     # Cache the processed data
@@ -1449,7 +1463,7 @@ def mk_chat_sft_packed_dataset(
         completions = [
             PromptCompletion(
                 ids=ex["input_ids"].tolist(),
-                prompt_length=int(ex["prompt_length"])
+                prompt_length=int(ex["sources_len"])
             ) for ex in examples
         ]
         return list(pack_prompt_completions(
