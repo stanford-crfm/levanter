@@ -156,5 +156,24 @@ def test_tensorstore_ok_with_nones():
         m3 = MyModule(a=hax.zeros(A), b=hax.ones(A))
         with TemporaryDirectory() as tmpdir:
             tree_serialize_leaves_tensorstore(tmpdir, m2)
-            with pytest.raises(ValueError):
+            with pytest.raises(FileNotFoundError):
                 tree_deserialize_leaves_tensorstore(tmpdir, m3)
+
+
+def test_tensorstore_ok_with_missing():
+    mesh = jax.sharding.Mesh(jax.devices(), ("device",))
+    with mesh:
+        A = hax.Axis("A", 10)
+
+        class MyModule(eqx.Module):
+            a: Any
+            b: Any
+
+        m = MyModule(a=None, b=hax.zeros(A))
+        m2 = MyModule(a=hax.full(A, 4), b=hax.ones(A))
+
+        with TemporaryDirectory() as tmpdir:
+            tree_serialize_leaves_tensorstore(tmpdir, m)
+            m3 = tree_deserialize_leaves_tensorstore(tmpdir, m2, allow_missing=True)
+            assert hax.all(m3.a == hax.full(A, 4))
+            assert hax.all(m3.b == hax.zeros(A))

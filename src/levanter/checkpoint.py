@@ -353,6 +353,7 @@ def load_checkpoint(
     discover_latest=True,
     axis_mapping: Optional[haliax.partitioning.ResourceMapping] = None,
     mesh: Optional[jax.sharding.Mesh] = None,
+    allow_partial: bool = False,
 ) -> M:
     """
     Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
@@ -367,6 +368,7 @@ def load_checkpoint(
         discover_latest: whether to discover the latest checkpoint in the given path
         axis_mapping: the axis mapping to use for loading the checkpoint
         mesh: the mesh to use for loading the checkpoint
+        allow_partial: if True, allow partial loading of the checkpoint. If False, all parameters must be present in the checkpoint.
     Returns:
         the loaded checkpoint, with the same structure as the exemplar tree
 
@@ -397,7 +399,9 @@ def load_checkpoint(
 
     ser, non_ser = equinox.partition(tree, is_jax_array_like)
     try:
-        tree = tree_deserialize_leaves_tensorstore(checkpoint_path, ser, axis_mapping=axis_mapping, mesh=mesh)
+        tree = tree_deserialize_leaves_tensorstore(
+            checkpoint_path, ser, axis_mapping=axis_mapping, mesh=mesh, allow_missing=allow_partial
+        )
         tree = equinox.combine(tree, non_ser)
         return tree
     except:  # noqa
@@ -445,6 +449,7 @@ def load_checkpoint_or_initialize(
     donate_args: FilterSpec = True,
     donate_kwargs: Optional[FilterSpec] = None,
     do_load: Optional[bool] = None,
+    allow_partial: bool = False,
 ) -> Callable[Sig, M]:
     """
     Load a checkpoint from a given path. If discover_latest is True, then the latest checkpoint
@@ -476,6 +481,7 @@ def load_checkpoint_or_initialize(
         donate_args: a FilterSpec that specifies which arguments to donate to init_fn if we need to initialize
         donate_kwargs: a FilterSpec that specifies which kwargs to donate to init_fn if we need to initialize
         do_load: if True, always load the checkpoint. If False, always initialize. If None, load if the checkpoint exists, otherwise initialize
+        allow_partial: if True, allow partial loading of the checkpoint. If False, all parameters must be present in the checkpoint.
 
     Returns:
         A function that takes the same arguments as init_fn, but loads the checkpoint if it exists and returns the
@@ -493,6 +499,8 @@ def load_checkpoint_or_initialize(
     )
     def init_and_merge(state, *args, **kwargs):
         init_state = init_fn(*args, **kwargs)
+        # remove all ShapeDTypeStructs from the state
+        state = equinox.filter(state, lambda x: not isinstance(x, jax.ShapeDtypeStruct))
         return equinox.combine(state, init_state)
 
     def load_or_init(*args, **kwargs):
@@ -516,6 +524,7 @@ def load_checkpoint_or_initialize(
                     discover_latest=discover_latest,
                     axis_mapping=axis_mapping,
                     mesh=mesh,
+                    allow_partial=allow_partial,
                 )
             except FileNotFoundError:
                 if do_load is True:
