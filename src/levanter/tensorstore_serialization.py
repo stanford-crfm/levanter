@@ -175,9 +175,15 @@ def tree_deserialize_leaves_tensorstore(
         indices_to_load.append(i)
         shardings_to_load.append(shardings_leaves[i])
 
-    # ok now check for missing paths. We need to remove them from the real_shardings and real_paths
-    if not allow_missing and missing_paths:
-        raise FileNotFoundError(f"Missing paths: {missing_paths}")
+    # ok now check for missing paths
+    if missing_paths:
+        if not allow_missing:
+            raise FileNotFoundError(f"Missing paths: {missing_paths}")
+        else:
+            to_log = f"Several keys were missing from the checkpoint directory {paths}:"
+            for i in missing_indices:
+                to_log += f"\n  - {leaf_key_paths[i]}"
+            logger.warning(to_log)
 
     deser_leaves = manager.deserialize_with_paths(shardings=shardings_to_load, paths=paths_to_load)
 
