@@ -130,6 +130,7 @@ def pack_prompt_completions(
 
         if len(sequence.ids) > Pos.size:
             logger.info(f" id is {tokenizer.decode(sequence.ids)}")
+            raise ValueError("PromptCompletion is too long")
         for packer in packers:
             if packer.can_pack(sequence.ids):
                 packer.add_example(sequence.ids, loss_mask, sequence.segment_id)

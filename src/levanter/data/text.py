@@ -1461,9 +1461,8 @@ def mk_chat_sft_packed_dataset(
     # Convert cached dictionaries to PromptCompletions and pack them
     def prepare_and_pack(examples: list[dict]) -> list[LmExample]:
         completions = []
+        logger.info(f"length of examples is {len(examples)}")
         for idx, ex in enumerate(examples):
-            logger.info(f" pos {Pos}")
-            logger.info(f"length of examples is {len(examples)}")
             if int(ex["sources_len"]) > Pos.size - 1:
                 # if the prompt itself is larger than our context
                 # length we need to skip this example
@@ -1471,7 +1470,8 @@ def mk_chat_sft_packed_dataset(
                 continue
             if len(ex["input_ids"]) > Pos.size:
                 logger.info(f"Shortening example {idx} from {len(ex['input_ids'])} to {Pos.size}")
-                ex["input_ids"] = ex["input_ids"][Pos.size:]
+                ex["input_ids"] = ex["input_ids"][:Pos.size]
+                logger.info(f"New length of example is {len(ex['input_ids'])}")
             completions.append(
                 PromptCompletion(
                     ids=ex["input_ids"].tolist(),
