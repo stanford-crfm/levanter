@@ -1,7 +1,7 @@
 eval_harness:
 #  task_spec: ["hellaswag"]
   task_spec:
-    - mmlu
+#    - mmlu
     - task: mmlu
       num_fewshot: 1
       task_alias: mmlu_1shot
