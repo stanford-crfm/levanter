@@ -262,6 +262,7 @@ class LlamaAttention(eqx.Module):
             use_flash=c.use_flash_attention,
             attn_backend=self.config.attn_backend,
             flash_block_size=c.flash_attention_block_size,
+            use_mup=self.config.use_mup,
         )
 
         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")

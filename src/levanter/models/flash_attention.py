@@ -39,6 +39,7 @@ def flash_attention(
     block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
+    use_mup: bool = False,
 ):
     """
     Flash Attention impl, vaguely following the v2 paper.
@@ -67,11 +68,25 @@ def flash_attention(
         from levanter.models.attention import simple_attention_with_dropout
 
         return simple_attention_with_dropout(
-            QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
+            QPos,
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            mask=mask,
+            bias=bias,
+            dropout=dropout,
+            inference=inference,
+            prng=key,
+            use_mup=use_mup,
         )
 
     # premultiply by 1/sqrt(d_k) for normal dot product attention
-    q = q / math.sqrt(float(q.axis_size(Key)))
+    if use_mup:
+        q = q / float(q.axis_size(Key))
+    else:
+        q = q / math.sqrt(float(q.axis_size(Key)))
 
     return _flash_attention(
         (q, k, v),

@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import equinox as eqx
 import jax.random as jrandom
 
 import haliax as hax
@@ -166,6 +167,41 @@ def main(config: TrainLmConfig):
             trainer.add_hook(epoch_checkpointer, every=1)
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
+
+        if config.model.use_mup:
+            base_model = eqx.filter_eval_shape(config.model.__class__().build, Vocab, key=jrandom.PRNGKey(0))
+            import jax
+
+            from haliax.nn import Linear
+
+            def width_mult(param, base_param):
+                mup_axes = ["embed", "mlp", "head_size"]
+
+                if isinstance(param, Linear):
+                    mult = hax.axis_size(param.In) / hax.axis_size(base_param.In)
+                    if isinstance(param.Out, Axis):
+                        if param.Out.name not in mup_axes:
+                            mult = 1
+                    else:
+                        for ax in param.Out:
+                            if ax.name in mup_axes:
+                                break
+                        else:
+                            mult = 1  # this is an output weight
+
+                    return dataclasses.replace(param, weight=mult, bias=1 if param.bias is not None else None)
+                else:
+                    return 1
+
+            flattened_model, treedef = jax.tree_util.tree_flatten(state.model, is_leaf=lambda x: isinstance(x, Linear))
+            flattened_base_model, _ = jax.tree_util.tree_flatten(base_model, is_leaf=lambda x: isinstance(x, Linear))
+
+            flattened_width_multipliers = jax.tree_util.tree_map(
+                width_mult, flattened_model, flattened_base_model, is_leaf=lambda x: isinstance(x, Linear)
+            )
+
+            width_multipliers = jax.tree_util.tree_unflatten(treedef, flattened_width_multipliers)
+            state = dataclasses.replace(state, width_multipliers=width_multipliers)
 
         seek_dataloader = True
         if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
