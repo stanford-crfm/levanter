@@ -180,9 +180,10 @@ def tree_deserialize_leaves_tensorstore(
         if not allow_missing:
             raise FileNotFoundError(f"Missing paths: {missing_paths}")
         else:
-            to_log = f"Several keys were missing from the checkpoint directory {paths}:"
+            to_log = f"Several keys were missing from the checkpoint directory {checkpoint_dir}:"
+            leaf_paths = jtu.tree_leaves(leaf_key_paths, is_leaf=_is_named_or_none)
             for i in missing_indices:
-                to_log += f"\n  - {leaf_key_paths[i]}"
+                to_log += f"\n  - {leaf_paths[i]}"
             logger.warning(to_log)
 
     deser_leaves = manager.deserialize_with_paths(shardings=shardings_to_load, paths=paths_to_load)
