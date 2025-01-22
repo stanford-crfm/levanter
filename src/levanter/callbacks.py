@@ -56,6 +56,7 @@ class StepInfo(Generic[S]):
 
     model = property(lambda self: self.state.model)
     opt_state = property(lambda self: self.state.opt_state)
+    eval_model = property(lambda self: self.state.eval_model)
 
     step = property(lambda self: int(self.state.step) - 1)
     """
@@ -190,7 +191,7 @@ def compute_validation_loss(
     name: Optional[str] = None,
 ):
     def compute_loss(info: StepInfo):
-        loss = eval_loss_loop(loss_fn, info.model, dataset, max_batches=max_batches, name=name)
+        loss = eval_loss_loop(loss_fn, info.eval_model, dataset, max_batches=max_batches, name=name)
 
         prefix = "eval"
         if name:
@@ -372,7 +373,7 @@ def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir:
     """
 
     def compute_and_viz_log_probs(step: StepInfo):
-        model = step.model
+        model = step.eval_model
         os.makedirs(html_dir, exist_ok=True)
         path = os.path.join(html_dir, f"step_{step.step}.html")
 

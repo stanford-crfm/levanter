@@ -390,7 +390,7 @@ def save_peft_checkpoint_callback(
         logger.info(f"Saving PEFT checkpoint for step {step.step} to {base_path}")
 
         save_peft_pretrained(
-            step.model,
+            step.eval_model,
             config,
             base_model_name_or_path,
             os.path.join(base_path, f"step-{step.step}"),
@@ -441,7 +441,7 @@ def save_merged_hf_checkpoint_callback(
         logger.info(f"Saving merged HF model for step {step.step} to {base_path}")
         path = os.path.join(base_path, f"step-{step.step}")
 
-        model = step.model
+        model = step.eval_model
 
         save_merged_hf_model(model, converter, path, upload_to_hf=upload_to_hf, **my_upload_kwargs)
 

@@ -35,7 +35,7 @@ def test_eval_lm():
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-            state = TrainerState(0, model, model, jax.random.PRNGKey(0), True, None, None)
+            state = TrainerState(0, model, model, jax.random.PRNGKey(0), None, True, None, None)
 
             save_checkpoint(state, 0, f"{f}/ckpt")
 
@@ -79,7 +79,7 @@ def test_eval_lm_from_hf():
             Vocab = haliax.Axis("vocab", len(tok))
             model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
-            state = TrainerState(0, model, model, jax.random.PRNGKey(0), True, None, None)
+            state = TrainerState(0, model, model, jax.random.PRNGKey(0), None, True, None, None)
 
             save_checkpoint(state, 0, f"{f}/ckpt")
 
