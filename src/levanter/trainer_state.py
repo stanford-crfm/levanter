@@ -53,10 +53,11 @@ class TrainerState(eqx.Module, Generic[M]):
     optimizer: GradientTransformation = eqx.field(static=True)
     opt_state: OptState
     training_key: PRNGKeyArray
-    model_averaging: ModelAveraging[M] | None = None
 
     is_trainable: FilterTree = eqx.field(static=True)
     mp: jmp.Policy = eqx.field(static=True)
+
+    model_averaging: ModelAveraging[M] | None = None
 
     @property
     def int_step(self) -> int:
