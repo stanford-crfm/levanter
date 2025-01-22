@@ -329,3 +329,40 @@ def test_load_from_checkpoint_or_initialize_works_if_file_not_found():
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(loaded, is_checkpointed))),
             jax.tree_util.tree_leaves(arrays_only(eqx.filter(model1, is_checkpointed))),
         )
+
+
+def test_load_from_checkpoint_allows_partial_checkpoints():
+    In = Axis("in", 2)
+    Out = Axis("out", 1)
+
+    class MyModule(eqx.Module):
+        a: hax.NamedArray
+        b: hax.NamedArray | None
+
+    def init_fn(key, use_b):
+        k_a, k_b = jax.random.split(key)
+        return MyModule(a=hax.random.normal(k_a, (In, Out)), b=hax.random.normal(k_b, (In, Out)) if use_b else None)
+
+    k0 = jax.random.PRNGKey(0)
+    k1 = jax.random.PRNGKey(1)
+
+    model0 = init_fn(k0, False)
+    model1 = init_fn(k1, True)
+
+    is_checkpointed = True
+
+    with jax.sharding.Mesh(jax.devices(), ("devices",)), tempfile.TemporaryDirectory() as tmpdir:
+
+        save_checkpoint(eqx.filter(model0, is_checkpointed), step=0, checkpoint_path=tmpdir)
+
+        loaded = load_checkpoint_or_initialize(
+            init_fn,
+            tmpdir,
+            is_checkpointed=is_checkpointed,
+            allow_partial=True,
+        )(k1, True)
+
+        assert not any(jax.tree_util.tree_leaves(eqx.filter(loaded, lambda x: isinstance(x, ShapeDtypeStruct))))
+        assert hax.all(hax.equal(loaded.a, model0.a))
+        assert loaded.b is not None
+        assert hax.all(hax.equal(loaded.b, model1.b))

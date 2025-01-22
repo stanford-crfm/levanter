@@ -343,6 +343,7 @@ class Trainer:
                 mesh=self.device_mesh,
                 subpath="model",
                 do_load=True,
+                allow_partial=self.config.allow_partial_checkpoint,
             )()
             model_init = jax.tree_util.Partial(lambda m: m, loaded_model)
 
@@ -369,6 +370,7 @@ class Trainer:
             mesh=self.device_mesh,
             is_checkpointed=saveable_train_state,
             do_load=load_checkpoint,
+            allow_partial=self.config.allow_partial_checkpoint,
         )(model_init, training_key)
 
         return state
@@ -629,6 +631,9 @@ class TrainerConfig:
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
     initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
+    allow_partial_checkpoint: bool = False
+    """If True, we allow loading a checkpoint that doesn't have all the parameters in the model.
+        Missing parameters are initialized from the model_init function."""
 
     jax_config: Mapping[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
