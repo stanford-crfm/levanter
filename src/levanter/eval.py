@@ -194,7 +194,7 @@ def cb_tagged_lm_evaluate(
 
     def eval_callback(step: StepInfo):
         with levanter.tracker.capture_time() as time_fn:
-            result = evaluator.evaluate(step.model)
+            result = evaluator.evaluate(step.eval_model)
 
         log_dict = {
             # log micro average as just "loss"

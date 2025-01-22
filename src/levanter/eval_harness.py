@@ -689,7 +689,7 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
         if step.step == 0 and not force:
             return
 
-        model = inference_mode(step.model, True)
+        model = step.eval_model
         logger.info("Running eval harness...")
         outputs = _actually_run_eval_harness(
             config,

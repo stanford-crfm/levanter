@@ -38,6 +38,7 @@ from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
+from levanter.optim.model_averaging import ModelAveragingConfig
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.utils import cloud_utils, fsspec_utils
@@ -356,6 +357,7 @@ class Trainer:
                 is_trainable=is_trainable,
                 mp=self.mp,
                 fp8=self.fp8,
+                model_averaging=self.config.model_averaging,
             )
             return state
 
@@ -472,7 +474,6 @@ class Trainer:
 
             @eqx.filter_jit
             def eval_loss(model, *batch, **batch_kwargs):
-                model = inference_mode(model, True)
                 model = self.mp.cast_to_compute(model)
                 return self.loss_fn(model, *batch, **batch_kwargs, key=None)
 
@@ -577,6 +578,7 @@ class TrainerConfig:
     seed: int = 0  # random seed
     mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
     fp8: Optional[bool | Fp8Config] = None
+    model_averaging: ModelAveragingConfig | None = None
 
     wandb: Optional[tracker.wandb.WandbConfig] = None
     log_dir: Path = Path("logs/")
