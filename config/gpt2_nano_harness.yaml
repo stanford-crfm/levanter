@@ -1,5 +1,9 @@
 eval_harness:
-  task_spec: ["piqa", "hellaswag"]
+  task_spec:
+    - mmlu
+#    - task: mmlu
+#      task_alias: mmlu_0shot
+#      num_fewshot: 0
   max_examples: 32
 eval_harness_steps: 50
 data:
