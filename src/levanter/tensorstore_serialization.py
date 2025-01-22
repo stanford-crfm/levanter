@@ -20,7 +20,7 @@ from haliax.jax_utils import is_jax_array_like
 from haliax.partitioning import ResourceMapping
 from haliax.util import is_named_array
 
-from levanter.utils import jax_utils
+from levanter.utils import fsspec_utils, jax_utils
 
 
 logger = logging.getLogger(__name__)
@@ -119,6 +119,8 @@ def tree_deserialize_leaves_tensorstore(
     axis_mapping: Optional[ResourceMapping] = None,
     mesh: Optional[Mesh] = None,
     manager: Optional[array_ser.GlobalAsyncCheckpointManager] = None,
+    *,
+    allow_missing: bool = False,
 ):
     """
     Deserializes a PyTree of Arrays and NamedArrays from a Tensorstore checkpoint, returning a pytree with the same shape
@@ -132,6 +134,7 @@ def tree_deserialize_leaves_tensorstore(
         axis_mapping: optional, the axis mapping for the NamedArrays (if they are not yet arrays)
         mesh: optional, the mesh for the NamedArrays (if they are not yet arrays)
         manager: optional, the checkpoint manager to use. If not provided, a new one will be created
+        allow_missing: if True, missing leaves will be allowed and kept as-is
 
     Returns:
         A pytree with the same shape as the exemplar pytree, but with the arrays deserialized from the checkpoint
@@ -151,26 +154,56 @@ def tree_deserialize_leaves_tensorstore(
     shardings_leaves, shardings_structure = jtu.tree_flatten(shardings, is_leaf=_is_named_or_none)
 
     assert len(shardings_leaves) == len(paths)
-
     # ok, so, jax really doesn't want any Nones in the leaves here, so we need to temporarily partition the pytree
     real_indices = [i for i, x in enumerate(shardings_leaves) if x is not None]
-    real_leaves = [x for x in shardings_leaves if x is not None]
-    real_paths = [paths[i] for i in real_indices]
+    paths_to_load = []
+    indices_to_load = []
+    shardings_to_load = []
 
-    assert len(real_leaves) == len(real_paths), f"{len(real_leaves)} != {len(real_paths)}"
+    missing_paths = []
+    missing_indices = []
 
-    deser_leaves = manager.deserialize_with_paths(shardings=real_leaves, paths=real_paths)
+    for i in real_indices:
+        path = paths[i]
+
+        if not fsspec_utils.exists(path):
+            missing_paths.append(path)
+            missing_indices.append(i)
+            continue
+
+        paths_to_load.append(path)
+        indices_to_load.append(i)
+        shardings_to_load.append(shardings_leaves[i])
+
+    # ok now check for missing paths
+    if missing_paths:
+        if not allow_missing:
+            raise FileNotFoundError(f"Missing paths: {missing_paths}")
+        else:
+            to_log = f"Several keys were missing from the checkpoint directory {checkpoint_dir}:"
+            leaf_paths = jtu.tree_leaves(leaf_key_paths, is_leaf=_is_named_or_none)
+            for i in missing_indices:
+                to_log += f"\n  - {leaf_paths[i]}"
+            logger.warning(to_log)
+
+    deser_leaves = manager.deserialize_with_paths(shardings=shardings_to_load, paths=paths_to_load)
+
     # now we need to recreate the original structure
 
-    out_leaves = [None] * len(shardings_leaves)
-    for i, x in zip(real_indices, deser_leaves):
+    out_leaves = jax.tree_leaves(pytree, is_leaf=_is_named_or_none)
+    assert len(out_leaves) == len(shardings_leaves)
+    # out_leaves = [None] * len(shardings_leaves)
+    for i, x in zip(indices_to_load, deser_leaves):
         out_leaves[i] = x
 
     deser_arrays = jtu.tree_unflatten(shardings_structure, out_leaves)
 
-    # deser_arrays only has arrays, but we need named arrays for at least some.
+    # deser_arrays only has arrays for the deserialized arrays, but we need named arrays for at least some.
     # The original pytree has the structure we want, so we'll use that to rebuild the named arrays
     def _rebuild_named_array(like, array):
+        if is_named_array(array):
+            return array
+
         if is_named_array(like):
             return hax.NamedArray(array, like.axes)
         else:
