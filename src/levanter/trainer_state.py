@@ -9,6 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
+import haliax as hax
 from haliax.quantization import Fp8Config, apply_updates, fp8_linear_layers, partition_for_grad_overwrite
 from haliax.types import IntScalar, Scalar
 
@@ -54,6 +55,8 @@ class TrainerState(eqx.Module, Generic[M]):
 
     is_trainable: FilterTree = eqx.field(static=True)
     mp: jmp.Policy = eqx.field(static=True)
+
+    width_multipliers: Optional[M] = None
 
     @property
     def int_step(self) -> int:
@@ -102,6 +105,7 @@ class TrainerState(eqx.Module, Generic[M]):
             grads,
             obj_fun=obj_fun,
             is_trainable=self.is_trainable,
+            width_multipliers=self.width_multipliers,
         )
         return dataclasses.replace(self, model=model, opt_state=opt_state, step=self.step + 1)
 
@@ -177,11 +181,14 @@ def take_train_step(
     *,
     obj_fun: Optional[Callable[[M], Scalar]] = None,
     is_trainable: FilterTree = True,
+    width_multipliers: Optional[M] = None,
 ) -> Tuple[M, OptState]:
     train_grads = trainables_only(grads, is_trainable)
     overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+    if width_multipliers is not None:
+        updates = hax.tree_util.tree_map(lambda a, b: a * b, updates, width_multipliers)
     model = apply_updates(model, updates, overwrites)
 
     return model, opt_state

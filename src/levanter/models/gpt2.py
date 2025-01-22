@@ -203,6 +203,7 @@ class Gpt2Attention(eqx.Module):
             flash_block_size=self.config.flash_attention_block_size,
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
+            use_mup=self.config.use_mup,
         )
 
         attn_output = attn_output.astype(x.dtype)
