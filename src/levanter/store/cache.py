@@ -1237,7 +1237,7 @@ async def _extend_cache_with_other_cache(
             source_offsets = source_array.offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
             source_offsets = _virtual_offset(source_offsets, data_offset)
 
-            delay = 1
+            delay = 4
             while True:
                 try:
                     async with ts.Transaction() as txn:
@@ -1253,7 +1253,7 @@ async def _extend_cache_with_other_cache(
                         logger.info("Rate limit exceeded. Retrying.")
                         await asyncio.sleep(delay)
                         delay *= 2
-                        if delay > 60:
+                        if delay > 120:
                             raise
 
             futures.append(offset_future)
