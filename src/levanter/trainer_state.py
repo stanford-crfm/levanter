@@ -12,7 +12,9 @@ from optax import GradientTransformation, OptState
 from haliax.quantization import Fp8Config, apply_updates, fp8_linear_layers, partition_for_grad_overwrite
 from haliax.types import IntScalar, Scalar
 
+from levanter.optim.model_averaging import ModelAveraging, ModelAveragingConfig
 from levanter.utils.jax_utils import is_inexact_arrayish
+from levanter.utils.tree_utils import inference_mode
 from levanter.utils.types import FilterTree
 
 
@@ -55,6 +57,8 @@ class TrainerState(eqx.Module, Generic[M]):
     is_trainable: FilterTree = eqx.field(static=True)
     mp: jmp.Policy = eqx.field(static=True)
 
+    model_averaging: ModelAveraging[M] | None = None
+
     @property
     def int_step(self) -> int:
         """
@@ -70,6 +74,19 @@ class TrainerState(eqx.Module, Generic[M]):
     def saveable_state(self) -> FilterTree:
         return eqx.filter(self, saveable_training_mask(self, self.is_trainable))
 
+    @property
+    def eval_model(self) -> M:
+        """
+        Returns the model in evaluation mode, using the inference mode of the model averaging if it exists.
+        Otherwise, it uses the inference mode of the model.
+        """
+        if self.model_averaging is not None:
+            m = self.model_averaging.model_params
+        else:
+            m = self.model
+
+        return inference_mode(m, True)
+
     @classmethod
     def init(
         cls,
@@ -80,6 +97,7 @@ class TrainerState(eqx.Module, Generic[M]):
         is_trainable: FilterTree = True,
         mp: Optional[jmp.Policy] = None,
         fp8: Fp8Config = None,
+        model_averaging: ModelAveragingConfig[M] | None = None,
         **kwargs,
     ) -> "TrainerState[M]":
         if mp is not None:
@@ -90,8 +108,22 @@ class TrainerState(eqx.Module, Generic[M]):
         if fp8 is not None:
             model = fp8_linear_layers(model, fp8)
 
+        if model_averaging is not None:
+            model_averaging = model_averaging.create(model)
+
         opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
-        return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
+        return cls(
+            0,
+            model,
+            optimizer,
+            opt_state,
+            key,
+            is_trainable=is_trainable,
+            mp=mp,
+            model_averaging=model_averaging,
+            *args,
+            **kwargs,
+        )
 
     def take_step(self: S, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> S:
         assert isinstance(self, TrainerState)  # make mypy happy
@@ -103,7 +135,13 @@ class TrainerState(eqx.Module, Generic[M]):
             obj_fun=obj_fun,
             is_trainable=self.is_trainable,
         )
-        return dataclasses.replace(self, model=model, opt_state=opt_state, step=self.step + 1)
+
+        if self.model_averaging is not None:
+            ma = self.model_averaging.update(model, self.step)
+        else:
+            ma = None
+
+        return dataclasses.replace(self, model=model, opt_state=opt_state, model_averaging=ma, step=self.step + 1)
 
 
 def init_optimizer_for_trainables(optimizer, model, is_trainable):
@@ -164,8 +202,9 @@ def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = Tr
 
     is_trainable_param = make_floating_point_trainable_filter(is_trainable_param)
 
-    trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
-    saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
+    trainer_state = jax.tree_util.tree_map(lambda x: is_inexact_arrayish, trainer_state)
+    saveable_state = dataclasses.replace(trainer_state, step=True, training_key=True)  # type: ignore
+    saveable_state = dataclasses.replace(saveable_state, model=is_trainable_param)  # type: ignore
     return saveable_state  # type: ignore
 
 

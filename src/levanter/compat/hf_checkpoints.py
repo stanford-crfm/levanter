@@ -851,7 +851,7 @@ def save_hf_checkpoint_callback(
         else:
             my_upload_kwargs = hf_upload_kwargs
         converter.save_pretrained(
-            cast(ModelWithHfSerializationMixin, step.model),
+            cast(ModelWithHfSerializationMixin, step.eval_model),
             os.path.join(base_path, f"step-{step.step}"),
             upload_to_hf=upload_to_hf,
             **my_upload_kwargs,
