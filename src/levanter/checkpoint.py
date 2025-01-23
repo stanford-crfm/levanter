@@ -392,49 +392,16 @@ def load_checkpoint(
     checkpoint_path = discovered_checkpoint_path
 
     logger.info(f"Loading checkpoint from {checkpoint_path}")
-    metadata = load_metadata(checkpoint_path, fs)
 
     if subpath:
         checkpoint_path = os.path.join(checkpoint_path, subpath)
 
     ser, non_ser = equinox.partition(tree, is_jax_array_like)
-    try:
-        tree = tree_deserialize_leaves_tensorstore(
-            checkpoint_path, ser, axis_mapping=axis_mapping, mesh=mesh, allow_missing=allow_partial
-        )
-        tree = equinox.combine(tree, non_ser)
-        return tree
-    except:  # noqa
-        from levanter.trainer_state import TrainerState
-
-        if not isinstance(tree, TrainerState):
-            raise
-        else:
-            logger.warning("Attempting to load old-style checkpoint")
-            model, training_state = tree.model, (tree.opt_state, tree.training_key)
-
-            model = tree_deserialize_leaves_tensorstore(
-                os.path.join(checkpoint_path, "model"), model, axis_mapping=axis_mapping, mesh=mesh
-            )
-
-            if training_state is None:
-                opt_state = None
-                key = None
-            else:
-                training_state = tree_deserialize_leaves_tensorstore(
-                    os.path.join(checkpoint_path, "training_state"),
-                    training_state,
-                    axis_mapping=axis_mapping,
-                    mesh=mesh,
-                )
-                opt_state, key = training_state
-
-            # TODO: pretty sure this is right, but should verify
-            step = metadata["step"]
-            new_state = dataclasses.replace(
-                tree, step=step + 1, model=model, opt_state=opt_state, training_key=key  # type: ignore
-            )
-            return new_state
+    tree = tree_deserialize_leaves_tensorstore(
+        checkpoint_path, ser, axis_mapping=axis_mapping, mesh=mesh, allow_missing=allow_partial
+    )
+    tree = equinox.combine(tree, non_ser)
+    return tree
 
 
 def load_checkpoint_or_initialize(
