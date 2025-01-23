@@ -115,7 +115,7 @@ class TrainerState(eqx.Module, Generic[M]):
         if model_averaging is not None:
             model_averaging = model_averaging.create(trainable_model)
 
-        opt_state = init_optimizer_for_trainables(optimizer, model)
+        opt_state = init_optimizer_for_trainables(optimizer, trainable_model)
 
         return cls(
             0,
