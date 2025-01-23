@@ -1,4 +1,4 @@
-from .config import AdamConfig, OptimizerConfig
+from .config import AdamConfig, OptimizerConfig, SGDConfig
 from .sophia import (  # SophiaGConfig,; SophiaGObjective,
     ScaleBySophiaState,
     SophiaHConfig,
