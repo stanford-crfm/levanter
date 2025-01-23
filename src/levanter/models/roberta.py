@@ -528,17 +528,17 @@ class RobertaEncoder(eqx.Module, StateDictSerializationMixin):
         # else:
         #      return x, intermediates
     
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-        out = super().from_state_dict(state_dict, prefix=prefix)
-        return out
+    # def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+    #     out = super().from_state_dict(state_dict, prefix=prefix)
+    #     return out
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_state_dict: StateDict = {}
-        super().update_state_dict(my_state_dict, prefix=prefix)
+    # def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
+    #     my_state_dict: StateDict = {}
+    #     super().update_state_dict(my_state_dict, prefix=prefix)
 
-        state_dict.update(my_state_dict)
+    #     state_dict.update(my_state_dict)
 
-        return state_dict
+    #     return state_dict
 
 class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
     Vocab: Axis = eqx.static_field()
@@ -880,6 +880,21 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         # print(f"loss: {loss}")
 
         return loss
+    
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        # print(f"model: {state_dict}")
+
+        # raise NotImplementedError()
+
+        if "roberta.embeddings.word_embeddings.weight" in state_dict:
+            state_dict["lm_head.decoder.weight"] = state_dict["roberta.embeddings.word_embeddings.weight"]      
+            # print("yes1")
+        if "lm_head.bias" in state_dict:
+            state_dict["lm_head.decoder.bias"] = state_dict["lm_head.bias"]
+            # print("yes1")
+
+        return super().from_state_dict(state_dict, prefix)
+
     
 def _rotate_half(x: NamedArray) -> NamedArray:
     """Rotates half of the hidden dims of the input and concatenates them."""
