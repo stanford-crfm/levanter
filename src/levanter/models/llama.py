@@ -250,6 +250,11 @@ class LlamaAttention(eqx.Module):
         v = v.rename({"position": "key_position"})
 
         c = self.config
+        if c.use_mup:
+            scaling_factor = 1.0 / c.HeadSize.size
+        else:
+            scaling_factor = 1.0 / jnp.sqrt(c.HeadSize.size)
+
         attn_output = dot_product_attention(
             "position",
             "key_position",
@@ -262,7 +267,7 @@ class LlamaAttention(eqx.Module):
             use_flash=c.use_flash_attention,
             attn_backend=self.config.attn_backend,
             flash_block_size=c.flash_attention_block_size,
-            use_mup=self.config.use_mup,
+            scaling_factor=scaling_factor,
         )
 
         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")

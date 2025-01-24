@@ -189,6 +189,11 @@ class Gpt2Attention(eqx.Module):
         if self.config.scale_attn_by_inverse_layer_idx:
             q = q / (layer_idx + 1.0)
 
+        if self.config.use_mup:
+            scaling_factor = 1.0 / self.config.HeadSize.size
+        else:
+            scaling_factor = 1.0 / jnp.sqrt(self.config.HeadSize.size)
+
         attn_output = dot_product_attention(
             "position",
             "key_position",
@@ -203,7 +208,7 @@ class Gpt2Attention(eqx.Module):
             flash_block_size=self.config.flash_attention_block_size,
             prng=k_drop,
             attention_dtype=jnp.float32 if self.config.upcast_attn else None,
-            use_mup=self.config.use_mup,
+            scaling_factor=scaling_factor,
         )
 
         attn_output = attn_output.astype(x.dtype)

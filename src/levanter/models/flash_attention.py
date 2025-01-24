@@ -39,7 +39,7 @@ def flash_attention(
     block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
-    use_mup: bool = False,
+    scaling_factor: Optional[float] = None,
 ):
     """
     Flash Attention impl, vaguely following the v2 paper.
@@ -79,14 +79,14 @@ def flash_attention(
             dropout=dropout,
             inference=inference,
             prng=key,
-            use_mup=use_mup,
+            scaling_factor=scaling_factor,
         )
 
     # premultiply by 1/sqrt(d_k) for normal dot product attention
-    if use_mup:
-        q = q / float(q.axis_size(Key))
-    else:
-        q = q / math.sqrt(float(q.axis_size(Key)))
+    if scaling_factor is None:
+        scaling_factor = 1.0 / math.sqrt(float(q.axis_size(Key)))
+
+    q = q * scaling_factor
 
     return _flash_attention(
         (q, k, v),
