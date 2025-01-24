@@ -1375,9 +1375,9 @@ def _tokenize_one_shard_group(
             tokenized = _canonicalize_batch(tokenized)  # type: ignore
             this_prepared = writer._tree_store.batch_preparer(tokenized)
 
-            this_batch_size += len(batch)
-            rows_this_shard += len(batch)
-            total_rows += len(batch)
+            this_batch_size += len(tokenized)
+            rows_this_shard += len(tokenized)
+            total_rows += len(tokenized)
 
             if prepared_batch is None:
                 prepared_batch = this_prepared
