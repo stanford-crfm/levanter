@@ -224,11 +224,15 @@ def train(config: SFTConfig):
         # and then you have the correct loader, just pass to trainer.train()
 
         # TODO figure out if there's a better heuristic for max segements to pack per example?
+        logger.info("Creating prompt completion iterator")
         prompt_completion_iterator = create_prompt_completion_iterator(train_dataset, Pos)
 
+        logger.info("Packing prompt completions")
         packed_iterator = _pack_requests(prompt_completion_iterator, tokenizer, Pos, max_pack_size=4)
+        logger.info("Stacking batches to train batch")
         packed_iterator = stack_batches(packed_iterator, trainer.TrainBatch)
         # TODO  what's a good number for max_capacity?
+        logger.info("Creating data loader")
         packed_loader = BackgroundIterator(packed_iterator, max_capacity=256)
 
         # to be moved 
