@@ -3,7 +3,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Iterator
 
 import jax.random as jrandom
 import transformers
@@ -24,10 +24,18 @@ from levanter.data.text import (
     mk_supervised_dataset,
 )
 from levanter.models.llama import LlamaConfig
-from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
+from levanter.models.lm_model import LmConfig, LmHeadModel, LmExample, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
+from levanter.data.loader import stack_tree
+from levanter.data.packing import PromptCompletion, pack_prompt_completions
+from levanter.utils.background_iterable import BackgroundIterator
+from levanter.utils.hf_utils import HfTokenizer
+from levanter.data import batched
+from levanter.utils.jax_utils import broadcast_shard, use_cpu_device
+from levanter.data.dataset import AsyncDataset
 
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +210,29 @@ def train(config: SFTConfig):
             callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
         )
 
-        loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
+        # reshuffle the examples before packing!
+
+        # to implement seeking
+        # check the step number in the trainer state if it's not zero
+        # then next the iterator until we get there, then continue training.
+        # batch size will be backed in from config 
+
+        # change iterate tokenized requests to take a dict rather than a list
+        # of where the first element is prompt ands econd is response
+
+        # then pass into tierate tokenizer requests, go to pack requests
+        # and then you have the correct loader, just pass to trainer.train()
+
+        # TODO figure out if there's a better heuristic for max segements to pack per example?
+        prompt_completion_iterator = create_prompt_completion_iterator(train_dataset, Pos)
+
+        packed_iterator = _pack_requests(prompt_completion_iterator, tokenizer, Pos, max_pack_size=4)
+        packed_iterator = stack_batches(packed_iterator, trainer.TrainBatch)
+        # TODO  what's a good number for max_capacity?
+        packed_loader = BackgroundIterator(packed_iterator, max_capacity=256)
+
+        # to be moved 
+        #loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
 
         if config.hf_save_path is not None:
             # bit gross to reach this far into the config, but it's fine
@@ -216,8 +246,83 @@ def train(config: SFTConfig):
                 every=config.hf_save_steps,
             )
 
-        trainer.train(state, loader)
+        trainer.train(state, packed_loader)
 
+
+# async def get_dataset_length(cached_dataset: AsyncDataset) -> int:
+#     """Helper function to get dataset length asynchronously"""
+#     return await cached_dataset.async_len()
+
+def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axis) -> Iterator[PromptCompletion]:
+    """
+    Creates an iterator that yields PromptCompletion objects from a cached dataset.
+    
+    Args:
+        cached_dataset: The AsyncDataset containing preprocessed examples
+        Pos: The position axis defining maximum sequence length
+    
+    Returns:
+        An iterator yielding PromptCompletion objects
+    """
+    # AsyncDataset already has a current_len method that returns current length or None
+    # We can use wait_until_len_at_least which will wait until the dataset has at least
+    # the requested length or the final length is known
+    length = asyncio.run(cached_dataset.wait_until_len_at_least(0))
+    
+    if length is None:
+        raise ValueError("Dataset length cannot be None")
+        
+    for i in range(length):
+        example = asyncio.run(cached_dataset.getitem_async(i))
+        
+        if int(example["sources_len"]) > Pos.size - 1:
+            continue
+            
+        ids = example["input_ids"].tolist()
+        if len(ids) > Pos.size:
+            ids = ids[:Pos.size]
+            
+        if len(ids) <= example["sources_len"]:
+            continue
+            
+        try:
+            yield PromptCompletion(
+                ids=ids,
+                prompt_length=int(example["sources_len"]),
+                segment_id=i
+            )
+        except ValueError:
+            continue
+
+def _pack_requests(
+    prompt_completion_iterator: Iterator[PromptCompletion], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
+) -> Iterator[LmExample]:
+    # TODO: use a better packing algorithm?
+    yield from pack_prompt_completions(
+        Pos,
+        prompt_completion_iterator,
+        max_segments_per_example=max_pack_size,
+        pad_token=tokenizer.pad_token_id,
+        max_buffered_examples=16,
+    )
+
+def stack_batches(self, example_iterator, TrainBatch):
+        """
+        Stack examples from an iterator into a batch.
+
+        Args:
+            TrainBatch: The batch axis.
+            example_iterator: An iterator of examples.
+
+        Returns:
+            A batch of examples.
+        """
+        with use_cpu_device():
+            for batch in batched(example_iterator, TrainBatch.size):
+                if len(batch) < TrainBatch.size:
+                    dummy_instance = self._make_dummy_instance(batch)
+                    batch.extend([dummy_instance] * (TrainBatch.size - len(batch)))
+                yield stack_tree(TrainBatch, batch)
 
 def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
     special_tokens_dict = dict()

@@ -1004,9 +1004,9 @@ def mk_chat_sft_dataset(
     # Ensure padding token is set (needed by _prepare_supervised_example)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
+    return cached_dataset
     # Reuse the supervised prepare function directly
-    return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
+    # return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
 @dataclass
