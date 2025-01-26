@@ -35,7 +35,6 @@ class SequencePacker:
 
     def __init__(self, Pos: hax.Axis, max_pack_size: int, pad_token: int):
         self.Pos = Pos
-        logger.info(f" Pos in packer is {Pos}")
         self._ids: list[int] = []
         self._segment_ids: list[int] = []
         self._loss_mask: list[int] = []
@@ -55,8 +54,6 @@ class SequencePacker:
             return
 
         if len(ids) + len(self._ids) > self.Pos.size:
-            logger.info(f"length of new id is ids: {len(ids)}")
-            logger.info(f"length of old list is ids: {len(self._ids)}")
             raise ValueError("Too many tokens")
 
         if self.num_segments >= self.max_pack_size:
@@ -67,8 +64,6 @@ class SequencePacker:
             segment_id = self.num_segments
 
         self.num_segments += 1
-        logger.info(f"segment_id is {segment_id}")
-        logger.info(f"ids total is now {len(self._ids)}")
 
         self._segment_ids.extend([segment_id] * len(ids))
 

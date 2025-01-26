@@ -104,6 +104,7 @@ def train(config: SFTConfig):
             converter = converter.replaced(tokenizer=tokenizer)
 
         model_config = converter.default_config
+        logger.info(f"New seq_len is {config.max_seq_len}")
         model_config = dataclasses.replace(converter.default_config, seq_len=config.max_seq_len)
     elif config.trainer.initialize_from is None:
         raise ValueError("Must specify either --initialize_from_hf or --initialize_from")
@@ -150,12 +151,11 @@ def train(config: SFTConfig):
         )
         
         # if config.enable_packing:
-        logger.info('\n\npacking!!\n\n')
         import haliax
         train_dataset = mk_chat_sft_packed_dataset(
             chat_config, 
             tokenizer, 
-            haliax.Axis("position", 4096),
+            haliax.Axis("position", 2048),
             max_segments_per_example=8
         )
         # else:
@@ -217,6 +217,18 @@ def train(config: SFTConfig):
             callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
         )
 
+        # reshuffle the examples before packing!
+
+        # to implement seeking
+        # check the step number in the trainer state if it's not zero
+        # then next the iterator until we get there, then continue training.
+        # batch size will be backed in from config 
+
+        # change iterate tokenized requests to take a dict rather than a list
+        # of where the first element is prompt ands econd is response
+
+        # then pass into tierate tokenizer requests, go to pack requests
+        # and then you have the correct loader, just pass to trainer.train()
         loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
 
         if config.hf_save_path is not None:

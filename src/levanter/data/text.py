@@ -193,7 +193,6 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         token_arrays = await self._await_token_cache()
-        # logger.info(f"Time to get token cache: {time.time() - time_in}")
         len = await self.wait_until_len_at_least(max(indices) + 1)
         if len is not None and len < max(indices) + 1:
             raise ValueError("Requested indices beyond the end of the dataset")
@@ -1459,31 +1458,27 @@ def mk_chat_sft_packed_dataset(
     )
 
     # Convert cached dictionaries to PromptCompletions and pack them
-    def prepare_and_pack(examples: list[dict]) -> list[LmExample]:
+    def prepare_and_pack(examples: list[dict]) -> list:
         completions = []
-        logger.info(f"length of examples is {len(examples)}")
         for idx, ex in enumerate(examples):
             if int(ex["sources_len"]) > Pos.size - 1:
                 # if the prompt itself is larger than our context
                 # length we need to skip this example
-                logger.info(f"Skipping example {idx} because prompt is too long")
                 continue
             if len(ex["input_ids"]) > Pos.size:
-                logger.info(f"Shortening example {idx} from {len(ex['input_ids'])} to {Pos.size}")
                 ex["input_ids"] = ex["input_ids"][:Pos.size]
-                logger.info(f"New length of example is {len(ex['input_ids'])}")
             completions.append(
                 PromptCompletion(
                     ids=ex["input_ids"].tolist(),
                     prompt_length=int(ex["sources_len"])
                 )
             )
-            logger.info(f"\n\n at example {idx}")
-            logger.info(f"Prompt Length: {ex['sources_len']}")
-            #logger.info(f"Prompt: {tokenizer.decode(ex['input_ids'])}")
-            logger.info(f"Total completion length {len(ex['input_ids'])}")
+            # logger.info(f"\n\n at example {idx}")
+            # logger.info(f"Prompt Length: {ex['sources_len']}")
+            # #logger.info(f"Prompt: {tokenizer.decode(ex['input_ids'])}")
+            # logger.info(f"Total completion length {len(ex['input_ids'])}")
         #import os; os._exit(1)
-        logger.info(f"completions: {len(completions)}")
+        # logger.info(f"completions: {len(completions)}")
         iterator = pack_prompt_completions(
             Pos=Pos,
             sequences=completions,
