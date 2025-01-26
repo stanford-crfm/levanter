@@ -230,7 +230,7 @@ def train(config: SFTConfig):
         logger.info("Packing prompt completions")
         packed_iterator = _pack_requests(prompt_completion_iterator, tokenizer, Pos, max_pack_size=4)
         logger.info("Stacking batches to train batch")
-        packed_iterator = stack_batches(packed_iterator, trainer.TrainBatch)
+        packed_iterator = stack_batches(example_iterator=packed_iterator, TrainBatch=trainer.TrainBatch)
         # TODO  what's a good number for max_capacity?
         logger.info("Creating data loader")
         packed_loader = BackgroundIterator(packed_iterator, max_capacity=256)
@@ -310,7 +310,7 @@ def _pack_requests(
         max_buffered_examples=16,
     )
 
-def stack_batches(self, example_iterator, TrainBatch):
+def stack_batches(example_iterator, TrainBatch):
         """
         Stack examples from an iterator into a batch.
 
