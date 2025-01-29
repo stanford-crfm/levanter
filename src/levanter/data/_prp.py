@@ -1,5 +1,6 @@
 import typing
 
+import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
 
@@ -19,19 +20,20 @@ class Permutation:
     def __init__(self, length, prng_key):
         self.length = length
         # Convert jax.random.PRNGKey to numpy.random.Generator
-        self.rng = np.random.Generator(
-            np.random.PCG64(jrandom.randint(prng_key, (), 0, 2**32).item())
-        )  # Use jrandom.randint
+        self.rng = np.random.Generator(np.random.PCG64(jrandom.randint(prng_key, (), 0, 2**30).item()))
         self.a, self.b = self._generate_permutation_params()  # Generate a and b in init
 
     def _generate_permutation_params(self):
         length = self.length
         rng = self.rng
 
+        if length == 1:
+            return 1, 0
+
         while True:
-            a = rng.integers(1, length)  # a must be in [1, length-1]
+            a = rng.integers(1, length)
             if np.gcd(a, length) == 1:
-                break  # Found a valid 'a'
+                break
 
         b = rng.integers(0, length)  # b can be in [0, length-1]
         return a, b
@@ -50,7 +52,7 @@ class Permutation:
         length = self.length
 
         was_int = False
-        if isinstance(indices, np.ndarray):
+        if isinstance(indices, np.ndarray | jnp.ndarray):
             if np.any(indices < 0) or np.any(indices >= self.length):
                 raise IndexError(f"index {indices} is out of bounds for length {self.length}")
         else:
