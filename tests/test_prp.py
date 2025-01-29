@@ -85,3 +85,13 @@ def test_permutation_is_deterministic1():
     permutation = Permutation(length, prng_key)
     results2 = permutation(indices)
     assert jnp.all(results == results2)
+
+
+def test_permutation_handles_large_length_no_overflow():
+    large_length = 2**32  # Length greater than max int32
+    prng_key = jrandom.PRNGKey(0)
+    permutation = Permutation(large_length, prng_key)
+    index = 2**31  # A large index within the range
+    result = permutation(index)
+    assert isinstance(result, int)
+    assert 0 <= result < large_length
