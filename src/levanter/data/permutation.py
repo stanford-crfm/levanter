@@ -1,7 +1,6 @@
 from typing import Optional, Sequence
 
 import jax.random
-import numpy as np
 from async_lru import alru_cache
 
 from levanter.data import AsyncDataset
@@ -88,8 +87,7 @@ class EraShufflingDataset(AsyncDataset[T_co]):
             current_len = await self.dataset.wait_until_len_at_least((era + 1) * self.era_length)
             era_length_val = min(self.era_length, current_len - era * self.era_length)
 
-            numpy_key = np.random.Generator(np.random.PCG64(jax.random.fold_in(key, era).item()))
-            mix_key = numpy_key
+            mix_key = jax.random.fold_in(key, era)
             return Permutation(era_length_val, mix_key)
 
         self.gen_era_permutation = gen_era_permutation
@@ -99,7 +97,9 @@ class EraShufflingDataset(AsyncDataset[T_co]):
             raise ValueError("Negative indices are not supported")
         era = idx // self.era_length
         permutation = await self.gen_era_permutation(era)
-        return permutation(idx - era * self.era_length) + era * self.era_length
+        out = permutation(idx - era * self.era_length) + era * self.era_length
+
+        return out
 
     async def async_len(self) -> int:
         return await self.dataset.async_len()
