@@ -172,7 +172,7 @@ def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, n
         logger.exception(e)
         for actor in actors:
             try:
-                ray.cancel(actor)
+                ray.kill(actor)
             except Exception:
                 logger.exception("Failed to kill actor after primary failure")
         return futures
