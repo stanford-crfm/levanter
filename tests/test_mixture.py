@@ -87,7 +87,9 @@ async def test_mixture_dataset_normalized_weights():
 async def test_mixture_dataset_unpermuted_ids():
     mixture_ds = MixtureDataset(datasets(), weights(), block_size=10, key=key())
 
-    unpermuted_ids = mixture_ds._compute_unpermuted_ids(mixture_ds._counts_per_block)
+    unpermuted_ids = mixture_ds._compute_unpermuted_ids(
+        mixture_ds._compute_expected_counts_per_block(weights(), block_size())
+    )
     assert len(unpermuted_ids) == 10
     assert unpermuted_ids[0] >> 32 in range(3)  # Ensure the dataset ID is valid
 
