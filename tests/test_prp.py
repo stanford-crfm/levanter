@@ -10,8 +10,8 @@ def test_permutation_creates_valid_instance():
     prng_key = jrandom.PRNGKey(0)
     permutation = Permutation(length, prng_key)
     assert permutation.length == length
-    assert permutation._a > 0 and permutation._a < length
-    assert permutation._b >= 0 and permutation._b < length
+    assert permutation.a > 0 and permutation.a < length
+    assert permutation.b >= 0 and permutation.b < length
 
 
 def test_permutation_with_single_index_returns_correct_value():
