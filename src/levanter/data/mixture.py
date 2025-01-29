@@ -183,7 +183,7 @@ class MixtureDataset(AsyncDataset[T]):
         stage_starts = np.array([start for start, _ in self.weight_stages])
         return max(0, np.searchsorted(stage_starts, block_start, side="right") - 1)
 
-    @alru_cache
+    @alru_cache(maxsize=32)
     async def _get_block(self, index: int) -> Optional[np.ndarray]:
         stage = self._get_stage_for_block(index)
         if not self.randomize_blocks:
