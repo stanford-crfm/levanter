@@ -805,7 +805,11 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
         lm_head = RobertaLMHead.init(Vocab, config, key=key_head)
 
         return RobertaForMaskedLM(roberta, lm_head, Vocab, config.Pos, output_hidden_states)
-
+    
+    @property
+    def config(self):
+        return self.roberta.config
+    
     def get_output_embeddings(self):
         return self.lm_head.decoder
 
