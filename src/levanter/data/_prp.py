@@ -22,25 +22,20 @@ class Permutation:
         self.length = length
         # Convert jax.random.PRNGKey to numpy.random.Generator
         self.rng = np.random.Generator(np.random.PCG64(jrandom.randint(prng_key, (), 0, 2**32).item())) # Use jrandom.randint
-        self._permutation = None # permutation is generated on demand
+        self.a, self.b = self._generate_permutation_params() # Generate a and b in init
 
-    def _generate_permutation(self):
-        if self._permutation is None:
-            length = self.length
-            rng = self.rng
+    def _generate_permutation_params(self):
+        length = self.length
+        rng = self.rng
 
-            while True:
-                a = rng.integers(1, length)  # a must be in [1, length-1]
-                if np.gcd(a, length) == 1:
-                    break  # Found a valid 'a'
+        while True:
+            a = rng.integers(1, length)  # a must be in [1, length-1]
+            if np.gcd(a, length) == 1:
+                break  # Found a valid 'a'
 
-            b = rng.integers(0, length)  # b can be in [0, length-1]
+        b = rng.integers(0, length)  # b can be in [0, length-1]
+        return a, b
 
-            permutation = np.empty(length, dtype=np.int64)
-            for i in range(length):
-                permutation[i] = (a * i + b) % length
-
-            self._permutation = permutation
 
     @typing.overload
     def __call__(self, indices: int) -> int:
@@ -51,7 +46,9 @@ class Permutation:
         ...
 
     def __call__(self, indices):
-        self._generate_permutation() # generate permutation on first call
+        a = self.a
+        b = self.b
+        length = self.length
 
         was_int = False
         if isinstance(indices, np.ndarray):
@@ -64,7 +61,7 @@ class Permutation:
             indices = np.array(indices)
             was_int = True
 
-        out = self._permutation[indices]
+        out = (a * indices + b) % length # Compute permutation on-the-fly
 
         if was_int:
             return int(out)
