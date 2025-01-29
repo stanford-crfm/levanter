@@ -21,40 +21,27 @@ class Permutation:
 
     def __init__(self, length, prng_key):
         self.length = length
-        self.prng_key = prng_key
-        a_key, b_key = jrandom.split(prng_key)
-        self._a = jrandom.randint(a_key, (), 1, length)
-        self._b = jrandom.randint(b_key, (), 0, length)
+        # Convert jax.random.PRNGKey to numpy.random.Generator
+        self.rng = np.random.Generator(np.random.PCG64(jax.random.randint(prng_key, (), 0, 2**32).item()))
+        self._permutation = None # permutation is generated on demand
 
-        cond = lambda a_and_key: jnp.all(jnp.gcd(a_and_key[0], length) != 1)
-
-        def loop_body(a_and_key):
-            a, key = a_and_key
-            this_key, key = jrandom.split(key)
-            a = jrandom.randint(this_key, (), 1, length)
-            return a, key
-
-        self._a, key = jax.lax.while_loop(cond, loop_body, (self._a, a_key))
-
-        self._a = int(self._a)
-        self._b = int(self._b)
+    def _generate_permutation(self):
+        if self._permutation is None:
+            self._permutation = self.rng.permutation(self.length).astype(np.int64)
 
     @typing.overload
     def __call__(self, indices: int) -> int:
         ...
 
     @typing.overload
-    def __call__(self, indices: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, indices: np.ndarray) -> np.ndarray:
         ...
 
     def __call__(self, indices):
+        self._generate_permutation() # generate permutation on first call
+
         was_int = False
-        if isinstance(indices, jnp.ndarray):
-            # TODO: use error_if?
-            # import equinox as eqx
-            if jnp.any(indices < 0) or jnp.any(indices >= self.length):
-                raise IndexError(f"index {indices} is out of bounds for length {self.length}")
-        elif isinstance(indices, np.ndarray):
+        if isinstance(indices, np.ndarray):
             if np.any(indices < 0) or np.any(indices >= self.length):
                 raise IndexError(f"index {indices} is out of bounds for length {self.length}")
         else:
@@ -64,9 +51,7 @@ class Permutation:
             indices = np.array(indices)
             was_int = True
 
-        old_settings = np.seterr(over="raise")
-        out = (self._a * indices + self._b) % self.length
-        np.seterr(**old_settings)
+        out = self._permutation[indices]
 
         if was_int:
             return int(out)

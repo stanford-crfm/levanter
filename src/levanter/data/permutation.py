@@ -1,6 +1,7 @@
 from typing import Optional, Sequence
 
 import jax.random
+import numpy as np
 from async_lru import alru_cache
 
 from levanter.data import AsyncDataset
@@ -41,7 +42,7 @@ class PermutationDataset(AsyncDataset[T_co]):
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         permutation = await self._get_permutation()
-        return await self.dataset.get_batch([permutation(i) for i in indices])
+        return await self.dataset.get_batch([int(permutation(i)) for i in indices]) # cast to int to be sure it's python int
 
     async def _get_permutation(self):
         if self._permutation is None:
@@ -83,10 +84,11 @@ class EraShufflingDataset(AsyncDataset[T_co]):
             # TODO: support epochs
             # edge case: final era may be shorter than era_length
             current_len = await self.dataset.wait_until_len_at_least((era + 1) * self.era_length)
-            era_length = min(self.era_length, current_len - era * self.era_length)
+            era_length_val = min(self.era_length, current_len - era * self.era_length)
 
-            mix_key = jax.random.fold_in(key, era)
-            return Permutation(era_length, mix_key)
+            numpy_key = np.random.Generator(np.random.PCG64(jax.random.fold_in(key, era).item()))
+            mix_key = numpy_key
+            return Permutation(era_length_val, mix_key)
 
         self.gen_era_permutation = gen_era_permutation
 
