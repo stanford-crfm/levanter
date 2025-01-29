@@ -1,7 +1,7 @@
 import typing
 
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jrandom  # Import jax.random
 import numpy as np
 
 
@@ -21,7 +21,7 @@ class Permutation:
     def __init__(self, length, prng_key):
         self.length = length
         # Convert jax.random.PRNGKey to numpy.random.Generator
-        self.rng = np.random.Generator(np.random.PCG64(jax.random.randint(prng_key, (), 0, 2**32).item()))
+        self.rng = np.random.Generator(np.random.PCG64(jrandom.randint(prng_key, (), 0, 2**32).item())) # Use jrandom.randint
         self._permutation = None # permutation is generated on demand
 
     def _generate_permutation(self):
