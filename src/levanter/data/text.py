@@ -1154,28 +1154,41 @@ class PassthroughTokenizer(PreTrainedTokenizer):
 
 @dataclass
 class LMMixtureDatasetConfig(LMTaskConfig):
-    """This class represents a mixture of datasets with their associated weights."""
+    """A mixture of language model datasets that supports dynamic weight changes during training.
+
+    Weights can be specified either as a single dictionary for constant mixing ratios,
+    or as a list of (step, weights) tuples to change mixing ratios during training.
+    """
 
     cache_dir: Optional[str] = "cache/"
 
-    # data source configs and weights
     configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
-    """ configuration of each dataset source (urls, hf dataset id, etc.) """
-    train_weights: Dict[str, float] = field(default_factory=dict)
-    """ weights for each dataset source. They will be normalized to sum to 1. """
+    """ Configuration of each dataset source (urls, hf dataset id, etc.) """
+
+    train_weights: Union[Dict[str, float], List[Tuple[int, Dict[str, float]]]] = field(default_factory=dict)
+    """ Dataset mixing weights. Either a constant dict[name->weight] or list of (step, weights) tuples """
+
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
     mixture_block_size: int = 2048
-    """ block size for the mixture dataset."""
+    """ Block size for deterministic mixing """
 
     def __post_init__(self):
         if len(self.configs) == 0:
             raise ValueError("At least one dataset must be provided")
 
-        if set(self.configs.keys()) != set(self.train_weights.keys()):
-            raise ValueError(
-                f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
-                f" {self.train_weights.keys()}"
-            )
+        if isinstance(self.train_weights, dict):
+            if not all(name in self.configs for name in self.train_weights):
+                raise ValueError(
+                    f"Weight keys {self.train_weights.keys()} must be subset of config keys {self.configs.keys()}"
+                )
+        elif isinstance(self.train_weights, list):
+            for step, weights in self.train_weights:
+                if not all(name in self.configs for name in weights):
+                    raise ValueError(
+                        f"Weight keys {weights.keys()} must be subset of config keys {self.configs.keys()}"
+                    )
+        else:
+            raise ValueError(f"Invalid train_weights type: {type(self.train_weights)}")
 
     def train_set(
         self,
@@ -1218,7 +1231,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             weights=self.train_weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
-            block_size=2048,
+            block_size=self.mixture_block_size,
         )
 
         return mixture
@@ -1248,9 +1261,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         caches = {}
         for name, source_config in self.configs.items():
-            weight = self.train_weights.get(name, 0)
+            # Skip datasets with zero weight in all stages
+            if isinstance(self.train_weights, dict):
+                has_nonzero_weight = self.train_weights.get(name, 0) > 0
+            elif isinstance(self.train_weights, list):
+                has_nonzero_weight = any(weights.get(name, 0) > 0 for _, weights in self.train_weights)
 
-            if weight == 0 and split == "train":
+            if not has_nonzero_weight and split == "train":
                 continue
 
             source_config_dict = dict(**source_config.__dict__)
