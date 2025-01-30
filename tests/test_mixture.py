@@ -74,6 +74,24 @@ async def test_mixture_dataset_stop_strategy_restart():
 
 
 @pytest.mark.asyncio
+async def test_mixture_dataset_simulated_data_size():
+    weights = {"ds1": 1 / 3, "ds2": 1 / 3, "ds3": 1 / 3}
+    mixture_ds = MixtureDataset(
+        datasets(),
+        weights,
+        block_size=10,
+        key=key(),
+        randomize_blocks=False,
+        stop_strategy=StopStrategy.RESTART_STRATEGY,
+        simulated_data_ratio=0.2,
+    )
+    for _ in range(10):
+        batch = await mixture_ds.get_batch([0, 1, 2])
+        assert len(batch) == 3
+        assert all(item in [1, 10, 100] for item in batch)
+
+
+@pytest.mark.asyncio
 async def test_mixture_dataset_normalized_weights():
     weights = {"ds1": 0, "ds2": 0.5, "ds3": 0.5}
     mixture_ds = MixtureDataset(datasets(), weights, block_size=10, key=key(), randomize_blocks=False)

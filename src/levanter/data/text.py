@@ -1169,6 +1169,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ Dataset mixing weights. Either a constant dict[name->weight] or list of (step, weights) tuples """
 
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+
+    # Configuration for Simulated Epoching
+    target_budget: Optional[int] = None
+    experiment_budget: Optional[int] = None
+
     mixture_block_size: int = 2048
     """ Block size for deterministic mixing """
 
@@ -1226,12 +1231,18 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
             token_datasets = out_token_datasets
 
+        if self.experiment_budget is not None and self.target_budget is not None:
+            simulated_data_ratio = self.experiment_budget / self.target_budget
+        else:
+            simulated_data_ratio = 1
+
         mixture = MixtureDataset(
             datasets=token_datasets,
             weights=self.train_weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
             block_size=self.mixture_block_size,
+            simulated_data_ratio=simulated_data_ratio,
         )
 
         return mixture
