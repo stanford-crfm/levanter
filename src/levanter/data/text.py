@@ -1231,10 +1231,20 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
             token_datasets = out_token_datasets
 
+        if (
+            self.experiment_budget is not None and self.target_budget is not None
+        ) and self.experiment_budget > self.target_budget:
+            raise ValueError(
+                f"Experiment budget should be smaller than target budget, got {self.experiment_budget} >"
+                f" {self.target_budget}"
+            )
         if self.experiment_budget is not None and self.target_budget is not None:
             simulated_data_ratio = self.experiment_budget / self.target_budget
-        else:
-            simulated_data_ratio = 1
+            for name, ds in token_datasets.items():
+                # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
+                true_length_of_dataset = len(ds.as_sync_dataset())
+                simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
+                token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
 
         mixture = MixtureDataset(
             datasets=token_datasets,
@@ -1242,7 +1252,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             stop_strategy=self.stop_strategy,
             key=mix_key,
             block_size=self.mixture_block_size,
-            simulated_data_ratio=simulated_data_ratio,
         )
 
         return mixture

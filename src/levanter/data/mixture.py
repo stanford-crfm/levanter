@@ -52,7 +52,6 @@ class MixtureDataset(AsyncDataset[T]):
         randomize_blocks: bool = True,
         key: PRNGKeyArray | int,
         stop_strategy: str = StopStrategy.RESTART_STRATEGY,
-        simulated_data_ratio: float = 1,
     ):
         super().__init__()
         if isinstance(weights, dict):
@@ -100,9 +99,6 @@ class MixtureDataset(AsyncDataset[T]):
             raise NotImplementedError("Only restart strategy is supported for now.")
 
         self.stop_strategy = stop_strategy
-        if simulated_data_ratio > 1:
-            raise ValueError(f"Simulated data ratio must be at most  1, got {simulated_data_ratio}")
-        self.simulated_data_ratio = simulated_data_ratio
 
         # Initialize stage-related counts and IDs
         (
@@ -279,13 +275,7 @@ class MixtureDataset(AsyncDataset[T]):
         if self.stop_strategy == StopStrategy.RESTART_STRATEGY:
             if ds.is_finite():
                 max_elem = max(indices_into_ds)
-                # Remap Indices Earlier when simulating epoching for a larger budget
-                if self.simulated_data_ratio < 1:
-                    # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
-                    true_length_of_dataset = await ds.async_len()
-                    length_of_dataset = int(true_length_of_dataset * self.simulated_data_ratio)
-                else:
-                    length_of_dataset = await ds.wait_until_len_at_least(max_elem + 1)
+                length_of_dataset = await ds.wait_until_len_at_least(max_elem + 1)
                 indices_into_ds = [idx % length_of_dataset for idx in indices_into_ds]
 
             return indices_into_ds

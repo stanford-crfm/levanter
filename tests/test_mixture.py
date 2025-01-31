@@ -77,13 +77,12 @@ async def test_mixture_dataset_stop_strategy_restart():
 async def test_mixture_dataset_simulated_data_size():
     weights = {"ds1": 1 / 3, "ds2": 1 / 3, "ds3": 1 / 3}
     mixture_ds = MixtureDataset(
-        datasets(),
+        {name: dataset.slice_dataset(end_index=1) for name, dataset in datasets().items()},
         weights,
         block_size=10,
         key=key(),
         randomize_blocks=False,
         stop_strategy=StopStrategy.RESTART_STRATEGY,
-        simulated_data_ratio=0.2,
     )
     for _ in range(10):
         batch = await mixture_ds.get_batch([0, 1, 2])
@@ -91,13 +90,12 @@ async def test_mixture_dataset_simulated_data_size():
         assert all(item in [1, 10, 100] for item in batch)
 
     mixture_ds = MixtureDataset(
-        datasets(),
+        {name: dataset.slice_dataset(end_index=2) for name, dataset in datasets().items()},
         weights,
         block_size=10,
         key=key(),
         randomize_blocks=False,
         stop_strategy=StopStrategy.RESTART_STRATEGY,
-        simulated_data_ratio=0.4,
     )
     for _ in range(10):
         batch = await mixture_ds.get_batch([0, 1, 2])
