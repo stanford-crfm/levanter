@@ -1240,11 +1240,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
         if self.experiment_budget is not None and self.target_budget is not None:
             simulated_data_ratio = self.experiment_budget / self.target_budget
+            sliced_token_datasets: Dict[str, TokenSeqDataset] = {}
             for name, ds in token_datasets.items():
                 # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
                 true_length_of_dataset = len(ds.as_sync_dataset())
                 simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
-                token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
+                sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
+            token_datasets = sliced_token_datasets
 
         mixture = MixtureDataset(
             datasets=token_datasets,
