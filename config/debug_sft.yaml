@@ -6,10 +6,11 @@ supervised_data:
   cache_dir: "gs://marin-us-central2/tokenized/tulu_sft_v3_llama3_tokenizer-7b19dc"
   #cache_dir: "gs://marin-us-central2/tokenized/tulu_sft_v3_llama3_tokenizer_retrypack-bca8bd/"
   
+max_seq_len: 4096
 tokenizer: "meta-llama/Meta-Llama-3.1-8B"
 model:  # 7B class model
   type: llama
-  seq_len: 2048
+  seq_len: 4096
   hidden_dim: 4096
   intermediate_dim: 11008
   num_layers: 32
@@ -19,23 +20,27 @@ model:  # 7B class model
   flash_attention_block_size: 512
   use_bias: false
   use_layer_norm_weight: false
+  initializer_range: 0.02
 trainer:
+  seed: 1
   tracker:
     type: wandb
     project: "marin"
     tags: ["dolma", "olmo", "llama"]
 
   mp: p=f32,c=bfloat16
-  train_batch_size: 256
-  num_train_steps: 750000  # 3,000,000,000,000 / 4,000,000 = 750,000
+  # same as 606 sft in marin
+  train_batch_size: 128
+  num_train_steps: 7335  # 3,000,000,000,000 / 4,000,000 = 750,000
   steps_per_eval: 1000
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
 optimizer:
-  learning_rate: 4E-4
-  weight_decay: 0.1
-  min_lr_ratio: 0.1
-  warmup: 5000
+  learning_rate: 5e-6
+  weight_decay: 0.0
+  min_lr_ratio: 0.0
+  lr_schedule: "linear"
+  warmup: 0.03
 
 epoch: 0

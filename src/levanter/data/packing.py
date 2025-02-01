@@ -18,6 +18,7 @@ import haliax as hax
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.utils.jax_utils import local_cpu_mesh
+import time
 
 
 # cf https://github.com/tensorflow/tensor2tensor/blob/bafdc1b67730430d38d6ab802cbd51f9d053ba2e/tensor2tensor/data_generators/generator_utils.py#L623
@@ -114,17 +115,30 @@ def pack_prompt_completions(
 
     packers = [SequencePacker(Pos, max_segments_per_example, pad_token)]
 
+    # put timer in here
     for sequence in sequences:
+        start_time = time.perf_counter
+        # put timer here, keep in mind the loop is an iterator so we want to
+        # separate the time to get examples, and how long it takes to pack
         loss_mask = np.arange(len(sequence.ids)) >= sequence.prompt_length - 1
         loss_mask[-1] = 0
         assert np.any(loss_mask)
 
+        # time how long to pack, and subtract
+        start_for_pack_yield = time.perf_counter()
         for packer in packers:
             if packer.can_pack(sequence.ids):
+                add_example = time.perf_counter()
                 packer.add_example(sequence.ids, loss_mask, sequence.segment_id)
-
+                add_example_end = time.perf_counter()
+                print(f" time to add example to segment apacker{ add_example_end - add_example:.6f} seconds", flush=True)
                 if packer.num_segments == max_segments_per_example:
-                    yield packer.pack()
+                    ot = packer.pack()
+                    end_time = time.perf_counter()
+                    time_to_yield = end_time - start_for_pack_yield
+                    print(f"total time to for loop until we yielded a packed example {time_to_yield}", flush=True)
+                    print(f"total time for iterator {start_time - time_to_yield}", flush=True)
+                    yield ot
                     packers.remove(packer)
                 break
         else:

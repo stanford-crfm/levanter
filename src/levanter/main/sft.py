@@ -13,6 +13,7 @@ import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 from optax.tree_utils import tree_zeros_like
+import time
 
 import levanter
 from levanter import callbacks
@@ -248,7 +249,7 @@ def train(config: SFTConfig):
         packed_iterator = stack_batches(example_iterator=packed_iterator, Pos=Pos, TrainBatch=trainer.TrainBatch)
         # TODO  what's a good number for max_capacity?
         logger.info("Creating data loader")
-        packed_loader = BackgroundIterator(packed_iterator, max_capacity=512)
+        packed_loader = BackgroundIterator(packed_iterator, max_capacity=1024)
 
         # to be moved 
         #loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
@@ -267,11 +268,6 @@ def train(config: SFTConfig):
 
         trainer.train(state, packed_loader)
 
-
-# async def get_dataset_length(cached_dataset: AsyncDataset) -> int:
-#     """Helper function to get dataset length asynchronously"""
-#     return await cached_dataset.async_len()
-
 def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axis) -> Iterator[PromptCompletion]:
     """
     Creates an iterator that yields PromptCompletion objects from a cached dataset.
@@ -284,16 +280,19 @@ def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axi
         An iterator yielding PromptCompletion objects
     """
     # AsyncDataset already has a current_len method that returns current length or None
-    # We can use wait_until_len_at_least which will wait until the dataset has at least
-    # the requested length or the final length is known
-    length = asyncio.run(cached_dataset.wait_until_len_at_least(0))
+    length = asyncio.run(cached_dataset.async_len())
     
     if length is None:
         raise ValueError("Dataset length cannot be None")
         
     # TODO play around with batch size
-    for batch_indicies in batched(range(length), 128):
+    for batch_indicies in batched(range(length), 4096):
+        # put timer here
+        start_time = time.perf_counter()
         examples = asyncio.run(cached_dataset.get_batch(batch_indicies))
+        end_time = time.perf_counter()
+        elapsed_time = end_time - start_time
+        print(f"Elapsed time for get batches: {elapsed_time:.6f} seconds", flush=True)
 
         for i in range(len(examples)):
             example = examples[i]
@@ -353,12 +352,26 @@ def stack_batches(example_iterator, Pos, TrainBatch):
         Returns:
             A batch of examples.
         """
+        # add timer here as well and profile
         with use_cpu_device():
+            batch_count = 0
             for batch in batched(example_iterator, TrainBatch.size):
+                batch_count += 1
+                start_time_loop = time.perf_counter()
                 if len(batch) < TrainBatch.size:
                     dummy_instance = _make_dummy_instance(batch, Pos)
                     batch.extend([dummy_instance] * (TrainBatch.size - len(batch)))
-                yield stack_tree(TrainBatch, batch)
+                # Start timing before calling stack_tree
+                start_time = time.perf_counter()
+                result = stack_tree(TrainBatch, batch)  # Capture the result
+                stack_time = time.perf_counter() - start_time  # Calculate elapsed time
+
+                print(f"Stack tree execution time: {stack_time:.6f} seconds", flush=True)
+                yield result  # Yield the computed result
+                end_time_loop = time.perf_counter()
+                loop_time = end_time_loop - start_time_loop
+                print(f"Loop takes {loop_time}")
+                print(f"Iterator time is {loop_time - stack_time}")
 
 def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
     special_tokens_dict = dict()
