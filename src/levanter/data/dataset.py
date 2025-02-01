@@ -122,6 +122,9 @@ class AsyncDataset(DatasetBase[T_co]):
     def map_batches(self, fn: MapFunction[Sequence[U]], *extra_args, **extra_kwargs) -> "BatchMappedAsyncDataset[U]":
         return BatchMappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
 
+    def slice_dataset(self, start_index: Optional[int] = None, end_index: Optional[int] = None):
+        return SlicedAsyncDataset(self, start_index, end_index)
+
     def shuffle(self, key: PRNGKey):
         import levanter.data.permutation as permutation
 
@@ -373,6 +376,57 @@ class MappedAsyncDataset(AsyncDataset[U], Generic[T, U]):
         else:
             kwargs = self._extra_kwargs
         return self.fn(item, *self._extra_args, **kwargs)
+
+
+class SlicedAsyncDataset(AsyncDataset[U]):
+    def __init__(
+        self,
+        dataset: AsyncDataset[U],
+        start_index: Optional[int] = None,
+        end_index: Optional[int] = None,
+    ):
+        super().__init__()
+        if start_index is None:
+            start_index = 0
+        if end_index is not None and start_index > end_index:
+            raise ValueError("End index must come after start index.")
+
+        self.start_index = start_index
+        self.end_index = end_index
+        self.dataset = dataset
+        self._min_known_len = dataset._min_known_len if end_index is None else (end_index - start_index)
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[U]:
+        shifted_indices = [(index + self.start_index) for index in indices]
+        max_index = max(shifted_indices)
+
+        if self.end_index is not None and max_index > self.end_index:
+            raise ValueError("Requested indices beyond the end of the dataset")
+
+        return await self.dataset.get_batch(shifted_indices)
+
+    async def async_len(self) -> int:
+        underlying_length = await self.dataset.async_len()
+        if self.end_index is None:
+            return underlying_length - self.start_index
+        else:
+            return self.end_index - self.start_index
+
+    async def final_length_is_known(self) -> bool:
+        underlying_is_known = await self.dataset.final_length_is_known()
+        return underlying_is_known and self.end_index is not None
+
+    def is_finite(self) -> bool:
+        return self.dataset.is_finite() and self.end_index is not None
+
+    async def current_len(self) -> Optional[int]:
+        underlying_length = await self.dataset.current_len()
+        if self.end_index is not None:
+            return self.end_index - self.start_index
+        elif underlying_length is not None:
+            return underlying_length - self.start_index
+        else:
+            return underlying_length
 
 
 class BatchMappedAsyncDataset(AsyncDataset[U]):
