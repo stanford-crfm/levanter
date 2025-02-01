@@ -288,11 +288,11 @@ def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axi
     # TODO play around with batch size
     for batch_indicies in batched(range(length), 4096):
         # put timer here
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         examples = asyncio.run(cached_dataset.get_batch(batch_indicies))
-        end_time = time.perf_counter()
-        elapsed_time = end_time - start_time
-        print(f"Elapsed time for get batches: {elapsed_time:.6f} seconds", flush=True)
+        # end_time = time.perf_counter()
+        # elapsed_time = end_time - start_time
+        # print(f"Elapsed time for get batches: {elapsed_time:.6f} seconds", flush=True)
 
         for i in range(len(examples)):
             example = examples[i]
@@ -357,21 +357,21 @@ def stack_batches(example_iterator, Pos, TrainBatch):
             batch_count = 0
             for batch in batched(example_iterator, TrainBatch.size):
                 batch_count += 1
-                start_time_loop = time.perf_counter()
+                #start_time_loop = time.perf_counter()
                 if len(batch) < TrainBatch.size:
                     dummy_instance = _make_dummy_instance(batch, Pos)
                     batch.extend([dummy_instance] * (TrainBatch.size - len(batch)))
-                # Start timing before calling stack_tree
-                start_time = time.perf_counter()
+                # # Start timing before calling stack_tree
+                # start_time = time.perf_counter()
                 result = stack_tree(TrainBatch, batch)  # Capture the result
-                stack_time = time.perf_counter() - start_time  # Calculate elapsed time
+                # stack_time = time.perf_counter() - start_time  # Calculate elapsed time
 
-                print(f"Stack tree execution time: {stack_time:.6f} seconds", flush=True)
+                # print(f"Stack tree execution time: {stack_time:.6f} seconds", flush=True)
                 yield result  # Yield the computed result
-                end_time_loop = time.perf_counter()
-                loop_time = end_time_loop - start_time_loop
-                print(f"Loop takes {loop_time}")
-                print(f"Iterator time is {loop_time - stack_time}")
+                # end_time_loop = time.perf_counter()
+                # loop_time = end_time_loop - start_time_loop
+                # print(f"Loop takes {loop_time}")
+                # print(f"Iterator time is {loop_time - stack_time}")
 
 def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
     special_tokens_dict = dict()
