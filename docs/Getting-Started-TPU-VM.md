@@ -102,7 +102,6 @@ accel_env:
 docker_repository: levanter  # default
 zone: us-west4-a  # if not set, will use your default zone
 tpu: test-spin-up-32  # name of the TPU
-tpu_type: "v4-16"
 capacity_type: "preemptible"
 subnetwork: "default"  # default
 EOF
