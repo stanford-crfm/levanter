@@ -63,73 +63,85 @@ class TpuFailed(_TpuRunResult):
 class TpuRunError(_TpuRunResult):
     error: Exception
 
-
-def run_on_pod(remote_fn: RemoteFunction | Callable, tpu_type: str) -> ray.ObjectRef:
-    """
-    Run a remote function on a TPU pod.
-
-    Args:
-        remote_fn: A remote function that takes no arguments
-        tpu_type: The type of TPU to run on, e.g. "v4-32"
-
-    Returns:
-        A Ray ObjectRef that represents the result of the function
-    """
-
+def make_tpu_head_node_actor(tpu_type: str):
     @ray.remote(resources={f"TPU-{tpu_type}-head": 1})
-    def do_run(remote_fn) -> _TpuRunResult:
-        logging.basicConfig(level=logging.INFO)
-        num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()  # -> 4
-        remote_fn, tpu_name = _redecorate_remote_fn_for_tpu(remote_fn, num_hosts)
-
-        info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
-        futures = [remote_fn.remote() for _ in range(num_hosts)]
-        try:
-            out = ray.get(futures)
-            logger.info("TPU job finished")
-            return TpuSuccess(info, out)
-        except RayError as e:
-            for f in futures:
-                try:
-                    ray.cancel(f)
-                except Exception:
-                    logger.exception("Failed to kill job after primary failure")
-            return _handle_ray_error(info, e)
-        except Exception as e:
-            for f in futures:
-                try:
-                    ray.cancel(f)
-                except Exception:
-                    logger.exception("Failed to kill job after primary failure")
-            return TpuFailed(info, e)
-
-    return do_run.remote(remote_fn)
-
-
-def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: int) -> ray.ObjectRef:
-    """
-    Run a remote function on multiple TPU slices.
-
-    Args:
-        remote_fn: A remote function that takes no arguments
-        tpu_type: The type of TPU to run on, e.g. "v4-32"
-        num_slices: The number of slices to run
-
-    Returns:
-        A Ray ObjectRef that represents the result of the function
-    """
-
-    @ray.remote(resources={f"TPU-{tpu_type}-head": 1})
-    class MultisliceActor:
+    class TPUHeadNodeActor:
         def __init__(self):
             self.pod_name = ray.util.accelerators.tpu.get_current_pod_name()
             self.num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
             self.ip = socket.gethostbyname(socket.gethostname())
+            self.slice_actors = None
 
         def get_slice_info(self):
             return self.pod_name, self.num_hosts, self.ip
+        
+        def run(self, remote_fn, num_slices) -> _TpuRunResult:
+            if self.slice_actors is not None:
+                raise RuntimeError("Actors already created")
+            
+            SliceActor = make_tpu_slice_actor(tpu_type)
+            self.slice_actors = [SliceActor.remote() for _ in range(num_slices)]
 
-        def do_run(self, remote_fn, coordinator_ip, slice_id, num_slices) -> _TpuRunResult:
+            # Get info from all slice actors to ensure they're ready
+            futures = [actor.get_slice_info.remote() for actor in self.slice_actors]
+            try:
+                slice_infos = ray.get(futures)
+                logger.info(f"TPU slice infos: {slice_infos}")
+            except Exception as e:
+                self.kill()
+                raise RuntimeError("Failed to initialize slice actors") from e
+            
+            # Start process on all slices
+            try:
+                futures = [
+                    actor.run.remote(remote_fn, self.ip, i, num_slices) 
+                    for i, actor in enumerate(self.slice_actors)
+                ]
+                infos = ray.get(futures)
+
+                wait_futures = [actor.wait.remote() for actor in self.slice_actors]
+                results = ray.get(wait_futures)
+
+                logger.info("TPU job finished, with info", infos[0])
+                return TpuSuccess(infos[0], results)
+            except RayError as e:
+                logger.exception(f"Failed to run job on {self.pod_name}")
+                self.kill()
+                return _handle_ray_error(infos[0], e)
+            except Exception as e:
+                logger.exception(f"Failed to run job on {self.pod_name}")
+                self.kill()
+                raise RuntimeError(f"Failed to run job on {self.pod_name}") from e
+            
+        def kill(self):
+            if self.slice_actors is not None:
+                for actor in self.slice_actors:
+                    try:
+                        ray.kill(actor)
+                    except Exception:
+                        logger.exception(f"Failed to kill slice actor {actor}")
+                self.slice_actors = None
+            ray.actor.exit_actor()
+    
+    return TPUHeadNodeActor
+
+def make_tpu_slice_actor(tpu_type: str):
+    @ray.remote(resources={f"TPU-{tpu_type}-slice": 1})
+    class TPUSliceActor:
+        def __init__(self):
+            self.pod_name = ray.util.accelerators.tpu.get_current_pod_name()
+            self.num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
+            self.ip = socket.gethostbyname(socket.gethostname())
+            self.process: multiprocessing.Process | None = None
+            self.queue: multiprocessing.Queue | None = None
+
+        def get_slice_info(self):
+            return self.pod_name, self.num_hosts, self.ip
+        
+        def run(self, remote_fn, coordinator_ip, slice_id, num_slices) -> _TpuRunResult:
+            if self.process is not None:
+                raise RuntimeError("Process already started")
+            
             port = 8081
             mxla_env = {
                 "MEGASCALE_COORDINATOR_ADDRESS": f"{coordinator_ip}:{port}",
@@ -138,61 +150,53 @@ def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, n
                 "MEGASCALE_SLICE_ID": str(slice_id),
             }
 
+            # redecorate remote function
             remote_fn, tpu_name = _redecorate_remote_fn_for_tpu(remote_fn, self.num_hosts, env_vars=mxla_env)
-
             info = _TpuInfo(tpu_name, "ACTIVE", "TPU")
-            futures = [remote_fn.remote() for _ in range(self.num_hosts)]
+
+            # Create queue for process communication
+            self.queue = multiprocessing.Queue()
+            self.process = multiprocessing.Process(
+                target=self._run_in_process, 
+                args=(remote_fn, self.queue)
+            )
+            self.process.start()
+            return info
+
+        def _run_in_process(self, fn, queue):
             try:
-                out = ray.get(futures)
-                logger.info("TPU job finished")
-                return TpuSuccess(info, out)
-            except RayError as e:
-                for f in futures:
-                    try:
-                        ray.cancel(f)
-                    except Exception:
-                        logger.exception("Failed to kill job after primary failure")
-                return _handle_ray_error(info, e)
+                result = fn()
+                queue.put((True, result))
             except Exception as e:
-                for f in futures:
-                    try:
-                        ray.cancel(f)
-                    except Exception:
-                        logger.exception("Failed to kill job after primary failure")
-                return TpuFailed(info, e)
+                info = ser_exc_info(e)
+                queue.put((False, info))
 
-    actors = [MultisliceActor.remote() for _ in range(num_slices)]  # type: ignore
-    futures = [actor.get_slice_info.remote() for actor in actors]
-    try:
-        logger.info("Getting slice infos...")
-        # also act as a sync step
-        slice_infos = ray.get(futures)
-        logger.info(f"TPU slice infos {slice_infos}")
-    except RayError as e:
-        logger.exception(e)
-        for actor in actors:
-            try:
-                ray.kill(actor)
-            except Exception:
-                logger.exception("Failed to kill actor after primary failure")
-        return futures
+        def wait(self) -> object:
+            if self.process is None or self.queue is None:
+                raise RuntimeError("No process running")
+            
+            success, value = self.queue.get()
+            self.process.join()
+            self.process = None
+            self.queue = None
 
-    coordinator_ip = slice_infos[0][2]
+            if success:
+                return value
+            else:
+                value.reraise()  # Reraise the exception with original traceback
 
-    return [actor.do_run.remote(remote_fn, coordinator_ip, i, num_slices) for i, actor in enumerate(actors)]
+        def kill(self):
+            if self.process is not None:
+                self.process.terminate()
+                self.process.join()
+                self.process = None
+                self.queue = None
+            ray.actor.exit_actor()
+
+    return TPUSliceActor
 
 
 def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts, **runtime_env):
-    """
-    Redecorate a remote function to run on a TPU pod.
-
-    Specifically, this function:
-
-    * Adds the TPU resources to the function
-    * forces the function to run in its own process to remove the TPU lockfile (and shutdown jax distributed)
-
-    """
-    remote_fn = _forkify_remote_fn(remote_fn)
     if not isinstance(remote_fn, RemoteFunction):
         remote_fn = ray.remote(remote_fn)
 
@@ -204,40 +208,79 @@ def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts, **runtime_env):
     sources = [e for e in [remote_fn._runtime_env, runtime_env] if e is not None]
     runtime_env = mergedeep.merge({}, *sources, strategy=mergedeep.Strategy.ADDITIVE)
 
-    remote_fn = remote_fn.options(
+    new_options = dict(remote_fn._default_options)
+    new_options.update(
         runtime_env=runtime_env,
         resources={tpu_name: 1, "TPU": num_tpus_per_host},
+    )
+    remote_fn = RemoteFunction(
+        language=remote_fn._language,
+        function=remote_fn._function,
+        function_descriptor=remote_fn._function_descriptor,
+        task_options=new_options,
     )
 
     logger.info(f"Running on TPU {tpu_name} with {num_hosts} hosts and {num_tpus_per_host} TPUs per host")
     return remote_fn, tpu_name
 
 
-def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_retries_failure=10):
+def run_on_pod_resumable(
+    remote_fn, 
+    tpu_type: str, 
+    num_slices: int = 1,
+    max_retries_preemption: int = int(1e6), 
+    max_retries_failure: int = 10
+) -> object | list[object]:
     """
     Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
+    Handles both single-slice and multi-slice cases.
 
     Args:
         remote_fn: A remote function that takes no arguments
         tpu_type: The type of TPU to run on, e.g. "v4-32"
+        num_slices: The number of slices to run (default=1 for single-slice mode)
         max_retries_preemption: The maximum number of times to retry if the job is preempted
         max_retries_failure: The maximum number of times to retry if the job fails
 
     Returns:
-        The result of the function (not an ObjectRef)
-
+        For single-slice: The result of the function
+        For multi-slice: List of results from each slice
+        TODO(cathy): refactor to always return a list of results
     """
     num_failures = 0
     num_preemptions = 0
     attempt = 0
     problem: Exception | None = None
+    HeadNodeActor = make_tpu_head_node_actor(tpu_type)
 
     while num_failures < max_retries_failure and num_preemptions < max_retries_preemption:
         logger.info(f"Running on TPU {tpu_type}. Attempt {attempt}")
         attempt += 1
         problem = None
+        
+        # Create head node actor
+        head_actor = HeadNodeActor.remote()
         try:
-            out = ray.get(run_on_pod(remote_fn, tpu_type))
+            # Run the job
+            out = ray.get(head_actor.run.remote(remote_fn, num_slices=num_slices))
+            
+            if isinstance(out, TpuSuccess):
+                logger.info("Success")
+                return out.result
+            elif isinstance(out, TpuPreempted):
+                problem = out.error
+                num_preemptions += 1
+                logger.warning(f"Preempted {num_preemptions} times. {problem}", exc_info=problem)
+            elif isinstance(out, TpuFailed):
+                num_preemptions += 1
+                logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
+            elif isinstance(out, TpuRunError):
+                problem = out.error
+                num_failures += 1
+                logger.warning(f"Failed {num_failures} times", exc_info=problem)
+            else:
+                raise RuntimeError(f"Unexpected result: {out}")
+                
         except ray.exceptions.RayTaskError as e:
             problem = e
             if "preempted" in str(e).lower():
@@ -246,7 +289,6 @@ def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_re
             else:
                 num_failures += 1
                 logger.warning(f"Failed {num_failures} times", exc_info=e)
-            continue
         except Exception as e:
             problem = e
             num_failures += 1
@@ -255,125 +297,29 @@ def run_on_pod_resumable(remote_fn, tpu_type, max_retries_preemption=1e6, max_re
                 raise e
             else:
                 logger.warning(f"Failed {num_failures} times", exc_info=e)
-                continue
-
-        if isinstance(out, TpuSuccess):
-            result = out.result
-            logger.info("Success")
-            return result
-        elif isinstance(out, TpuPreempted):
-            problem = out.error
-            num_preemptions += 1
-            logger.warning(f"Preempted {num_preemptions} times. {problem}", exc_info=problem)
-        elif isinstance(out, TpuFailed):
-            num_preemptions += 1
-            logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
-        elif isinstance(out, TpuRunError):
-            problem = out.error
-            num_failures += 1
-            logger.warning(f"Failed {num_failures} times", exc_info=problem)
-        else:
-            raise RuntimeError(f"Unexpected result: {out}")
+        finally:
+            # Always clean up the head actor
+            try:
+                ray.get(head_actor.kill.remote())
+            except Exception:
+                logger.exception("Failed to kill head actor during cleanup")
 
     if num_preemptions >= max_retries_preemption:
         raise RuntimeError("Preempted too many times") from problem
     elif num_failures >= max_retries_failure:
         raise RuntimeError("Failed too many times") from problem
-
-
+    
 def run_on_pod_multislice_resumable(
-    remote_fn, tpu_type, num_slices, max_retries_preemption=1e6, max_retries_failure=10
-):
+    remote_fn, 
+    tpu_type: str, 
+    num_slices,
+    max_retries_preemption: int = int(1e6),
+    max_retries_failure: int = 10
+) -> list[object]:
     """
-    Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
-
-    Args:
-        remote_fn: A remote function that takes no arguments
-        tpu_type: The type of TPU to run on, e.g. "v4-32"
-        num_slices: The number of slices to run
-        max_retries_preemption: The maximum number of times to retry if the job is preempted
-        max_retries_failure: The maximum number of times to retry if the job fails
-
-    Returns:
-        The result of the function (not an ObjectRef)
-
+    TODO(cathy): deprecated?
     """
-    num_failures = 0
-    num_preemptions = 0
-    attempt = 0
-    problem: Exception | None = None
-
-    while num_failures < max_retries_failure and num_preemptions < max_retries_preemption:
-        logger.info(f"Running on TPU {tpu_type}. Attempt {attempt}")
-        attempt += 1
-        problem = None
-        futures = run_on_pod_multislice(remote_fn, tpu_type, num_slices)
-        try:
-            outs = ray.get(futures)
-        except ray.exceptions.RayTaskError as e:
-            for f in futures:
-                try:
-                    ray.cancel(f)
-                except Exception:
-                    logger.exception("Failed to kill job after primary failure")
-            problem = e
-            if "preempted" in str(e).lower():
-                num_preemptions += 1
-                logger.warning(f"Preempted {num_preemptions} times, {e}")
-            else:
-                num_failures += 1
-                logger.warning(f"Failed {num_failures} times", exc_info=e)
-            continue
-        except Exception as e:
-            for f in futures:
-                try:
-                    ray.cancel(f)
-                except Exception:
-                    logger.exception("Failed to kill job after primary failure")
-            problem = e
-            num_failures += 1
-            if num_failures >= max_retries_failure:
-                logger.exception("Failed too many times", exc_info=e)
-                raise e
-            else:
-                logger.warning(f"Failed {num_failures} times", exc_info=e)
-                continue
-
-        if all(isinstance(out, TpuSuccess) for out in outs):
-            results = [out.result for out in outs]
-            logger.info("Success")
-            return results
-        elif any(isinstance(out, TpuPreempted) for out in outs):
-            out = None
-            for o in outs:
-                if isinstance(o, TpuPreempted):
-                    out = o
-            assert out is not None
-            problem = out.error
-            num_preemptions += 1
-            logger.warning(f"Preempted {num_preemptions} times. {problem}", exc_info=problem)
-        elif any(isinstance(out, TpuFailed) for out in outs):
-            num_preemptions += 1
-            logger.warning(f"TPU node failure. Treating as preempted: {num_preemptions} times")
-        elif any(isinstance(out, TpuRunError) for out in outs):
-            out = None
-            for o in outs:
-                if isinstance(o, TpuRunError):
-                    out = o
-            assert out is not None
-            problem = out.error
-            num_preemptions += 1
-            problem = out.error
-            num_failures += 1
-            logger.warning(f"Failed {num_failures} times", exc_info=problem)
-        else:
-            raise RuntimeError(f"Unexpected result: {out}")
-
-    if num_preemptions >= max_retries_preemption:
-        raise RuntimeError("Preempted too many times") from problem
-    elif num_failures >= max_retries_failure:
-        raise RuntimeError("Failed too many times") from problem
-
+    return run_on_pod_resumable(remote_fn, tpu_type, num_slices, max_retries_preemption, max_retries_failure)
 
 def _run_command(*args, **kwargs):
     return subprocess.check_call(args, **kwargs)
@@ -394,19 +340,9 @@ def run_docker_on_pod(
             logger.exception("Failed to run docker command")
             raise e
 
-    if num_slices == 1:
-        run_on_pod_resumable(
-            ray.remote(run_docker), tpu_type=tpu_type, max_retries_failure=retries, max_retries_preemption=10000
-        )
-    else:
-        run_on_pod_multislice_resumable(
-            ray.remote(run_docker),
-            tpu_type=tpu_type,
-            num_slices=num_slices,
-            max_retries_failure=retries,
-            max_retries_preemption=10000,
-        )
-
+    run_on_pod_resumable(
+        ray.remote(run_docker), tpu_type=tpu_type, num_slices=num_slices, max_retries_failure=retries, max_retries_preemption=10000
+    )
 
 def _kill_old_container(name):
     try:
@@ -448,92 +384,27 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
         return TpuRunError(tpu_info, e)
 
 
-def _forkify_remote_fn(remote_fn: RemoteFunction | Callable):
-    """
-    This is a bit of a hacky way to force a remote function to run in its own process, using multiprocessing.
+# TODO(cathy): this is unused, do we need it?
+# def _hacky_remove_tpu_lockfile():
+#     """
+#     This is a hack to remove the lockfile that TPU pods create on the host filesystem.
 
-    There are a few issues we're trying to cover:
-
-    * libtpu only allows one process to access the TPU at a time, and it uses a lockfile to enforce this.
-    * Ray runs tasks in a long-running daemon, so the lockfile persists across tasks.
-    * jax.distributed likes to only be called once per process, even if you call shutdown
-
-    """
-    if isinstance(remote_fn, RemoteFunction):
-        fn = remote_fn._function
-
-        @functools.wraps(fn)
-        def wrapped_fn(*args, **kwargs):
-            return _separate_process_fn(fn, args, kwargs)
-
-        # We need these arguments to be able to reconstruct the remote function
-        # def __init__(
-        #         self,
-        #         language,
-        #         function,
-        #         function_descriptor,
-        #         task_options,
-        # ):
-        remote_fn = RemoteFunction(
-            language=remote_fn._language,
-            function=wrapped_fn,
-            function_descriptor=remote_fn._function_descriptor,
-            task_options=remote_fn._default_options,
-        )
-        return remote_fn
-    else:
-        return functools.partial(_separate_process_fn, remote_fn)
-
-
-def _separate_process_fn(underlying_function, args, kwargs):
-    """
-    Helper function for _forkify_remote_fn. This runs the function in a separate process.
-    """
-
-    def target_fn(queue, args, kwargs):
-        try:
-            # Call the original function
-            result = underlying_function(*args, **kwargs)
-            queue.put((True, result))  # Success, put the result
-        except Exception as e:
-            # Capture and return the full traceback in case of an exception
-            info = ser_exc_info(e)
-            queue.put((False, info))
-
-    queue = multiprocessing.Queue()
-    process = multiprocessing.Process(target=target_fn, args=(queue, args, kwargs))
-    process.start()
-    process.join()
-
-    # Retrieve the result or error from the queue
-    success, value = queue.get()
-
-    if success:
-        return value
-    else:
-        value.reraise()
-
-
-def _hacky_remove_tpu_lockfile():
-    """
-    This is a hack to remove the lockfile that TPU pods create on the host filesystem.
-
-    libtpu only allows one process to access the TPU at a time, and it uses a lockfile to enforce this.
-    Ordinarily a lockfile would be removed when the process exits, but in the case of Ray, the process is
-    a long-running daemon that doesn't typically exit until the node is shut down. This means that the lockfile
-    persists across Ray tasks. This doesn't apply to our docker-based workloads, but it does apply to other
-    tasks that use JAX directly.
-    """
-    try:
-        os.unlink("/tmp/libtpu_lockfile")
-    except FileNotFoundError:
-        pass
-    except PermissionError:
-        logger.warning("Failed to remove lockfile")
-        try:
-            os.system("sudo rm /tmp/libtpu_lockfile")
-        except Exception:  # noqa
-            pass
+#     libtpu only allows one process to access the TPU at a time, and it uses a lockfile to enforce this.
+#     Ordinarily a lockfile would be removed when the process exits, but in the case of Ray, the process is
+#     a long-running daemon that doesn't typically exit until the node is shut down. This means that the lockfile
+#     persists across Ray tasks. This doesn't apply to our docker-based workloads, but it does apply to other
+#     tasks that use JAX directly.
+#     """
+#     try:
+#         os.unlink("/tmp/libtpu_lockfile")
+#     except FileNotFoundError:
+#         pass
+#     except PermissionError:
+#         logger.warning("Failed to remove lockfile")
+#         try:
+#             os.system("sudo rm /tmp/libtpu_lockfile")
+#         except Exception:  # noqa
+#             pass
 
 
 @dataclass
