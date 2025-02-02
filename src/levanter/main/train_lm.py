@@ -189,18 +189,33 @@ def main(config: TrainLmConfig):
                         else:
                             mult = 1  # this is an output weight
 
-                    return dataclasses.replace(param, weight=mult, bias=1 if param.bias is not None else None)
+                    return dataclasses.replace(
+                        param, weight=hax.full((), mult), bias=hax.ones(()) if param.bias is not None else None
+                    )
+                elif isinstance(param, hax.NamedArray):
+                    return hax.ones(())
+                elif param is None:
+                    return None
                 else:
                     return 1
 
-            flattened_model, treedef = jax.tree_util.tree_flatten(state.model, is_leaf=lambda x: isinstance(x, Linear))
-            flattened_base_model, _ = jax.tree_util.tree_flatten(base_model, is_leaf=lambda x: isinstance(x, Linear))
-
-            flattened_width_multipliers = jax.tree_util.tree_map(
-                width_mult, flattened_model, flattened_base_model, is_leaf=lambda x: isinstance(x, Linear)
+            flattened_model, treedef = jax.tree_util.tree_flatten(
+                state.model, is_leaf=lambda x: isinstance(x, Linear) or isinstance(x, hax.NamedArray)
+            )
+            flattened_base_model, _ = jax.tree_util.tree_flatten(
+                base_model, is_leaf=lambda x: isinstance(x, Linear) or isinstance(x, hax.NamedArray)
             )
 
-            width_multipliers = jax.tree_util.tree_unflatten(treedef, flattened_width_multipliers)
+            flattened_width_multipliers = jax.tree_util.tree_map(
+                width_mult,
+                flattened_model,
+                flattened_base_model,
+                is_leaf=lambda x: isinstance(x, Linear) or isinstance(x, hax.NamedArray),
+            )
+
+            width_multipliers = hax.shard(
+                jax.tree_util.tree_unflatten(treedef, flattened_width_multipliers), parameter_axis_mapping
+            )
             state = dataclasses.replace(state, width_multipliers=width_multipliers)
 
         seek_dataloader = True

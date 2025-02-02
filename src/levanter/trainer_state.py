@@ -188,7 +188,9 @@ def take_train_step(
     trainable_model = trainables_only(model, is_trainable)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
     if width_multipliers is not None:
-        updates = hax.tree_util.tree_map(lambda a, b: a * b, updates, width_multipliers)
+        updates = hax.tree_util.tree_map(
+            lambda a, b: None if a is None else a * b, updates, width_multipliers, is_leaf=lambda x: x is None
+        )
     model = apply_updates(model, updates, overwrites)
 
     return model, opt_state
