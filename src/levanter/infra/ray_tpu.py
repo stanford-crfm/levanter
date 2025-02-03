@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from queue import Empty as QueueEmpty
 from typing import Callable, Optional, Sequence
 
 import draccus
@@ -89,24 +90,24 @@ def run_on_pod(remote_fn: RemoteFunction | Callable, tpu_type: str) -> ray.Objec
             logger.info("TPU job finished")
             return TpuSuccess(info, out)
         except RayError as e:
-            for f in futures:
-                try:
-                    ray.cancel(f)
-                except Exception:
-                    logger.exception("Failed to kill job after primary failure")
+            _cancel_all_futures(futures)
             return _handle_ray_error(info, e)
         except Exception as e:
-            for f in futures:
-                try:
-                    ray.cancel(f)
-                except Exception:
-                    logger.exception("Failed to kill job after primary failure")
+            _cancel_all_futures(futures)
             return TpuFailed(info, e)
 
     return do_run.remote(remote_fn)
 
 
-def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: int) -> ray.ObjectRef:
+def _cancel_all_futures(futures):
+    for f in futures:
+        try:
+            ray.cancel(f)
+        except Exception:
+            logger.exception("Failed to kill job after primary failure")
+
+
+def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: int) -> list[ray.ObjectRef]:
     """
     Run a remote function on multiple TPU slices.
 
@@ -147,18 +148,12 @@ def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, n
                 logger.info("TPU job finished")
                 return TpuSuccess(info, out)
             except RayError as e:
-                for f in futures:
-                    try:
-                        ray.cancel(f)
-                    except Exception:
-                        logger.exception("Failed to kill job after primary failure")
+                logger.exception(f"Ray error {e}. Killing futures for this slice")
+                _cancel_all_futures(futures)
                 return _handle_ray_error(info, e)
             except Exception as e:
-                for f in futures:
-                    try:
-                        ray.cancel(f)
-                    except Exception:
-                        logger.exception("Failed to kill job after primary failure")
+                logger.exception(f"Exception {e}")
+                _cancel_all_futures(futures)
                 return TpuFailed(info, e)
 
     actors = [MultisliceActor.remote() for _ in range(num_slices)]  # type: ignore
@@ -310,6 +305,16 @@ def run_on_pod_multislice_resumable(
         futures = run_on_pod_multislice(remote_fn, tpu_type, num_slices)
         try:
             outs = ray.get(futures)
+        except ray.exceptions.ActorUnavailableError as e:
+            problem = e
+            num_preemptions += 1
+            logger.warning(f"Preempted {num_preemptions} times, {e}")
+            continue
+        except ray.exceptions.ActorDiedError as e:
+            problem = e
+            num_preemptions += 1
+            logger.warning(f"Preempted {num_preemptions} times, {e}")
+            continue
         except ray.exceptions.RayTaskError as e:
             for f in futures:
                 try:
@@ -425,6 +430,9 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
     if isinstance(e, NodeDiedError):
         logger.exception("Node died", exc_info=e)
         return TpuPreempted(tpu_info, e)
+    elif isinstance(e, ray.exceptions.ActorUnavailableError | ray.exceptions.ActorDiedError):
+        logger.exception("Actor died", exc_info=e)
+        return TpuPreempted(tpu_info, e)
     elif isinstance(e, WorkerCrashedError):
         logger.exception("Worker crashed", exc_info=e)
         return TpuPreempted(tpu_info, e)
@@ -506,7 +514,13 @@ def _separate_process_fn(underlying_function, args, kwargs):
     process.join()
 
     # Retrieve the result or error from the queue
-    success, value = queue.get()
+    logger.info("Process finished")
+    try:
+        success, value = queue.get(timeout=10)
+    except QueueEmpty:
+        logger.error("Process timed out")
+        process.terminate()
+        raise RuntimeError("Process timed out")
 
     if success:
         return value
