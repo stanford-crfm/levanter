@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from queue import Empty as QueueEmpty
 from typing import Callable, Optional, Sequence
 
 import draccus
@@ -152,7 +153,7 @@ def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, n
                 return _handle_ray_error(info, e)
             except Exception as e:
                 logger.exception(f"Exception {e}")
-                _cancel_all_futures
+                _cancel_all_futures(futures)
                 return TpuFailed(info, e)
 
     actors = [MultisliceActor.remote() for _ in range(num_slices)]  # type: ignore
@@ -513,7 +514,13 @@ def _separate_process_fn(underlying_function, args, kwargs):
     process.join()
 
     # Retrieve the result or error from the queue
-    success, value = queue.get()
+    logger.info("Process finished")
+    try:
+        success, value = queue.get(timeout=10)
+    except QueueEmpty:
+        logger.error("Process timed out")
+        process.terminate()
+        raise RuntimeError("Process timed out")
 
     if success:
         return value
