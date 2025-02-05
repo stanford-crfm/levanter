@@ -68,9 +68,9 @@ class DataLoader(Iterable[Ex]):
     def __init__(
         self,
         data: AsyncDataset[Ex],
-        batch_axis_name: str | hax.Axis,
-        batch_size: int | IntSchedule | None = None,
+        batch_size: int | IntSchedule | hax.Axis,
         *,
+        batch_axis_name: str | None = None,
         max_buffered_batches: Optional[int] = 64,
         mesh: Mesh,
         axis_resources: Optional[ResourceMapping],
@@ -85,7 +85,6 @@ class DataLoader(Iterable[Ex]):
         but whole examples are handled correctly.)
 
         Args:
-            batch_axis_name (str | Axis): The name of the batch axis
             batch_size (int | IntSchedule | None): The size of the batch or a schedule for the size of the batch
             data (AsyncDataset[Ex]): The dataset to load from
             max_buffered_batches (Optional[int]): The maximum number of batches to buffer. If None, the buffer is unbounded.
@@ -93,6 +92,7 @@ class DataLoader(Iterable[Ex]):
             axis_resources (Optional[ResourceMapping]): axis mapping
             prefetch_size (int): The number of batches to prefetch at once
             mesh (Mesh): The mesh to use
+            batch_axis_name (str | None): The name of the batch axis. If None, defaults to "batch" unless batch_size is an Axis.
 
         """
         self.max_buffered_batches = max_buffered_batches
@@ -101,15 +101,15 @@ class DataLoader(Iterable[Ex]):
         self.data_store = data
         self.mesh = mesh
 
-        if batch_size is None:
-            assert isinstance(batch_axis_name, hax.Axis)
-            self.batch_axis_name = batch_axis_name.name
-            self.scheduler = BatchSchedule(batch_axis_name.size)
+        if isinstance(batch_size, hax.Axis):
+            assert batch_axis_name is None
+            self.batch_axis_name = batch_size.name
+            self.scheduler = BatchSchedule(batch_size.size)
         else:
-            self.batch_axis_name = batch_axis_name
+            self.batch_axis_name = batch_axis_name or "batch"
             self.scheduler = BatchSchedule(batch_size)
 
-        self._batch_sharding = hax.partitioning.sharding_for_axis(batch_axis_name, axis_resources, mesh)
+        self._batch_sharding = hax.partitioning.sharding_for_axis(self.batch_axis_name, axis_resources, mesh)
 
         with local_cpu_mesh():
             # It's important that all data loading happens CPU side. We might relax this one day.

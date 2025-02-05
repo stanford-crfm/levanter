@@ -1,4 +1,5 @@
 import typing
+import warnings
 from dataclasses import dataclass
 from typing import Sequence, TypeVar
 
@@ -44,7 +45,7 @@ def validate_schedule_sorted(schedule: Sequence[ScheduleStep[T]]):
 @dataclass
 class BatchSegment:
     start: int  # The training step at which this batch size starts.
-    until: int | float  # The training step at which this batch size stops. If -1 or inf, the segment is open-ended.
+    until: int  # The training step at which this batch size stops. If -1, the segment is open-ended.
     value: int  # The batch size for steps before 'until'.
     offset: int  # The cumulative number of data points processed up to the start of this segment.
 
@@ -91,7 +92,7 @@ class BatchSchedule:
         for seg in self.segments:
             if seg.start <= step < seg.until:
                 return seg.value
-        # If the step is beyond all defined segments, use the last segment's batch size.
+        warnings.warn(f"Step {step} is beyond the last defined segment. Using the last segment's batch size.")
         return self.segments[-1].value
 
     def global_data_offset_by_step(self, step: int) -> int:

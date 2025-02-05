@@ -145,16 +145,6 @@ def _unify_model_and_model_init(model: Optional[M], model_init: Optional[Callabl
     return model_init
 
 
-def _resolve_axis_in_tree(tree, axis):
-    for leaf in haliax.tree_util.tree_leaves(tree):
-        if isinstance(leaf, haliax.NamedArray):
-            try:
-                return leaf.resolve_axis(axis)
-            except ValueError:
-                pass
-    raise ValueError(f"Could not find axis {axis} in tree {tree}")
-
-
 class Trainer:
     config: "TrainerConfig"
     optimizer: GradientTransformation
@@ -506,6 +496,7 @@ class Trainer:
 
         Args:
             dataset (AsyncDataset): the dataset to load
+            batch (Optional[hax.Axis]): the batch axis. If None, uses the trainer batch axis (and schedule, if applicable)
 
         Returns:
             DataLoader: the data loader
@@ -518,12 +509,12 @@ class Trainer:
             batch_size = self.config.train_batch_size
         return DataLoader(
             dataset,
-            batch_name,
-            batch_size,
+            batch_size=batch_size,
             max_buffered_batches=128,
             mesh=self.device_mesh,
             axis_resources=self.compute_axis_mapping,
             prefetch_size=32,
+            batch_axis_name=batch_name,
         )
 
     @cached_property
@@ -919,3 +910,17 @@ def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
         return x.scalar()
     else:
         return x
+
+
+def _resolve_axis_in_tree(tree, axis):
+    """
+    Resolves an axis in a tree of NamedArrays. This is useful for finding the batch axis in a batch of data.
+    """
+    for leaf in haliax.tree_util.tree_leaves(tree):
+        if isinstance(leaf, haliax.NamedArray):
+            try:
+                return leaf.resolve_axis(axis)
+            except ValueError:
+                pass
+
+    raise ValueError(f"Could not find axis {axis} in tree {tree}")

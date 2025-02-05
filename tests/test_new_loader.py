@@ -36,7 +36,7 @@ def test_local_batched_data_loading_model_axis_2():
 
         seq_len = 128
         cache = _small_dataset(seq_len)
-        loader = DataLoader(cache, "batch", len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
+        loader = DataLoader(cache, len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
         batches = list(loader)
         for batch in batches:
@@ -55,7 +55,7 @@ def test_local_batched_data_loading_model_axis_1():
 
         seq_len = 128
         cache = _small_dataset(seq_len)
-        loader = DataLoader(cache, "batch", len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
+        loader = DataLoader(cache, len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
         batches = list(loader)
         for batch in batches:
@@ -109,7 +109,7 @@ def test_structured_batches_model_axis_1():
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
         dataset = StructuredDataset(seq_len)
-        loader = DataLoader(dataset, "batch", len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
+        loader = DataLoader(dataset, len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
         batches = list(loader)
         for batch in batches:
@@ -128,7 +128,7 @@ def test_structured_batches_model_axis_2():
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
         dataset = StructuredDataset(seq_len)
-        loader = DataLoader(dataset, "batch", len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
+        loader = DataLoader(dataset, len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
         batches = list(loader)
         for batch in batches:
@@ -196,7 +196,7 @@ def test_structured_batches_model_axis_1_with_names():
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, len(devices) * 10, 1)
-        loader = DataLoader(dataset, "batch", len(devices), max_buffered_batches=0, mesh=mesh, axis_resources=None)
+        loader = DataLoader(dataset, len(devices), max_buffered_batches=0, mesh=mesh, axis_resources=None)
 
         batches = list(loader)
         for batch in batches:
@@ -218,7 +218,7 @@ def test_structured_batches_model_axis_2_with_names():
         Height = Axis("Height", 16)
         Width = Axis("Width", 16)
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
-        loader = DataLoader(dataset, "batch", len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
+        loader = DataLoader(dataset, len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
         batches = list(loader)
         for batch in batches:
@@ -239,7 +239,7 @@ def test_structured_batches_model_axis_2_subsharded():
     Width = Axis("Width", 16)
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA, Height.name: ResourceAxis.MODEL}):
         dataset = StructuredDatasetWithNames(Height, Width, 0, 256, 1)
-        loader = DataLoader(dataset, "batch", len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
+        loader = DataLoader(dataset, len(devices), max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
         for batch in iter(loader):
             check_sharded_consistency(batch, check_disjoint_indices_are_different=True)
@@ -265,7 +265,7 @@ def test_loader_with_batch_scheduler(model_axis_size):
     with mesh, haliax.axis_mapping({"batch": ResourceAxis.DATA}):
         seq_len = 128
         cache = _small_dataset(seq_len, num_sequences=1000)
-        loader = DataLoader(cache, "batch", schedule, max_buffered_batches=10, mesh=mesh, axis_resources=None)
+        loader = DataLoader(cache, schedule, max_buffered_batches=10, mesh=mesh, axis_resources=None)
 
         for step, batch in enumerate(loader):
             if step < 10:
