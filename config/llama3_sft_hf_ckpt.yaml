@@ -10,5 +10,10 @@ model:
   use_flash_attention: true
   flash_attention_block_size: 512
   use_bias: false
-  use_layer_norm_weight: false
+  use_layer_norm_weight: true
   initializer_range: 0.02
+  rope: 
+    type: "llama3"
+
+# need to set this!
+tokenizer: "meta-llama/Meta-Llama-3.1-8B"
