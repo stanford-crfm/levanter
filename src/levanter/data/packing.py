@@ -18,7 +18,6 @@ import haliax as hax
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.utils.jax_utils import local_cpu_mesh
-import time
 
 
 # cf https://github.com/tensorflow/tensor2tensor/blob/bafdc1b67730430d38d6ab802cbd51f9d053ba2e/tensor2tensor/data_generators/generator_utils.py#L623
@@ -112,59 +111,30 @@ def pack_prompt_completions(
     """
     Packs a list of prompt completions into LmExamples using the SequencePacker
     """
-
-    # start_packer = time.perf_counter()
     packers = [SequencePacker(Pos, max_segments_per_example, pad_token)]
-    # print(f"time to create packer is {time.perf_counter() - start_packer:.6f} seconds", flush=True)
-    # put timer in here
     for sequence in sequences:
-        # start_time = time.perf_counter()
-        # put timer here, keep in mind the loop is an iterator so we want to
-        # separate the time to get examples, and how long it takes to pack
         loss_mask = np.arange(len(sequence.ids)) >= sequence.prompt_length - 1
         loss_mask[-1] = 0
         assert np.any(loss_mask)
 
-        # time how long to pack, and subtract
-        #start_for_pack_yield = time.perf_counter()
         for packer in packers:
             if packer.can_pack(sequence.ids):
-                # add_example = time.perf_counter()
                 packer.add_example(sequence.ids, loss_mask, sequence.segment_id)
-                # add_example_end = time.perf_counter()
-                # time_to_add_example = add_example_end - add_example
-                # print(f" time to add example to segment packer { time_to_add_example:.6f} seconds", flush=True)
-                # end_iter_plus_example = time.perf_counter()
-                # time_to_reach_example_total = end_iter_plus_example - start_time
-                # print(f"time to get sequence, so time to get here minus time to add example {time_to_reach_example_total - time_to_add_example:.6f} seconds", flush=True)
                 if packer.num_segments == max_segments_per_example:
-                    ot = packer.pack()
-                    # end_time = time.perf_counter()
-                    # time_to_yield = end_time - start_for_pack_yield
-                    # print(f"MAX SEG total time to for loop until we yielded a packed example {time_to_yield}", flush=True)
-                    # print(f"MAX SEG total time for iterator {start_time - time_to_yield}", flush=True)
-                    yield ot
+                    yield packer.pack()
                     packers.remove(packer)
                 break
         else:
             # no packer could fit the example, create a new one
-            #start_new_packer = time.perf_counter()
             packer = SequencePacker(Pos, max_segments_per_example, pad_token)
             packer.add_example(sequence.ids, loss_mask, sequence.segment_id)
             packers.append(packer)
-            #print(f"time to create new packer is {time.perf_counter() - start_new_packer:.6f}", flush=True)
 
         while len(packers) >= max_buffered_examples:
-            #start_return_packed_example_full_buffer = time.perf_counter()
-            max_example = packers.pop(0).pack()
-            #print(f"time to create lm example when max buffered examples is {time.perf_counter() - start_return_packed_example_full_buffer:.6f}", flush=True)
-            yield max_example
+            yield packers.pop(0).pack()
 
     for packer in packers:
-        #start_return_packed_example = time.perf_counter()
-        example = packer.pack()
-        #print(f"time to create lm example from packer is {time.perf_counter() - start_return_packed_example:.6f}", flush=True)
-        yield example
+        yield packer.pack()
 
 
 def per_segment_loss(

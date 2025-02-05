@@ -5,7 +5,7 @@ supervised_data:
 # cache_dir before trying sequence packing
   cache_dir: "gs://marin-us-central2/tokenized/openthoughts_llama3_tokenizer-9edd80"
   #cache_dir: "gs://marin-us-central2/tokenized/tulu_sft_v3_llama3_tokenizer_retrypack-bca8bd/"
-  
+
 max_seq_len: 4096
 tokenizer: "meta-llama/Meta-Llama-3.1-8B"
 model:  # 8B  llama3 class model
@@ -21,7 +21,7 @@ model:  # 8B  llama3 class model
   use_bias: false
   use_layer_norm_weight: true
   initializer_range: 0.02
-  rope: 
+  rope:
     type: "llama3"
 trainer:
   seed: 1

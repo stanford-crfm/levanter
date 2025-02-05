@@ -975,6 +975,38 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     }
 
 
+def mk_cached_sft_dataset(
+    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+) -> AsyncDataset[dict]:
+    """Creates a dataset from JSONL files containing chat format data for SFT."""
+    source = config.get_shard_source("train")
+    if source is None:
+        raise ValueError("No training data source found")
+
+    # Set up example structure matching supervised case
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+
+    input_ids = tokenizer("hi there")["input_ids"]
+    should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+    logger.info(f"Manual EOS Needed: {should_append_eos}")
+
+    # Process the dataset
+    dataset = source.map_batches(
+        lambda ex: preprocess_chat_example(ex, tokenizer, should_append_eos),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    # Cache the processed data
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+
+    # Ensure padding token is set (needed by _prepare_supervised_example)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return cached_dataset
+
+
 def mk_chat_sft_dataset(
     config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
 ) -> AsyncDataset[LmExample]:
@@ -1004,9 +1036,8 @@ def mk_chat_sft_dataset(
     # Ensure padding token is set (needed by _prepare_supervised_example)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    return cached_dataset
     # Reuse the supervised prepare function directly
-    # return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
+    return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
 @dataclass

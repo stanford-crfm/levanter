@@ -12,7 +12,7 @@ model:
   use_bias: false
   use_layer_norm_weight: true
   initializer_range: 0.02
-  rope: 
+  rope:
     type: "llama3"
 
 # need to set this!

@@ -1,44 +1,43 @@
+import asyncio
 import dataclasses
 import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Union, Iterator
+from typing import Iterator, List, Optional, Union
 
-import jax.random as jrandom
 import jax.numpy as jnp
+import jax.random as jrandom
 import transformers
+from optax.tree_utils import tree_zeros_like
 
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
-from optax.tree_utils import tree_zeros_like
-import time
 
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data import PermutationDataset, batched
+from levanter.data.dataset import AsyncDataset
+from levanter.data.loader import stack_tree
+from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
     EpochDataset,
     SupervisedSourceConfig,
-    mk_chat_sft_dataset,
+    mk_cached_sft_dataset,
     mk_supervised_dataset,
 )
 from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig
-from levanter.models.lm_model import LmConfig, LmHeadModel, LmExample, compute_next_token_loss
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
-from levanter.data.loader import stack_tree
-from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.utils.background_iterable import BackgroundIterator
 from levanter.utils.hf_utils import HfTokenizer
-from levanter.utils.jax_utils import broadcast_shard, use_cpu_device
-from levanter.data.dataset import AsyncDataset
+from levanter.utils.jax_utils import use_cpu_device
 
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +154,7 @@ def train(config: SFTConfig):
             input_role=config.input_role,
             output_role=config.output_role,
         )
-        train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
+        train_dataset = mk_cached_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
         if isinstance(config.supervised_data, dict):
@@ -214,16 +213,6 @@ def train(config: SFTConfig):
         # Get current step from trainer state
         current_step = int(state.step)
 
-        
-       
-
-        # change iterate tokenized requests to take a dict rather than a list
-        # of where the first element is prompt ands econd is response
-
-        # then pass into tierate tokenizer requests, go to pack requests
-        # and then you have the correct loader, just pass to trainer.train()
-
-        # TODO figure out if there's a better heuristic for max segements to pack per example?
         logger.info("Creating prompt completion iterator")
         prompt_completion_iterator = create_prompt_completion_iterator(train_dataset, Pos)
 
@@ -231,7 +220,7 @@ def train(config: SFTConfig):
             logger.info(f"Resuming training from step {current_step}")
             # Calculate how many examples to skip based on batch size
             examples_to_skip = current_step * trainer.config.train_batch_size
-            
+
             # Skip through the iterator until we reach the right position
             for _ in range(examples_to_skip):
                 try:
@@ -251,9 +240,6 @@ def train(config: SFTConfig):
         logger.info("Creating data loader")
         packed_loader = BackgroundIterator(packed_iterator, max_capacity=1024)
 
-        # to be moved 
-        #loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
-
         if config.hf_save_path is not None:
             # bit gross to reach this far into the config, but it's fine
             if config.trainer.checkpointer.append_run_id_to_base_path:
@@ -268,31 +254,26 @@ def train(config: SFTConfig):
 
         trainer.train(state, packed_loader)
 
+
 def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axis) -> Iterator[PromptCompletion]:
     """
     Creates an iterator that yields PromptCompletion objects from a cached dataset.
-    
+
     Args:
         cached_dataset: The AsyncDataset containing preprocessed examples
         Pos: The position axis defining maximum sequence length
-    
+
     Returns:
         An iterator yielding PromptCompletion objects
     """
     # AsyncDataset already has a current_len method that returns current length or None
     length = asyncio.run(cached_dataset.async_len())
-    
+
     if length is None:
         raise ValueError("Dataset length cannot be None")
-        
-    # TODO play around with batch size
+
     for batch_indicies in batched(range(length), 4096):
-        # put timer here
-        # start_time = time.perf_counter()
         examples = asyncio.run(cached_dataset.get_batch(batch_indicies))
-        # end_time = time.perf_counter()
-        # elapsed_time = end_time - start_time
-        # print(f"Elapsed time for get batches: {elapsed_time:.6f} seconds", flush=True)
 
         for i in range(len(examples)):
             example = examples[i]
@@ -302,19 +283,16 @@ def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axi
 
             ids = example["input_ids"].tolist()
             if len(ids) > Pos.size:
-                ids = ids[:Pos.size]
+                ids = ids[: Pos.size]
 
             if len(ids) <= sources_len:
                 continue
 
             try:
-                yield PromptCompletion(
-                    ids=ids,
-                    prompt_length=sources_len,
-                    segment_id=batch_indicies[i]
-                )
+                yield PromptCompletion(ids=ids, prompt_length=sources_len, segment_id=batch_indicies[i])
             except ValueError:
                 continue
+
 
 def _pack_requests(
     prompt_completion_iterator: Iterator[PromptCompletion], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
@@ -328,50 +306,45 @@ def _pack_requests(
         max_buffered_examples=16,
     )
 
+
 """
 Helper function to create a dummy instance with the same shape as the batch.
 When we reach the end of the dataset but we want a full batch,
 will give a batch of zeros with -1 segment mask so it doesn't affect loss
 """
+
+
 def _make_dummy_instance(batch, Pos):
-        dummy_instance: LmExample = tree_zeros_like(batch[0])
-        dummy_segment_mask = hax.full(Pos, -1, dtype=jnp.int32)
-        dummy_attn = AttentionMask.causal().with_segment_ids(dummy_segment_mask)
-        dummy_instance = dataclasses.replace(dummy_instance, attn_mask=dummy_attn)
-        return dummy_instance
+    dummy_instance: LmExample = tree_zeros_like(batch[0])
+    dummy_segment_mask = hax.full(Pos, -1, dtype=jnp.int32)
+    dummy_attn = AttentionMask.causal().with_segment_ids(dummy_segment_mask)
+    dummy_instance = dataclasses.replace(dummy_instance, attn_mask=dummy_attn)
+    return dummy_instance
+
 
 def stack_batches(example_iterator, Pos, TrainBatch):
-        """
-        Stack examples from an iterator into a batch.
+    """
+    Stack examples from an iterator into a batch.
 
-        Args:
-            TrainBatch: The batch axis.
-            Pos: The position axis.
-            example_iterator: An iterator of examples.
+    Args:
+        TrainBatch: The batch axis.
+        Pos: The position axis.
+        example_iterator: An iterator of examples.
 
-        Returns:
-            A batch of examples.
-        """
-        # add timer here as well and profile
-        with use_cpu_device():
-            batch_count = 0
-            for batch in batched(example_iterator, TrainBatch.size):
-                batch_count += 1
-                #start_time_loop = time.perf_counter()
-                if len(batch) < TrainBatch.size:
-                    dummy_instance = _make_dummy_instance(batch, Pos)
-                    batch.extend([dummy_instance] * (TrainBatch.size - len(batch)))
-                # # Start timing before calling stack_tree
-                # start_time = time.perf_counter()
-                result = stack_tree(TrainBatch, batch)  # Capture the result
-                # stack_time = time.perf_counter() - start_time  # Calculate elapsed time
+    Returns:
+        A batch of examples.
+    """
+    # add timer here as well and profile
+    with use_cpu_device():
+        batch_count = 0
+        for batch in batched(example_iterator, TrainBatch.size):
+            batch_count += 1
+            if len(batch) < TrainBatch.size:
+                dummy_instance = _make_dummy_instance(batch, Pos)
+                batch.extend([dummy_instance] * (TrainBatch.size - len(batch)))
+            result = stack_tree(TrainBatch, batch)  # Capture the result
+            yield result  # Yield the computed result
 
-                # print(f"Stack tree execution time: {stack_time:.6f} seconds", flush=True)
-                yield result  # Yield the computed result
-                # end_time_loop = time.perf_counter()
-                # loop_time = end_time_loop - start_time_loop
-                # print(f"Loop takes {loop_time}")
-                # print(f"Iterator time is {loop_time - stack_time}")
 
 def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
     special_tokens_dict = dict()
