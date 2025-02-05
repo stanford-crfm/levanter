@@ -111,6 +111,7 @@ def train(config: SFTConfig):
             converter = None
         model_config = config.model
 
+    config = dataclasses.replace(config, model=model_config)
     levanter.initialize(config)
 
     num_new_tokens = add_special_tokens(tokenizer)

@@ -203,7 +203,7 @@ def estimate_mixture_weights(
             average_alpha=initial_alpha,
         )
         del initial_proxy
-        train_loader = iter(trainer.data_loader(tagged_mixture, trainer.TrainBatch))
+        train_loader = iter(trainer.data_loader(tagged_mixture))
 
         if state.step > 0:
             # step is after the batch, so we need to seek to step
