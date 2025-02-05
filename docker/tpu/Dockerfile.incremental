@@ -19,6 +19,7 @@ ADD pyproject.toml README.md /opt/levanter/
 RUN mkdir -p /opt/levanter/src/levanter
 RUN pip install -e '.[test]'
 RUN pip install "lm-eval@git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+RUN pip install "draccus@git+https://github.com/dlwh/draccus.git"
 ADD . /opt/levanter
 
 # Add $EXTRA_CTX to the same location as in local machine.

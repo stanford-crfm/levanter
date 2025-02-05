@@ -22,6 +22,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation
 
 import haliax as hax
+import haliax.tree_util
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 from haliax.quantization import Fp8Config
@@ -39,6 +40,7 @@ from levanter.data import AsyncDataset, DataLoader
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.optim.model_averaging import ModelAveragingConfig
+from levanter.schedule import BatchSchedule, IntSchedule, ScheduleStep, value_at_step
 from levanter.tracker import TrackerConfig, capture_time
 from levanter.trainer_state import TrainerState, saveable_training_mask
 from levanter.utils import cloud_utils, fsspec_utils
@@ -489,23 +491,30 @@ class Trainer:
                 every=self.config.steps_per_eval,
             )
 
-    def data_loader(self, dataset: AsyncDataset[X], batch_axis: Axis) -> DataLoader[X]:
+    def data_loader(self, dataset: AsyncDataset[X], batch: Optional[hax.Axis] = None) -> DataLoader[X]:
         """Creates a data loader for the given dataset and batch axis.
 
         Args:
             dataset (AsyncDataset): the dataset to load
-            batch_axis (Axis): the batch axis
+            batch (Optional[hax.Axis]): the batch axis. If None, uses the trainer batch axis (and schedule, if applicable)
 
         Returns:
             DataLoader: the data loader
         """
+        if batch is not None:
+            batch_name = batch.name
+            batch_size = batch.size
+        else:
+            batch_name = self.config.batch_axis
+            batch_size = self.config.train_batch_size
         return DataLoader(
-            batch_axis,
             dataset,
+            batch_size=batch_size,
             max_buffered_batches=128,
             mesh=self.device_mesh,
             axis_resources=self.compute_axis_mapping,
             prefetch_size=32,
+            batch_axis_name=batch_name,
         )
 
     @cached_property
@@ -553,15 +562,20 @@ class Trainer:
             return loss, new_state, hook_infos
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
+        Batch = _resolve_axis_in_tree((batch, batch_kwargs), self.config.batch_axis)
+
         grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=False)
+
         mbs = self.config.microbatch_size
-        grad_fn = microbatched(
-            grad_fn,
-            self.TrainBatch,
-            mbs,
-            self.parameter_axis_mapping,
-            self.compute_axis_mapping,
-        )
+        if mbs is not None:
+            grad_fn = microbatched(
+                grad_fn,
+                Batch,
+                mbs,
+                self.parameter_axis_mapping,
+                self.compute_axis_mapping,
+            )
+
         with hax.axis_mapping(self.compute_axis_mapping):
             return grad_fn(model, *batch, **batch_kwargs)
 
@@ -596,7 +610,7 @@ class TrainerConfig:
 
     # config related to partitioning
 
-    batch_axis: Optional[str] = "batch"  # Batch axis for data parallel.
+    batch_axis: str = "batch"  # Batch axis for data parallel.
     fsdp_axis: Optional[Union[str, List[str]]] = "embed"  # Axis/Axes to use for FSDP
     tensor_parallel_axes: Optional[List[str]] = None  # Axes, if any, to use for tensor parallelism
 
@@ -615,7 +629,7 @@ class TrainerConfig:
     """how many slices in the multislice scheme for sharding with DP and TP. The rest of the devices is for FSDP."""
 
     # Config related to batch sizes
-    train_batch_size: int = 512
+    train_batch_size: int | IntSchedule = 512
     per_device_parallelism: int = -1
     """how many examples to process in parallel on each device. -1 (default) means train_batch_size/num_devices"""
 
@@ -653,14 +667,26 @@ class TrainerConfig:
 
     @property
     def TrainBatch(self):
-        return Axis("batch", self.train_batch_size)
+        if not isinstance(self.train_batch_size, int):
+            raise ValueError("TrainBatch is only valid for a single batch size. Use batch_axis_at_step instead")
+        return Axis(self.batch_axis, self.train_batch_size)
+
+    @cached_property
+    def batch_scheduler(self):
+        return BatchSchedule(self.train_batch_size)
+
+    def batch_axis_at_step(self, step: int) -> Axis:
+        bs = value_at_step(self.train_batch_size, step)
+        return Axis(self.batch_axis, bs)
 
     @property
     def EvalBatch(self):
-        return Axis("batch", self.eval_batch_size)
+        return Axis(self.batch_axis, self.eval_batch_size)
 
     @property
-    def microbatch_size(self):
+    def microbatch_size(self) -> int | None:
+        if self.per_device_parallelism < 0:
+            return None
         return self.per_device_parallelism * self.data_axis_size
 
     def __post_init__(self):
@@ -819,23 +845,44 @@ class TrainerConfig:
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
 
-        assert self.train_batch_size != -1 or self.per_device_parallelism != -1
+        if self.train_batch_size == -1 and self.per_device_parallelism == -1:
+            raise ValueError("either train_batch_size or per_device_parallelism must be specified (not -1)")
 
         if self.per_device_parallelism == -1:
-            self.per_device_parallelism = self.train_batch_size // self.data_axis_size
+            if isinstance(self.train_batch_size, int):
+                self.per_device_parallelism = self.train_batch_size // self.data_axis_size
+            else:
+                logger.info(
+                    "per_device_parallelism is not set and train_batch_size is not an int. "
+                    "Not using microbatching and just maxing out the per_device_parallelism."
+                )
 
         if self.train_batch_size == -1:
             self.train_batch_size = self.per_device_parallelism * self.data_axis_size
 
         # validate size of per_device_parallelism
-        if self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:
-            raise ValueError(
-                f"train_batch_size ({self.train_batch_size}) must be divisible by per_device_parallelism *"
-                f" data_axis_size ({self.per_device_parallelism}, {self.data_axis_size})"
-            )
+        if self.per_device_parallelism != -1:
+            if isinstance(self.train_batch_size, Sequence):
+                for phase in self.train_batch_size:
+                    assert isinstance(phase, ScheduleStep)
+                    if phase.value % (self.per_device_parallelism * self.data_axis_size) != 0:
+                        raise ValueError(
+                            f"At step {phase.step}, train_batch_size ({phase.value}) must be divisible by "
+                            "per_device_parallelism * data_axis_size "
+                            f"({self.per_device_parallelism}, {self.data_axis_size})"
+                        )
+            elif self.train_batch_size % (self.per_device_parallelism * self.data_axis_size) != 0:
+                raise ValueError(
+                    f"train_batch_size ({self.train_batch_size}) must be divisible by per_device_parallelism *"
+                    f" data_axis_size ({self.per_device_parallelism}, {self.data_axis_size})"
+                )
 
         if self.per_device_eval_parallelism == -1:
-            self.per_device_eval_parallelism = self.per_device_parallelism
+            if self.per_device_parallelism == -1:
+                initial_train_batch_size = value_at_step(self.train_batch_size, 0)
+                self.per_device_eval_parallelism = initial_train_batch_size // self.data_axis_size
+            else:
+                self.per_device_eval_parallelism = self.per_device_parallelism
 
         if self.replica_dcn_axis_size == -1:
             self.replica_dcn_axis_size = self.num_slices
@@ -863,3 +910,17 @@ def _ensure_scalar(x: hax.types.Scalar | hax.NamedArray) -> hax.types.Scalar:
         return x.scalar()
     else:
         return x
+
+
+def _resolve_axis_in_tree(tree, axis):
+    """
+    Resolves an axis in a tree of NamedArrays. This is useful for finding the batch axis in a batch of data.
+    """
+    for leaf in haliax.tree_util.tree_leaves(tree):
+        if isinstance(leaf, haliax.NamedArray):
+            try:
+                return leaf.resolve_axis(axis)
+            except ValueError:
+                pass
+
+    raise ValueError(f"Could not find axis {axis} in tree {tree}")
