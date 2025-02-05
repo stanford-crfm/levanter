@@ -1185,28 +1185,46 @@ class PassthroughTokenizer(PreTrainedTokenizer):
 
 @dataclass
 class LMMixtureDatasetConfig(LMTaskConfig):
-    """This class represents a mixture of datasets with their associated weights."""
+    """A mixture of language model datasets that supports dynamic weight changes during training.
+
+    Weights can be specified either as a single dictionary for constant mixing ratios,
+    or as a list of (step, weights) tuples to change mixing ratios during training.
+    """
 
     cache_dir: Optional[str] = "cache/"
 
-    # data source configs and weights
     configs: Dict[str, LMDatasetSourceConfig] = field(default_factory=dict)
-    """ configuration of each dataset source (urls, hf dataset id, etc.) """
-    train_weights: Dict[str, float] = field(default_factory=dict)
-    """ weights for each dataset source. They will be normalized to sum to 1. """
+    """ Configuration of each dataset source (urls, hf dataset id, etc.) """
+
+    train_weights: Union[Dict[str, float], List[Tuple[int, Dict[str, float]]]] = field(default_factory=dict)
+    """ Dataset mixing weights. Either a constant dict[name->weight] or list of (step, weights) tuples """
+
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+
+    # Configuration for Simulated Epoching
+    target_budget: Optional[int] = None
+    experiment_budget: Optional[int] = None
+
     mixture_block_size: int = 2048
-    """ block size for the mixture dataset."""
+    """ Block size for deterministic mixing """
 
     def __post_init__(self):
         if len(self.configs) == 0:
             raise ValueError("At least one dataset must be provided")
 
-        if set(self.configs.keys()) != set(self.train_weights.keys()):
-            raise ValueError(
-                f"The keys in configs and weights must be the same;got {self.configs.keys()} and"
-                f" {self.train_weights.keys()}"
-            )
+        if isinstance(self.train_weights, dict):
+            if not all(name in self.configs for name in self.train_weights):
+                raise ValueError(
+                    f"Weight keys {self.train_weights.keys()} must be subset of config keys {self.configs.keys()}"
+                )
+        elif isinstance(self.train_weights, list):
+            for step, weights in self.train_weights:
+                if not all(name in self.configs for name in weights):
+                    raise ValueError(
+                        f"Weight keys {weights.keys()} must be subset of config keys {self.configs.keys()}"
+                    )
+        else:
+            raise ValueError(f"Invalid train_weights type: {type(self.train_weights)}")
 
     def train_set(
         self,
@@ -1244,12 +1262,29 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
             token_datasets = out_token_datasets
 
+        if (
+            self.experiment_budget is not None and self.target_budget is not None
+        ) and self.experiment_budget > self.target_budget:
+            raise ValueError(
+                f"Experiment budget should be smaller than target budget, got {self.experiment_budget} >"
+                f" {self.target_budget}"
+            )
+        if self.experiment_budget is not None and self.target_budget is not None:
+            simulated_data_ratio = self.experiment_budget / self.target_budget
+            sliced_token_datasets: Dict[str, TokenSeqDataset] = {}
+            for name, ds in token_datasets.items():
+                # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
+                true_length_of_dataset = len(ds.as_sync_dataset())
+                simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
+                sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
+            token_datasets = sliced_token_datasets
+
         mixture = MixtureDataset(
             datasets=token_datasets,
             weights=self.train_weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
-            block_size=2048,
+            block_size=self.mixture_block_size,
         )
 
         return mixture
@@ -1279,9 +1314,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         caches = {}
         for name, source_config in self.configs.items():
-            weight = self.train_weights.get(name, 0)
+            # Skip datasets with zero weight in all stages
+            if isinstance(self.train_weights, dict):
+                has_nonzero_weight = self.train_weights.get(name, 0) > 0
+            elif isinstance(self.train_weights, list):
+                has_nonzero_weight = any(weights.get(name, 0) > 0 for _, weights in self.train_weights)
 
-            if weight == 0 and split == "train":
+            if not has_nonzero_weight and split == "train":
                 continue
 
             source_config_dict = dict(**source_config.__dict__)

@@ -10,8 +10,8 @@ def test_permutation_creates_valid_instance():
     prng_key = jrandom.PRNGKey(0)
     permutation = Permutation(length, prng_key)
     assert permutation.length == length
-    assert permutation._a > 0 and permutation._a < length
-    assert permutation._b >= 0 and permutation._b < length
+    assert 0 < permutation.a < length
+    assert 0 <= permutation.b < length
 
 
 def test_permutation_with_single_index_returns_correct_value():
@@ -85,3 +85,13 @@ def test_permutation_is_deterministic1():
     permutation = Permutation(length, prng_key)
     results2 = permutation(indices)
     assert jnp.all(results == results2)
+
+
+def test_permutation_handles_large_length_no_overflow():
+    large_length = 2**34
+    prng_key = jrandom.PRNGKey(0)
+    permutation = Permutation(large_length, prng_key)
+    index = 2**32  # A large index within the range
+    result = permutation(index)
+    assert isinstance(result, int)
+    assert 0 <= result < large_length
