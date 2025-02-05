@@ -35,7 +35,6 @@ from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_n
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.background_iterable import BackgroundIterator
-from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import use_cpu_device
 
 
@@ -233,7 +232,13 @@ def train(config: SFTConfig):
             logger.info("Starting SFT from scratch")
 
         logger.info("Packing prompt completions")
-        packed_iterator = _pack_requests(prompt_completion_iterator, tokenizer, Pos, max_pack_size=4)
+        packed_iterator = pack_prompt_completions(
+            Pos,
+            prompt_completion_iterator,
+            max_segments_per_example=4,
+            pad_token=tokenizer.pad_token_id,
+            max_buffered_examples=16,
+        )
         logger.info("Stacking batches to train batch")
         packed_iterator = stack_batches(example_iterator=packed_iterator, Pos=Pos, TrainBatch=trainer.TrainBatch)
         # TODO  what's a good number for max_capacity?
@@ -272,8 +277,8 @@ def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axi
     if length is None:
         raise ValueError("Dataset length cannot be None")
 
-    for batch_indicies in batched(range(length), 4096):
-        examples = asyncio.run(cached_dataset.get_batch(batch_indicies))
+    for indicies in batched(range(length), 4096):
+        examples = asyncio.run(cached_dataset.get_batch(indicies))
 
         for i in range(len(examples)):
             example = examples[i]
@@ -289,22 +294,14 @@ def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axi
                 continue
 
             try:
-                yield PromptCompletion(ids=ids, prompt_length=sources_len, segment_id=batch_indicies[i])
-            except ValueError:
+                yield PromptCompletion(ids=ids, prompt_length=sources_len, segment_id=indicies[i])
+            except ValueError as e:
+                # Likely error: PromptCompletion may raise a ValueError if the token list is empty or if its length is not greater than the prompt_length.
+                logger.error(
+                    f"Error creating PromptCompletion (ids length: {len(ids)}, sources_len: {sources_len}, segment id:"
+                    f" {indicies[i]}): {e}"
+                )
                 continue
-
-
-def _pack_requests(
-    prompt_completion_iterator: Iterator[PromptCompletion], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
-) -> Iterator[LmExample]:
-    # TODO: use a better packing algorithm?
-    yield from pack_prompt_completions(
-        Pos,
-        prompt_completion_iterator,
-        max_segments_per_example=max_pack_size,
-        pad_token=tokenizer.pad_token_id,
-        max_buffered_examples=16,
-    )
 
 
 """

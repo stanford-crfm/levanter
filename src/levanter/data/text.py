@@ -1000,10 +1000,6 @@ def mk_cached_sft_dataset(
 
     # Cache the processed data
     cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
-
-    # Ensure padding token is set (needed by _prepare_supervised_example)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
     return cached_dataset
 
 

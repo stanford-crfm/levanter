@@ -111,7 +111,9 @@ def pack_prompt_completions(
     """
     Packs a list of prompt completions into LmExamples using the SequencePacker
     """
+
     packers = [SequencePacker(Pos, max_segments_per_example, pad_token)]
+
     for sequence in sequences:
         loss_mask = np.arange(len(sequence.ids)) >= sequence.prompt_length - 1
         loss_mask[-1] = 0
@@ -120,6 +122,7 @@ def pack_prompt_completions(
         for packer in packers:
             if packer.can_pack(sequence.ids):
                 packer.add_example(sequence.ids, loss_mask, sequence.segment_id)
+
                 if packer.num_segments == max_segments_per_example:
                     yield packer.pack()
                     packers.remove(packer)
