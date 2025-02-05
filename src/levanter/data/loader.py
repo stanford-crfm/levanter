@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import time
 from collections import defaultdict
@@ -11,6 +12,7 @@ from jax import tree_util as jtu
 from jax.experimental import multihost_utils
 from jax.sharding import Mesh, PartitionSpec
 from jaxtyping import PyTree
+from optax.tree_utils import tree_zeros_like
 
 import haliax as hax
 from haliax import is_named_array
@@ -19,9 +21,11 @@ from haliax.partitioning import ResourceMapping
 
 from levanter.data.dataset import AsyncDataset
 from levanter.data.utils import batched
+from levanter.models.attention import AttentionMask
+from levanter.models.lm_model import LmExample
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
 from levanter.utils.background_iterable import BackgroundIterator
-from levanter.utils.jax_utils import local_cpu_mesh
+from levanter.utils.jax_utils import local_cpu_mesh, use_cpu_device
 from levanter.utils.thread_utils import AsyncIteratorWrapper, blocking_wait
 
 
@@ -245,6 +249,41 @@ class DataLoaderIterator(Iterator[Ex]):
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
             return hax.partitioning.pspec_for_axis(shape_spec.shape, self.dl.axis_resources)  # type: ignore
+
+
+def _make_dummy_instance(batch, Pos):
+    """
+    Creates a dummy instance matching the shape of the provided batch.
+    If the dataset is exhausted and a full batch is needed, this function returns a dummy instance
+    with all elements set to zero and a segment mask filled with -1. This design ensures that the dummy
+    instance does not contribute to the loss during training.
+    """
+    dummy_instance: LmExample = tree_zeros_like(batch[0])
+    dummy_segment_mask = hax.full(Pos, -1, dtype=jnp.int32)
+    dummy_attn = AttentionMask.causal().with_segment_ids(dummy_segment_mask)
+    dummy_instance = dataclasses.replace(dummy_instance, attn_mask=dummy_attn)
+    return dummy_instance
+
+
+def stack_batches(example_iterator, Pos, Batch):
+    """
+    Stack examples from an iterator into a batch.
+
+    Args:
+        Batch: The batch axis.
+        Pos: The position axis.
+        example_iterator: An iterator of examples.
+
+    Returns:
+        A batch of examples.
+    """
+    # add timer here as well and profile
+    with use_cpu_device():
+        for batch in batched(example_iterator, Batch.size):
+            if len(batch) < Batch.size:
+                dummy_instance = _make_dummy_instance(batch, Pos)
+                batch.extend([dummy_instance] * (Batch.size - len(batch)))
+            yield stack_tree(Batch, batch)
 
 
 def _batchified_shape(Batch, leaf: hax.NamedArray | Array) -> ShapeSpec | NamedShapeSpec:

@@ -6,10 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterator, List, Optional, Union
 
-import jax.numpy as jnp
 import jax.random as jrandom
 import transformers
-from optax.tree_utils import tree_zeros_like
 
 import haliax as hax
 from haliax import Axis
@@ -20,7 +18,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data import PermutationDataset, batched
 from levanter.data.dataset import AsyncDataset
-from levanter.data.loader import stack_tree
+from levanter.data.loader import stack_batches
 from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
@@ -29,13 +27,11 @@ from levanter.data.text import (
     mk_cached_sft_dataset,
     mk_supervised_dataset,
 )
-from levanter.models.attention import AttentionMask
 from levanter.models.llama import LlamaConfig
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
+from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.background_iterable import BackgroundIterator
-from levanter.utils.jax_utils import use_cpu_device
 
 
 logger = logging.getLogger(__name__)
@@ -240,7 +236,7 @@ def train(config: SFTConfig):
             max_buffered_examples=16,
         )
         logger.info("Stacking batches to train batch")
-        packed_iterator = stack_batches(example_iterator=packed_iterator, Pos=Pos, TrainBatch=trainer.TrainBatch)
+        packed_iterator = stack_batches(example_iterator=packed_iterator, Pos=Pos, Batch=trainer.TrainBatch)
         # TODO  what's a good number for max_capacity?
         logger.info("Creating data loader")
         packed_loader = BackgroundIterator(packed_iterator, max_capacity=1024)
@@ -302,45 +298,6 @@ def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axi
                     f" {indicies[i]}): {e}"
                 )
                 continue
-
-
-"""
-Helper function to create a dummy instance with the same shape as the batch.
-When we reach the end of the dataset but we want a full batch,
-will give a batch of zeros with -1 segment mask so it doesn't affect loss
-"""
-
-
-def _make_dummy_instance(batch, Pos):
-    dummy_instance: LmExample = tree_zeros_like(batch[0])
-    dummy_segment_mask = hax.full(Pos, -1, dtype=jnp.int32)
-    dummy_attn = AttentionMask.causal().with_segment_ids(dummy_segment_mask)
-    dummy_instance = dataclasses.replace(dummy_instance, attn_mask=dummy_attn)
-    return dummy_instance
-
-
-def stack_batches(example_iterator, Pos, TrainBatch):
-    """
-    Stack examples from an iterator into a batch.
-
-    Args:
-        TrainBatch: The batch axis.
-        Pos: The position axis.
-        example_iterator: An iterator of examples.
-
-    Returns:
-        A batch of examples.
-    """
-    # add timer here as well and profile
-    with use_cpu_device():
-        batch_count = 0
-        for batch in batched(example_iterator, TrainBatch.size):
-            batch_count += 1
-            if len(batch) < TrainBatch.size:
-                dummy_instance = _make_dummy_instance(batch, Pos)
-                batch.extend([dummy_instance] * (TrainBatch.size - len(batch)))
-            result = stack_tree(TrainBatch, batch)  # Capture the result
-            yield result  # Yield the computed result
 
 
 def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
