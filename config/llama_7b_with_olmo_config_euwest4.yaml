@@ -24,7 +24,6 @@ trainer:
         until: 1000
       - every: 1000
         until: 40000
-python -m levanter.main.export_lm_to_hf --checkpoint_path "gs://marin-ckpt-eu-w4/checkpoints/olmo7b_seed0_datafix0/fgtbtvho/step-25"  --output_dir "gs://marin-ckpt-eu-w4/checkpoints/olmo7b_seed0_datafix0/hf_100M_tokens"
   mp: p=f32,c=bfloat16
   train_batch_size: 2048
   num_train_steps: 750000  # 3,000,000,000,000 / 4,000,000 = 750,000
