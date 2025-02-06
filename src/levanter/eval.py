@@ -270,8 +270,8 @@ class TaggedEvaluator:
         self.EvalBatch = EvalBatch
         self.dataset = DomainTaggedDataset(tagged_eval_sets, max_examples_per_dataset)
         self.loader = DataLoader(
-            EvalBatch,
             self.dataset.as_async_dataset(),
+            EvalBatch,
             max_buffered_batches=100,
             mesh=device_mesh,
             axis_resources=axis_mapping,

@@ -44,12 +44,9 @@ def main(config: VizGpt2Config):
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
+    ds = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos, eos_id=tokenizer.eos_token_id)  # type: ignore
     eval_loader = DataLoader(
-        EvalBatch,
-        CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos, eos_id=tokenizer.eos_token_id),  # type: ignore
-        32,
-        config.trainer.device_mesh,
-        config.trainer.compute_axis_mapping,
+        ds, EvalBatch, mesh=config.trainer.device_mesh, axis_resources=config.trainer.compute_axis_mapping
     )
 
     # some axes we use outside the model proper

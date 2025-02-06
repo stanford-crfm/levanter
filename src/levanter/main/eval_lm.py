@@ -60,7 +60,11 @@ def main(config: EvalLmConfig):
         raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
 
     eval_loader = DataLoader(
-        Batch, raw_dataset, None, config.trainer.device_mesh, config.trainer.parameter_axis_mapping
+        raw_dataset,
+        Batch,
+        max_buffered_batches=None,
+        mesh=config.trainer.device_mesh,
+        axis_resources=config.trainer.parameter_axis_mapping,
     )
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
