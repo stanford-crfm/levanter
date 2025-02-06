@@ -2,8 +2,6 @@ cache_dir: null
 cache_options:
   batch_size: 128
   num_shard_groups: 128
-  prefetch_per_group: 4
-  shard_order_randomization_key: 0
   target_size_per_flush: 512MB
 configs:
   dolma/algebraic-stack:
