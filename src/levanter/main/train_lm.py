@@ -178,7 +178,7 @@ def main(config: TrainLmConfig):
                 mup_axes = ["embed", "mlp", "head_size"]
 
                 if isinstance(param, Linear):
-                    mult = hax.axis_size(param.In) / hax.axis_size(base_param.In)
+                    mult = hax.axis_size(base_param.In) / hax.axis_size(param.In)
                     if isinstance(param.Out, Axis):
                         if param.Out.name not in mup_axes:
                             mult = 1
