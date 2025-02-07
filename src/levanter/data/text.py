@@ -1011,9 +1011,27 @@ def mk_chat_sft_dataset(
 
 @dataclass
 class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
-    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
+    """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls.
+    Optionally supports splitting training data into train/validation sets."""
 
     cache_dir: Optional[str] = "cache/"
+    split_fraction: Optional[float] = None
+    """If set, fraction of training data to use for training. Must be between 0 and 1.
+    The remainder will be used for validation. This overrides any existing validation set."""
+    split_key: PRNGKeyArray = jax.random.PRNGKey(0)
+
+    def __post_init__(self):
+        if self.split_fraction is not None:
+            if not 0 < self.split_fraction < 1:
+                raise ValueError(f"split_fraction must be between 0 and 1, got {self.split_fraction}")
+
+            if self.split_key is None:
+                raise ValueError("split_key must be provided when split_fraction is set")
+
+            if self._has_validation_set:
+                logger.warning(
+                    "Dataset has an existing validation set - this will be ignored in favor of the split train set"
+                )
 
     def train_set(
         self,
@@ -1023,28 +1041,38 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         key: Optional[PRNGKeyArray] = None,
         epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
-
-        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
-
-        # add epoch flag here.
+        # Get the dataset and handle None case upfront
+        ds = self.token_seq_dataset("train", seq_len, monitors)
         if ds is None:
             raise ValueError("No training set!")
 
+        if self.split_fraction is not None:
+            ds = ds.shuffle(self.split_key)  # type: ignore
+            ds = ds.slice_proportionally(start_fraction=0, end_fraction=self.split_fraction)  # type: ignore
+
         if epochs:
             logger.info("Wrapping dataset in epoch dataset")
-            ds = EpochDataset(ds, max_epochs=epochs)
+            ds = EpochDataset(ds, max_epochs=epochs)  # type: ignore
 
         if self.shuffle is True:
-            ds = ds.shuffle(key)
+            ds = ds.shuffle(key)  # type: ignore
         elif isinstance(self.shuffle, int) and self.shuffle > 0:
-            ds = ds.era_shuffle(self.shuffle, key=key)
+            ds = ds.era_shuffle(self.shuffle, key=key)  # type: ignore
 
         return ds  # type: ignore
 
     def validation_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        return self.token_seq_dataset("validation", seq_len, monitors)
+    ) -> Optional[AsyncDataset[np.ndarray]]:
+        if self.split_fraction is not None:
+            ds: Optional[TokenSeqDataset] = self.token_seq_dataset("train", seq_len, monitors)
+            if ds is None:
+                return None
+            ds = ds.shuffle(self.split_key)  # Use same key as train set for consistent split
+            ds = ds.slice_proportionally(start_fraction=self.split_fraction, end_fraction=1.0)  # type: ignore
+            return ds  # type: ignore
+        else:
+            return self.token_seq_dataset("validation", seq_len, monitors)
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True

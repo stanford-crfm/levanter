@@ -125,6 +125,9 @@ class AsyncDataset(DatasetBase[T_co]):
     def slice_dataset(self, start_index: Optional[int] = None, end_index: Optional[int] = None):
         return SlicedAsyncDataset(self, start_index, end_index)
 
+    def slice_proportionally(self, start_fraction: float, end_fraction: float):
+        return LazySlicedAsyncDataset(self, start_fraction, end_fraction)
+
     def shuffle(self, key: PRNGKey):
         import levanter.data.permutation as permutation
 
@@ -427,6 +430,59 @@ class SlicedAsyncDataset(AsyncDataset[U]):
             return underlying_length - self.start_index
         else:
             return underlying_length
+
+
+class LazySlicedAsyncDataset(AsyncDataset[T_co]):
+    """A dataset that lazily slices another dataset based on fractions of its length.
+    The actual slicing is deferred until the data is accessed."""
+
+    def __init__(self, dataset: AsyncDataset[T_co], start_fraction: float, end_fraction: float):
+        super().__init__()
+        self.dataset = dataset
+        self.start_fraction = start_fraction
+        self.end_fraction = end_fraction
+        # self._slice_indices: tuple[int, int] | None = None
+        # self.sliced_dataset: AsyncDataset[T_co] | None = None
+
+    async def _initialize_slice_indices(self):
+        if self._slice_indices is not None:
+            if self.sliced_dataset is None:
+                raise ValueError("Failed to slice dataset")
+            if self._slice_indices is None:
+                raise ValueError("Failed to slice dataset")
+            return
+
+        underlying_length = await self.dataset.async_len()
+        self.start_index = int(underlying_length * self.start_fraction)
+        self.end_index = int(underlying_length * self.end_fraction)
+        self._slice_indices = (self.start_index, self.end_index)
+
+        if self.start_index == self.end_index:
+            raise ValueError("Dataset is empty")
+
+        if self.start_index > self.end_index:
+            raise ValueError("Start index is greater than end index")
+
+        self.sliced_dataset: AsyncDataset[T_co] = self.dataset.slice_dataset(self.start_index, self.end_index)
+
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
+        await self._initialize_slice_indices()
+        return await self.sliced_dataset.get_batch(indices)
+
+    async def async_len(self) -> int:
+        await self._initialize_slice_indices()
+        return self._slice_indices[1] - self._slice_indices[0]
+
+    async def final_length_is_known(self) -> bool:
+        await self._initialize_slice_indices()
+        return await self.sliced_dataset.final_length_is_known()
+
+    def is_finite(self) -> bool:
+        return self.sliced_dataset.is_finite()
+
+    async def current_len(self) -> Optional[int]:
+        await self._initialize_slice_indices()
+        return await self.sliced_dataset.current_len()
 
 
 class BatchMappedAsyncDataset(AsyncDataset[U]):
