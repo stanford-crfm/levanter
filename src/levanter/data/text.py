@@ -1018,7 +1018,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     split_fraction: Optional[float] = None
     """If set, fraction of training data to use for training. Must be between 0 and 1.
     The remainder will be used for validation. This overrides any existing validation set."""
-    split_key: PRNGKeyArray = jax.random.PRNGKey(0)
+    split_key: PRNGKeyArray = field(default_factory=lambda: jax.random.PRNGKey(0))
 
     def __post_init__(self):
         if self.split_fraction is not None:
