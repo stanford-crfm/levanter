@@ -106,7 +106,7 @@ class DataLoader(Iterable[Ex]):
             self.scheduler = BatchSchedule(batch_size)
 
         self._batch_sharding = hax.partitioning.sharding_for_axis(self.batch_axis_name, axis_resources, mesh)
-        self._data_axis_size = hax.partitioning.physical_axis_size(self.batch_axis_name, axis_resources)
+        self._data_axis_size = hax.partitioning.physical_axis_size(self.batch_axis_name, axis_resources, mesh)
 
         self._allow_non_divisible_batch_size = allow_nondivisible_batch_size
         self._pad_final_batch = pad_final_batch
