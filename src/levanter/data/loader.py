@@ -233,6 +233,10 @@ class DataLoaderIterator(Iterator[Ex]):
             logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}")
         return batch
 
+    def __del__(self):
+        if hasattr(self, "_batches") and hasattr(self._batches, "stop"):
+            self._batches.stop()
+
     async def _produce_batches(self):
         batch_number = self._start_from_batch or 0
         done = False
