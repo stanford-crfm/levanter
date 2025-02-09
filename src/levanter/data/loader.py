@@ -176,8 +176,8 @@ class DataLoader(Iterable[Ex]):
         out = _round_to_nearest_multiple(size, self._data_axis_size)
 
         warnings.warn(
-            f"Rounding batch size {size} to {out} to be divisible by data axis size {self._data_axis_size}."
-            f"\n This results in a per-device batch size of {out // self._data_axis_size}"
+            f"Padding batch size {size} to {out} to be divisible by data axis size {self._data_axis_size}."
+            f"\n This results in a per-device batch size of {out // self._data_axis_size}. (Extra data is zeros.)"
         )
 
         return out
