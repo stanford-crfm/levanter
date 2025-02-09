@@ -215,7 +215,7 @@ class DataLoaderIterator(Iterator[Ex]):
 
         buffered_batches = self.dl.max_buffered_batches
         self._batches: Iterator[Ex]
-        if buffered_batches == 0 or True:
+        if buffered_batches == 0:
             self._batches = AsyncIteratorWrapper(self._produce_batches())
         else:
             self._batches = _JaxCpuBackgroundIterator(self._produce_batches, max_capacity=buffered_batches)
