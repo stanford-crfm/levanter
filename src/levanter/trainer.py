@@ -330,7 +330,7 @@ class Trainer:
         if load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist")
         elif load_checkpoint is None:
-            load_checkpoint = fsspec_utils.exists(checkpoint_path)
+            load_checkpoint = levanter.checkpoint.is_checkpoint_path(checkpoint_path)
 
         if load_checkpoint is False and self.config.initialize_from is not None:
             # we're not going to load a checkpoint, so see if we can initialize from a model
