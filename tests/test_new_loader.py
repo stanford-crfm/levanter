@@ -350,4 +350,4 @@ def test_padded_final_batch(model_axis_size):
         assert len(batch) == 32
         # ensure all the padded examples are all 0's
         num_padding = 32 - (1007 - 240) % 32
-        np.all(batch[-num_padding:] == 0)
+        assert np.all(batch[-num_padding:] == 0)
