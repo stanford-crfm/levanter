@@ -25,4 +25,4 @@ jobs:
           pip install soundfile librosa
       - name: Run entry tests with pytest
         run: |
-          JAX_PLATFORMS="cpu" XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=$(pwd)/tests:$(pwd)/src:$(pwd):. pytest -s tests -m entry
+          JAX_PLATFORMS="cpu" PYTHONPATH=$(pwd)/tests:$(pwd)/src:$(pwd):. pytest -s tests -m entry
