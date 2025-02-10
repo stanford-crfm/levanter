@@ -196,6 +196,9 @@ def cb_tagged_lm_evaluate(
         EvalBatch, tagged_eval_sets, tokenizer, device_mesh, axis_mapping, max_examples_per_dataset, mp=mp
     )
 
+    if not eval_current and not eval_ema:
+        raise ValueError("At least one of eval_current or eval_ema should be True")
+
     def eval_callback(step: StepInfo):
         if eval_current:
             with levanter.tracker.capture_time() as time_fn:
@@ -204,6 +207,9 @@ def cb_tagged_lm_evaluate(
             log_dict = _construct_log_dict(result, time_fn())
 
             levanter.tracker.log(log_dict, step=step.step)
+
+        if not eval_current and step.state.model_averaging is None:
+            raise ValueError("Cannot evaluate EMA model without model averaging, but you only want to evaluate EMA")
 
         if eval_ema and step.state.model_averaging is not None:
             with levanter.tracker.capture_time() as time_fn:
