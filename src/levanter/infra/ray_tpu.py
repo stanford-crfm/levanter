@@ -106,10 +106,12 @@ class TPUHeadNodeActor:
             logger.info("TPU job finished, with info", run_infos[0])
             return TpuSuccess(run_infos[0], results)
         except RayError as e:
-            logger.exception(f"Failed to run job on {self.pod_name}")
+            logger.exception(f"Ray error {e}. Killing futures for slice {self.pod_name}")
+            _cancel_all_futures(futures)
             return _handle_ray_error(run_infos[0], e)
         except Exception as e:
             logger.exception(f"Failed to run job on {self.pod_name}")
+            _cancel_all_futures(futures)
             raise RuntimeError(f"Failed to run job on {self.pod_name}") from e
         
     def cleanup(self):
@@ -194,6 +196,12 @@ class TPUWorkerActor:
             self.process = None
             self.queue = None
 
+def _cancel_all_futures(futures):
+    for f in futures:
+        try:
+            ray.cancel(f)
+        except Exception:
+            logger.exception("Failed to kill job after primary failure")
 
 def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts, **runtime_env):
     if not isinstance(remote_fn, RemoteFunction):
@@ -301,7 +309,17 @@ def run_on_pod_resumable(
             if all_succeeded:
                 logger.info("Success")
                 return results[0] if num_slices == 1 else results
-                
+        
+        except ray.exceptions.ActorUnavailableError as e:
+            problem = e
+            num_preemptions += 1
+            logger.warning(f"Preempted {num_preemptions} times, {e}")
+            continue
+        except ray.exceptions.ActorDiedError as e:
+            problem = e
+            num_preemptions += 1
+            logger.warning(f"Preempted {num_preemptions} times, {e}")
+            continue
         except ray.exceptions.RayTaskError as e:
             problem = e
             if "preempted" in str(e).lower():
@@ -385,9 +403,17 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
     if isinstance(e, NodeDiedError):
         logger.exception("Node died", exc_info=e)
         return TpuPreempted(tpu_info, e)
+    elif isinstance(e, ray.exceptions.ActorUnavailableError | ray.exceptions.ActorDiedError):
+        logger.exception("Actor died", exc_info=e)
+        return TpuPreempted(tpu_info, e)
     elif isinstance(e, WorkerCrashedError):
         logger.exception("Worker crashed", exc_info=e)
         return TpuPreempted(tpu_info, e)
+    
+    elif isinstance(e, RayTaskError):
+        logger.exception("Ray task error", exc_info=e)
+        return TpuPreempted(tpu_info, e)
+    
     elif isinstance(e, RaySystemError):
         logger.exception("System error", exc_info=e)
         return TpuRunError(tpu_info, e)

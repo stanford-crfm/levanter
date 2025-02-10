@@ -975,6 +975,34 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     }
 
 
+def mk_cached_sft_dataset(
+    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+) -> AsyncDataset[dict]:
+    """Creates a dataset from JSONL files containing chat format data for SFT."""
+    source = config.get_shard_source("train")
+    if source is None:
+        raise ValueError("No training data source found")
+
+    # Set up example structure matching supervised case
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+
+    input_ids = tokenizer("hi there")["input_ids"]
+    should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+    logger.info(f"Manual EOS Needed: {should_append_eos}")
+
+    # Process the dataset
+    dataset = source.map_batches(
+        lambda ex: preprocess_chat_example(ex, tokenizer, should_append_eos),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    # Cache the processed data
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+    return cached_dataset
+
+
 def mk_chat_sft_dataset(
     config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
 ) -> AsyncDataset[LmExample]:
@@ -1004,7 +1032,6 @@ def mk_chat_sft_dataset(
     # Ensure padding token is set (needed by _prepare_supervised_example)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
     # Reuse the supervised prepare function directly
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
@@ -1169,6 +1196,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ Dataset mixing weights. Either a constant dict[name->weight] or list of (step, weights) tuples """
 
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
+
+    # Configuration for Simulated Epoching
+    target_budget: Optional[int] = None
+    experiment_budget: Optional[int] = None
+
     mixture_block_size: int = 2048
     """ Block size for deterministic mixing """
 
@@ -1225,6 +1257,23 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             for name, ds in token_datasets.items():
                 out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
             token_datasets = out_token_datasets
+
+        if (
+            self.experiment_budget is not None and self.target_budget is not None
+        ) and self.experiment_budget > self.target_budget:
+            raise ValueError(
+                f"Experiment budget should be smaller than target budget, got {self.experiment_budget} >"
+                f" {self.target_budget}"
+            )
+        if self.experiment_budget is not None and self.target_budget is not None:
+            simulated_data_ratio = self.experiment_budget / self.target_budget
+            sliced_token_datasets: Dict[str, TokenSeqDataset] = {}
+            for name, ds in token_datasets.items():
+                # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
+                true_length_of_dataset = len(ds.as_sync_dataset())
+                simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
+                sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
+            token_datasets = sliced_token_datasets
 
         mixture = MixtureDataset(
             datasets=token_datasets,

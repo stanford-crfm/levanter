@@ -23,6 +23,7 @@ from haliax.jax_utils import is_jax_array_like
 
 import levanter.tracker
 from levanter.data import AsyncDataset, DataLoader
+from levanter.schedule import BatchSchedule
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.histogram import Histogram
 from levanter.tracker.wandb import WandbConfig
@@ -238,10 +239,13 @@ def wandb_xla_logger(config: WandbConfig):
 
 def log_performance_stats(
     tokens_per_example: int,
-    batch_size: int,
+    batch_schedule: int | BatchSchedule,
     flops_per_example: Optional[float] = None,
     prefix: Optional[str] = "throughput",
 ):
+    if isinstance(batch_schedule, int):
+        batch_schedule = BatchSchedule(batch_schedule)
+
     def wrap_key(key):
         if prefix:
             return f"{prefix}/{key}"
@@ -267,23 +271,26 @@ def log_performance_stats(
         levanter.tracker.log_summary({wrap_key("flops_per_example"): flops_per_example})
 
     def log_performance_stats(step_info: StepInfo):
-        dict_to_log = {}
+        dict_to_log: dict[str, float | int] = {}
 
         # log these totals because it's useful for comparing different seqlens, batch sizes, etc
-        total_tokens = tokens_per_example * batch_size * step_info.step
+        # TODO: if we add seqlen schedules this will get even more complex
+        this_batch_size = batch_schedule.batch_size_at_step(step_info.step)
+        total_examples = batch_schedule.global_data_offset_by_step(step_info.step + 1)
+        total_tokens = tokens_per_example * total_examples
         dict_to_log["total_tokens"] = total_tokens
 
         if flops_per_example:
-            total_flops = flops_per_example * batch_size * step_info.step
+            total_flops = flops_per_example * total_examples
             dict_to_log["total_gflops"] = total_flops / 1e9
 
         if step_info.step_duration != 0.0:
-            dict_to_log["examples_per_second"] = float(batch_size) / step_info.step_duration
-            dict_to_log["tokens_per_second"] = float(tokens_per_example) / step_info.step_duration * batch_size
+            dict_to_log["examples_per_second"] = float(this_batch_size) / step_info.step_duration
+            dict_to_log["tokens_per_second"] = float(tokens_per_example) / step_info.step_duration * this_batch_size
             dict_to_log["duration"] = step_info.step_duration
 
             if flops_per_example is not None:
-                model_flops_instant = flops_per_example / step_info.step_duration * batch_size
+                model_flops_instant = flops_per_example / step_info.step_duration * this_batch_size
                 dict_to_log["gflops_per_second"] = model_flops_instant / 1e9
 
                 if flops_per_device is not None:
