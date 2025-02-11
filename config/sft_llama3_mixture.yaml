@@ -1,0 +1,92 @@
+dataset_type: chat_jsonl
+
+# Config for mixture of supervised datasets
+supervised_data:
+  tulu:
+    cache_dir: "gs://marin-us-central2/tokenized/tulu_sft_v3_llama3_tokenizer-7b19dc"
+    train_urls:
+      - "gs://marin-us-central2/documents/allenai--tulu-v2-sft-mixture-0ba27c/data/**/*.jsonl.gz"
+  openthoughts:
+    cache_dir: "gs://marin-us-central2/tokenized/openthoughts_llama3_tokenizer-404700"
+    train_urls:
+      - "gs://marin-us-central2/documents/open-thoughts--OpenThoughts-114k-216e29/data/**/*.jsonl.gz"
+  prime_verified_math:
+    cache_dir: "gs://marin-us-central2/tokenized/prime_verified_math_llama3_tokenizer-9256ad"
+    train_urls:
+      - "gs://marin-us-central2/documents/PrimeIntellect--verifiable-math-problems-ae89bf/data/**/*.jsonl.gz"
+  acecode:
+    cache_dir: "gs://marin-us-central2/tokenized/acecode_llama3_tokenizer-9c2672"
+    train_urls:
+      - "gs://marin-us-central2/documents/TIGER-Lab--AceCode-89K-73bd59/data/**/*.jsonl.gz"
+  smoltalk:
+    cache_dir: "gs://marin-us-central2/tokenized/smoltalk_llama3_tokenizer-ad5792"
+    train_urls:
+      - "gs://marin-us-central2/documents/HuggingFaceTB--smoltalk-6190ae/data/**/*.jsonl.gz"
+    
+
+# Mixture weights (example weights - adjust based on your needs)
+mixture_weights:
+  tulu: 0.318
+  openthoughts: 0.037
+  prime_verified_math: 0.193
+  acecode: 0.013
+  smoltalk: 0.439
+
+mixture_block_size: 2048
+stop_strategy: restart
+
+max_seq_len: 4096
+tokenizer: "meta-llama/Meta-Llama-3.1-8B"
+model:  # 8B llama3 class model
+  type: llama
+  seq_len: 4096
+  hidden_dim: 4096
+  intermediate_dim: 14336
+  num_layers: 32
+  num_heads: 32
+  num_kv_heads: 8
+  use_flash_attention: True
+  flash_attention_block_size: 512
+  use_bias: false
+  use_layer_norm_weight: true
+  initializer_range: 0.02
+  rope:
+    type: "llama3"
+
+trainer:
+  seed: 2
+  tracker:
+    type: wandb
+    project: "marin"
+    tags: ["dolma", "olmo", "llama", "mixture"]
+  wandb:
+    project: "marin"
+    name: "llama3.1_tulu_openthoughts_mixture"
+
+  mp: p=f32,c=bfloat16
+  train_batch_size: 128
+  # Adjust steps based on combined dataset size and desired epochs
+  num_train_steps: 12197
+  steps_per_eval: 1000
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+  checkpointer:
+    base_path: "gs://levanter-checkpoints/marin/llama_3.1_mixture/seed_2/"
+
+optimizer:
+  learning_rate: 5e-6
+  weight_decay: 0.0
+  min_lr_ratio: 0.0
+  lr_schedule: "linear"
+  warmup: 0.03
+
+hf_save_steps: 4000
+hf_save_path: "gs://levanter-checkpoints/marin/llama_3.1_mixture/hf/seed_2/"
+
+initialize_from_hf: True
+model_name_or_path: "meta-llama/Llama-3.1-8B"
+
+messages_field: "messages"
+input_role: "user"
+output_role: "assistant" 
