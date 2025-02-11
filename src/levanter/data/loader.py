@@ -314,7 +314,7 @@ class DataLoaderIterator(Iterator[Ex]):
         and creates a global array for each leaf of the example.
         """
         cache: dict[tuple[int, int], list[Array | hax.NamedArray]] = {}
-        padded_batch_size = self.dl._round_batch_size(batch.global_size)
+        padded_batch_size = self.dl.rounded_batch_size_at_step(batch.index)
         Batch = hax.Axis(self.dl.batch_axis_name, padded_batch_size)
 
         def get_local_batch(begin: int, end: int) -> list:
