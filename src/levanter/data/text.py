@@ -1015,23 +1015,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     Optionally supports splitting training data into train/validation sets."""
 
     cache_dir: Optional[str] = "cache/"
-    split_fraction: Optional[float] = None
-    """If set, fraction of training data to use for training. Must be between 0 and 1.
-    The remainder will be used for validation. This overrides any existing validation set."""
-    split_key: PRNGKeyArray = field(default_factory=lambda: jax.random.PRNGKey(0))
-
-    def __post_init__(self):
-        if self.split_fraction is not None:
-            if not 0 < self.split_fraction < 1:
-                raise ValueError(f"split_fraction must be between 0 and 1, got {self.split_fraction}")
-
-            if self.split_key is None:
-                raise ValueError("split_key must be provided when split_fraction is set")
-
-            if self._has_validation_set:
-                logger.warning(
-                    "Dataset has an existing validation set - this will be ignored in favor of the split train set"
-                )
 
     def train_set(
         self,
@@ -1045,10 +1028,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         ds = self.token_seq_dataset("train", seq_len, monitors)
         if ds is None:
             raise ValueError("No training set!")
-
-        if self.split_fraction is not None:
-            ds = ds.shuffle(self.split_key)  # type: ignore
-            ds = ds.slice_proportionally(start_fraction=0, end_fraction=self.split_fraction)  # type: ignore
 
         if epochs:
             logger.info("Wrapping dataset in epoch dataset")
@@ -1064,15 +1043,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     def validation_set(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[AsyncDataset[np.ndarray]]:
-        if self.split_fraction is not None:
-            ds: Optional[TokenSeqDataset] = self.token_seq_dataset("train", seq_len, monitors)
-            if ds is None:
-                return None
-            ds = ds.shuffle(self.split_key)  # Use same key as train set for consistent split
-            ds = ds.slice_proportionally(start_fraction=self.split_fraction, end_fraction=1.0)  # type: ignore
-            return ds  # type: ignore
-        else:
-            return self.token_seq_dataset("validation", seq_len, monitors)
+        return self.token_seq_dataset("validation", seq_len, monitors)
 
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -1196,6 +1167,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     train_weights: Union[Dict[str, float], List[Tuple[int, Dict[str, float]]]] = field(default_factory=dict)
     """ Dataset mixing weights. Either a constant dict[name->weight] or list of (step, weights) tuples """
 
+    max_sequences_dict: Optional[Dict[str, int]] = None
+    """ Maximum number of sequences to use for each dataset. If None, no limit is applied. """
+
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
 
     # Configuration for Simulated Epoching
@@ -1275,6 +1249,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
                 sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             token_datasets = sliced_token_datasets
+
+        for name, ds in token_datasets.items():
+            if self.max_sequences_dict is not None and name in self.max_sequences_dict:
+                token_datasets[name] = ds.slice_dataset(end_index=self.max_sequences_dict[name])
 
         mixture = MixtureDataset(
             datasets=token_datasets,
