@@ -115,7 +115,7 @@ class DataLoader(Iterable[Ex]):
         with local_cpu_mesh():
             # It's important that all data loading happens CPU side. We might relax this one day.
             current_len = blocking_wait(self.data_store.current_len())
-            if current_len <= 0:
+            if current_len is not None and current_len <= 0:
                 logger.warning("Data store currently has no data. We will block until data is available.")
 
             initial_example = blocking_wait(self.data_store.getitem_async(0))
