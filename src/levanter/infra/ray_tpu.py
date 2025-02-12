@@ -8,7 +8,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from queue import Empty as QueueEmpty
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import draccus
 import mergedeep
@@ -75,7 +75,7 @@ class TPUHeadNodeActor:
     def get_info(self) -> Tuple[str, int, str]:
         return self.pod_name, self.num_hosts, self.ip
 
-    def run(self, remote_fn) -> _TpuRunResult:
+    def run(self, remote_fn: RemoteFunction | Callable) -> _TpuRunResult:
         if self.worker_actors is not None:
             raise RuntimeError("Actors already created")
         self.worker_actors = [TPUWorkerActor.remote() for _ in range(self.num_hosts)]
@@ -87,7 +87,7 @@ class TPUHeadNodeActor:
                     raise RuntimeError(f"Worker actor {i} returned invalid info: {info}")
             logger.info(f"Initialized worker slice actors {self.worker_actors}")
         except Exception as e:
-            self.cleanup()
+            self.cancel()
             raise RuntimeError("Failed to initialize worker actors") from e
 
         # Start process on all workers
@@ -108,18 +108,26 @@ class TPUHeadNodeActor:
             return TpuSuccess(run_infos[0], results)
         except RayError as e:
             logger.exception(f"Ray error {e}. Killing futures for slice {self.pod_name}")
-            _cancel_all_futures(futures)
+            for actor in self.worker_actors:
+                try:
+                    ray.get(actor.cancel.remote())
+                except Exception:
+                    logger.exception(f"Failed to kill worker actor {actor}")
             return _handle_ray_error(run_infos[0], e)
         except Exception as e:
             logger.exception(f"Failed to run job on {self.pod_name}")
-            _cancel_all_futures(futures)
+            for actor in self.worker_actors:
+                try:
+                    ray.get(actor.cancel.remote())
+                except Exception:
+                    logger.exception(f"Failed to kill worker actor {actor}")
             raise RuntimeError(f"Failed to run job on {self.pod_name}") from e
 
-    def cleanup(self) -> None:
+    def cancel(self) -> None:
         if self.worker_actors is not None:
             for actor in self.worker_actors:
                 try:
-                    ray.get(actor.cleanup.remote())
+                    ray.get(actor.cancel.remote())
                     ray.kill(actor)
                 except Exception:
                     logger.exception(f"Failed to kill worker actor {actor}")
@@ -180,7 +188,7 @@ class TPUWorkerActor:
             self.queue = None
         except QueueEmpty:
             logger.exception("Process timed out")
-            self.cleanup()
+            self.cancel()
             raise RuntimeError("Process timed out")
 
         if success:
@@ -189,21 +197,13 @@ class TPUWorkerActor:
             value.reraise()
             return None
 
-    def cleanup(self) -> None:
+    def cancel(self) -> None:
         logger.info(f"Cleaning up worker actor {self.pod_name}")
         if self.process is not None:
             self.process.terminate()
             self.process.join()
             self.process = None
             self.queue = None
-
-
-def _cancel_all_futures(futures) -> None:
-    for f in futures:
-        try:
-            ray.cancel(f)
-        except Exception:
-            logger.exception("Failed to kill job after primary failure")
 
 
 def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts, **runtime_env) -> Tuple[RemoteFunction, str]:
@@ -275,9 +275,9 @@ def run_on_pod_resumable_shared(
         infos_futures = [actor.get_info.remote() for actor in head_actors]
         try:
             infos = ray.get(infos_futures)
-            for info in infos:
+            for i, info in enumerate(infos):
                 if info[0] is None:
-                    raise RuntimeError(f"Worker actor {actor} returned invalid info: {info}")
+                    raise RuntimeError(f"Worker actor {i} returned invalid info: {info}")
 
             # Run the job on all slices
             run_futures = [actor.run.remote(remote_fn) for actor in head_actors]
@@ -330,9 +330,8 @@ def run_on_pod_resumable_shared(
             else:
                 num_failures += 1
                 logger.warning(f"Failed {num_failures} times", exc_info=e)
+                continue
         except Exception as e:
-            if "run_futures" in locals():
-                _cancel_all_futures(run_futures)
             problem = e
             num_failures += 1
             if num_failures >= max_retries_failure:
@@ -340,14 +339,15 @@ def run_on_pod_resumable_shared(
                 raise e
             else:
                 logger.warning(f"Failed {num_failures} times", exc_info=e)
+                continue
         finally:
             try:
                 # Kill all head actors
                 for actor in head_actors:
-                    ray.get(actor.cleanup.remote())
+                    ray.get(actor.cancel.remote())
                     ray.kill(actor)
             except Exception:
-                logger.exception("Failed to kill head actors during cleanup")
+                logger.exception("Failed to kill head actors during cancellation")
 
     if num_preemptions >= max_retries_preemption:
         raise RuntimeError("Preempted too many times") from problem
