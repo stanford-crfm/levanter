@@ -78,7 +78,7 @@ class TPUHeadNodeActor:
     def run(self, remote_fn: RemoteFunction | Callable) -> _TpuRunResult:
         if self.worker_actors is not None:
             raise RuntimeError("Actors already created")
-        self.worker_actors = [TPUWorkerActor.remote() for _ in range(self.num_hosts)]
+        self.worker_actors = [TPUWorkerActor.remote() for _ in range(self.num_hosts)]  # type: ignore[attr-defined]
         futures = [actor.get_info.remote() for actor in self.worker_actors]
         try:
             worker_infos = ray.get(futures)
@@ -260,7 +260,7 @@ def run_on_pod_resumable_shared(
     num_preemptions = 0
     attempt = 0
     problem: Exception | None = None
-    HeadNodeActor = TPUHeadNodeActor.options(resources={f"TPU-{tpu_type}-head": 1})
+    HeadNodeActor = TPUHeadNodeActor.options(resources={f"TPU-{tpu_type}-head": 1})  # type: ignore[attr-defined]
 
     while num_failures < max_retries_failure and num_preemptions < max_retries_preemption:
         logger.info(f"Running on TPU {tpu_type}. Attempt {attempt}")
