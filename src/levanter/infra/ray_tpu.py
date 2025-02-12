@@ -85,7 +85,7 @@ class TPUHeadNodeActor:
             for i, (actor, info) in enumerate(zip(self.worker_actors, worker_infos)):
                 if info[0] is None:
                     raise RuntimeError(f"Worker actor {i} returned invalid info: {info}")
-            logger.info(f"Initialized worker slice actors {self.worker_actors}")
+            logger.info(f"Initialized worker slice actors {worker_infos}")
         except Exception as e:
             self.cancel()
             raise RuntimeError("Failed to initialize worker actors") from e
@@ -208,10 +208,7 @@ class TPUWorkerActor:
 
 def _redecorate_remote_fn_for_tpu(remote_fn, num_hosts, **runtime_env) -> Tuple[RemoteFunction, str]:
     if not isinstance(remote_fn, RemoteFunction):
-        logger.info("CATHY log: decorating non remote function")
         remote_fn = ray.remote(remote_fn)
-    else:
-        logger.info("CATHY log: decorating remote function")
 
     tpu_name = ray.util.accelerators.tpu.get_current_pod_name()  # -> my-tpu
     num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()  # -> 8
