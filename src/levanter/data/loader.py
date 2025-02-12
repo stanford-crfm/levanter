@@ -109,6 +109,8 @@ class DataLoader(Iterable[Ex]):
         with mesh:
             self._data_axis_size = hax.partitioning.physical_axis_size(self.batch_axis_name, axis_resources)
 
+        assert self._data_axis_size is not None, "Data axis size must be known. Make sure you're passing in a mesh"
+
         self._allow_non_divisible_batch_size = allow_nondivisible_batch_size
         self._pad_final_batch = pad_final_batch
 
