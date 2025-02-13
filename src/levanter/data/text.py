@@ -1170,6 +1170,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     max_sequences_dict: Optional[Dict[str, int]] = None
     """ Maximum number of sequences to use for each dataset. If None, no limit is applied. """
 
+    num_validation_sequences_dict: Optional[Dict[str, int]] = None
+    """ Number of validation sequences to use for each dataset. If None, no limit is applied. """
+
     stop_strategy: str = field(default=StopStrategy.RESTART_STRATEGY)
 
     # Configuration for Simulated Epoching
@@ -1250,12 +1253,26 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             token_datasets = sliced_token_datasets
 
+        train_token_datasets = {}
         for name, ds in token_datasets.items():
             if self.max_sequences_dict is not None and name in self.max_sequences_dict:
-                token_datasets[name] = ds.slice_dataset(end_index=self.max_sequences_dict[name])
+                train_token_datasets[name] = ds.slice_dataset(end_index=self.max_sequences_dict[name])
+
+        self.validation_token_datasets = {}
+        for name, ds in token_datasets.items():
+            if self.num_validation_sequences_dict is not None and name in self.num_validation_sequences_dict:
+                len_dataset = len(ds.as_sync_dataset())
+                self.validation_token_datasets[name] = ds.slice_dataset(
+                    start_index=len_dataset - self.num_validation_sequences_dict[name], end_index=len_dataset
+                )
+                assert (
+                    self.max_sequences_dict is not None and name in self.max_sequences_dict
+                ), f"Dataset {name} is not in max_sequences_dict"
+                if len_dataset < self.max_sequences_dict[name] + self.num_validation_sequences_dict[name]:
+                    raise ValueError(f"Dataset {name} is too small to supply unique training and validation sets")
 
         mixture = MixtureDataset(
-            datasets=token_datasets,
+            datasets=train_token_datasets,
             weights=self.train_weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
@@ -1274,8 +1291,16 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     def validation_sets(
         self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+        logger.info("Building validation sets")
         doc_caches = self.build_caches("validation", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+        if self.num_validation_sequences_dict is not None:
+            logger.info("Uploading new validation sets from the training set")
+            for name, ds in self.validation_token_datasets.items():
+                logger.info(f"Uploading new validation set from the training set for {name}")
+                if name in token_datasets:
+                    logger.warning(f"Overwriting existing validation set for {name}")
+                token_datasets[name] = ds
         return token_datasets
 
     def build_caches(
