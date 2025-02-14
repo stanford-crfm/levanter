@@ -137,8 +137,8 @@ def test_merge_lora():
         @staticmethod
         def init(*, key):
             k1, k2 = jax.random.split(key)
-            first = hnn.Linear.init(In, Mid, key=k1)
-            second = hnn.Linear.init(Mid, In, key=k2)
+            first = hnn.Linear.init(In, Mid, key=k1, init_scale=0.02)
+            second = hnn.Linear.init(Mid, In, key=k2, init_scale=0.02)
             return Module(first, second)
 
     Layers = hax.Axis("Layers", 2)

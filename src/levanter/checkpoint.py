@@ -26,6 +26,7 @@ import haliax.partitioning
 from haliax.jax_utils import is_in_jit, is_jax_array_like
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
+from levanter.utils import fsspec_utils
 from levanter.utils.types import FilterSpec
 
 
@@ -596,4 +597,12 @@ class CheckpointerConfig:
             prev_interval = interval
 
 
-# TODO: add partial checkpoint loading
+def is_checkpoint_path(path: str) -> bool:
+    """
+    Check if a given path is a checkpoint path.
+    """
+    try:
+        return fsspec_utils.exists(path)
+    except Exception:  # noqa
+        logger.exception(f"Error checking if {path} is a checkpoint path")
+        raise
