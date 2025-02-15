@@ -1284,6 +1284,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         for name, ds in token_datasets.items():
             if self.max_sequences_dict is not None and name in self.max_sequences_dict:
                 train_token_datasets[name] = ds.slice_dataset(end_index=self.max_sequences_dict[name])
+            else:
+                train_token_datasets[name] = ds
 
         self.validation_token_datasets = {}
         for name, ds in token_datasets.items():
