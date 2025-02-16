@@ -133,8 +133,6 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        # TODO: fix this
-        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
         # TokenSeqDataset is config.data.train_set(Pos.size, key=data_key)
 
         train_dataset = CausalLmDataset(
@@ -144,6 +142,9 @@ def main(config: TrainLmConfig):
             ignore_index=config.data.ignore_token_id,
             eos_id=tokenizer.eos_token_id,
         )
+
+        # TODO: fix this
+        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
 
         # add epoch logging if epochs specified
         if config.epoch > 0:

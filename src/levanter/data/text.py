@@ -1177,6 +1177,12 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     mixture_block_size: int = 2048
     """ Block size for deterministic mixing """
 
+    max_sequences_dict: Optional[Dict[str, int]] = None
+    """ Maximum number of sequences to use from each dataset for training """
+
+    num_validation_sequences_dict: Optional[Dict[str, int]] = None
+    """ Number of validation sequences to sample from the training set for each dataset """
+
     def __post_init__(self):
         if len(self.configs) == 0:
             raise ValueError("At least one dataset must be provided")
@@ -1206,6 +1212,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
 
+        if self.experiment_budget is not None or self.target_budget is not None:
+            raise ValueError("Do not support experiment budget or target budget for now")
+
         if epochs:
             raise ValueError("Epochs are not supported for mixture datasets")
 
@@ -1231,25 +1240,27 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
             token_datasets = out_token_datasets
 
-        if (
-            self.experiment_budget is not None and self.target_budget is not None
-        ) and self.experiment_budget > self.target_budget:
-            raise ValueError(
-                f"Experiment budget should be smaller than target budget, got {self.experiment_budget} >"
-                f" {self.target_budget}"
-            )
-        if self.experiment_budget is not None and self.target_budget is not None:
-            simulated_data_ratio = self.experiment_budget / self.target_budget
-            sliced_token_datasets: Dict[str, TokenSeqDataset] = {}
+        train_token_datasets = {}
+        if self.max_sequences_dict is not None:
             for name, ds in token_datasets.items():
-                # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
-                true_length_of_dataset = len(ds.as_sync_dataset())
-                simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
-                sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
-            token_datasets = sliced_token_datasets
+                if name in self.max_sequences_dict:
+                    train_token_datasets[name] = ds.slice_dataset(end_index=self.max_sequences_dict[name])
+                else:
+                    train_token_datasets[name] = ds
+
+        self.validation_token_datasets = {}
+        for name, ds in token_datasets.items():
+            if self.num_validation_sequences_dict is not None and name in self.num_validation_sequences_dict:
+                len_dataset = len(ds.as_sync_dataset())
+                self.validation_token_datasets[name] = ds.slice_dataset(
+                    start_index=len_dataset - self.num_validation_sequences_dict[name], end_index=len_dataset
+                )
+                if self.max_sequences_dict is not None and name in self.max_sequences_dict:
+                    if len_dataset < self.max_sequences_dict[name] + self.num_validation_sequences_dict[name]:
+                        raise ValueError(f"Dataset {name} is too small to supply unique training and validation sets")
 
         mixture = MixtureDataset(
-            datasets=token_datasets,
+            datasets=train_token_datasets,
             weights=self.train_weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
@@ -1270,6 +1281,15 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     ) -> Mapping[str, AsyncDataset[np.ndarray]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+
+        if self.num_validation_sequences_dict is not None:
+            logger.info("Uploading new validation sets from the training set")
+            for name, ds in self.validation_token_datasets.items():
+                logger.info(f"Uploading new validation set from the training set for {name}")
+                if name in token_datasets:
+                    logger.warning(f"Overwriting existing validation set for {name}")
+                token_datasets[name] = ds
+
         return token_datasets
 
     def build_caches(
