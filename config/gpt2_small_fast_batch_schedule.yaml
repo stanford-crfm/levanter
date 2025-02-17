@@ -18,16 +18,11 @@ trainer:
   per_device_parallelism: -1
 
   train_batch_size:
-    - until: 10
-      value: 7
-    - until: 50
-      value: 39
     - until: 1000
       value: 128
     - until: -1
       value: 256
   num_train_steps: 20000
-  allow_nondivisible_batch_size: true
 
 #  tensor_parallel_axes: ["position", "key_position"]
 #  tensor_parallel_axes: ["heads", "mlp"]
