@@ -37,7 +37,6 @@ from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M,
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
-from levanter.data.loader import _round_to_nearest_multiple
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.optim.model_averaging import ModelAveragingConfig
@@ -516,7 +515,6 @@ class Trainer:
             axis_resources=self.compute_axis_mapping,
             prefetch_size=32,
             batch_axis_name=batch_name,
-            allow_nondivisible_batch_size=self.config.allow_nondivisible_batch_size,
         )
 
     @cached_property
@@ -637,13 +635,6 @@ class TrainerConfig:
 
     per_device_eval_parallelism: int = -1
     """how many examples to process in parallel on each device. -1 (default) means same as per_device_parallelism"""
-
-    allow_nondivisible_batch_size: bool = False
-    """
-    Allow batch sizes to be non-divisible by the number of devices (or data axis size).
-
-    This is typically used when you want a specific batch size but have a weird number of devices.
-    """
 
     # Config related to duration
     num_train_steps: int = 400_000  # number of training steps
@@ -888,10 +879,8 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             if self.per_device_parallelism == -1:
-                tbs = max(levanter.schedule.distinct_values(self.train_batch_size))
-                self.per_device_eval_parallelism = (
-                    _round_to_nearest_multiple(tbs, self.data_axis_size) // self.data_axis_size
-                )
+                initial_train_batch_size = value_at_step(self.train_batch_size, 0)
+                self.per_device_eval_parallelism = initial_train_batch_size // self.data_axis_size
             else:
                 self.per_device_eval_parallelism = self.per_device_parallelism
 

@@ -57,7 +57,7 @@ class TrainerState(eqx.Module, Generic[M]):
     is_trainable: FilterTree = eqx.field(static=True)
     mp: jmp.Policy = eqx.field(static=True)
 
-    model_averaging: ModelAveraging[M]
+    model_averaging: ModelAveraging[M] | None = None
 
     @property
     def int_step(self) -> int:
@@ -224,7 +224,6 @@ def take_train_step(
     train_grads = trainables_only(grads, is_trainable)
     overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
-    _, trainable_model = partition_for_grad_overwrite(trainable_model)
     updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
     model = apply_updates(model, updates, overwrites)
 

@@ -42,12 +42,6 @@ def validate_schedule_sorted(schedule: Sequence[ScheduleStep[T]]):
             raise ValueError(f"Schedule is not sorted at index {i}")
 
 
-def distinct_values(schedule: Sequence[ScheduleStep[T]] | T) -> set[T]:
-    if not isinstance(schedule, Sequence) or (schedule and not isinstance(schedule[0], ScheduleStep)):
-        return {schedule}  # type: ignore
-    return set(step.value for step in schedule)
-
-
 @dataclass
 class BatchSegment:
     start: int  # The training step at which this batch size starts.
@@ -127,6 +121,3 @@ class BatchSchedule:
         last = self.segments[-1]
         base = last.offset + (bn - last.start) * last.value
         return range(base, base + last.value)
-
-    def unique_batch_sizes(self):
-        return set(seg.value for seg in self.segments)
