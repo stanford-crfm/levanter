@@ -20,10 +20,10 @@ from levanter.callbacks import StepInfo
 from levanter.checkpoint import (
     Checkpointer,
     CheckpointInterval,
+    _load_metadata,
     discover_latest_checkpoint,
     load_checkpoint,
     load_checkpoint_or_initialize,
-    load_metadata,
     save_checkpoint,
 )
 from levanter.trainer_state import TrainerState
@@ -49,7 +49,7 @@ def _dummy_step_info(step):
 
 def _get_checkpoint_steps(checkpoint_dir):
     paths = list(pathlib.Path(checkpoint_dir).iterdir())
-    return sorted([load_metadata(f)["step"] for f in paths])
+    return sorted([_load_metadata(f)["step"] for f in paths])
 
 
 def test_checkpointer_changing_policy():
@@ -245,6 +245,72 @@ def test_checkpoint_discovery():
         assert latest == f"{tempdir}/step-30"
 
         assert discover_latest_checkpoint("file:///tmp/does-not-exist") is None
+
+
+def test_checkpointer_deletes_previous_checkpoints():
+    fake_now = datetime.datetime(2021, 1, 1, 0, 0, 0)
+
+    tick = 10
+
+    def advance_time(delta_seconds):
+        nonlocal fake_now
+        fake_now += timedelta(seconds=delta_seconds)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpointer = Checkpointer(
+            tmpdir,
+            timedelta(seconds=tick),
+            [
+                CheckpointInterval(every=5, until=20),
+                CheckpointInterval(every=10, until=None),
+            ],
+            dt_now_injection=lambda: fake_now,
+        )
+
+        checkpointer.on_step(_dummy_step_info(0))
+        advance_time(tick)
+        for i in range(1, 6):
+            checkpointer.on_step(_dummy_step_info(i))
+        checkpointer.wait_until_finished()
+        assert _get_checkpoint_steps(tmpdir) == [5]
+        advance_time(tick)
+        checkpointer.on_step(_dummy_step_info(6))
+        checkpointer.wait_until_finished()
+        assert _get_checkpoint_steps(tmpdir) == [5, 6]
+
+        # now make a new one and ensure it deletes the old one
+        checkpointer = Checkpointer(
+            tmpdir,
+            timedelta(seconds=tick),
+            [
+                CheckpointInterval(every=5, until=20),
+                CheckpointInterval(every=10, until=None),
+            ],
+            dt_now_injection=lambda: fake_now,
+        )
+
+        checkpointer.on_step(_dummy_step_info(7))
+        advance_time(tick)
+        checkpointer.on_step(_dummy_step_info(8))
+        checkpointer.wait_until_finished()
+        assert _get_checkpoint_steps(tmpdir) == [5, 8]
+
+        # now make sure if we don't enable deleting old checkpoints, it doesn't delete them
+        checkpointer = Checkpointer(
+            tmpdir,
+            timedelta(seconds=tick),
+            [
+                CheckpointInterval(every=20, until=None),
+            ],
+            dt_now_injection=lambda: fake_now,
+            delete_old_temp_checkpoints=False,
+        )
+
+        checkpointer.on_step(_dummy_step_info(9))
+        advance_time(tick)
+        checkpointer.on_step(_dummy_step_info(10))
+        checkpointer.wait_until_finished()
+        assert _get_checkpoint_steps(tmpdir) == [5, 8, 10]
 
 
 def test_load_from_checkpoint_or_initialize():
