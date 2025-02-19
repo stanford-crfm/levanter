@@ -346,7 +346,7 @@ class RobertaSelfAttention(eqx.Module, StateDictSerializationMixin):
         # seem a bit unusual, but is taken from the original Transformer paper.
         attention_probs = self.dropout(attention_probs, key=key)
 
-        hax.dot(query_layer, key_layer, axis=self.HeadSize)
+        # hax.dot(query_layer, key_layer, axis=self.HeadSize)
 
         context_layer = hax.dot(attention_probs, value_layer, axis=self.KeyPos)
         
