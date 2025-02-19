@@ -157,12 +157,20 @@ class MixtureDataset(AsyncDataset[T]):
         return unpermuted_ids
 
     @staticmethod
-    def _normalize_weights(weights: dict[str, float]):
+    def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
         """Normalize the weights to sum to 1"""
         total = sum(weights.values())
         if total == 0:
             raise ValueError(f"Datasets' weights cannot sum to 0, got {weights}")
-        return {name: weight / total for name, weight in weights.items() if weight > 0}
+
+        out_weights = {}
+        for name, weight in weights.items():
+            if weight < 0:
+                raise ValueError(f"Dataset weights cannot be negative, got {weights}")
+            elif weight > 0:
+                out_weights[name] = weight / total
+
+        return out_weights
 
     async def async_len(self) -> int:
         if self.stop_strategy == StopStrategy.RESTART_STRATEGY:
