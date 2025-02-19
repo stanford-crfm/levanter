@@ -44,6 +44,8 @@ from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_c
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
+from fsspec import AbstractFileSystem
+
 
 silence_transformer_nag()
 from transformers import (  # noqa: E402
@@ -435,10 +437,20 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return ref.model_name_or_path, ref.revision
 
     def load_state_dict(self, ref: Optional[Union[str, RepoRef]] = None, dtype: Optional[jnp.dtype] = None) -> dict:
+        """Load a state dict from either HF Hub or a GCS path"""
         if ref is None:
             ref = self.reference_checkpoint
         if ref is None:
             raise ValueError("Must provide a checkpoint to load from")
+
+        logger.info("\ncall load state dict")
+        logger.info(f" type of ref {type(ref)}")
+        logger.info(f"ref starts with  {ref.startswith('gs://')}")
+        logger.info(f" ref is {ref}")
+        # Handle GCS paths directly
+        if isinstance(ref, str) and ref.startswith("gs://"):
+            logger.info(f"\n\n loading hf from GCS! \n\n")
+            return self._load_from_gcs(ref, dtype)
 
         id, rev = self._get_ref(ref)
 
@@ -497,6 +509,52 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 final_state_dict.update(shard_state_dict)
 
         return final_state_dict
+
+    def _load_from_gcs(self, gcs_path: str, dtype: Optional[jnp.dtype] = None) -> dict:
+        """Load a state dict from a GCS path"""
+        fs: AbstractFileSystem
+        fs, path = fsspec.core.url_to_fs(gcs_path)
+
+        # First try to load sharded checkpoint
+        for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
+            index_path = os.path.join(path, index_file)
+            if fs.exists(index_path):
+                with fs.open(index_path, "r") as f:
+                    index = json.load(f)
+                
+                shard_files = list(set(index["weight_map"].values()))
+                final_state_dict = {}
+
+                if "safetensors" in index_file:
+                    loader = _load_safe_tensors
+                else:
+                    loader = _load_torch
+
+                for shard_file in shard_files:
+                    shard_path = os.path.join(path, shard_file)
+                    if not fs.exists(shard_path):
+                        raise FileNotFoundError(f"Shard file {shard_path} not found")
+                    
+                    # Download shard to temporary file
+                    with tempfile.NamedTemporaryFile() as tmp:
+                        fs.get(shard_path, tmp.name)
+                        shard_state_dict = loader(tmp.name, dtype)
+                        final_state_dict.update(shard_state_dict)
+
+                return final_state_dict
+
+        # If no index file found, try loading single file checkpoint
+        for model_file in [SAFE_TENSORS_MODEL, PYTORCH_MODEL]:
+            model_path = os.path.join(path, model_file)
+            if fs.exists(model_path):
+                with tempfile.NamedTemporaryFile() as tmp:
+                    fs.get(model_path, tmp.name)
+                    if model_file == SAFE_TENSORS_MODEL:
+                        return _load_safe_tensors(tmp.name, dtype)
+                    else:
+                        return _load_torch(tmp.name, dtype)
+
+        raise FileNotFoundError(f"No checkpoint files found in {gcs_path}")
 
     def load_pretrained(
         self,
