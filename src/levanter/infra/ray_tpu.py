@@ -21,7 +21,6 @@ from ray.remote_function import RemoteFunction
 from levanter.infra.docker import make_docker_run_command
 from levanter.utils.ray_utils import ser_exc_info
 
-
 # CF https://gist.github.com/allenwang28/e3400b9e9212b50aa1cda55ebeccea60
 
 logger = logging.getLogger("ray")
@@ -78,15 +77,22 @@ class TPUHeadNodeActor:
     def run(self, remote_fn: RemoteFunction | Callable) -> _TpuRunResult:
         if self.worker_actors is not None:
             raise RuntimeError("Actors already created")
-        self.worker_actors = [TPUWorkerActor.remote() for _ in range(self.num_hosts)]  # type: ignore[attr-defined]
+
+        tpu_name = ray.util.accelerators.tpu.get_current_pod_name()
+        num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()
+        self.worker_actors = [
+            TPUWorkerActor.options(resources={tpu_name: 1, "TPU": num_tpus_per_host}).remote()
+            for _ in range(self.num_hosts)
+        ]
         futures = [actor.get_info.remote() for actor in self.worker_actors]
         try:
             worker_infos = ray.get(futures)
             for i, (actor, info) in enumerate(zip(self.worker_actors, worker_infos)):
-                if info[0] is None:
+                if info[2] is None:
                     raise RuntimeError(f"Worker actor {i} returned invalid info: {info}")
-            logger.info(f"Initialized worker slice actors {worker_infos}")
+            logger.info(f"Initialized worker actors {worker_infos}")
         except Exception as e:
+            logger.exception("Failed to initialize worker actors with error", exc_info=e)
             self.cancel()
             raise RuntimeError("Failed to initialize worker actors") from e
 
@@ -100,7 +106,7 @@ class TPUHeadNodeActor:
             for actor, info in zip(self.worker_actors, run_infos):
                 if not isinstance(info, _TpuInfo):
                     raise RuntimeError(f"Worker actor {actor} returned invalid info: {info}")
-
+            logger.info(f"Worker actor infos {run_infos}")
             wait_futures = [actor.wait.remote() for actor in self.worker_actors]
             results = ray.get(wait_futures)
 
@@ -108,19 +114,11 @@ class TPUHeadNodeActor:
             return TpuSuccess(run_infos[0], results)
         except RayError as e:
             logger.exception(f"Ray error {e}. Killing futures for slice {self.pod_name}")
-            for actor in self.worker_actors:
-                try:
-                    ray.get(actor.cancel.remote())
-                except Exception:
-                    logger.exception(f"Failed to kill worker actor {actor}")
+            self.cancel()
             return _handle_ray_error(run_infos[0], e)
         except Exception as e:
             logger.exception(f"Failed to run job on {self.pod_name}")
-            for actor in self.worker_actors:
-                try:
-                    ray.get(actor.cancel.remote())
-                except Exception:
-                    logger.exception(f"Failed to kill worker actor {actor}")
+            self.cancel()
             raise RuntimeError(f"Failed to run job on {self.pod_name}") from e
 
     def cancel(self) -> None:
@@ -275,6 +273,7 @@ def run_on_pod_resumable_shared(
             for i, info in enumerate(infos):
                 if info[0] is None:
                     raise RuntimeError(f"Worker actor {i} returned invalid info: {info}")
+            logger.info(f"Initialized worker slice actors {infos}")
 
             # Run the job on all slices
             run_futures = [actor.run.remote(remote_fn) for actor in head_actors]
@@ -340,6 +339,7 @@ def run_on_pod_resumable_shared(
         finally:
             try:
                 # Kill all head actors
+                logger.info(f"Cancelling head actors {head_actors}")
                 for actor in head_actors:
                     ray.get(actor.cancel.remote())
                     ray.kill(actor)
