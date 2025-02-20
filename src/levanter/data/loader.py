@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import logging
 import time
@@ -416,7 +417,7 @@ class DataLoaderIterator(Iterator[Ex]):
         indices_for_this_batch_of_batches: list[int] = [
             i for indices in global_indices_for_each_batch for i in indices
         ]
-        individual_datums = await self.dl.data_store.get_batch(indices_for_this_batch_of_batches)
+        individual_datums = await self._fetch_with_logging(indices_for_this_batch_of_batches)
 
         # unflatten
         global_map: dict[int, Ex] = {}
@@ -441,6 +442,26 @@ class DataLoaderIterator(Iterator[Ex]):
             return PartitionSpec(batch_name, *((None,) * (len(shape_spec.shape) - 1)))
         else:
             return hax.partitioning.pspec_for_axis(shape_spec.shape, self.dl.axis_resources)  # type: ignore
+
+    async def _fetch_with_logging(self, indices):
+        threshold = 10.0
+        task = asyncio.create_task(self.dl.data_store.get_batch(indices))  # Start fetch
+
+        async def watchdog():
+
+            while not task.done():
+                await asyncio.sleep(threshold)
+                if not task.done():
+                    logging.warning(f"Fetching data is taking longer than {threshold} seconds...")
+                    logging.warning(f"Indices: {indices}")
+
+        watchdog_task = asyncio.create_task(watchdog())  # Start watchdog
+
+        try:
+            result = await task  # Wait for actual result
+            return result
+        finally:
+            watchdog_task.cancel()  #
 
 
 def _make_dummy_instance(batch, Pos):

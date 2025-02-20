@@ -190,7 +190,7 @@ async def test_mixture_dataset_samples_all_elements():
 
 def test_rescale_mixture_schedule_for_batch_schedule():
     mixture_schedule = [(0, {"ds1": 0.5, "ds2": 0.5}), (10, {"ds1": 0.2, "ds2": 0.8})]
-    batch_schedule = BatchSchedule([ScheduleStep(until=5, value=10), ScheduleStep(until=-1, value=20)])
+    batch_schedule = BatchSchedule([ScheduleStep(start=0, value=10), ScheduleStep(start=5, value=20)])
 
     rescaled_schedule = rescale_mixture_schedule_for_batch_schedule(mixture_schedule, batch_schedule)
 
@@ -198,11 +198,10 @@ def test_rescale_mixture_schedule_for_batch_schedule():
     assert rescaled_schedule == expected_schedule
 
     # double check changing on the cusp
-    batch_schedule = BatchSchedule([ScheduleStep(until=10, value=10), ScheduleStep(until=-1, value=20)])
+    batch_schedule = BatchSchedule([ScheduleStep(start=0, value=10), ScheduleStep(start=10, value=20)])
 
     rescaled_schedule = rescale_mixture_schedule_for_batch_schedule(mixture_schedule, batch_schedule)
 
     expected_schedule = [(0, {"ds1": 0.5, "ds2": 0.5}), (100, {"ds1": 0.2, "ds2": 0.8})]
 
     assert rescaled_schedule == expected_schedule
-

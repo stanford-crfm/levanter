@@ -681,7 +681,7 @@ class TrainerConfig:
         return Axis(self.batch_axis, self.train_batch_size)
 
     @cached_property
-    def batch_scheduler(self):
+    def batch_schedule(self):
         return BatchSchedule(self.train_batch_size)
 
     def batch_axis_at_step(self, step: int) -> Axis:
