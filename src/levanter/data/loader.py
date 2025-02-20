@@ -215,9 +215,23 @@ class DataLoader(Iterable[Ex]):
         return self.data_store.is_finite()
 
     def __len__(self):
+        """
+        Returns the number of batches in the dataset under the given schedule.
+
+        If the dataset is not finite, this will raise a ValueError.
+        """
         if not self.has_len():
             raise ValueError("DataLoader has no length")
-        return blocking_wait(self.data_store.async_len())
+        total_len = blocking_wait(self.data_store.async_len())
+
+        step_with_len = self.scheduler.find_step_containing_offset(total_len)
+        if self._pad_final_batch:
+            total_at_step = self.scheduler.global_data_offset_by_step(step_with_len + 1)
+
+            if total_len < total_at_step:
+                return step_with_len + 1
+
+        return step_with_len
 
 
 class DataLoaderIterator(Iterator[Ex]):
