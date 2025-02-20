@@ -370,7 +370,7 @@ class TaggedEvaluator:
         iterator = LoadingTimeTrackerIterator(self.loader)
         n = 0
 
-        for batch, tags in tqdm(iterator, "eval"):
+        for batch, tags in tqdm(iterator, "eval", total=len(self.loader)):
             state = self.accum_for_batch(m, state, batch, tags)
             n += 1
 

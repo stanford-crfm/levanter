@@ -211,6 +211,14 @@ class DataLoader(Iterable[Ex]):
         start_from_batch = int(start_from_batch) if start_from_batch is not None else None
         return DataLoaderIterator(self, start_from_batch=start_from_batch)
 
+    def has_len(self):
+        return self.data_store.is_finite()
+
+    def __len__(self):
+        if not self.has_len():
+            raise ValueError("DataLoader has no length")
+        return blocking_wait(self.data_store.async_len())
+
 
 class DataLoaderIterator(Iterator[Ex]):
     def __init__(self, data_loader: DataLoader, start_from_batch: Optional[int] = None):
@@ -252,6 +260,9 @@ class DataLoaderIterator(Iterator[Ex]):
             max_achievable_batch_number, final_batch_size = await self._dataset_get_available_batch_number(
                 target_next_batch_number
             )
+
+            assert batch_number <= max_achievable_batch_number <= target_next_batch_number
+
             if max_achievable_batch_number < target_next_batch_number:
                 done = True
             else:
@@ -295,7 +306,9 @@ class DataLoaderIterator(Iterator[Ex]):
         """
         if self.dl.data_store.is_finite():
             next_end = self.dl.scheduler.global_data_offset_by_step(target_max_batch_number)
+            logger.info(f"waiting for {next_end}")
             available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
+            logger.info(f"for {next_end} got {available_len}")
 
             at_the_end = available_len < next_end
 
@@ -304,12 +317,16 @@ class DataLoaderIterator(Iterator[Ex]):
                 # TODO: we could be much smarter about this but unlikely to be a bottle neck
                 target_max_batch_number -= 1
                 next_end = self.dl.scheduler.global_data_offset_by_step(target_max_batch_number)
+                logger.info(
+                    f"Bumping down to {target_max_batch_number} and got {next_end}. Need to get to {available_len}"
+                )
                 if target_max_batch_number < 0:
                     raise ValueError("No data available")
 
             # if we are padding the final batch, we want to see if there is data past the end of the last batch
             if at_the_end and self.dl._pad_final_batch and next_end < available_len:
                 partial_batch_size = available_len - next_end
+                logger.info(f"Partial batch size: {partial_batch_size}")
                 return target_max_batch_number + 1, partial_batch_size
 
         return target_max_batch_number, None
@@ -445,7 +462,7 @@ class DataLoaderIterator(Iterator[Ex]):
 
     async def _fetch_with_logging(self, indices):
         threshold = 10.0
-        task = asyncio.create_task(self.dl.data_store.get_batch(indices))  # Start fetch
+        task = asyncio.create_task(self.dl.data_store.get_batch(indices))
 
         async def watchdog():
 
@@ -455,13 +472,13 @@ class DataLoaderIterator(Iterator[Ex]):
                     logging.warning(f"Fetching data is taking longer than {threshold} seconds...")
                     logging.warning(f"Indices: {indices}")
 
-        watchdog_task = asyncio.create_task(watchdog())  # Start watchdog
+        watchdog_task = asyncio.create_task(watchdog())
 
         try:
-            result = await task  # Wait for actual result
+            result = await task
             return result
         finally:
-            watchdog_task.cancel()  #
+            watchdog_task.cancel()
 
 
 def _make_dummy_instance(batch, Pos):
