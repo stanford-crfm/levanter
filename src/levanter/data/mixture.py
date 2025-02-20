@@ -11,6 +11,7 @@ from jaxtyping import PRNGKeyArray
 from haliax.util import StringHolderEnum
 
 from levanter.data import AsyncDataset
+from levanter.schedule import BatchSchedule, IntSchedule
 from levanter.utils.index import Index
 from levanter.utils.thread_utils import future_from_value
 
@@ -298,3 +299,32 @@ def _compute_block_assignment(base_ids, index, key):
     rng = jax.random.fold_in(key, index)
     permuted_ids = jax.random.permutation(rng, base_ids)
     return permuted_ids
+
+
+def rescale_mixture_schedule_for_batch_schedule(
+        mixture_schedule: Sequence[Tuple[int, dict[str, float]]],
+        batch_schedule: BatchSchedule) -> List[Tuple[int, dict[str, float]]]:
+    """
+    Rescale the mixture schedule to match the batch schedule. MixtureDataset expects the mixture schedule to be in terms
+     of example indices, but the batch schedule is in terms of batch indices/steps. So, given a mixture schedule
+     that is in terms of *batch* indices, this function will rescale it to be in terms of example indices suitable for
+        MixtureDataset.
+
+    Args:
+        mixture_schedule: The mixture schedule to rescale
+        batch_schedule: The batch schedule to rescale to
+
+    Returns:
+        The rescaled mixture schedule in terms of example indices
+    """
+
+    # for each step in mixture_schedule, we want to compute its data offset in the batch schedule
+    out = []
+    for step, weights in mixture_schedule:
+        # find the batch index that corresponds to this step
+        data_offset = batch_schedule.global_data_offset_by_step(step)
+        out.append((data_offset, weights))
+
+    return out
+
+

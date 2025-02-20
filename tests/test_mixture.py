@@ -3,7 +3,8 @@ import numpy as np
 import pytest
 
 from levanter.data import ListAsyncDataset, MixtureDataset
-from levanter.data.mixture import StopStrategy
+from levanter.data.mixture import StopStrategy, rescale_mixture_schedule_for_batch_schedule
+from levanter.schedule import BatchSchedule, ScheduleStep
 
 
 def datasets():
@@ -185,3 +186,23 @@ async def test_mixture_dataset_samples_all_elements():
 
     assert len(samples) == num_samples
     assert set(samples) == {1, 2, 3, 4, 5, 10, 20, 30, 40, 50, 100, 200, 300, 400, 500}
+
+
+def test_rescale_mixture_schedule_for_batch_schedule():
+    mixture_schedule = [(0, {"ds1": 0.5, "ds2": 0.5}), (10, {"ds1": 0.2, "ds2": 0.8})]
+    batch_schedule = BatchSchedule([ScheduleStep(until=5, value=10), ScheduleStep(until=-1, value=20)])
+
+    rescaled_schedule = rescale_mixture_schedule_for_batch_schedule(mixture_schedule, batch_schedule)
+
+    expected_schedule = [(0, {"ds1": 0.5, "ds2": 0.5}), (150, {"ds1": 0.2, "ds2": 0.8})]
+    assert rescaled_schedule == expected_schedule
+
+    # double check changing on the cusp
+    batch_schedule = BatchSchedule([ScheduleStep(until=10, value=10), ScheduleStep(until=-1, value=20)])
+
+    rescaled_schedule = rescale_mixture_schedule_for_batch_schedule(mixture_schedule, batch_schedule)
+
+    expected_schedule = [(0, {"ds1": 0.5, "ds2": 0.5}), (100, {"ds1": 0.2, "ds2": 0.8})]
+
+    assert rescaled_schedule == expected_schedule
+
