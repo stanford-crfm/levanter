@@ -108,8 +108,8 @@ def test_estimate_mixture_weights():
     # 2. x is not predictive of y at all, y is highly random (y ~ N(0, 1))
     # 3. x is highly predictive of y, but it's very easy (y = sigmoid([1, 0, 0] x > 0.5)
 
-    Dim = hax.Axis("Dim", 5)
-    Batch = hax.Axis("Batch", 32)
+    Dim = hax.Axis("dim", 5)
+    Batch = hax.Axis("batch", 32)
 
     # data loading needs to take place on CPU
     with local_cpu_mesh():
