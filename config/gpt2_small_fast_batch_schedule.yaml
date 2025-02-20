@@ -30,6 +30,7 @@ trainer:
   mp: p=f32,c=bfloat16
   model_axis_size: 1
   per_device_parallelism: -1
+  per_device_eval_parallelism: 128
 
   train_batch_size:
     - start: 0

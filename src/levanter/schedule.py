@@ -115,6 +115,15 @@ class BatchSchedule:
         last = self.segments[-1]
         return last.offset + (step - last.start) * last.value
 
+    def find_step_containing_offset(self, offset: int) -> int:
+        """
+        Find the step that contains the given global data offset.
+        """
+        for seg in self.segments:
+            if seg.offset <= offset < seg.offset + (seg.until - seg.start) * seg.value:
+                return seg.start + (offset - seg.offset) // seg.value
+        raise ValueError(f"Offset {offset} is beyond the last defined segment.")
+
     def batch_indices_at_step(self, bn):
         """
         Return the indices for the batch at the given training step.

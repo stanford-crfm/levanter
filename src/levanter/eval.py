@@ -87,6 +87,9 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
                 lengths = [min(length, self._max_examples_per_dataset) for length in lengths]
             self._offsets = np.cumsum([0] + lengths)
 
+            for (ds, tags), length in zip(self.datasets, lengths):
+                logger.info(f"Dataset {ds} has {length} examples and tags {tags}")
+
         return self._offsets  # type: ignore
 
     def _compute_tag_arrays(self):
@@ -115,12 +118,14 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
         offsets = await self._get_offsets()
         original_order = np.argsort(indices)
         sorted_indices = np.array(indices)[original_order]
-        dataset_indices = np.searchsorted(offsets, sorted_indices, side="right") - 1
+        dataset_indices = (np.searchsorted(offsets, sorted_indices, side="right") - 1).tolist()
 
         # Group indices by the dataset they belong to
         grouped_indices = defaultdict(list)
         for idx, dataset_index in zip(sorted_indices, dataset_indices):
-            grouped_indices[dataset_index].append(idx - offsets[dataset_index])
+            grouped_indices[dataset_index].append(int(idx - offsets[dataset_index]))
+
+        logger.info(grouped_indices)
 
         # Retrieve the batch for each group
         batch_futures: list = []
