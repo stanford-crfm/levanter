@@ -1177,6 +1177,14 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     mixture_block_size: int = 2048
     """ Block size for deterministic mixing """
 
+    max_sequences_dict: Optional[Dict[str, int]] = None
+    """ Maximum number of sequences to load from each dataset. If a dataset is not present in the dict,
+    then there is no limit. """
+
+    num_validation_sequences_dict: Optional[Dict[str, int]] = None
+    """ Maximum number of sequences to load from each dataset for validation. If a dataset is not present in the dict,
+    then there is no limit. """
+
     def __post_init__(self):
         if len(self.configs) == 0:
             raise ValueError("At least one dataset must be provided")
@@ -1194,6 +1202,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                     )
         else:
             raise ValueError(f"Invalid train_weights type: {type(self.train_weights)}")
+
+        assert self.num_validation_sequences_dict is None, "num_validation_sequences_dict is not implemented"
 
     def train_set(
         self,
@@ -1213,6 +1223,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             key = jax.random.PRNGKey(0)
 
         mix_key, shuffle_key = jax.random.split(key)
+
+        if self.max_sequences_dict is not None:
+            for name, ds in token_datasets.items():
+                if name not in self.max_sequences_dict:
+                    continue
+                ds = ds.slice_dataset(end_index=self.max_sequences_dict[name])
+                token_datasets[name] = ds
 
         # We shuffle the components and not the overall mixture because this lets us preserve
         # the "stable batch" property of the mixture dataset.

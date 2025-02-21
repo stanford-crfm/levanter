@@ -26,6 +26,7 @@ from levanter.data.text import (
     mk_supervised_datasets,
 )
 from levanter.eval_harness import LmEvalHarnessConfig
+from levanter.main.grade_datapoints import grade_datapoints
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -282,6 +283,12 @@ def main(config: TrainLmConfig):
             return logprobs.rearrange((EvalBatch, Pos)).array
 
         train_loader = trainer.data_loader(train_dataset)
+
+        # EXPERIMENTAL:
+        grade_datapoints(config, trainer, train_dataset)
+        logger.info("Finished grading datapoints")
+        return
+
         if seek_dataloader:
             train_loader = train_loader.iter_from_step(state.step)
         else:
