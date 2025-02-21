@@ -1,3 +1,5 @@
+import os
+
 import braceexpand
 import fsspec
 from fsspec.asyn import AsyncFileSystem
@@ -47,3 +49,22 @@ async def async_remove(url, *, recursive=False, **kwargs):
         return await fs._rm(path, recursive=recursive)
     else:
         fs.rm(path, recursive=recursive)
+
+
+def join_path(lhs, rhs):
+    """
+    Join parts of a path together. Similar to plain old os.path.join except when there is a protocol in the rhs, it
+    is treated as an absolute path. However, the lhs protocol and rhs protocol must match if the rhs has one.
+
+    """
+
+    lhs_protocol, lhs_rest = fsspec.core.split_protocol(lhs)
+    rhs_protocol, rhs_rest = fsspec.core.split_protocol(rhs)
+
+    if rhs_protocol is not None and lhs_protocol is not None and lhs_protocol != rhs_protocol:
+        raise ValueError(f"Cannot join paths with different protocols: {lhs} and {rhs}")
+
+    if rhs_protocol is not None:
+        return rhs
+    else:
+        return os.path.join(lhs, rhs)

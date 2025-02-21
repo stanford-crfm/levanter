@@ -681,7 +681,7 @@ class TrainerConfig:
         return Axis(self.batch_axis, self.train_batch_size)
 
     @cached_property
-    def batch_scheduler(self):
+    def batch_schedule(self):
         return BatchSchedule(self.train_batch_size)
 
     def batch_axis_at_step(self, step: int) -> Axis:
@@ -876,7 +876,7 @@ class TrainerConfig:
                     assert isinstance(phase, ScheduleStep)
                     if phase.value % (self.per_device_parallelism * self.data_axis_size) != 0:
                         raise ValueError(
-                            f"At step {phase.step}, train_batch_size ({phase.value}) must be divisible by "
+                            f"At step {phase.start}, train_batch_size ({phase.value}) must be divisible by "
                             "per_device_parallelism * data_axis_size "
                             f"({self.per_device_parallelism}, {self.data_axis_size})"
                         )
@@ -894,6 +894,8 @@ class TrainerConfig:
                 )
             else:
                 self.per_device_eval_parallelism = self.per_device_parallelism
+
+            logger.info(f"Setting per_device_eval_parallelism to {self.per_device_eval_parallelism}")
 
         if self.replica_dcn_axis_size == -1:
             self.replica_dcn_axis_size = self.num_slices
