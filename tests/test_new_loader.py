@@ -277,7 +277,7 @@ def test_structured_batches_model_axis_2_subsharded():
 
 @pytest.mark.parametrize("model_axis_size", [1, 2])
 def test_loader_with_batch_scheduler(model_axis_size):
-    schedule = [ScheduleStep(until=10, value=8), ScheduleStep(until=20, value=16), ScheduleStep(until=-1, value=32)]
+    schedule = [ScheduleStep(start=0, value=8), ScheduleStep(start=10, value=16), ScheduleStep(start=20, value=32)]
 
     if len(jax.devices()) % model_axis_size != 0:
         pytest.skip("This test requires the number of devices to divide model_axis_size")
@@ -313,7 +313,7 @@ def test_loader_with_batch_scheduler(model_axis_size):
 
 @pytest.mark.parametrize("model_axis_size", [1, 2])
 def test_padded_final_batch(model_axis_size):
-    schedule = [ScheduleStep(until=10, value=8), ScheduleStep(until=20, value=16), ScheduleStep(until=-1, value=32)]
+    schedule = [ScheduleStep(start=0, value=8), ScheduleStep(start=10, value=16), ScheduleStep(start=20, value=32)]
 
     if len(jax.devices()) % model_axis_size != 0:
         pytest.skip("This test requires the number of devices to divide model_axis_size")

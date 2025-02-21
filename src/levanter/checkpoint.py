@@ -246,7 +246,7 @@ class Checkpointer:
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
-            cp_path = os.path.join(plain_path, checkpoint)
+            cp_path = fsspec_utils.join_path(plain_path, checkpoint)
             logger.info(f"Deleting old checkpoint {checkpoint} from {cp_path}")
             time_in = time.time()
             fs.rm(cp_path, recursive=True)
