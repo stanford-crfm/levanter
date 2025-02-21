@@ -306,9 +306,7 @@ class DataLoaderIterator(Iterator[Ex]):
         """
         if self.dl.data_store.is_finite():
             next_end = self.dl.scheduler.global_data_offset_by_step(target_max_batch_number)
-            logger.info(f"waiting for {next_end}")
             available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
-            logger.info(f"for {next_end} got {available_len}")
 
             at_the_end = available_len < next_end
 
@@ -317,16 +315,12 @@ class DataLoaderIterator(Iterator[Ex]):
                 # TODO: we could be much smarter about this but unlikely to be a bottle neck
                 target_max_batch_number -= 1
                 next_end = self.dl.scheduler.global_data_offset_by_step(target_max_batch_number)
-                logger.info(
-                    f"Bumping down to {target_max_batch_number} and got {next_end}. Need to get to {available_len}"
-                )
                 if target_max_batch_number < 0:
                     raise ValueError("No data available")
 
             # if we are padding the final batch, we want to see if there is data past the end of the last batch
             if at_the_end and self.dl._pad_final_batch and next_end < available_len:
                 partial_batch_size = available_len - next_end
-                logger.info(f"Partial batch size: {partial_batch_size}")
                 return target_max_batch_number + 1, partial_batch_size
 
         return target_max_batch_number, None
