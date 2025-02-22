@@ -423,7 +423,11 @@ class Trainer:
 
         while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
-                example = next(iter_data)
+                try:
+                    example = next(iter_data)
+                except StopIteration:
+                    logger.info("Reached end of training data loader")
+                    break
             info = self.train_step(state, example)
             state = info.state
 
