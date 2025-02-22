@@ -1,3 +1,4 @@
+import gc
 import logging
 import os
 
@@ -42,6 +43,17 @@ def load_grader_model(
     return state.model
 
 
+# def load_grader_model(
+#     grader_model_path: str,
+#     state,
+# ):
+#     state = dataclasses.replace(state, model=None)
+#     gc.collect()
+#     state = load_checkpoint(state, grader_model_path)
+#     gc.collect()
+#     return state.model
+
+
 def compute_loss_per_sequence(model, example, trainer):
     """Compute per-sequence loss using the same logic as eval.py"""
     model = inference_mode(model, True)
@@ -72,7 +84,10 @@ def grade_datapoints(
     grader_model_base_path = (
         "gs://marin-us-central2/checkpoints/suhas/rs-c4-3B-150m-seed{seed}-debug/checkpoints/step-2700"
     )
-    grader_model_seeds = [13, 6, 8, 11, 10, 12, 15, 8, 6, 1]
+    if config.grader_seed is None:
+        grader_model_seeds = [13, 6, 8, 11, 10, 12, 15, 8, 6, 1]
+    else:
+        grader_model_seeds = [config.grader_seed]
     logger.info(f"Will process {len(grader_model_seeds)} grader models")
 
     all_grader_losses = []
@@ -123,6 +138,7 @@ def grade_datapoints(
 
         del train_loader
         del grader_model
+        gc.collect()
         logger.info("Resources cleaned up")
         all_grader_losses.append(grader_losses_array)
 
@@ -148,8 +164,12 @@ def grade_datapoints(
     fs, plain_path = _get_fs_and_plain_path("gs://marin-us-central2/scratch/suhas/loss_arrays/")
     fs.makedirs(plain_path, exist_ok=True)
 
-    loss_variances_path = os.path.join(plain_path, "loss_variances.npy")
-    all_grader_losses_path = os.path.join(plain_path, "all_grader_losses.npy")
+    if len(grader_model_seeds) > 1:
+        loss_variances_path = os.path.join(plain_path, "loss_variances.npy")
+        all_grader_losses_path = os.path.join(plain_path, "all_grader_losses.npy")
+    else:
+        loss_variances_path = os.path.join(plain_path, f"loss_variances_seed{grader_model_seeds[0]}.npy")
+        all_grader_losses_path = os.path.join(plain_path, f"all_grader_losses_seed{grader_model_seeds[0]}.npy")
 
     # Only save on process 0 to avoid conflicts
     if jax.process_index() == 0:

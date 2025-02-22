@@ -60,6 +60,7 @@ class TrainLmConfig:
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
 
+    grader_seed: Optional[int] = None
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
     # if provided, will initialize from this checkpoint, used for llama style data mixture
