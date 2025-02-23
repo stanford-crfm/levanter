@@ -361,6 +361,7 @@ class Trainer:
                 is_trainable=is_trainable,
                 mp=self.mp,
                 fp8=self.fp8,
+                int8=self.config.int8,
                 model_averaging=self.config.model_averaging,
             )
             return state
@@ -600,6 +601,7 @@ class TrainerConfig:
     seed: int = 0  # random seed
     mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
     fp8: Optional[bool | Fp8Config] = None
+    int8: Optional[bool] = None
     model_averaging: ModelAveragingConfig | None = None
 
     wandb: Optional[tracker.wandb.WandbConfig] = None
