@@ -16,6 +16,7 @@ from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCompatConfig, ModelWithHfSerializationMixin, save_hf_checkpoint_callback
 from levanter.data.audio import AudioIODatasetConfig, AudioMixtureDatasetConfig, AudioTextDataset
 from levanter.models.asr_model import ASRConfig, AudioTextExample
+from levanter.models.diva import DivaASRModel, diva_connector_only
 from levanter.models.whisper import WhisperConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -45,6 +46,7 @@ class TrainASRConfig:
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
+    diva_training: bool = False
 
 
 def main(config: TrainASRConfig):
@@ -122,7 +124,7 @@ def main(config: TrainASRConfig):
         train_dataset = AudioTextDataset(
             config.data.train_set(key=data_key),
             Pos,
-            [config.model.Mels, config.model.MelPos],
+            config.model.AudioPos,
             KeyPos,
             ignore_index=config.data.pad_token_id,
         )
@@ -136,8 +138,16 @@ def main(config: TrainASRConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        state = trainer.initial_state(training_key, model_init=lambda: config.model.build_asr(Vocab, key=model_key))
+        state = trainer.initial_state(
+            training_key,
+            model_init=lambda: config.model.build_asr(Vocab, key=model_key),
+        )
 
+        if config.diva_training and config.model.asr_model_type == DivaASRModel:
+            state = dataclasses.replace(state, model=None)
+            model = DivaASRModel.init(Vocab, config.model, key=model_key, init_from_submodels=True)
+            model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
+            state = dataclasses.replace(state, model=model, is_trainable=diva_connector_only(model))
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
@@ -164,7 +174,7 @@ def main(config: TrainASRConfig):
             hax_eval_dataset = AudioTextDataset(
                 eval_dataset,
                 Pos,
-                [config.model.Mels, config.model.MelPos],
+                config.model.AudioPos,
                 KeyPos,
                 ignore_index=config.data.pad_token_id,
             )
