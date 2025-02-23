@@ -238,8 +238,6 @@ class DataLoaderIterator(Iterator[Ex]):
     def __next__(self):
         time_start = time.time()
         individual_data_batch = next(self._batches)
-        if len(individual_data_batch.data_by_local_index) == 0:
-            raise StopIteration
         batch = self._batchify_local_data(individual_data_batch)
 
         time_end = time.time()
@@ -271,6 +269,7 @@ class DataLoaderIterator(Iterator[Ex]):
             next_batch_numbers = list(range(batch_number, min(target_next_batch_number, max_achievable_batch_number)))
 
             if len(next_batch_numbers) == 0:
+                logger.info(f"Breaking because no more data available at batch number {batch_number}")
                 break
 
             batches = [
@@ -293,6 +292,8 @@ class DataLoaderIterator(Iterator[Ex]):
 
             batch_number = next_batch_numbers[-1] + 1
 
+        logger.info(f"DataLoaderIterator finished at batch number {batch_number}")
+
     async def _dataset_get_available_batch_number(self, target_max_batch_number: int) -> tuple[int, Optional[int]]:
         """
         Wait until the data store has enough data to support the given batch number. If
@@ -312,19 +313,13 @@ class DataLoaderIterator(Iterator[Ex]):
 
             at_the_end = available_len < next_end
 
-            while available_len < next_end:
-                # backoff until we find a batch size we can support
-                # TODO: we could be much smarter about this but unlikely to be a bottle neck
-                target_max_batch_number -= 1
+            if available_len < next_end:
+                target_max_batch_number = self.dl.scheduler.find_step_containing_offset(available_len)
                 next_end = self.dl.scheduler.global_data_offset_by_step(target_max_batch_number)
-                logger.info(
-                    f"Bumping down to {target_max_batch_number} and got {next_end}. Need to get to {available_len}"
-                )
-                if target_max_batch_number < 0:
-                    raise ValueError("No data available")
+                logger.info(f"Data store exhausted after {target_max_batch_number} batches.")
 
             # if we are padding the final batch, we want to see if there is data past the end of the last batch
-            if at_the_end and self.dl._pad_final_batch and next_end < available_len:
+            if at_the_end and self.dl._pad_final_batch and available_len > next_end:
                 partial_batch_size = available_len - next_end
                 logger.info(f"Partial batch size: {partial_batch_size}")
                 return target_max_batch_number + 1, partial_batch_size
