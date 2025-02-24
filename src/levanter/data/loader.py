@@ -307,9 +307,7 @@ class DataLoaderIterator(Iterator[Ex]):
         """
         if self.dl.data_store.is_finite():
             next_end = self.dl.scheduler.global_data_offset_by_step(target_max_batch_number)
-            logger.info(f"waiting for {next_end}")
             available_len = await self.dl.data_store.wait_until_len_at_least(next_end)
-            logger.info(f"for {next_end} got {available_len}")
 
             at_the_end = available_len < next_end
 
