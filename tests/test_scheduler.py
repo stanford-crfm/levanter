@@ -12,9 +12,9 @@ def scheduler():
       - Then batch size 128 forever
     """
     schedule = [
-        ScheduleStep(until=1000, value=32),
-        ScheduleStep(until=100000, value=64),
-        ScheduleStep(until=-1, value=128),
+        ScheduleStep(start=0, value=32),
+        ScheduleStep(start=1000, value=64),
+        ScheduleStep(start=100000, value=128),
     ]
     return BatchSchedule(schedule)
 

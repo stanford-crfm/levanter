@@ -68,7 +68,7 @@ def test_eval_lm_from_hf():
         num_layers=2,
         num_heads=2,
         seq_len=1024,
-        hidden_dim=2,
+        hidden_dim=32,
         use_flash_attention=True,
     )
 
@@ -86,7 +86,6 @@ def test_eval_lm_from_hf():
             config = eval_lm.EvalLmConfig(
                 data=data_config,
                 model=model_config,
-                hf_checkpoint="sshleifer/tiny-gpt2",
                 trainer=eval_lm.TrainerConfig(
                     per_device_eval_parallelism=len(jax.devices()),
                     max_eval_batches=1,

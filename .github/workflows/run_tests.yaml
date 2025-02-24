@@ -25,4 +25,4 @@ jobs:
           pip install -r ./tests/requirements.txt
       - name: Test with pytest
         run: |
-          XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=tests:src:. pytest tests -m "not entry and not slow and not ray"
+          PYTHONPATH=tests:src:. pytest tests -m "not entry and not slow and not ray"

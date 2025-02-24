@@ -29,9 +29,10 @@ from haliax import Axis
 
 from levanter.data import AsyncDataset
 from levanter.data.dataset import MappedAsyncDataset
-from levanter.data.mixture import MixtureDataset, StopStrategy
+from levanter.data.mixture import MixtureDataset, StopStrategy, rescale_mixture_schedule_for_batch_schedule
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
+from levanter.schedule import BatchSchedule
 from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
@@ -641,6 +642,7 @@ class LMTaskConfig(abc.ABC):
     def train_set(
         self,
         seq_len: int,
+        batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray],
@@ -1045,11 +1047,13 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     def train_set(
         self,
         seq_len: int,
+        batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray] = None,
         epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
+        del batch_schedule  # unused
 
         ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
 
@@ -1202,7 +1206,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     experiment_budget: Optional[int] = None
 
     mixture_block_size: int = 2048
-    """ Block size for deterministic mixing """
+    """Block size for deterministic mixing. In each block, a given dataset will have exactly the same number
+    of samples, equal to the expected number of samples in the mixture, rounding in the expected way."""
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -1225,6 +1230,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     def train_set(
         self,
         seq_len: int,
+        batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray],
@@ -1275,9 +1281,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             token_datasets = sliced_token_datasets
 
+        weights = self.train_weights
+        if isinstance(weights, Sequence):
+            weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
+
         mixture = MixtureDataset(
             datasets=token_datasets,
-            weights=self.train_weights,
+            weights=weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
             block_size=self.mixture_block_size,
