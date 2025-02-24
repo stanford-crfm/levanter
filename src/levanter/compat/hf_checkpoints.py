@@ -22,6 +22,7 @@ import mergedeep
 import safetensors
 import safetensors.numpy
 import transformers.utils.hub
+from fsspec import AbstractFileSystem
 from huggingface_hub import HfApi, hf_hub_download, repo_exists, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError, RepositoryNotFoundError
 from jax.experimental.multihost_utils import sync_global_devices
@@ -43,8 +44,6 @@ from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
-
-from fsspec import AbstractFileSystem
 
 
 silence_transformer_nag()
@@ -443,13 +442,12 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if ref is None:
             raise ValueError("Must provide a checkpoint to load from")
 
-        logger.info("\ncall load state dict")
-        logger.info(f" type of ref {type(ref)}")
-        logger.info(f"ref starts with  {ref.startswith('gs://')}")
-        logger.info(f" ref is {ref}")
         # Handle GCS paths directly
-        if isinstance(ref, str) and ref.startswith("gs://"):
-            logger.info(f"\n\n loading hf from GCS! \n\n")
+        if isinstance(ref, RepoRef) and ref.model_name_or_path.startswith("gs://"):
+            logger.info("\n\n loading hf from GCS! \n\n")
+            return self._load_from_gcs(ref.model_name_or_path, dtype)
+        elif isinstance(ref, str) and ref.startswith("gs://"):
+            logger.info("\n\n loading hf from GCS! \n\n")
             return self._load_from_gcs(ref, dtype)
 
         id, rev = self._get_ref(ref)
@@ -521,7 +519,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             if fs.exists(index_path):
                 with fs.open(index_path, "r") as f:
                     index = json.load(f)
-                
+
                 shard_files = list(set(index["weight_map"].values()))
                 final_state_dict = {}
 
@@ -534,7 +532,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     shard_path = os.path.join(path, shard_file)
                     if not fs.exists(shard_path):
                         raise FileNotFoundError(f"Shard file {shard_path} not found")
-                    
+
                     # Download shard to temporary file
                     with tempfile.NamedTemporaryFile() as tmp:
                         fs.get(shard_path, tmp.name)
