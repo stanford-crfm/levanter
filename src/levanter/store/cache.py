@@ -969,6 +969,7 @@ def _core_writer_task(
 
 
 def _clean_up_temp_caches(path):
+    logger.info(f"Cleaning up temporary cache at {path}")
     if fsspec_exists(path):
         for i in range(10):
             # this is crashy for some reason
@@ -1396,7 +1397,6 @@ def _tokenize_one_shard_group(
                 logger.debug(
                     f"Processed {rows_this_shard} rows. Wrote {this_batch_size} rows to {shard_name}. ({nice_bytes})"
                 )
-                # print(f"Processed {rows_this_shard} rows. Wrote {this_batch_size} rows to {shard_name}. ({nice_bytes})", flush=True)
                 this_batch_size = 0
                 prepared_batch = None
 
@@ -1420,7 +1420,7 @@ def _tokenize_one_shard_group(
     if not force_unfinalized:
         writer.finish()
 
-    logger.debug(f"Finished processing {len(shards)} shards. Wrote {total_rows} rows.")
+    logger.info(f"Finished processing {len(shards)} shards. Wrote {total_rows} rows.")
 
     return writer.ledger
 

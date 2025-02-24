@@ -7,8 +7,8 @@ data:
       id: dlwh/wikitext_103_detokenized
       cache_dir: wikitext2_cache
   train_weights:
-    wikitext: 1.0
-    w2: 1.0
+    - [0, {"wikitext": 0.8, "w2": 0.2}]
+    - [100, {"w2": 0.5, "wikitext": 0.5}]
 model:
   type: gpt2
   hidden_dim: 32

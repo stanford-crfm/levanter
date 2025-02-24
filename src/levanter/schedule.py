@@ -9,7 +9,7 @@ T = TypeVar("T")
 
 @dataclass
 class ScheduleStep(typing.Generic[T]):
-    until: int
+    start: int
     value: T
 
 
@@ -27,19 +27,29 @@ def value_at_step(schedule_or_t: Sequence[ScheduleStep[T]] | T, step: int) -> T:
         return schedule_or_t  # type: ignore
 
     for i, step_ in enumerate(schedule_or_t):
-        if step < step_.until or step_.until == -1:
+        # we use start now
+        if step >= step_.start:
             return step_.value
 
-    return schedule_or_t[-1].value
+    raise ValueError(f"Step {step} isn't after any of the schedule steps.")
 
 
 def validate_schedule_sorted(schedule: Sequence[ScheduleStep[T]]):
+    if len(schedule) == 0:
+        raise ValueError("Schedule must have at least one step.")
+    if schedule[0].start != 0:
+        raise ValueError("Schedule must start at step 0.")
+
     for i in range(1, len(schedule)):
         # the last step can be -1 to indicate that the value should be held indefinitely
-        if schedule[i].until < schedule[i - 1].until:
-            if i == len(schedule) - 1 and schedule[i].until == -1:
-                continue
+        if schedule[i].start < schedule[i - 1].start:
             raise ValueError(f"Schedule is not sorted at index {i}")
+
+
+def distinct_values(schedule: Sequence[ScheduleStep[T]] | T) -> set[T]:
+    if not isinstance(schedule, Sequence) or (schedule and not isinstance(schedule[0], ScheduleStep)):
+        return {schedule}  # type: ignore
+    return set(step.value for step in schedule)
 
 
 @dataclass
@@ -69,12 +79,10 @@ class BatchSchedule:
             if len(schedule) == 0:
                 raise ValueError("Batch schedule must have at least one step.")
             self.segments = []
-            prev_until = 0
             total_offset = 0
-            for step in schedule:
-                start = prev_until
-                # If step.until is -1, interpret that as an infinite (open-ended) segment.
-                until = BIG_INT if step.until < 0 else step.until
+            for i, step in enumerate(schedule):
+                start = step.start
+                until = BIG_INT if i == len(schedule) - 1 else schedule[i + 1].start
 
                 # Save the segment information.
                 self.segments.append(BatchSegment(start, until, step.value, total_offset))
@@ -83,7 +91,6 @@ class BatchSchedule:
                 if until < BIG_INT:
                     # (until - start) steps each process 'value' data points.
                     total_offset += (until - start) * step.value
-                    prev_until = until
 
     def batch_size_at_step(self, step: int) -> int:
         """
@@ -108,6 +115,15 @@ class BatchSchedule:
         last = self.segments[-1]
         return last.offset + (step - last.start) * last.value
 
+    def find_step_containing_offset(self, offset: int) -> int:
+        """
+        Find the step that contains the given global data offset.
+        """
+        for seg in self.segments:
+            if seg.offset <= offset < seg.offset + (seg.until - seg.start) * seg.value:
+                return seg.start + (offset - seg.offset) // seg.value
+        raise ValueError(f"Offset {offset} is beyond the last defined segment.")
+
     def batch_indices_at_step(self, bn):
         """
         Return the indices for the batch at the given training step.
@@ -121,3 +137,6 @@ class BatchSchedule:
         last = self.segments[-1]
         base = last.offset + (bn - last.start) * last.value
         return range(base, base + last.value)
+
+    def unique_batch_sizes(self):
+        return set(seg.value for seg in self.segments)

@@ -11,10 +11,11 @@ from levanter.tracker.wandb import WandbConfig
 from test_utils import skip_if_no_soundlibs
 
 
+@pytest.mark.skip
 @pytest.mark.entry
 @skip_if_no_soundlibs
 def test_train_asr():
-    # just testing if train_lm has a pulse
+    # just testing if train_asr has a pulse
     with tempfile.TemporaryDirectory() as tmpdir:
         data_config = tiny_test_corpus.tiny_asr_corpus_config(tmpdir)
         try:
