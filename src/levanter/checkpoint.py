@@ -26,6 +26,7 @@ import haliax.partitioning
 from haliax.jax_utils import is_in_jit, is_jax_array_like
 
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
+from levanter.utils import fsspec_utils
 from levanter.utils.types import FilterSpec
 
 
@@ -67,6 +68,7 @@ class Checkpointer:
         *,
         keep_params: PyTree[FilterSpec] = True,
         dt_now_injection: Optional[Callable[[], datetime.datetime]] = None,
+        delete_old_temp_checkpoints: bool = True,
     ):
         """
         Class for managing checkpoints. Saves checkpoints according to two policies: time and step.
@@ -82,6 +84,7 @@ class Checkpointer:
             step_policies: the step policies to use
             keep_params: a PyTree of FilterSpecs that specifies which parameters to keep in the checkpoint
             dt_now_injection: a function that returns the current time. useful for testing
+            delete_old_temp_checkpoints: if True, delete old checkpoints when saving a new one
         """
         self.base_path = str(base_path)
         self.save_interval = save_interval
@@ -90,7 +93,6 @@ class Checkpointer:
         self._dt_now_injection = dt_now_injection or datetime.datetime.now
         self._last_save_time = self._dt_now_injection()
         self._last_save_step = 0
-        self._last_temporary_checkpoint = None
 
         # ensure that the step_policies are sorted. We could sort, but instead we'll just insist that they are sorted
         # since it's probably a typo if they aren't
@@ -115,6 +117,18 @@ class Checkpointer:
             )
             self._async_checkpoint_remover_thread.start()
             self._checkpoint_being_removed = None
+
+        # discover latest checkpoint and see if it's temporary
+        self._last_temporary_checkpoint = None
+        latest_checkpoint = discover_latest_checkpoint(self.base_path)
+        if latest_checkpoint is not None and delete_old_temp_checkpoints:
+            metadata = _load_metadata(latest_checkpoint)
+            if metadata.get("is_temporary", False):
+                logger.info(
+                    f"Found prior temporary checkpoint {latest_checkpoint}. We will delete it after"
+                    " saving a new checkpoint."
+                )
+                self._last_temporary_checkpoint = latest_checkpoint
 
     def load_checkpoint(
         self,
@@ -184,6 +198,8 @@ class Checkpointer:
         should_save, save_permanent_ckpt = broadcast_one_to_all(
             jnp.array([my_should_save, my_save_permanent_ckpt], dtype=jnp.bool_)
         )
+        # this comes out as np.bool_, so we need to convert it to a regular bool so json serialization works
+        save_permanent_ckpt = bool(save_permanent_ckpt)
 
         # log the decision
         if should_save:
@@ -205,7 +221,7 @@ class Checkpointer:
                 if last_checkpoint is not None:
                     self._rm_checkpoint(last_checkpoint)
 
-            self.save_checkpoint(info, destination, commit_callback=callback)
+            self.save_checkpoint(info, destination, commit_callback=callback, is_temporary=not save_permanent_ckpt)
 
     def _get_current_step_save_interval(self, step):
         # binary search for the correct interval
@@ -230,7 +246,7 @@ class Checkpointer:
         fs, plain_path = _get_fs_and_plain_path(self.base_path)
         # have to strip protocol from path because fsspec filesystems don't like them
         try:
-            cp_path = os.path.join(plain_path, checkpoint)
+            cp_path = fsspec_utils.join_path(plain_path, checkpoint)
             logger.info(f"Deleting old checkpoint {checkpoint} from {cp_path}")
             time_in = time.time()
             fs.rm(cp_path, recursive=True)
@@ -239,7 +255,14 @@ class Checkpointer:
         except Exception:  # pylint: disable=broad-except
             logger.exception(f"Failed to delete checkpoint {checkpoint}", exc_info=True)
 
-    def save_checkpoint(self, info, destination: str, commit_callback: Optional[Callable[[], None]] = None):
+    def save_checkpoint(
+        self,
+        info,
+        destination: str,
+        commit_callback: Optional[Callable[[], None]] = None,
+        *,
+        is_temporary: bool = False,
+    ):
         path = os.path.join(self.base_path, destination)
         logger.info(f"Saving checkpoint at step {info.step} to {path}")
         state = info.state.saveable_state
@@ -250,6 +273,7 @@ class Checkpointer:
             checkpoint_path=path,
             manager=self._manager,
             commit_callback=commit_callback,
+            is_temporary=is_temporary,
         )
         self._last_save_step = info.step
         self._last_save_time = self._dt_now_injection()
@@ -295,6 +319,7 @@ class EpochCheckpointer:
             self.checkpointer.save_checkpoint(
                 step_info,
                 f"epoch-{current_epoch}",
+                is_temporary=True,
             )
             self._last_saved_epoch = current_epoch
 
@@ -306,6 +331,7 @@ def save_checkpoint(
     manager: Optional[GlobalAsyncCheckpointManager] = None,
     *,
     commit_callback: Optional[Callable[[], None]] = None,
+    is_temporary: bool = True,
 ):
     """
     Save a checkpoint to a given path using TensorStore.
@@ -315,6 +341,14 @@ def save_checkpoint(
     If training_state is None, no training state will be saved.
 
     This method is jax.Array-aware and will save shards in a way that can be restored
+
+    Args:
+        tree: the PyTree to save
+        step: the step to save the checkpoint at
+        checkpoint_path: the path to save the checkpoint to
+        manager: the GlobalAsyncCheckpointManager to use for saving the checkpoint
+        commit_callback: a callback to call after the checkpoint has been saved
+        is_temporary: whether the checkpoint is temporary
     """
     step = int(step)
     checkpoint_path = str(checkpoint_path)
@@ -325,7 +359,7 @@ def save_checkpoint(
     fs.makedirs(plain_path, exist_ok=True)
 
     def my_callback():
-        save_metadata(checkpoint_path, fs, step)
+        _save_metadata(checkpoint_path, fs, step, is_temporary)
         logger.info(f"Saved checkpoint to {checkpoint_path} for step {step}")
 
         if commit_callback is not None:
@@ -338,8 +372,8 @@ def save_checkpoint(
     return checkpoint_path
 
 
-def save_metadata(checkpoint_path, fs, step):
-    metadata = {"step": step, "timestamp": datetime.datetime.now().isoformat()}
+def _save_metadata(checkpoint_path, fs, step, is_temporary):
+    metadata = {"step": step, "timestamp": datetime.datetime.now().isoformat(), "is_temporary": is_temporary}
     if jax.process_index() == 0:
         with fs.open(os.path.join(checkpoint_path, "metadata.json"), "w") as json_out:
             json.dump(metadata, json_out)
@@ -505,7 +539,7 @@ def load_checkpoint_or_initialize(
     return load_or_init
 
 
-def load_metadata(checkpoint_path, fs=None):
+def _load_metadata(checkpoint_path, fs=None):
     if fs is None:
         fs, _, _ = fsspec.get_fs_token_paths(str(checkpoint_path))
     with fs.open(os.path.join(checkpoint_path, "metadata.json")) as metadata_in:
@@ -567,6 +601,12 @@ class CheckpointerConfig:
     )  # list of dicts with two keys: every and until
 
     append_run_id_to_base_path: bool = True
+    delete_old_temp_checkpoints: bool = True
+    """
+    If True, delete old checkpoints from prior attempts at this run. If False, keep them.
+
+    This is useful if the run is being preempted and restarted, and you want to keep the old checkpoints.
+    """
 
     def expanded_path(self, run_id) -> str:
         if self.append_run_id_to_base_path:
@@ -579,6 +619,7 @@ class CheckpointerConfig:
             base_path=self.expanded_path(run_id),
             save_interval=self.save_interval,
             step_policies=keeps,
+            delete_old_temp_checkpoints=self.delete_old_temp_checkpoints,
         )
 
     def __post_init__(self):
@@ -596,4 +637,12 @@ class CheckpointerConfig:
             prev_interval = interval
 
 
-# TODO: add partial checkpoint loading
+def is_checkpoint_path(path: str) -> bool:
+    """
+    Check if a given path is a checkpoint path.
+    """
+    try:
+        return fsspec_utils.exists(path)
+    except Exception:  # noqa
+        logger.exception(f"Error checking if {path} is a checkpoint path")
+        raise

@@ -86,7 +86,14 @@ def main(config: LoraLmConfig):
             logger.warning("No evaluation datasets provided.")
 
         train_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size, key=data_key), Pos, KeyPos, eos_id=tokenizer.eos_token_id
+            config.data.train_set(
+                Pos.size,
+                key=data_key,
+                batch_schedule=config.trainer.batch_schedule,
+            ),
+            Pos,
+            KeyPos,
+            eos_id=tokenizer.eos_token_id,
         )
         train_loader = trainer.data_loader(train_dataset, Batch)
 
