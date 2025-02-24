@@ -37,6 +37,7 @@ from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M,
 from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
+from levanter.data.loader import _round_to_nearest_multiple
 from levanter.distributed import DistributedConfig, RayConfig
 from levanter.grad_accum import microbatched
 from levanter.optim.model_averaging import ModelAveragingConfig
@@ -330,7 +331,7 @@ class Trainer:
         if load_checkpoint is True and not fsspec_utils.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist")
         elif load_checkpoint is None:
-            load_checkpoint = fsspec_utils.exists(checkpoint_path)
+            load_checkpoint = levanter.checkpoint.is_checkpoint_path(checkpoint_path)
 
         if load_checkpoint is False and self.config.initialize_from is not None:
             # we're not going to load a checkpoint, so see if we can initialize from a model
@@ -422,7 +423,11 @@ class Trainer:
 
         while int(state.step) < self.num_train_steps:
             with capture_time() as loading_time:
-                example = next(iter_data)
+                try:
+                    example = next(iter_data)
+                except StopIteration:
+                    logger.info("Reached end of training data loader")
+                    break
             info = self.train_step(state, example)
             state = info.state
 
@@ -515,6 +520,7 @@ class Trainer:
             axis_resources=self.compute_axis_mapping,
             prefetch_size=32,
             batch_axis_name=batch_name,
+            allow_nondivisible_batch_size=self.config.allow_nondivisible_batch_size,
         )
 
     @cached_property
@@ -636,6 +642,13 @@ class TrainerConfig:
     per_device_eval_parallelism: int = -1
     """how many examples to process in parallel on each device. -1 (default) means same as per_device_parallelism"""
 
+    allow_nondivisible_batch_size: bool = False
+    """
+    Allow batch sizes to be non-divisible by the number of devices (or data axis size).
+
+    This is typically used when you want a specific batch size but have a weird number of devices.
+    """
+
     # Config related to duration
     num_train_steps: int = 400_000  # number of training steps
     steps_per_eval: int = 1_000  # how often to evaluate
@@ -672,7 +685,7 @@ class TrainerConfig:
         return Axis(self.batch_axis, self.train_batch_size)
 
     @cached_property
-    def batch_scheduler(self):
+    def batch_schedule(self):
         return BatchSchedule(self.train_batch_size)
 
     def batch_axis_at_step(self, step: int) -> Axis:
@@ -867,7 +880,7 @@ class TrainerConfig:
                     assert isinstance(phase, ScheduleStep)
                     if phase.value % (self.per_device_parallelism * self.data_axis_size) != 0:
                         raise ValueError(
-                            f"At step {phase.step}, train_batch_size ({phase.value}) must be divisible by "
+                            f"At step {phase.start}, train_batch_size ({phase.value}) must be divisible by "
                             "per_device_parallelism * data_axis_size "
                             f"({self.per_device_parallelism}, {self.data_axis_size})"
                         )
@@ -879,10 +892,14 @@ class TrainerConfig:
 
         if self.per_device_eval_parallelism == -1:
             if self.per_device_parallelism == -1:
-                initial_train_batch_size = value_at_step(self.train_batch_size, 0)
-                self.per_device_eval_parallelism = initial_train_batch_size // self.data_axis_size
+                tbs = max(levanter.schedule.distinct_values(self.train_batch_size))
+                self.per_device_eval_parallelism = (
+                    _round_to_nearest_multiple(tbs, self.data_axis_size) // self.data_axis_size
+                )
             else:
                 self.per_device_eval_parallelism = self.per_device_parallelism
+
+            logger.info(f"Setting per_device_eval_parallelism to {self.per_device_eval_parallelism}")
 
         if self.replica_dcn_axis_size == -1:
             self.replica_dcn_axis_size = self.num_slices

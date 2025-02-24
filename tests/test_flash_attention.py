@@ -23,9 +23,9 @@ def test_flash_attention_acausal():
     QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
     KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
 
-    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key))
-    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
-    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Key)) * 0.2
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key)) * 0.2
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key)) * 0.2
 
     flash_out = flash_attention(QPos, KPos, Key, q, k, v, inference=True, block_size=BLOCK_SIZE)
     hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v)

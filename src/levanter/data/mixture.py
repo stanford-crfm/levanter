@@ -11,6 +11,7 @@ from jaxtyping import PRNGKeyArray
 from haliax.util import StringHolderEnum
 
 from levanter.data import AsyncDataset
+from levanter.schedule import BatchSchedule
 from levanter.utils.index import Index
 from levanter.utils.thread_utils import future_from_value
 
@@ -157,12 +158,20 @@ class MixtureDataset(AsyncDataset[T]):
         return unpermuted_ids
 
     @staticmethod
-    def _normalize_weights(weights: dict[str, float]):
+    def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
         """Normalize the weights to sum to 1"""
         total = sum(weights.values())
         if total == 0:
             raise ValueError(f"Datasets' weights cannot sum to 0, got {weights}")
-        return {name: weight / total for name, weight in weights.items() if weight > 0}
+
+        out_weights = {}
+        for name, weight in weights.items():
+            if weight < 0:
+                raise ValueError(f"Dataset weights cannot be negative, got {weights}")
+            elif weight > 0:
+                out_weights[name] = weight / total
+
+        return out_weights
 
     async def async_len(self) -> int:
         if self.stop_strategy == StopStrategy.RESTART_STRATEGY:
@@ -290,3 +299,36 @@ def _compute_block_assignment(base_ids, index, key):
     rng = jax.random.fold_in(key, index)
     permuted_ids = jax.random.permutation(rng, base_ids)
     return permuted_ids
+
+
+def rescale_mixture_schedule_for_batch_schedule(
+    mixture_schedule: Sequence[Tuple[int, dict[str, float]]], batch_schedule: BatchSchedule
+) -> List[Tuple[int, dict[str, float]]]:
+    """
+    Rescale the mixture schedule to match the batch schedule. MixtureDataset expects the mixture schedule to be in terms
+     of example indices, but the batch schedule is in terms of batch indices/steps. So, given a mixture schedule
+     that is in terms of *batch* indices, this function will rescale it to be in terms of example indices suitable for
+        MixtureDataset.
+
+    Args:
+        mixture_schedule: The mixture schedule to rescale
+        batch_schedule: The batch schedule to rescale to
+
+    Returns:
+        The rescaled mixture schedule in terms of example indices
+    """
+
+    # for each step in mixture_schedule, we want to compute its data offset in the batch schedule
+    out = []
+    for i, (step, weights) in enumerate(mixture_schedule):
+        # find the batch index that corresponds to this step
+        if step < 0:
+            if i != len(mixture_schedule) - 1:
+                raise ValueError("Negative step indices are only allowed for the last step")
+            data_offset = -1
+        else:
+            data_offset = batch_schedule.global_data_offset_by_step(step)
+
+        out.append((data_offset, weights))
+
+    return out
