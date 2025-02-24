@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Iterator, List, Optional, Union
+from typing import Dict, Iterator, Optional, Union
 
 import jax.random as jrandom
 import transformers
@@ -16,14 +16,13 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data import PermutationDataset, batched
+from levanter.data import PermutationDataset
 from levanter.data.dataset import AsyncDataset
 from levanter.data.loader import stack_batches
 from levanter.data.mixture import MixtureDataset, StopStrategy
 from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
-    EpochDataset,
     SupervisedSourceConfig,
     mk_cached_sft_dataset,
     mk_supervised_dataset,
@@ -46,6 +45,7 @@ DEFAULT_UNK_TOKEN = "<unk>"
 
 class DatasetType(str, Enum):
     """Type of dataset to use"""
+
     HUGGINGFACE = "huggingface"  # Use HF dataset
     CHAT_JSONL = "chat_jsonl"  # Use JSONL files with chat format
 
@@ -55,7 +55,7 @@ class SFTMixtureConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=LlamaConfig)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
-    
+
     # Config for mixture of supervised datasets
     supervised_data: Dict[str, SupervisedSourceConfig] = field(default_factory=dict)
     mixture_weights: Dict[str, float] = field(default_factory=dict)
@@ -79,6 +79,7 @@ class SFTMixtureConfig:
     output_role: str = "assistant"
 
     data_seed: Optional[int] = None
+
 
 def train(config: SFTMixtureConfig):
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -130,7 +131,7 @@ def train(config: SFTMixtureConfig):
 
     # Create supervised datasets using generic machinery
     logger.info("Creating supervised datasets")
-    
+
     # Create individual datasets
     train_datasets = {}
     for name, source_config in config.supervised_data.items():
@@ -143,13 +144,13 @@ def train(config: SFTMixtureConfig):
                     input_role=config.input_role,
                     output_role=config.output_role,
                 ),
-                tokenizer, 
-                model_config.Pos
+                tokenizer,
+                model_config.Pos,
             )
             train_dataset = PermutationDataset(train_dataset, data_key)
         else:
             train_dataset = mk_supervised_dataset(source_config, "train", tokenizer, model_config.Pos)
-            
+
         train_datasets[name] = train_dataset
 
     # Create mixture dataset
@@ -159,7 +160,7 @@ def train(config: SFTMixtureConfig):
         weights=config.mixture_weights,
         block_size=config.mixture_block_size,
         key=data_key,
-        stop_strategy=config.stop_strategy
+        stop_strategy=config.stop_strategy,
     )
 
     logger.info("Creating optimizer")
@@ -171,7 +172,7 @@ def train(config: SFTMixtureConfig):
         Pos = config.model.Pos
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
-        
+
         if config.initialize_from_hf:
             logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
             model: LmHeadModel = converter.load_pretrained(
@@ -297,4 +298,4 @@ def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
 
 
 if __name__ == "__main__":
-    levanter.config.main(train)() 
+    levanter.config.main(train)()
