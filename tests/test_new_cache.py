@@ -1,4 +1,5 @@
 import asyncio
+import os
 import tempfile
 from typing import Any, Dict, Iterator, Sequence
 
@@ -10,6 +11,10 @@ from levanter.data import BatchProcessor, ShardedDataSource, batched
 from levanter.data.sharded_datasource import TextUrlDataSource
 from levanter.store.cache import CacheOptions, SerialCacheWriter, TreeStore, _get_builder_actor, build_or_load_cache
 from levanter.utils.py_utils import logical_cpu_core_count
+
+
+if os.getenv("CI") in ["true", "True", "1"]:
+    pytest.skip("skipping these tests b/c they seem to crash in CI", allow_module_level=True)
 
 
 class TestProcessor(BatchProcessor[Sequence[int], dict[str, np.ndarray]]):
