@@ -54,15 +54,13 @@ class Permutation:
         ...
 
     def __call__(self, indices):
-
         was_int = False
-        # Ensure we work with a numpy array of uint64.
         if isinstance(indices, jnp.ndarray):
             indices = np.array(indices)
         if not isinstance(indices, np.ndarray):
             if indices < 0 or indices >= self.length:
                 raise IndexError(f"Index {indices} is out of bounds for length {self.length}")
-            indices = np.array(indices, dtype=np.uint64)
+            indices = np.atleast_1d(np.array(indices, dtype=np.uint64))
             was_int = True
         else:
             indices = indices.astype(np.uint64)
@@ -70,9 +68,7 @@ class Permutation:
         if np.any(indices < 0) or np.any(indices >= self.length):
             raise IndexError(f"Index {indices} is out of bounds for length {self.length}")
 
-        # Embed indices into the larger domain.
         x = indices
-        # Apply cycle-walking: reapply the Feistel network until the result is in [0, length).
         out = self._feistel(x)
         mask = out >= self.length
         while np.any(mask):
@@ -80,7 +76,7 @@ class Permutation:
             mask = out >= self.length
 
         if was_int:
-            return int(out)
+            return int(out[0])
         return out
 
 
