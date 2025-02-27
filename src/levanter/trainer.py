@@ -25,7 +25,7 @@ import haliax as hax
 import haliax.tree_util
 from haliax import Axis
 from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
-from haliax.quantization import Fp8Config
+from haliax.quantization import QuantizationConfig
 from haliax.types import Scalar
 
 import levanter.checkpoint
@@ -213,15 +213,6 @@ class Trainer:
         return self.config.mp
 
     @property
-    def fp8(self) -> Optional[Fp8Config]:
-        if self.config.fp8 is True:
-            return Fp8Config()
-        elif self.config.fp8 is False:
-            return None
-        else:
-            return self.config.fp8
-
-    @property
     def num_train_steps(self) -> int:
         return self.config.num_train_steps
 
@@ -360,8 +351,7 @@ class Trainer:
                 key=training_key,
                 is_trainable=is_trainable,
                 mp=self.mp,
-                fp8=self.fp8,
-                int8=self.config.int8,
+                quantization=self.config.quantization,
                 model_averaging=self.config.model_averaging,
             )
             return state
@@ -600,8 +590,7 @@ def _initialize_global_tracker(config, run_id):
 class TrainerConfig:
     seed: int = 0  # random seed
     mp: jmp.Policy = jmp.get_policy("f32")  # mixed precision policy
-    fp8: Optional[bool | Fp8Config] = None
-    int8: Optional[bool] = None
+    quantization: Optional[QuantizationConfig] = None
     model_averaging: ModelAveragingConfig | None = None
 
     wandb: Optional[tracker.wandb.WandbConfig] = None

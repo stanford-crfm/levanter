@@ -9,13 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
-from haliax.quantization import (
-    Fp8Config,
-    apply_updates,
-    fp8_linear_layers,
-    int8_linear_layers,
-    partition_for_grad_overwrite,
-)
+from haliax.quantization import QuantizationConfig, apply_updates, partition_for_grad_overwrite, quantize_linear_layers
 from haliax.types import IntScalar, Scalar
 
 from levanter.optim.model_averaging import ModelAveraging, ModelAveragingConfig
@@ -104,8 +98,7 @@ class TrainerState(eqx.Module, Generic[M]):
         key: PRNGKeyArray,
         is_trainable: FilterTree = True,
         mp: Optional[jmp.Policy] = None,
-        fp8: Fp8Config = None,
-        int8: Optional[bool] = None,
+        quantization: Optional[QuantizationConfig] = None,
         model_averaging: ModelAveragingConfig[M] | None = None,
         **kwargs,
     ) -> "TrainerState[M]":
@@ -114,11 +107,8 @@ class TrainerState(eqx.Module, Generic[M]):
         else:
             mp = jmp.get_policy("f32")
 
-        if fp8 is not None:
-            model = fp8_linear_layers(model, fp8)
-
-        if int8:
-            model = int8_linear_layers(model)
+        if quantization is not None:
+            model = quantize_linear_layers(model, quantization)
 
         trainable_model = trainables_only(model, is_trainable)
 
