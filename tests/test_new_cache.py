@@ -99,6 +99,7 @@ class SimpleShardSource(ShardedDataSource[list[int]]):
         return ([shard_num * 10 + i] * 10 for i in range(row, self._rows_per_shard))
 
 
+@pytest.mark.ray
 def test_serial_cache_writer():
     with tempfile.TemporaryDirectory() as tmpdir1:
         source = SimpleShardSource(num_shards=4)

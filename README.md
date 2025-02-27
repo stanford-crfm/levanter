@@ -173,13 +173,17 @@ optimizer:
 
 Currently, we support the following architectures:
 * GPT-2
-* [LLama 1 or 2](https://ai.meta.com/llama/)
+* [LLama](https://ai.meta.com/llama/)
 * [Backpacks](http://backpackmodels.science/)
-* MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)
+* [Gemma](https://ai.google.dev/gemma)
+* [Qwen](https://huggingface.co/Qwen/Qwen2.5-7B)
+* [Mistral](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3)
 
 We plan to add more in the future.
 
-#### Continued Pretraining with Llama 1 or Llama 2
+For speech, we currently only support [Whisper](https://huggingface.co/openai/whisper-large-v3).
+
+#### Continued Pretraining with Llama
 
 Here's an example of how to continue pretraining a Llama 1 or Llama 2 model on the OpenWebText dataset:
 
