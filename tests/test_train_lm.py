@@ -4,6 +4,8 @@ import tempfile
 import jax
 import pytest
 
+from haliax.quantization import QuantizationConfig
+
 import levanter.main.train_lm as train_lm
 import tiny_test_corpus
 from levanter.distributed import RayConfig
@@ -58,7 +60,7 @@ def test_train_lm_fp8():
                     attn_backend=None,  # use default for platform
                 ),
                 trainer=train_lm.TrainerConfig(
-                    fp8=True,
+                    quantization=QuantizationConfig(fp8=True),
                     num_train_steps=2,
                     train_batch_size=len(jax.devices()),
                     max_eval_batches=1,

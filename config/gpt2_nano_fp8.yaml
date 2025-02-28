@@ -7,7 +7,8 @@ model:
   num_layers: 2
 trainer:
   mp: f32
-  fp8: true
+  quantization:
+    fp8: true
   num_train_steps: 100
 
   checkpointer:
