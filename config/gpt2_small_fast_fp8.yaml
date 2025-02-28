@@ -14,7 +14,8 @@ trainer:
       tags: [ "openwebtext", "gpt2", "itest"]
 
   mp: p=f32,c=bfloat16
-  fp8: true
+  quantization:
+    fp8: true
   model_axis_size: 1
   per_device_parallelism: -1
 
