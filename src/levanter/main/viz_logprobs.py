@@ -1,4 +1,6 @@
 import logging
+import os
+import typing
 from dataclasses import dataclass, field
 
 import equinox as eqx
@@ -7,35 +9,44 @@ import jmp
 
 import haliax as hax
 from haliax import Axis
-from haliax.partitioning import fsdp, round_axis_for_partitioning
+from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
 from levanter.checkpoint import load_checkpoint
+from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import DataLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig
+from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
+from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.loss import next_token_loss
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.utils.tree_utils import inference_mode
-from levanter.visualization import compute_and_visualize_log_probs
+from levanter.visualization import compute_and_diff_log_probs, compute_and_visualize_log_probs
 
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class VizGpt2Config:
+class VizLmConfig:
     checkpoint_path: str
     path: str = "logprobs.html"
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    data: LMDatasetConfig | LMMixtureDatasetConfig = field(default_factory=LMDatasetConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
 
-    num_docs: int = 256
+    num_docs: int = 32
+
+    checkpoint_is_hf: bool = False
+
+    data_seed: int | None = 0
+
+    comparison_model_path: str | None = None
+    comparison_is_hf: bool = False
 
 
-def main(config: VizGpt2Config):
+def main(config: VizLmConfig):
     levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
@@ -44,10 +55,10 @@ def main(config: VizGpt2Config):
     Pos = config.model.Pos
     KeyPos = config.model.KeyPos
 
-    ds = CausalLmDataset(config.data.validation_set(Pos.size), Pos, KeyPos, eos_id=tokenizer.eos_token_id)  # type: ignore
-    eval_loader = DataLoader(
-        ds, EvalBatch, mesh=config.trainer.device_mesh, axis_resources=config.trainer.compute_axis_mapping
-    )
+    validation_sets = {
+        k: CausalLmDataset(v, Pos, KeyPos, eos_id=tokenizer.eos_token_id)  # type: ignore
+        for k, v in config.data.validation_sets(Pos.size).items()
+    }
 
     # some axes we use outside the model proper
     Pos = config.model.Pos
@@ -67,33 +78,106 @@ def main(config: VizGpt2Config):
 
         # don't want to compute the mask w.r.t. the final token
 
-        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        @hax.named_jit
         def compute_log_probs(model: LmHeadModel, example: LmExample):
-            model = inference_mode(model, True)
-            model = mp.cast_to_compute(model)
-            logprobs = compute_next_token_loss(model, example, reduction=None)
-            # roll forward to get the loss for each predicted token
-            logprobs = hax.roll(logprobs, 1, Pos)
-            return logprobs.rearrange((EvalBatch, Pos)).array
+            with hax.axis_mapping(config.trainer.compute_axis_mapping):
+                model = inference_mode(model, True)
+                model = mp.cast_to_compute(model)
+
+                activations = model.activations(example.tokens, example.attn_mask, key=key)
+                logits = hax.dot(activations, model.get_lm_head(), axis=model.Embed)
+
+                loss = next_token_loss(
+                    model.Pos,
+                    model.Vocab,
+                    logits=logits,
+                    true_ids=example.tokens,
+                    loss_mask=example.loss_mask,
+                    reduction=None,
+                )
+                logprobs = -loss
+                # roll forward to get the loss for each predicted token
+                logprobs = hax.roll(logprobs, 1, Pos)
+                logits = hax.roll(logits, 1, Pos)
+                argmaxes = hax.argmax(logits, axis=Vocab)
+                return logprobs.rearrange((EvalBatch, Pos)).array, argmaxes.rearrange((EvalBatch, Pos)).array
+
+        model: LmHeadModel
 
         # initialize the model
-        with use_cpu_device():
-            model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
-            # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-            model = load_checkpoint(model, config.checkpoint_path, subpath="model")
+        if config.checkpoint_is_hf:
+            model_config = config.model
+            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
+            converter = converter.replaced(reference_checkpoint=config.checkpoint_path, tokenizer=tokenizer)
+            model = converter.load_pretrained(
+                model_config.model_type, ref=config.checkpoint_path, dtype=config.trainer.mp.compute_dtype  # type: ignore
+            )
+        else:
+            with use_cpu_device():
+                model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
+                model = load_checkpoint(model, config.checkpoint_path, subpath="model")
+            model = hax.shard(model, parameter_axis_mapping)
 
-        assert model is not None
+        model = typing.cast(LmHeadModel, inference_mode(model, True))
 
-        model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+        if config.comparison_model_path is not None:
+            if config.comparison_is_hf:
+                model_config = config.model
+                converter = model_config.hf_checkpoint_converter()
+                converter = converter.replaced(reference_checkpoint=config.comparison_model_path, tokenizer=tokenizer)
+                comparison_model = converter.load_pretrained(
+                    model_config.model_type, ref=config.comparison_model_path, dtype=config.trainer.mp.compute_dtype  # type: ignore
+                )
+            else:
+                with use_cpu_device():
+                    comparison_model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
+                    comparison_model = load_checkpoint(comparison_model, config.comparison_model_path, subpath="model")
+                comparison_model = hax.shard(comparison_model, parameter_axis_mapping)
+            comparison_model = typing.cast(LmHeadModel, inference_mode(comparison_model, True))
+        else:
+            comparison_model = None
 
-        compute_and_visualize_log_probs(
-            path=config.path,
-            model=model,
-            tokenizer=tokenizer,
-            log_prob_fn=compute_log_probs,
-            test_data=eval_loader,
-            max_docs=config.num_docs,
-        )
+        for name, dataset in validation_sets.items():
+
+            if config.data_seed is not None:
+                dataset = dataset.shuffle(jax.random.PRNGKey(config.data_seed))
+
+            dataset = dataset.slice_dataset(0, config.num_docs)
+
+            loader = DataLoader(
+                dataset,
+                config.trainer.eval_batch_size,
+                mesh=config.trainer.device_mesh,
+                axis_resources=config.trainer.compute_axis_mapping,
+            )
+
+            if name:
+                path = os.path.join(config.path, f"{name}.html")
+            else:
+                path = config.path
+                if not path.endswith(".html"):
+                    path = f"{path}.html"
+
+            compute_and_visualize_log_probs(
+                path=path,
+                model=model,
+                tokenizer=tokenizer,
+                log_prob_fn=compute_log_probs,
+                test_data=loader,
+                max_docs=config.num_docs,
+            )
+
+            if comparison_model is not None:
+                diff_path = path.replace(".html", "_diff.html")
+                compute_and_diff_log_probs(
+                    path=diff_path,
+                    model=model,
+                    comparison_model=comparison_model,
+                    tokenizer=tokenizer,
+                    log_prob_fn=compute_log_probs,
+                    test_data=loader,
+                    max_docs=config.num_docs,
+                )
 
 
 if __name__ == "__main__":
