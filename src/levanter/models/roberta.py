@@ -574,42 +574,18 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
     def create_position_ids_from_input_ids(self, input_ids, past_key_values_length=0):
         mask = hax.not_equal(input_ids, self.padding_idx) * 1
         incremental_indices = (hax.cumsum(mask, axis=self.Pos).astype(mask) + past_key_values_length) * mask
-        incremental_indices -= mask.all(axis=self.Pos)
-        return incremental_indices
+        # incremental_indices -= mask.all(axis=self.Pos)
+        return incremental_indices + self.padding_idx
 
-    def create_position_ids_from_inputs_embeds(self, input_axes, PosInput):
-        position_ids = hax.arange(axis = PosInput, start = 0, dtype=jnp.int32)
-        # position_ids = hax.arange(axis = PosInput, start = self.padding_idx + 1, dtype=jnp.int32)
+    # def create_position_ids_from_inputs_embeds(self, input_axes, PosInput):
+    #     position_ids = hax.arange(axis = PosInput, start = 0, dtype=jnp.int32)
+    #     # position_ids = hax.arange(axis = PosInput, start = self.padding_idx + 1, dtype=jnp.int32)
 
-        return hax.broadcast_to(position_ids, input_axes)
+    #     return hax.broadcast_to(position_ids, input_axes)
 
     @named_call
     def embed(self, input_ids=None, token_type_ids=None, position_ids=None, input_embeds=None, past_key_values_length=0, *, key = None):
-        # if input_ids is not None:
-        #     print(f"input_ids: {input_ids.dtype}")
-        # else:
-        #     print("input_ids: None")
 
-        # if token_type_ids is not None:
-        #     print(f"token_type_ids: {token_type_ids.dtype}")
-        # else:
-        #     print("token_type_ids: None")
-
-        # if position_ids is not None:
-        #     print(f"position_ids: {position_ids.dtype}")
-        # else:
-        #     print("position_ids: None")
-        
-        # if input_embeds is not None:
-        #     print(f"input_embeds: {input_embeds.dtype}")
-        # else:
-        #     print("input_embeds: None")
-
-        """
-        Note: When inputting your own embeds into input_embeds, make sure that the embeds axis has the name "embed"
-        for compatibility with the position_id creation function. Make sures its length is not equal to 
-        """
-        
         # Get Axes
         if input_ids is not None:
             input_axes = input_ids.axes
@@ -618,11 +594,15 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
 
         # Get position_ids
         if position_ids is None:
+            # position_ids = hax.arange(axis = self.Pos, start = 0, dtype=jnp.int32)
             if input_ids is not None:
-                # Create the position ids from the input token ids. Any padded tokens remain padded.
                 position_ids = self.create_position_ids_from_input_ids(input_ids, past_key_values_length)
-            else:
-                position_ids = self.create_position_ids_from_inputs_embeds(input_axes, input_embeds.resolve_axis("position"))
+
+            # if input_ids is not None:
+            #     # Create the position ids from the input token ids. Any padded tokens remain padded.
+            #     position_ids = self.create_position_ids_from_input_ids(input_ids, past_key_values_length)
+            # else:
+            #     position_ids = self.create_position_ids_from_inputs_embeds(input_axes, input_embeds.resolve_axis("position"))
         
         # Get token_type_ids
         if token_type_ids is None:
@@ -630,6 +610,15 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
 
         if input_embeds is None:
             input_embeds = self.word_embeddings(input_ids)
+
+            # cond = (input_ids == self.padding_idx)
+            # cond = hax.broadcast_to(cond, input_embeds.axes)
+
+            # input_embeds = hax.where(
+            #     cond,
+            #     hax.zeros_like(input_embeds),
+            #     input_embeds
+            # )
 
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
         embeddings = input_embeds + token_type_embeddings
@@ -769,10 +758,6 @@ class RobertaLMHead(eqx.Module, StateDictSerializationMixin):
         layer_norm = hnn.LayerNorm.init(axis=Embed, eps=config.layer_norm_eps)
 
         decoder = hnn.Linear.init(Embed, Vocab, key=k_decoder, out_first=True)
-
-        # idk what this is: TODO
-        # self.bias = nn.Parameter(torch.zeros(config.vocab_size))
-        # self.decoder.bias = self.bias
 
         return RobertaLMHead(dense, layer_norm, decoder, config)
 
