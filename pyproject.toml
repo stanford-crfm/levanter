@@ -7,7 +7,7 @@ name = "levanter"
 version = "1.2"
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
-    { name = "Jason Wang"},
+    { name = "Jason Wang", email = "jsywang@cs.stanford.edu"},
     { name = "Ahmed Ahmed"},
     { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
     { name = "Will Held"},
@@ -25,8 +25,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 dependencies = [
-    # until we fully update levanter with int8
-    "haliax==1.4.dev327",
+    "haliax>=1.4.dev330",
     "equinox>=0.11.7",
     "jaxtyping>=0.2.34",
     "tokenizers>=0.15.2",
