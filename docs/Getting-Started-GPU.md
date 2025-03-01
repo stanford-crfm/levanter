@@ -322,7 +322,8 @@ On H100 GPUs, you can train with FP8 precision. To do this, you just need to add
 ```yaml
 trainer:
   # ...
-  fp8: true
+  quantization:
+    fp8: true
 ```
 
 For details on how it works, see the [Haliax FP8 docs](https://haliax.readthedocs.io/en/latest/fp8/) and

@@ -60,7 +60,7 @@ trainer:
     keep:
     - every: 20000
     save_interval: 10m
-  fp8: null
+  quantization: null
   fsdp_axis: embed
   id: llama-8b-tootsie-0.001-19ad63
   initialize_from: null
