@@ -3,3 +3,4 @@ pytest
 soundfile
 librosa
 pytest-forked
+pytest-asyncio
