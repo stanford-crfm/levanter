@@ -48,6 +48,12 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     """Whether to apply a default reasonable weight decay to modules not explicitly masked. None means it will if
     no weight_decay_modules are set. False means it will not. True means it will regardless of weight_decay_modules."""
 
+    # Add new SFT-related fields
+    sft_learning_rate: Optional[float] = None
+    """Learning rate to use for SFT phase at the end of training"""
+    sft_steps: Optional[int] = None
+    """Number of steps to use for SFT phase"""
+
     @classmethod
     def default_choice_name(cls) -> Optional[str]:
         return "adam"
@@ -146,13 +152,21 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             return mask_fn
 
     def lr_scheduler(self, num_train_steps):
+        # Handle SFT steps first
+        if self.sft_learning_rate is not None and self.sft_steps is not None:
+            if self.sft_steps >= num_train_steps:
+                raise ValueError(f"SFT steps ({self.sft_steps}) must be less than total steps ({num_train_steps})")
+            main_steps = num_train_steps - self.sft_steps
+        else:
+            main_steps = num_train_steps
+
         if self.cooldown is not None:
             warnings.warn("cooldown is deprecated. Just use the normal schedule.", DeprecationWarning)
-            cooldown_steps = _convert_frac_or_steps(self.cooldown, num_train_steps)
+            cooldown_steps = _convert_frac_or_steps(self.cooldown, main_steps)
         else:
             cooldown_steps = 0
 
-        total_main_steps = num_train_steps - cooldown_steps
+        total_main_steps = main_steps - cooldown_steps
         cooldown_points = self._get_cycle_minima(total_main_steps)
 
         min_lr = self.learning_rate * self.min_lr_ratio
@@ -209,6 +223,22 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             final_main_lr = schedule(lr_decay_steps)
             cooldown = optax.linear_schedule(final_main_lr, min_lr, cooldown_steps)
             schedules.append(cooldown)
+            boundaries.append(main_steps)
+
+        # Add SFT schedule if specified
+        if self.sft_learning_rate is not None and self.sft_steps is not None:
+            sft_warmup_steps = int(0.1 * self.sft_steps)  # 10% warmup
+            sft_decay_steps = self.sft_steps - sft_warmup_steps
+
+            # Warmup from previous end to SFT lr
+            sft_warmup = optax.linear_schedule(previous_end, self.sft_learning_rate, sft_warmup_steps)
+            schedules.append(sft_warmup)
+            boundaries.append(main_steps + sft_warmup_steps)
+
+            # Cosine decay to 0 lr
+            sft_decay = optax.cosine_decay_schedule(self.sft_learning_rate, sft_decay_steps, 0.0)
+            schedules.append(sft_decay)
+            boundaries.append(num_train_steps)
 
         if len(schedules) > 1:
             schedule = optax.join_schedules(schedules, boundaries)
