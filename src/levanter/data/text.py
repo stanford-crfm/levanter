@@ -763,6 +763,15 @@ class SupervisedUrlSourceConfig(SupervisedSourceConfigBase):
 SupervisedSourceConfig: TypeAlias = Union[SupervisedHfSourceConfig, SupervisedUrlSourceConfig]
 
 
+def _preprocess_pretraining_example(batch, tokenizer: PreTrainedTokenizerBase, text_key: str) -> dict:
+    sources = [example[text_key] for example in batch]
+    sources_tokenized = tokenizer(sources, padding=False, truncation=True)
+    return {
+        "input_ids": sources_tokenized["input_ids"],
+        "sources_len": [len(s) for s in sources_tokenized["input_ids"]],
+    }
+
+
 def _preprocess_supervised_example(
     batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
 ) -> dict:
@@ -780,6 +789,20 @@ def _preprocess_supervised_example(
         "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],
         "sources_len": np.array(source_lens, dtype=np.int32),
     }
+
+
+def _prepare_pretraining_examples(
+    ex: list[dict], tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+) -> list[LmExample]:
+    """
+    Prepare examples for pretraining. This function converts the (cached) encodings into LmExamples. Unlike the supervised case, we don't need to mask anything here. Also, instead of truncation, we will do "concat and chunk", which entails treating all the examples as a single sequence and then chopping it up into chunks of the appropriate size.
+    """
+    input_ids = np.concatenate([ex["input_ids"] for ex in ex])
+
+    # now we need to chunk this into chunks of size Pos.size
+    chunks = [input_ids[i : i + Pos.size] for i in range(0, len(input_ids), Pos.size)]
+
+    return [LmExample.causal(hax.named(chunk, Pos)) for chunk in chunks]
 
 
 def _prepare_supervised_examples(ex: list[dict], tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis) -> list[LmExample]:
@@ -821,6 +844,35 @@ def _mk_sup_example_jit(Pos, input_ids: hax.NamedArray, sources_len, pad_token_i
     loss_mask = loss_mask & (targets != pad_token_id)
     loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
     return LmExample.causal(input_ids, loss_mask=loss_mask, eos_id=eos_id)
+
+
+def mk_pretraining_datasets(
+    sources: Mapping[str, LMDatasetSourceConfig],
+    split: str,
+    tokenizer: PreTrainedTokenizerBase,
+    Pos: hax.Axis,
+) -> dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]]:
+    """
+    Create pretraining datasets from a set of sources.
+    """
+
+    out: dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]] = {}
+
+    for name, config in sources.items():
+        source = config.get_shard_source(split)
+        if source is None:
+            continue
+
+        ds = _cache_pretraining_set(source, config.cache_dir, tokenizer, Pos, config.text_key)
+
+        if config.tags is None:
+            tags = [name]
+        else:
+            tags = config.tags + [name]
+
+        out[name] = (ds, tags)
+
+    return out
 
 
 def mk_supervised_datasets(
@@ -897,6 +949,22 @@ def mk_supervised_dataset(
         tokenizer.pad_token = tokenizer.eos_token
 
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
+
+
+def _cache_pretraining_set(source, cache_dir, tokenizer, Pos, text_key):
+    """
+    Cache a pretraining dataset into input_ids and sources_len.
+    """
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+    dataset = source.map_batches(
+        lambda ex: _preprocess_pretraining_example(ex, tokenizer, text_key),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(cache_dir, await_finished=True)
+    ds = cached_dataset.map_batches(lambda ex: _prepare_pretraining_examples(ex, tokenizer, Pos))
+    return ds
 
 
 def _cache_supervised_set(source, cache_dir, tokenizer, Pos, input_field, output_field):
