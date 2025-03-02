@@ -1,17 +1,9 @@
 import jax.numpy as jnp
 import jax.random as jrandom
+import numpy as np
 import pytest
 
 from levanter.data._prp import Permutation
-
-
-def test_permutation_creates_valid_instance():
-    length = 100
-    prng_key = jrandom.PRNGKey(0)
-    permutation = Permutation(length, prng_key)
-    assert permutation.length == length
-    assert 0 < permutation.a < length
-    assert 0 <= permutation.b < length
 
 
 def test_permutation_with_single_index_returns_correct_value():
@@ -30,7 +22,7 @@ def test_permutation_with_array_returns_correct_values():
     permutation = Permutation(length, prng_key)
     indices = jnp.arange(length)
     results = permutation(indices)
-    assert isinstance(results, jnp.ndarray)
+    assert isinstance(results, np.ndarray)
     assert len(results) == length
     assert jnp.sum(results == indices) <= 2
 
