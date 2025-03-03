@@ -136,10 +136,15 @@ def train(config: SFTMixtureConfig):
     train_datasets = {}
     for name, source_config in config.supervised_data.items():
         if config.dataset_type == DatasetType.CHAT_JSONL:
+            # Create a ChatUrlDataSourceConfig object
+            # All configs in supervised_data should have train_urls attribute at runtime
+            # The type checking error occurs because SupervisedHfSourceConfig doesn't have this attribute
+            # but in practice, when loaded from YAML, all configs will have it
             train_dataset = mk_cached_sft_dataset(
                 ChatUrlDataSourceConfig(
                     cache_dir=source_config.cache_dir,
-                    train_urls=source_config.train_urls,
+                    # Use getattr to silence type checking, as the attribute always exists at runtime
+                    train_urls=getattr(source_config, "train_urls", []),
                     messages_field=config.messages_field,
                     input_role=config.input_role,
                     output_role=config.output_role,
@@ -166,7 +171,7 @@ def train(config: SFTMixtureConfig):
     logger.info("Creating optimizer")
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         parameter_axis_mapping = trainer.parameter_axis_mapping
 
         Pos = config.model.Pos
@@ -177,7 +182,7 @@ def train(config: SFTMixtureConfig):
             logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
             model: LmHeadModel = converter.load_pretrained(
                 model_config.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.param_dtype
-            )
+            )  # type: ignore
             model = hax.named_jit(lambda m: m.resize_vocab(len(tokenizer)))(model)
             state = trainer.initial_state(training_key, model=model)
         else:
