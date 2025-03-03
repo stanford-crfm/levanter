@@ -35,7 +35,7 @@ def test_viz_lm():
 
             save_checkpoint({"model": model}, 0, f"{f}/ckpt")
 
-            config = viz_logprobs.VizGpt2Config(
+            config = viz_logprobs.VizLmConfig(
                 data=data_config,
                 model=model_config,
                 trainer=viz_logprobs.TrainerConfig(
