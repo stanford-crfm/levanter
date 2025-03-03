@@ -2,7 +2,7 @@
 # See https://pre-commit.com/hooks.html for more hooks
 exclude: ".git"
 default_stages:
-    - commit
+    - pre-commit
 fail_fast: true
 
 repos:
