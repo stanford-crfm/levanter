@@ -410,7 +410,7 @@ class SlicedAsyncDataset(AsyncDataset[U]):
         if self.end_index is None:
             return underlying_length - self.start_index
         else:
-            return self.end_index - self.start_index
+            return min(self.end_index, underlying_length) - self.start_index
 
     async def final_length_is_known(self) -> bool:
         underlying_is_known = await self.dataset.final_length_is_known()
