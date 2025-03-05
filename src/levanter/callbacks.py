@@ -323,11 +323,31 @@ def pbar_logger(iterable=None, desc="train", **tqdm_mkwargs):
 def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bool) -> Callable[[StepInfo], None]:
     def profiler_callback_fn(step: StepInfo):
         # -1 b/c step is the finished step
+        if step.step < start_step - 1:
+            logger.info(f"Profiling scheduled to start at step {start_step}, current step: {step.step + 1}")
+            return
+
         if step.step == start_step - 1:
             _create_perfetto_link = create_perfetto_link and jax.process_index() == 0
-            logger.info(f"Starting profiler until step {start_step + num_steps}.")
-            jax.profiler.start_trace(path, create_perfetto_link=_create_perfetto_link, create_perfetto_trace=True)
+            logger.info(
+                f"Starting profiler at step {step.step + 1}, will profile for {num_steps} steps until step"
+                f" {start_step + num_steps}."
+            )
+            logger.info(f"Profile output path: {path}")
+            try:
+                jax.profiler.start_trace(path, create_perfetto_link=_create_perfetto_link, create_perfetto_trace=True)
+                logger.info("Profiler successfully started")
+            except Exception as e:
+                logger.error(f"Failed to start profiler: {e}")
+                return
+
+        elif step.step > start_step - 1 and step.step < start_step + num_steps - 1:
+            # Log progress during profiling
+            steps_remaining = start_step + num_steps - step.step - 1
+            logger.info(f"Profiling in progress: step {step.step + 1}, {steps_remaining} steps remaining")
+
         elif step.step == start_step + num_steps - 1:
+            logger.info(f"Profiling complete at step {step.step + 1}, stopping profiler now")
             if create_perfetto_link:
                 logger.info(
                     f"Stopping profiler. Process 0 will open a perfetto link. I am process {jax.process_index()}"
@@ -338,16 +358,40 @@ def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bo
             # a thread to flush and print periodically until we make it past stop_trace
             # (note: stop_trace blocks if perfetto is enabled)
             event = threading.Event()
-            if create_perfetto_link and jax.process_index() == 0:
-                _flush_while_waiting(event)
+            # Always flush for all processes to ensure logs are visible
+            _flush_while_waiting(event)
 
-            jax.profiler.stop_trace()
+            try:
+                logger.info("Calling stop_trace...")
+                jax.profiler.stop_trace()
+                logger.info("Profiler successfully stopped")
+            except Exception as e:
+                logger.error(f"Failed to stop profiler: {e}")
+                # Don't return here, still try to save whatever was collected
+                logger.warning("Continuing despite profiler stop error")
 
-            if create_perfetto_link and jax.process_index() == 0:
-                event.set()
+            # Always stop the flush thread
+            event.set()
+            logger.info("Set event to stop flushing thread")
 
-            levanter.tracker.current_tracker().log_artifact(path, type="jax_profile")
-            barrier_sync()
+            # Make sure logs are sent immediately
+            sys.stdout.flush()
+
+            try:
+                logger.info(f"Logging profile artifact to {path}")
+                levanter.tracker.current_tracker().log_artifact(path, type="jax_profile")
+                logger.info("Profile artifact logged successfully")
+            except Exception as e:
+                logger.error(f"Failed to log profile artifact: {e}")
+
+            logger.info("Calling barrier_sync")
+            try:
+                barrier_sync(timeout=60.0)  # Increase timeout to 60 seconds
+                logger.info("Profiling callback complete")
+            except Exception as e:
+                logger.warning(f"Barrier sync after profiling failed, but continuing training: {e}")
+                logger.warning("Some profile data may be incomplete but training will continue")
+                logger.info("Profiling callback completed with warnings")
 
     return profiler_callback_fn
 
@@ -355,12 +399,15 @@ def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bo
 def _flush_while_waiting(event):
     def flush_stdout():
         sys.stdout.flush()
-        time.sleep(5)
+        # Initial shorter wait to reduce lag
+        time.sleep(2)
         while not event.is_set():
-            print("Waiting...", flush=True)
-            time.sleep(5)
+            print(f"Worker {jax.process_index()} flushing logs...", flush=True)
+            sys.stderr.flush()
+            sys.stdout.flush()
+            time.sleep(3)
 
-    thread = threading.Thread(target=flush_stdout)
+    thread = threading.Thread(target=flush_stdout, daemon=True)
     thread.start()
 
 
