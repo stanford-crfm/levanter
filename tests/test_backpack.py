@@ -10,6 +10,7 @@ import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 
+from levanter.models.attention import AttentionMask
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.tree_utils import inference_mode
@@ -23,14 +24,14 @@ def test_backpack_predict():
     trainer_config = TrainerConfig()
 
     Vocab = round_axis_for_partitioning(Axis("vocab", VOCAB_SIZE), trainer_config.compute_axis_mapping)
-    model_config = BackpackConfig()
+    model_config = BackpackConfig(use_flash_attention=False)
     model_key = PRNGKey(0)
     model = BackpackLMHeadModel.init(Vocab, model_config, key=model_key)
     mp = trainer_config.mp
     model = mp.cast_to_param(model)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
-    attn_mask = hax.nn.attention.causal_mask(model.Pos, model.config.KeyPos)
+    attn_mask = AttentionMask.causal()
 
     def compute(input):
         return hax.nn.softmax(
@@ -53,7 +54,7 @@ def test_backpack_nano_compare():
     vocab_size = 5257
     torch.manual_seed(0)
 
-    converter = BackpackConfig.default_hf_checkpoint_converter
+    converter = BackpackConfig().hf_checkpoint_converter()
 
     # a bit hacky, using some internal-y APIs of transformers
     cls = converter.HFAutoModelClass()
@@ -82,7 +83,7 @@ def test_backpack_nano_compare():
     # now compare levanter
     with tempfile.TemporaryDirectory() as tmpdir:
         lev_config = converter.config_from_hf_config(config)
-        model.save_pretrained(tmpdir)
+        model.save_pretrained(tmpdir, safe_serialization=False)  # unsafe b/c weight tying
         loaded_checkpoint = converter.load_state_dict(tmpdir)
 
     roundtrip_hf_config = converter.hf_config_from_config(lev_config)
@@ -92,7 +93,7 @@ def test_backpack_nano_compare():
 
     Vocab = haliax.Axis("vocab", vocab_size)
     lev_model = BackpackLMHeadModel.init(Vocab, lev_config, key=PRNGKey(0))
-    lev_model = lev_model.from_state_dict(loaded_checkpoint)
+    lev_model = haliax.state_dict.from_torch_compatible_state_dict(lev_model, loaded_checkpoint)
     lev_model = inference_mode(lev_model, True)
 
     hax_input = haliax.named(input, lev_config.Pos)
@@ -126,10 +127,11 @@ def test_backpack_configs(config_file):
 
 def test_pass_different_length_seq():
     config = BackpackConfig(
-        seq_len=32,
+        seq_len=64,
         hidden_dim=16,
         num_layers=4,
         num_heads=2,
         gradient_checkpointing=False,
+        use_flash_attention=True,
     )
     check_model_works_with_seqlen(BackpackLMHeadModel, config, 16)

@@ -1,22 +1,33 @@
 import dataclasses
+import functools
+import gc
 import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import jax.random as jrandom
-import wandb
 
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
+import levanter.eval
+import levanter.eval_harness
 from levanter import callbacks
+from levanter.checkpoint import EpochCheckpointer, load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import (
+    CausalLmDataset,
+    LMDatasetConfig,
+    LMMixtureDatasetConfig,
+    SupervisedSourceConfig,
+    mk_supervised_datasets,
+)
+from levanter.eval_harness import LmEvalHarnessConfig
 from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
+from levanter.models.lm_model import LmConfig, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
@@ -28,6 +39,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainLmConfig:
     data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
+    supervised_data: Optional[SupervisedSourceConfig | dict[str, SupervisedSourceConfig]] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -41,10 +53,18 @@ class TrainLmConfig:
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
 
     fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
+    z_loss_weight: float = 0.0
 
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
+
+    data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
+    initialize_from_checkpoint_path: Optional[str] = None
+    # if provided, will initialize from this checkpoint, used for llama style data mixture
+    epoch: int = 0
+    eval_harness: Optional[LmEvalHarnessConfig] = None
+    eval_harness_steps: int = 10000
 
 
 def main(config: TrainLmConfig):
@@ -57,7 +77,7 @@ def main(config: TrainLmConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
@@ -71,44 +91,40 @@ def main(config: TrainLmConfig):
             # NB: gross mutability
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(tokenizer=tokenizer)
     else:
         converter = None
 
-    # initialize training config *after* we've done the hf stuff b/c we might have changed the model config
-    config.trainer.initialize(config)
-
-    # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
-    # this makes deterministic training pretty easy
-    seed = config.trainer.seed
-    data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
-
-    # some axes we need
-    Batch = config.trainer.TrainBatch
-    EvalBatch = config.trainer.EvalBatch
-    Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
-
-    # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
-    # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
-    compute_axis_mapping = config.trainer.compute_axis_mapping
-    parameter_axis_mapping = config.trainer.parameter_axis_mapping
-
-    def compute_loss(model: LmHeadModel, example: LmExample, key=None):
-        return model.compute_loss(example, key=key).scalar()
-
+    levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    # Our trainer is a wrapper around the optimizer and compute_loss function that handles checkpointing and fsdp
-    trainer = Trainer(config.trainer, optimizer, compute_loss)
+    loss_function = functools.partial(compute_next_token_loss, logsumexp_weight=config.z_loss_weight)
 
-    eval_datasets = config.data.validation_sets(Pos.size)
-    train_dataset = CausalLmDataset(
-        config.data.train_set(Pos.size), Pos, KeyPos, ignore_index=config.data.ignore_token_id
-    )
+    # Using the trainer as a context manager does 3 things:
+    # 1. Sets the device mesh
+    # 2. Sets the axis mapping (for fsdp)
+    # 3. Sets the global metrics tracker
+    with Trainer(config.trainer, optimizer, loss_function) as trainer:
+        # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
+        # this makes deterministic training pretty easy
+        seed = config.trainer.seed
+        data_key, loader_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
-    with trainer.device_mesh:
+        if config.data_seed is not None:
+            logger.info(f"Overriding data seed with {config.data_seed}")
+            data_key = jrandom.PRNGKey(config.data_seed)
+
+        # We have two axis_mappings: one for storing the model and optimizer states, and one for compute
+        # This allows Zero-3-style parameter sharding, where we shard the parameters and optimizer state across the mesh
+        compute_axis_mapping = trainer.compute_axis_mapping
+        parameter_axis_mapping = trainer.parameter_axis_mapping
+
+        # some axes we need
+        EvalBatch = config.trainer.EvalBatch
+        Pos = config.model.Pos
+        KeyPos = config.model.KeyPos
+
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
@@ -117,9 +133,48 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
+        # TODO: fix this
+        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
+
+        train_sets = config.data.train_set(
+            Pos.size, key=data_key, epochs=config.epoch, batch_schedule=config.trainer.batch_schedule
+        )
+
+        train_dataset = CausalLmDataset(
+            train_sets,
+            Pos,
+            KeyPos,
+            ignore_index=config.data.ignore_token_id,
+            eos_id=tokenizer.eos_token_id,
+        )
+
+        # add epoch logging if epochs specified
+        if config.epoch > 0:
+            total_tokens_future = callbacks.get_total_dataset_tokens(train_dataset.dataset, config.model.seq_len)
+            trainer.add_hook(
+                callbacks.log_epoch_progress(
+                    total_tokens_future, Pos.size, trainer.config.train_batch_size, max_epochs=config.epoch
+                ),
+                every=1,
+            )
+
+            # Add epoch checkpoint callback
+            epoch_checkpointer = EpochCheckpointer(
+                checkpointer=trainer.config.checkpointer.create(trainer.run_id),
+                every_n_epochs=1,  # Or configure as needed
+                total_dataset_size=total_tokens_future.result(),
+                batch_size=trainer.config.train_batch_size,
+            )
+            trainer.add_hook(epoch_checkpointer, every=1)
+
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
-        if state.step == 0:
+        seek_dataloader = True
+        if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
+            state = load_checkpoint(state, config.initialize_from_checkpoint_path)
+            seek_dataloader = False
+
+        if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
             if config.initialize_from_hf:
                 # initialize from an hf pretrained model
@@ -128,32 +183,92 @@ def main(config: TrainLmConfig):
                     f" '{converter.reference_checkpoint}'"
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
-                state.model = None
-                model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                state = dataclasses.replace(state, model=None)
+                gc.collect()
+                model = converter.load_pretrained(
+                    config.model.model_type,
+                    config=config.model if not config.use_hf_model_config else None,
+                    axis_mapping=parameter_axis_mapping,
+                    dtype=trainer.mp.compute_dtype,
+                )
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
             else:
                 logger.info("No checkpoint found. Starting from scratch.")
 
-        wandb.summary["parameter_count"] = parameter_count(state.model)
+        levanter.tracker.log_summary({"parameter_count": parameter_count(state.model)})
 
-        # boilerplate hooks and such
-        trainer.add_default_hooks()
+        max_eval_examples_per_ds = config.trainer.max_eval_batches
+        if max_eval_examples_per_ds is not None:
+            max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
-        if len(eval_datasets) == 0:
+        if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
+        else:
+            causal_datasets = [
+                (
+                    CausalLmDataset(
+                        ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id, eos_id=tokenizer.eos_token_id
+                    ),
+                    tags,
+                )
+                for ds, tags in tagged_eval_datasets
+            ]
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                EvalBatch,
+                causal_datasets,
+                tokenizer,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                mp=config.trainer.mp,
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
-        for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
-            trainer.add_eval_hook(eval_dataset, name=name)
+        if config.supervised_data is not None:
+            logger.info("Using supervised data for evals")
+            supervised_eval = mk_supervised_datasets(config.supervised_data, "validation", tokenizer, Pos)
 
-        trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
+            evals = list(supervised_eval.values())
+
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                EvalBatch,
+                evals,
+                tokenizer,
+                trainer.device_mesh,
+                compute_axis_mapping,
+                max_eval_examples_per_ds,
+                prefix="internal_eval",
+                mp=config.trainer.mp,
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
+
+        flops_per_token = config.model.flops_per_token(vocab_size)
+        flops_per_example = 3 * flops_per_token * Pos.size if flops_per_token is not None else None
+        trainer.add_hook(
+            callbacks.log_performance_stats(Pos.size, trainer.config.batch_schedule, flops_per_example), every=1
+        )
+        # trainer.add_hook(callbacks.GradWatchCallback(include_histogram=True), every=5)
+
         if config.hf_save_path is not None:
-            full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+            # bit gross to reach this far into the config, but it's fine
+            if config.trainer.checkpointer.append_run_id_to_base_path:
+                full_save_path = os.path.join(config.hf_save_path, trainer.run_id)
+            else:
+                full_save_path = config.hf_save_path
 
             trainer.add_hook(
                 save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
                 every=config.hf_save_steps,
+            )
+
+        if config.eval_harness is not None:
+            eval_harness = config.eval_harness
+            trainer.add_hook(
+                levanter.eval_harness.lm_eval_harness(
+                    eval_harness, tokenizer, EvalBatch, compute_axis_mapping, trainer.mp
+                ),
+                every=config.eval_harness_steps,
             )
 
         # visualize log probs
@@ -162,34 +277,30 @@ def main(config: TrainLmConfig):
             axis_resources=compute_axis_mapping,
             out_axis_resources=compute_axis_mapping,
         )
-        def compute_log_probs(model, example: LmExample):
+        def compute_log_probs(model, example):
             model = trainer.mp.cast_to_compute(model)
             logprobs = model.compute_loss(example, key=None, reduction=None)
             # roll forward to get the loss for each predicted token
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # engine.add_hook(
-        #     callbacks.compute_and_visualize_log_probs(
-        #         eval_loader, tokenizer, compute_log_probs, os.path.join(config.trainer.run_dir, "log_probs")
-        #     ),
-        #     every=config.trainer.steps_per_eval,
-        # )
-        #
-        # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
-
-        if state.step > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step + 1), desc="seeking data for resume"):
-                next(train_loader)
+        train_loader = trainer.data_loader(train_dataset)
+        if seek_dataloader:
+            train_loader = train_loader.iter_from_step(state.step)
+        else:
+            train_loader = iter(train_loader)
 
         ## OK, actually run training!
-        trainer.train(state, train_loader)
-        # checkpointer.on_step(last_step, force=True)
+        last_info = trainer.train(state, train_loader)
+
+        # If running EpochDataset save latest checkpoint by default
+        if trainer.config.checkpointer is not None and config.epoch > 0:
+            trainer.run_hooks(last_info, force=True)
+            checkpointer = trainer.config.checkpointer.create(trainer.run_id)
+            checkpointer.wait_until_finished()
+
+    # This isn't necessary except when Levanter is run in a subprocess (as happens w/ ray)
+    trainer.tracker.finish()
 
 
 if __name__ == "__main__":

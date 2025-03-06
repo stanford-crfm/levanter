@@ -175,7 +175,11 @@ _already_initialized = False
 
 
 def auto_ray_cluster(
-    address: Optional[str] = None, namespace: Optional[str] = "levanter", start_workers: bool = True, **kwargs
+    address: Optional[str] = None,
+    namespace: Optional[str] = "levanter",
+    start_workers: bool = True,
+    fail_if_cluster_already_initialized: bool = False,
+    **kwargs,
 ):
     """Initializes ray, automatically discovering the address if it is not provided.
     Currently supports slurm and TPU.
@@ -220,11 +224,10 @@ def auto_ray_cluster(
                 # Explicitly setting the number of CPUs on ray init stops init errors
                 num_cpus = logical_cpu_core_count()
 
-                # it used to be that if we were coordinator, we were also process 0
-                # this is no longer the case, so instead we need to check if we are the coordinator
-                # and if so, start the head
-
                 if _is_local_leader():
+                    # it used to be that if we were coordinator, we were also process 0
+                    # this is no longer the case, so instead we need to check if we are the coordinator
+                    # and if so, start the head
                     if _is_this_machine(host):
                         logger.info(f"Starting ray head on port {ray_port}. We are process the coordinator {host}.")
                         logger.info(f"Starting ray head with num_cpus set to {num_cpus}.")
@@ -232,12 +235,24 @@ def auto_ray_cluster(
                             f"ray start --head --port {ray_port} --num-cpus {num_cpus} --dashboard-host=0.0.0.0"
                         )
                         if ret != 0:
-                            raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                            if not fail_if_cluster_already_initialized:
+                                # see if we can connect to the head
+                                logger.warning(
+                                    f"Failed to start ray head with exit code {ret}. Checking if we can connect to"
+                                    " the head..."
+                                )
+                                ret = os.system("ray status")
+                                if ret != 0:
+                                    raise RuntimeError(f"Failed to start ray head with exit code {ret}")
+                                else:
+                                    logger.info(f"Ray head already running on port {ray_port}. Connecting to it.")
+                            else:
+                                raise RuntimeError(f"Failed to start ray head with exit code {ret}")
                         else:
                             logger.info(f"Successfully started ray head on port {ray_port}.")
 
                         # install an atexit handler to kill the head when we exit
-                        atexit.register(lambda: os.system("ray stop -g 10 --force"))
+                        atexit.register(lambda: os.system("ray stop -g 10 --force &> /dev/null"))
                     elif start_workers:
                         logger.info(
                             f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
@@ -261,7 +276,12 @@ def auto_ray_cluster(
             else:
                 logger.warning(f"Failed to initialize ray with address {address}. Retrying...")
                 continue
-    atexit.register(lambda: ray.shutdown())
+
+    def do_shutdown():
+        logger.info("Shutting down ray...")
+        ray.shutdown()
+
+    atexit.register(do_shutdown)
     _already_initialized = True
 
 
@@ -300,7 +320,9 @@ class DistributedConfig:
                 if coordinator_address is None:
                     coordinator_address = LevanterSlurmCluster.get_coordinator_address()
 
-            jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
+            jax.distributed.initialize(
+                coordinator_address, self.num_processes, self.process_id, device_ids, initialization_timeout=30 * 60
+            )
             logger.info(
                 f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} processes,"
                 f" coordinator_address={coordinator_address}, process_id={self.process_id}, my"

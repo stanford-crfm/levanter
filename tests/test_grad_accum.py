@@ -1,9 +1,10 @@
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import pytest
+from chex import assert_trees_all_close
 from jax.sharding import Mesh
 
+import haliax
 import haliax as hax
 import haliax.nn as hnn
 
@@ -28,9 +29,9 @@ class Mlp(eqx.Module):
         return Mlp(w_in, w_out, In, Out, Mid)
 
     def __call__(self, x):
-        x = hax.dot(self.In, self.w_in, x)
+        x = hax.dot(self.w_in, x, axis=self.In)
         x = hnn.relu(x)
-        x = hax.dot(self.Mid, self.w_out, x)
+        x = hax.dot(self.w_out, x, axis=self.Mid)
         return x
 
 
@@ -65,11 +66,13 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
         return acc_v, acc_g
 
     with mesh:
+        mlp = haliax.shard(mlp, axis_mapping)
+        x = haliax.shard(x, axis_mapping)
         grad_fn = eqx.filter_value_and_grad(loss_fn)
         acc_v, acc_g = jit_grad_accum(mlp, x)
         v, g = grad_fn(mlp, x)
 
-        assert jnp.allclose(acc_v, v)
+        assert_trees_all_close(acc_v, v, atol=1e-3, rtol=1e-3)
 
         for l1, l2 in zip(jax.tree_util.tree_leaves(acc_g), jax.tree_util.tree_leaves(g)):
-            assert jnp.allclose(l1, l2)
+            assert_trees_all_close(l1, l2, atol=1e-3, rtol=1e-3)

@@ -158,7 +158,7 @@ W = hax.random.uniform(PRNGKey(2), (Feature,))
 def mse(pred, target):
     return hax.mean((pred - target) * (pred - target), axis=Batch)
 
-y_pred = hax.dot(Feature, x, W)
+y_pred = hax.dot(x, W, axis=Feature)
 mse(y_pred, y)
 ```
 
@@ -218,7 +218,7 @@ Embed = hax.Axis("embed", 512)  # embedding size
 
 def attention(Key, KPos, query, key, value, mask):
     # how similar is each query to each key
-    scores = hax.dot(Key, query, key) / jnp.sqrt(Key.size)
+    scores = hax.dot(query, key, axis=Key) / jnp.sqrt(Key.size)
 
     # mask out invalid positions
     if mask is not None:
@@ -228,7 +228,7 @@ def attention(Key, KPos, query, key, value, mask):
     scores = hax.nn.softmax(scores, axis=KPos)
 
     # weighted sum of values
-    return hax.dot(KPos, scores, value)
+    return hax.dot(scores, value, axis=KPos)
 ```
 
 With named tensors, we can write the code in a way that conveys the semantics of the operation, rather than the
@@ -539,7 +539,7 @@ learn differently from Transformers.
 ## A few other features
 
 * **Training**: Levanter uses [Optax](https://github.com/deepmind/optax) for optimization,
-  though our new optimizer, [Sofia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
+  though our new optimizer, [Sophia](https://arxiv.org/abs/2305.14342), is coming to Levanter soon!
 * **Logging**: Logging is done with [WandB](https://wandb.ai/), complete with a fancy online visualization of the validation set during training.
 * **Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
 * **Export**: We also support exporting models to the Hugging Face Hub, with export compatible with Pytorch and Transformers via [SafeTensors](https://github.com/huggingface/safetensors).
@@ -627,7 +627,7 @@ trained on the [Lakh MIDI](https://colinraffel.com/projects/lmd/) corpus. The la
 This is just the beginning for Levanter. In the future, look for:
 * more models on interesting problem domains,
 * scaled up versions of new architectures developed here at Stanford and elsewhere,
-* new training techniques, including the newly released [Sofia](https://arxiv.org/abs/2305.14342) optimizer,
+* new training techniques, including the newly released [Sophia](https://arxiv.org/abs/2305.14342) optimizer,
 * and larger models!
 
 Levanter is still a work in progress, but we are excited to share it with the community. We hope that Levanter will be

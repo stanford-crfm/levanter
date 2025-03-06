@@ -11,7 +11,9 @@ from jax.sharding import PartitionSpec
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
-from haliax.util import is_jax_array_like, is_named_array
+from haliax.util import is_named_array
+
+from levanter.utils.jax_utils import zeros_like_tree
 
 
 Args = ParamSpec("Args")
@@ -90,7 +92,7 @@ def microbatched(
 
         # first, determine the shape and make accumulator arrays
         r_shape = eqx.filter_eval_shape(fn, *args, **kwargs)
-        acc = _zeros_like_tree(r_shape, accum_axis_mapping, accum_dtype)
+        acc = zeros_like_tree(r_shape, accum_axis_mapping, accum_dtype)
 
         # then, reshape the inputs from (Batch, ...) to (AccumStep, Microbatch, ...)
 
@@ -112,8 +114,12 @@ def microbatched(
                 this_r = fn(*microbatch, **microbatch_kwargs)
 
             with jax.named_scope("accum"):
-                acc = eqx.apply_updates(acc, this_r)
-                acc = hax.shard(acc, accum_axis_mapping)
+                import haliax.quantization as hq
+
+                # TODO: this uses the latest value for the scale for fp8, which seems not ideal but probably ok?
+                overwrites, updates = hq.partition_for_grad_overwrite(this_r)
+                acc = hq.apply_updates(acc, updates, overwrites)
+                acc = hax.shard_with_axis_mapping(acc, accum_axis_mapping)
 
             return acc
 
@@ -139,23 +145,7 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
             x = x.reshape((AccumStep.size, Microbatch.size) + x.shape[1:])
             return with_sharding_constraint(x, PartitionSpec(None, ResourceAxis.DATA, *(None,) * (len(x.shape) - 2)))
         else:
-            assert jnp.isscalar(x)
+            # assert jnp.isscalar(x)
             return x
 
     return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)
-
-
-def _zeros_like_tree(r_shape, axis_mapping, accum_dtype):
-    _zeros = functools.partial(_zeros_like, axis_mapping, accum_dtype)
-    acc = jax.tree_util.tree_map(_zeros, r_shape, is_leaf=is_named_array)
-    return acc
-
-
-def _zeros_like(mapping, dtype, n):
-    if isinstance(n, hax.NamedArray):
-        return hax.shard(hax.zeros_like(n, dtype=dtype), mapping)
-    elif is_jax_array_like(n):
-        return jnp.zeros_like(n, dtype)
-    else:
-        assert jnp.isscalar(n)
-        return 0.0

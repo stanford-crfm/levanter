@@ -56,18 +56,18 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis
 from haliax.jax_utils import shaped_rng_split
+from haliax.state_dict import (
+    ModuleWithStateDictSerialization,
+    StateDict,
+    save_state_dict,
+    to_torch_compatible_state_dict,
+)
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    save_state_dict,
-    to_numpy_state_dict,
-)
-from levanter.logging import silence_transformer_nag
 from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()
@@ -150,10 +150,10 @@ class LowRankLinear(eqx.Module):
         return LowRankLinear(lora_A, lora_B, dropout, alpha / r)
 
     def merge(self) -> hax.NamedArray:
-        return hax.dot(LORA_R, self.lora_A.weight, self.lora_B.weight) * self.scale
+        return hax.dot(self.lora_A.weight, self.lora_B.weight, axis=LORA_R) * self.scale
 
 
-class LoraLinear(eqx.Module, StateDictSerializationMixin):
+class LoraLinear(ModuleWithStateDictSerialization):
     """
     Linear layer with LoRA transform.
     """
@@ -367,14 +367,14 @@ def save_peft_checkpoint_callback(
     If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
     any additional kwargs to the huggingface_hub.upload_folder function.
 
-    Args
-    base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
-               may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
-    config: the LoRA config to use
-    base_model_name_or_path: the name or path of the base model
-    tokenizer: If provided, will save the tokenizer to the checkpoint
-    upload_to_hf: the repo to upload to. If a string, will be interpreted as a repo name + branch
-    hf_upload_kwargs: kwargs to pass to the upload function
+    Args:
+        base_path: the base path to save the checkpoint to. `/step-<step>` will be appended to this. base_path
+                   may be a GCS bucket path, in which case the checkpoint will be uploaded to GCS after being written to a tmp
+        config: the LoRA config to use
+        base_model_name_or_path: the name or path of the base model
+        tokenizer: If provided, will save the tokenizer to the checkpoint
+        upload_to_hf: the repo to upload to. If a string, will be interpreted as a repo name + branch
+        hf_upload_kwargs: kwargs to pass to the upload function
     """
 
     def cb(step: StepInfo):
@@ -390,7 +390,7 @@ def save_peft_checkpoint_callback(
         logger.info(f"Saving PEFT checkpoint for step {step.step} to {base_path}")
 
         save_peft_pretrained(
-            step.model,
+            step.eval_model,
             config,
             base_model_name_or_path,
             os.path.join(base_path, f"step-{step.step}"),
@@ -441,7 +441,7 @@ def save_merged_hf_checkpoint_callback(
         logger.info(f"Saving merged HF model for step {step.step} to {base_path}")
         path = os.path.join(base_path, f"step-{step.step}")
 
-        model = step.model
+        model = step.eval_model
 
         save_merged_hf_model(model, converter, path, upload_to_hf=upload_to_hf, **my_upload_kwargs)
 
@@ -518,5 +518,5 @@ def lora_state_dict(model: M, prefix: Optional[str] = DEFAULT_DICT_PREFIX) -> St
     Returns a state dict of the LoRA parameters of the given model without other parameters.
     This method attempts to return a state dict compatible with PEFT's import method.
     """
-    state_dict = to_numpy_state_dict(filter_lora_params(model), prefix=prefix)
+    state_dict = to_torch_compatible_state_dict(filter_lora_params(model), prefix=prefix)
     return {k: v for k, v in state_dict.items() if v is not None}

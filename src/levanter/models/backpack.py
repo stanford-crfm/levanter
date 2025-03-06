@@ -12,20 +12,13 @@ import haliax.jax_utils
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import named_call
+from haliax.state_dict import ModuleWithStateDictSerialization, StateDict, with_prefix
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
-from levanter.compat.torch_serialization import (
-    StateDict,
-    StateDictSerializationMixin,
-    apply_prefix,
-    flatten_linear_layers,
-    unflatten_linear_layers,
-)
-from levanter.logging import silence_transformer_nag
 from levanter.models.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
-from levanter.utils.py_utils import cached_classproperty
+from levanter.utils.logging import silence_transformer_nag
 
 
 silence_transformer_nag()
@@ -43,11 +36,12 @@ class BackpackConfig(Gpt2Config):
     def model_type(self) -> Type["BackpackLMHeadModel"]:
         return BackpackLMHeadModel
 
-    @cached_classproperty
-    def default_hf_checkpoint_converter(cls) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self) -> HFCheckpointConverter["BackpackConfig"]:  # type: ignore
         # We trust this code because it's in our hub repo
         return HFCheckpointConverter(
-            cls, "stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079", trust_remote_code=True
+            self,
+            reference_checkpoint="stanford-crfm/levanter-backpack-1b@9face7bd6182155fe3f1a6a5a14ca1c4810bb079",
+            trust_remote_code=True,
         )
 
     # Axes
@@ -100,7 +94,7 @@ class BackpackConfig(Gpt2Config):
         )
 
 
-class BackpackMlp(eqx.Module, StateDictSerializationMixin):
+class BackpackMlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
     act: Callable = eqx.static_field()
@@ -116,8 +110,8 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
         use_bias: bool = True,
     ) -> "BackpackMlp":
         k_fc, k_proj = jrandom.split(key, 2)
-        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
-        c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias)
+        c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
+        c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -131,32 +125,8 @@ class BackpackMlp(eqx.Module, StateDictSerializationMixin):
         x = self.c_proj(x)
         return x
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "BackpackMlp":
-        d = {}
-        d.update(
-            unflatten_linear_layers(
-                apply_prefix(prefix, "c_proj"), state_dict, self.c_proj, out_dims_first_in_dict=False
-            )
-        )
-        d.update(
-            unflatten_linear_layers(apply_prefix(prefix, "c_fc"), state_dict, self.c_fc, out_dims_first_in_dict=False)
-        )
-        return super().from_state_dict(d, prefix)
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(
-            flatten_linear_layers(apply_prefix(prefix, "c_proj"), self.c_proj, out_dims_first_in_dict=False)
-        )
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_fc"), self.c_fc, out_dims_first_in_dict=False))
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
+class WeightsOnlyAttention(ModuleWithStateDictSerialization):
     """
     Changes from Gpt2Attention:
     1. No projection; it returns the attention weights
@@ -176,7 +146,10 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         Embed = config.Embed
 
         k_c, _ = jrandom.split(key, 2)
-        c_attn = hnn.Linear.init(In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias)
+        # NB: out_first=True b/c the torch implementation uses Linear
+        c_attn = hnn.Linear.init(
+            In=Embed, Out=(Qk, config.Senses, config.SenseHeadDim), key=k_c, use_bias=use_bias, out_first=True
+        )
         dropout = hnn.Dropout(config.attn_pdrop)
 
         return WeightsOnlyAttention(config, c_attn, dropout)
@@ -205,25 +178,8 @@ class WeightsOnlyAttention(StateDictSerializationMixin, eqx.Module):
         attn_weights = self.dropout(attn_weights, key=key)
         return attn_weights
 
-    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> "WeightsOnlyAttention":
-        d = unflatten_linear_layers(
-            apply_prefix(prefix, "c_attn"), state_dict, self.c_attn, out_dims_first_in_dict=True
-        )
-        return super().from_state_dict(d, prefix)
 
-    def update_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None) -> StateDict:
-        # need to undo the reshape we did in from_state_dict
-        # reminder that everything is vectorized
-        my_dict: StateDict = {}
-        super().update_state_dict(my_dict, prefix)
-
-        my_dict.update(flatten_linear_layers(apply_prefix(prefix, "c_attn"), self.c_attn, out_dims_first_in_dict=True))
-
-        state_dict.update(my_dict)
-        return state_dict
-
-
-class NoMixBlock(StateDictSerializationMixin, eqx.Module):
+class NoMixBlock(eqx.Module):
     ln_1: hnn.LayerNorm
     ln_2: hnn.LayerNorm
     mlp: BackpackMlp
@@ -263,7 +219,7 @@ class NoMixBlock(StateDictSerializationMixin, eqx.Module):
         return hidden_states
 
 
-class BackpackSenses(StateDictSerializationMixin, eqx.Module):
+class BackpackSenses(eqx.Module):
     dropout: hnn.Dropout
     block: NoMixBlock
     ln: hnn.LayerNorm
@@ -342,7 +298,7 @@ class BackpackGpt2Embeddings(eqx.Module):
         return x
 
     def unembed(self, x: NamedArray):
-        return hax.dot("embed", x, self.token_embeddings)
+        return hax.dot(x, self.token_embeddings, axis="embed")
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"token_embeddings": "wte.weight", "position_embeddings": "wpe.weight"}
@@ -352,7 +308,7 @@ class BackpackGpt2Embeddings(eqx.Module):
         return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
-class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
+class BackpackLMHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSerialization):
     transformer: Gpt2Transformer
     embeddings: BackpackGpt2Embeddings
     sense_net: BackpackSenses
@@ -398,7 +354,7 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         )
 
     @named_call
-    def __call__(
+    def activations(
         self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
@@ -416,16 +372,19 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         sense_vectors = sense_vectors.rename({self.Pos: self.config.KeyPos})
 
         ## Weight-and-sum
-        hidden_states = hax.dot(self.config.KeyPos, contextualization_weights, sense_vectors)  # (seq, senses, embed)
+        hidden_states = hax.dot(
+            contextualization_weights, sense_vectors, axis=self.config.KeyPos
+        )  # (seq, senses, embed)
         hidden_states = hax.sum(hidden_states, axis=self.config.Senses)
 
         # Rescale - this is important for large num_senses
         scale = self.config.Senses.size
         hidden_states = hidden_states / scale
 
-        lm_logits = self.embeddings.unembed(hidden_states)
+        return hidden_states
 
-        return lm_logits
+    def get_lm_head(self) -> hax.NamedArray:
+        return self.embeddings.token_embeddings
 
     def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
@@ -443,10 +402,10 @@ class BackpackLMHeadModel(eqx.Module, LmWithHfSerializationMixin):
         state_dict = super().update_state_dict(state_dict, prefix=prefix)
         # In levanter's implementation, we have a shared embedding matrix for both the word
         # embeddings and the sense embeddings
-        state_dict[apply_prefix(prefix, "backpack.word_embeddings.weight")] = state_dict[
-            apply_prefix(prefix, "backpack.gpt2_model.wte.weight")
+        state_dict[with_prefix(prefix, "backpack.word_embeddings.weight")] = state_dict[
+            with_prefix(prefix, "backpack.gpt2_model.wte.weight")
         ]
-        state_dict[apply_prefix(prefix, "backpack.position_embeddings.weight")] = state_dict[
-            apply_prefix(prefix, "backpack.gpt2_model.wpe.weight")
+        state_dict[with_prefix(prefix, "backpack.position_embeddings.weight")] = state_dict[
+            with_prefix(prefix, "backpack.gpt2_model.wpe.weight")
         ]
         return state_dict

@@ -1,6 +1,7 @@
 # cf https://github.com/lucidrains/flash-attention-jax
 # cf https://tridao.me/publications/flash2/flash2.pdf
 # cf https://arxiv.org/pdf/2205.14135.pdf
+import math
 from typing import Optional, Tuple
 
 import equinox
@@ -18,8 +19,7 @@ from haliax.types import PrecisionLike
 from levanter.models.attention import AttentionMask, materialize_mask
 
 
-# TODO: tune
-BLOCK_SIZE = 128
+BLOCK_SIZE = 1024
 
 
 @named_call
@@ -36,7 +36,7 @@ def flash_attention(
     dropout: float = 0.0,
     inference: bool,
     key: Optional[PRNGKeyArray] = None,
-    block_size: int = BLOCK_SIZE,
+    block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
 ):
@@ -57,11 +57,21 @@ def flash_attention(
         q = q.astype(dtype)
         k = k.astype(dtype)
 
-    # premultiply by 1/sqrt(d_k) for normal dot product attention
-    q = q * jax.lax.rsqrt(float(q.axis_size(Key)))
+    if block_size is None:
+        block_size = BLOCK_SIZE
 
     QPos = q.resolve_axis(QPos)
     KPos = k.resolve_axis(KPos)
+
+    if QPos.size < block_size or KPos.size < block_size:
+        from levanter.models.attention import simple_attention_with_dropout
+
+        return simple_attention_with_dropout(
+            QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
+        )
+
+    # premultiply by 1/sqrt(d_k) for normal dot product attention
+    q = q / math.sqrt(float(q.axis_size(Key)))
 
     return _flash_attention(
         (q, k, v),
@@ -145,6 +155,8 @@ def _flash_attention_forward(
     ell = hax.zeros((*q_batch_axes, QPos))
     ell = hax.auto_sharded(ell)
 
+    is_causal = isinstance(mask, AttentionMask) and mask.is_causal
+
     @named_call
     def do_o_block(state):
         i, o, ell = state
@@ -168,7 +180,7 @@ def _flash_attention_forward(
             v_j = v[KPos, ds.block(j, block_size)]
 
             # Step 8: compute Sij = QiKj^T
-            attn_ij = hax.dot(Key, q_i, k_j, precision=precision)
+            attn_ij = hax.dot(q_i, k_j, precision=precision, axis=Key)
 
             if bias is not None:
                 if bias.has_axis(QPos.name):
@@ -187,8 +199,6 @@ def _flash_attention_forward(
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
 
-            # TODO: block causal
-
             if dropout > 0 and not inference:
                 attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
 
@@ -201,12 +211,14 @@ def _flash_attention_forward(
             sumexp_i = exp_diff * sumexp_i + hax.sum(P_ij, axis=KPos.name)
 
             # Step 10: Compute O_i = diag(exp(m_i^{j-1} - m_i^j) O_i + P_i^j V_j
-            o_i = exp_diff * o_i + hax.dot(KPos.name, P_ij, v_j)
+            o_i = exp_diff * o_i + hax.dot(P_ij, v_j, axis=KPos.name)
 
             return (i, j + 1, o_i, q_i, sumexp_i, max_i)
 
+        j_end = jnp.minimum(i + 1, Tc) if is_causal else Tc
+
         _, _, o_i, _, sumexp_i, max_i = jax.lax.while_loop(
-            lambda state: state[1] < Tc, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
+            lambda state: state[1] < j_end, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)
         )
 
         # Step 12: compute O_i = diag(\ell_i^{Tc})^{-1} O_i^{Tc}
@@ -234,7 +246,7 @@ def _flash_attention_backward(
     QPos: hax.Axis,
     KPos: hax.Axis,
     Key: hax.AxisSelector,
-    mask: Optional[hax.NamedArray] = None,
+    mask: Optional[AttentionMask | hax.NamedArray] = None,
     bias: Optional[hax.NamedArray] = None,
     dropout: float = 0.0,
     *,
@@ -263,6 +275,8 @@ def _flash_attention_backward(
     dK = (k * 0.0).astype(k.dtype)
     dV = (v * 0.0).astype(v.dtype)
 
+    is_causal = isinstance(mask, AttentionMask) and mask.is_causal
+
     @named_call
     def do_kv_block(state):
         j, dQ, dK, dV = state
@@ -282,7 +296,7 @@ def _flash_attention_backward(
             L_i = L[QPos, ds.block(i, block_size)]
             D_i = D[QPos, ds.block(i, block_size)]
 
-            attn_ij = hax.dot(Key, q_i, k_j, precision=precision)
+            attn_ij = hax.dot(q_i, k_j, precision=precision, axis=Key)
 
             if dropout > 0 and not inference:
                 attn_ij = hax.nn.dropout(attn_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
@@ -300,12 +314,12 @@ def _flash_attention_backward(
             if dropout > 0 and not inference:
                 p_ij = hax.nn.dropout(p_ij, dropout, inference=False, key=jax.random.fold_in(key, i * Tc + j))
 
-            dP_ij = hax.dot(Key, dO_i, v_j)
+            dP_ij = hax.dot(dO_i, v_j, axis=Key)
             dAttn_ij = p_ij * (dP_ij - D_i)
             dAttn_ij = dAttn_ij.astype(dQ_i.dtype)
 
-            dV_ji = hax.dot(QPos.name, p_ij, dO_i).astype(dV_j.dtype)
-            dK_ji = hax.dot(QPos.name, dAttn_ij, q_i).astype(dK_j.dtype)
+            dV_ji = hax.dot(p_ij, dO_i, axis=QPos.name).astype(dV_j.dtype)
+            dK_ji = hax.dot(dAttn_ij, q_i, axis=QPos.name).astype(dK_j.dtype)
 
             # GQA-specific: eliminate unnecessary axes (e.g. 'q_heads_per_group')
             unnecessary_axes = hax.eliminate_axes(dV_ji.axes, v.axes)
@@ -315,14 +329,17 @@ def _flash_attention_backward(
             dV_j = dV_j + dV_ji
             dK_j = dK_j + dK_ji
 
-            dQ_i = dQ_i + hax.dot(KPos.name, dAttn_ij, k_j).astype(dQ.dtype)
+            dQ_i = dQ_i + hax.dot(dAttn_ij, k_j, axis=KPos.name).astype(dQ.dtype)
             # dQ[i*block_size:(i+1)*block_size] = dQi
             dQ = dQ.updated_slice({QPos: i * block_size}, dQ_i)
 
             return i + 1, j, dQ, dK_j, dV_j
 
         # dQ, dK_j, dV_j = hax.fold(do_inner_block, Tr)((dQ, dK_j, dV_j), jnp.arange(Tr.size))
-        i, j, dQ, dK_j, dV_j = jax.lax.while_loop(lambda state: state[0] < Tr, do_inner_block, (0, j, dQ, dK_j, dV_j))
+        i_start = j if is_causal else 0
+        i, j, dQ, dK_j, dV_j = jax.lax.while_loop(
+            lambda state: state[0] < Tr, do_inner_block, (i_start, j, dQ, dK_j, dV_j)
+        )
 
         dK = dK.updated_slice({KPos: j * block_size}, dK_j)
         dV = dV.updated_slice({KPos: j * block_size}, dV_j)

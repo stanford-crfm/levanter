@@ -51,16 +51,15 @@ def main(config: ConvertLmConfig):
         model: LmHeadModel = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
         trainable, non_trainable = eqx.partition(model, is_inexact_arrayish)
         # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
-        ckpt = load_checkpoint(trainable, None, config.checkpoint_path)
+        trainable = load_checkpoint(trainable, config.checkpoint_path, subpath="model")
 
-        assert ckpt is not None
-        trainable, _, _ = ckpt
+        assert trainable is not None
         model = eqx.combine(trainable, non_trainable)
 
         if config.override_vocab_size:
             model = model.resize_vocab(config.override_vocab_size)
 
-        converter = model.config.default_hf_checkpoint_converter.replaced(tokenizer=tokenizer)
+        converter = model.config.hf_checkpoint_converter().replaced(tokenizer=tokenizer)
 
         converter.save_pretrained(
             model,

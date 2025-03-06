@@ -6,23 +6,108 @@ data:
   cache_dir: "gs://levanter-data/tokenized/openwebtext_llama/"
   tokenizer: "meta-llama/Llama-2-70b-hf"
 model:
+  activation_function: silu
+  attn_backend: null
+  cross_entropy_block_size: null
+  flash_attention_block_size: null
+  gradient_checkpointing: true
+  gradient_checkpointing_block_size: 5
+  hidden_dim: 4096
+  initializer_range: 0.02
+  intermediate_dim: 14336
+  layer_norm_epsilon: 1.0e-05
+  num_heads: 32
+  num_kv_heads: 8
+  num_layers: 32
+  reference_checkpoint: meta-llama/Llama-2-7b-hf
+  rope:
+    factor: 1.0
+    theta: 10000
+    type: default
+  scan_layers: true
+  seq_len: 4096
+  tie_word_embeddings: false
   type: llama
-# TODO: uncomment this once we resolve the resource exhaustion issue
-# initialize_from_hf: "meta-llama/Llama-2-7b-hf"
-# use_hf_model_config: true
-trainer:
-  wandb:
-    project: "levanter"
-    tags: ["openwebtext", "llama"]
-
-  mp: p=f32,c=bfloat16
-  train_batch_size: 256  # set for v4-64 TPU
-  num_train_steps: 1000
-  steps_per_eval: 50
-  tensor_parallel_axes: ["mlp", "heads"]
-  fsdp_axis: "embed"
-  batch_axis: "batch"
+  upcast_attn: false
+  use_bias: false
+  use_flash_attention: true
+  use_layer_norm_weight: true
 optimizer:
-  learning_rate: 1.2E-5  # set low for fine-tuning
-  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  cooldown: null
+  cycle_length: 10000
+  cycles: null
+  decay: 0.1
+  default_weight_decay_mask: null
+  epsilon: 1.0e-08
+  haps: null
+  learning_rate: 0.001
+  lr_schedule: inv
+  max_grad_norm: 1.0
   min_lr_ratio: 0.1
+  rewarmup: 0.0
+  type: adam
+  warmup: 1000
+  weight_decay: 0.05
+  weight_decay_modules: null
+trainer:
+  axis_resources: {}
+  batch_axis: batch
+  checkpointer:
+    append_run_id_to_base_path: false
+    base_path: gs://levanter-checkpoints/checkpoints/llama-8b-tootsie-0.001-19ad63/checkpoints
+    keep:
+    - every: 20000
+    save_interval: 10m
+  quantization: null
+  fsdp_axis: embed
+  id: llama-8b-tootsie-0.001-19ad63
+  initialize_from: null
+  jax_config:
+    jax_softmax_custom_jvp: true
+    jax_threefry_partitionable: true
+  load_checkpoint: null
+  load_checkpoint_path: null
+  log_dir: logs
+  max_eval_batches: null
+  model_axis_size: 1
+  mp: compute=bfloat16,params=float32,output=bfloat16
+  num_train_steps: 10000
+  parameter_axis_resources: {}
+  per_device_eval_parallelism: 2
+  per_device_parallelism: 2
+  profiler: false
+  profiler_num_steps: 100
+  profiler_perfetto_link: false
+  profiler_start_step: 5
+  ray:
+    address: null
+    auto_start_cluster: false
+    start_workers: false
+#  replica_dcn_axis_size: 2
+#  replica_ici_axis_size: 1
+  require_accelerator: true
+  seed: 0
+  shutdown_at_exit: false
+  steps_per_eval: 10000
+  tensor_parallel_axes: null
+  tracker:
+    entity: null
+    group: null
+    id: null
+    mode: null
+    name: null
+    project: levanter
+    resume: allow
+    save_code: true
+    save_xla_dumps: false
+    tags:
+    - llama-8b-test
+    - llama
+    - 8b
+    - wsd-s
+    type: wandb
+  train_batch_size: 1024
+  wandb: null
+use_hf_model_config: false
