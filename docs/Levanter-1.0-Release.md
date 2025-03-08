@@ -1,25 +1,4 @@
-# ---
-layout: blog
-title: Levanter — Legible, Scalable, Reproducible Foundation Models with JAX
-authors:
-    - name: David Hall
-      url: https://www.linkedin.com/in/dlwhall
-    - name: Ivan Zhou
-      url: https://www.ivanzhou.me/
-    - name: Percy Liang
-      url: https://cs.stanford.edu/~pliang/
-display: False
----
-> <div class="blog-tagline">
-    <strong> We introduce <a href="https://github.com/stanford-crfm/levanter" target="_blank">Levanter</a>, our codebase
-         for training reproducible, legible foundation models using JAX. We also
-        release a number of checkpoints for models trained with Levanter, including new architectures, on our
-        <a href="https://huggingface.co/stanford-crfm" target="_blank">Hugging Face Hub</a> page.
-    </strong>
-> </div>
-
-
-# Introduction
+# Levanter 1.0 Release Announcement
 
 We are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new [JAX](https://github.com/google/jax)-based codebase for training foundation models.
 Levanter is designed to be legible, scalable, and reproducible:
