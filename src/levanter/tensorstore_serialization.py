@@ -190,7 +190,7 @@ def tree_deserialize_leaves_tensorstore(
 
     # now we need to recreate the original structure
 
-    out_leaves = jax.tree_leaves(pytree, is_leaf=_is_named_or_none)
+    out_leaves = jax.tree.leaves(pytree, is_leaf=_is_named_or_none)
     assert len(out_leaves) == len(shardings_leaves)
     # out_leaves = [None] * len(shardings_leaves)
     for i, x in zip(indices_to_load, deser_leaves):
