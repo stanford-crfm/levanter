@@ -2,12 +2,12 @@
 # See https://pre-commit.com/hooks.html for more hooks
 exclude: ".git"
 default_stages:
-    - commit
+    - pre-commit
 fail_fast: true
 
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.0.1
+    rev: v5.0.0
     hooks:
     -   id: trailing-whitespace
     -   id: end-of-file-fixer
