@@ -55,7 +55,7 @@ class PermutationDataset(AsyncDataset[T_co]):
 
 
 class EraShufflingDataset(AsyncDataset[T_co]):
-    """
+    r"""
     A dataset that shuffles the data in "eras" of fixed length. Era shuffling is somewhere in between a shuffle buffer
     and a permutation. It's a "local" permutation where pi(i) \in [ (i//L) * L, (i//L + 1) * L ) for some era length L.
 
