@@ -1076,7 +1076,7 @@ def _copy_temp_caches_to_final_cache(
 
     # initialize the data offset tree
     permanent_cache = TreeStore.open(processor.output_exemplar, cache_dir, mode="a", cache_metadata=False)
-    data_offset_tree = jax.tree_map(lambda x: x.data_size, permanent_cache.tree)
+    data_offset_tree = jax.tree.map(lambda x: x.data_size, permanent_cache.tree)
 
     total_rows_from_caches = overall_ledger.total_num_rows
     copy_refs: dict[str, ray.ObjectRef] = {}
