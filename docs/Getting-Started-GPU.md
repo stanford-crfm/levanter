@@ -16,7 +16,7 @@ We have two installation options for Levanter:
 ```bash
 virtualenv -p python3.10 levanter
 source levanter/bin/activate
-pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+pip install --upgrade "jax[cuda12]"
 git clone https://github.com/stanford-crfm/levanter.git
 cd levanter
 pip install -e .
@@ -44,14 +44,10 @@ conda activate levanter
 ```
 ### Step 2: Install JAX with CUDA
 
-Please refer to the [JAX Installation Guide](https://github.com/google/jax#pip-installation-gpu-cuda-installed-via-pip-easier). Below are two options that worked as of March 2024.
+Please refer to the [JAX Installation Guide](https://docs.jax.dev/en/latest/installation.html#nvidia-gpu). Below is one option that works as of 2025-03.
 
 ```bash
-# CUDA 12 installation
-pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
-# CUDA 11 installation
-pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+pip install --upgrade "jax[cuda12]"
 ```
 
 ### Step 3: Install Levanter
@@ -69,7 +65,8 @@ pip install -e .
 
 #### Install from PyPI
 
-This package is frequently out of date, so we recommend installing from source.
+!!! note
+    This package is frequently out of date, so we recommend installing from source.
 
 ```bash
 pip install levanter
@@ -97,13 +94,13 @@ wandb offline
 
 #### Using a Different Tracker
 
-You can also use TensorBoard for logging. See the [Tracker](./dev/Trackers.md) documentation for more information.
+You can also use TensorBoard for logging. See [Trackers and Metrics](./dev/Trackers.md) for more information.
 
 ## Using a Docker Container
 
-To take advantage of the fastest training speeds Levanter has to offer, we recommend using the official Docker container
-built by NVIDIA's [JAX Toolbox](https://github.com/NVIDIA/JAX-Toolbox) team. The image is continuously updated with the latest versions of JAX, CUDA, TransformerEngine, and Levanter.
-Training speeds are accelerated by [TransformerEngine's](https://github.com/NVIDIA/TransformerEngine) [FusedAttention](https://arxiv.org/abs/2205.14135) implementation, which requires a TransformerEngine installation in your environment. Luckily, we can use a Docker container that already has Levanter and TransformerEngine installed for us.
+To take advantage of the fastest training speeds Levanter has to offer, we recommend using the Docker container image
+that is part of NVIDIA's [JAX Toolbox](https://github.com/NVIDIA/JAX-Toolbox). The image is continuously updated with the latest versions of JAX, CUDA, TransformerEngine, and Levanter.
+Training speeds are accelerated by [TransformerEngine's](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html) [FusedAttention](https://arxiv.org/abs/2205.14135) implementation, which requires a TransformerEngine installation in your environment. Luckily, the offical image has Levanter and TransformerEngine installed for us.
 
 ### Ensure You Have Docker Installed
 To check if you have Docker installed, run
@@ -116,9 +113,9 @@ If it is not installed, you can follow the [installation instructions on their w
 
 You'll also need to have the `nvidia-container-toolkit` installed. You can follow the [installation instructions on their website](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 
-### Download the Docker Container
+### Download the Container Image
 
-Technically optional, since the first time you run the container it will be downloaded, but you can download the container ahead of time with the following command:
+Technically optional, since the first time you run the container it will be downloaded, but you can download the inage ahead of time with the following command:
 
 ```bash
 sudo docker pull ghcr.io/nvidia/jax:levanter
@@ -269,7 +266,7 @@ The main difference between the command here and the one found in the [GPU Docke
 #### Multi-Node Training Command
 We use [JAX Distributed](https://jax.readthedocs.io/en/latest/multi_process.html) to help manage multi-node training in Levanter. On each node you can run a command like the following to kick off a training job:
 
-```
+```bash
 NCCL_DEBUG=INFO python src/levanter/main/train_lm.py \
   --config_path config/gpt2_7b.yaml \
   --trainer.ray.auto_start_cluster false \
@@ -317,7 +314,7 @@ In Levanter, you can switch between using TPUs and GPUs in the middle of a train
 
 ## FP8 Training
 
-On H100 GPUs, you can train with FP8 precision. To do this, you just need to add the following to your config:
+On H100 and newer GPUs, you can train with FP8 precision. To do this, you just need to add the following to your config:
 
 ```yaml
 trainer:
@@ -331,7 +328,7 @@ Transformer Engine's [FP8 docs](https://docs.nvidia.com/deeplearning/transformer
 
 ## Miscellaneous Problems
 
-For solutions to common problems, please see the FAQ.
+For solutions to common problems, please see the [FAQ](faq.md).
 
 ###  CUDA: `XLA requires ptxas version 11.8 or higher`
 
