@@ -110,6 +110,7 @@ test = [
     "flake8",
     "soundfile",
     "librosa",
+    "tensorboardX>=2.6",
 ]
 
 [tool.setuptools.packages.find]
