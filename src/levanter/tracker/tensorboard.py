@@ -1,4 +1,5 @@
 import logging
+import numbers
 import os
 import typing
 from dataclasses import dataclass
@@ -16,6 +17,10 @@ pylogger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
     from tensorboardX import SummaryWriter  # noqa: F401
+
+
+def _is_scalar(v) -> bool:
+    return isinstance(v, numbers.Number) or (isinstance(v, np.ndarray | jax.Array) and v.ndim == 0)
 
 
 class TensorboardTracker(Tracker):
@@ -52,12 +57,20 @@ class TensorboardTracker(Tracker):
                     global_step=step,
                 )
                 continue
+            elif isinstance(value, str):
+                self.writer.add_text(k, value)
+                continue
 
             self.writer.add_scalar(k, value, global_step=step)
 
     def log_summary(self, metrics: dict[str, Any]):
         for k, v in metrics.items():
-            self.writer.add_scalar(k, v, global_step=None)
+            if _is_scalar(v):
+                self.writer.add_scalar(k, v, global_step=None)
+            elif isinstance(v, str):
+                self.writer.add_text(k, v, global_step=None)
+            else:
+                pylogger.error(f"Unsupported metric type: {type(v)} for key {k}")
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         log_path = self.writer.logdir
