@@ -7,11 +7,11 @@ name = "levanter"
 version = "1.2"
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
-    { name = "Jason Wang", email = "jsywang@cs.stanford.edu"},
-    { name = "Ahmed Ahmed"},
+    { name = "Jason Wang", email = "jsywang@cs.stanford.edu" },
+    { name = "Ahmed Ahmed" },
     { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
-    { name = "Will Held"},
-    { name = "Virginia Adams"}
+    { name = "Will Held" },
+    { name = "Virginia Adams" },
 ]
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
@@ -53,8 +53,8 @@ dependencies = [
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
     "deepdiff",
-#    "lm-eval==0.4.2",
-#    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+    #    "lm-eval==0.4.2",
+    #    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
 
 [project.urls]
@@ -100,6 +100,7 @@ markers = [
     "entry: marks tests as entry point tests (deselect with '-m \"not entry\"')",
     "ray: marks tests that require Ray (deselect with '-m \"not ray\"')",
 ]
+asyncio_default_fixture_loop_scope = "function"
 
 [project.optional-dependencies]
 test = [
