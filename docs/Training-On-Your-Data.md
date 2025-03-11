@@ -4,13 +4,13 @@ This guide is meant to be a detailed walkthrough of training a model on your own
 
 The basic steps are:
 
-- [ ] [Configure your environment/cloud](#environment-setup)
-- [ ] [Prepare your data and upload to cloud](#data-preparation)
-- [ ] [Configure your training run](#configuration)
-- [ ] [Upload the training configuration file](#upload-config-to-gcs)
-- [ ] [Launch training](#launching-training)
-- [ ] [Evaluate](#evaluation)
-- [ ] [Export your model to Huggingface](#huggingface-export)
+1. [Configure your environment/cloud](#environment-setup)
+1. [Prepare your data and upload to cloud](#data-preparation)
+1. [Configure your training run](#configuration)
+1. [Upload the training configuration file](#upload-config-to-gcs)
+1. [Launch training](#launching-training)
+1. [Evaluate](#evaluation)
+1. [Export your model to Huggingface](#huggingface-export)
 
 If you're training on data that isn't text (or [audio-to-text](./tutorials/Training-On-Audio-Data.md)), you'll need to
 write a custom cache. See the section on [Direct Cache Construction](#direct-cache-construction).
@@ -19,16 +19,16 @@ write a custom cache. See the section on [Direct Cache Construction](#direct-cac
 
 ### TPU Setup
 
-See the [TPU guide](./Getting-Started-TPU-VM.md) for instructions on setting up a TPU VM instance. You should go through
+See the [TPU guide](./Getting-Started-TPU-VM.md). You should go through
 the installation steps in that guide before continuing. Don't spin up a TPU VM instance yet, though.
 
-### CUDA Setup
+### GPU Setup
 
-See the [GPU guide](./Getting-Started-GPU.md) for instructions on setting up a CUDA machine.
+See the [GPU guide](./Getting-Started-GPU.md).
 
 ### WandB Setup
 
-Levanter mainly uses [WandB](https://wandb.ai) for logging. You should create a WandB account and [get an API key](https://wandb.ai/authorize).
+Levanter mainly uses [WandB](https://wandb.ai) for logging. Create a WandB account and [get an API key](https://wandb.ai/authorize).
 
 ## Data Preparation
 
@@ -47,7 +47,7 @@ by e.g. using a templating mechanism with a prompt (a la Alpaca).
 
 #### Data Format: JSONL
 
-The canonical format for training data in Levanter is (compressed) JSONL, or JSON Lines.
+The canonical format for training data in Levanter is (compressed) [JSONL, or JSON Lines](https://jsonlines.org/).
 Each line of the file is a JSON object, which is a dictionary of key-value pairs.
 The only required key is `"text"`, which should map to a string of plain text.
 Other keys are ignored, but you can use them to store metadata about your data.
@@ -185,7 +185,7 @@ python -m levanter.main.cache_dataset \
 ### Direct Cache Construction
 
 As a final option, you can directly construct a cache of preprocessed data without using Ray. This is useful if you
-have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.store.SerialCacheWriter][]
+have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.store.SerialCacheWriter](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/store/cache.py)
 to write batches directly. Here's an example:
 
 ```python

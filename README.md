@@ -43,7 +43,7 @@ that resumes are much faster and so that subsequent runs are even faster. As soo
 to log inside of JAX `jit`-ted functions.
 * **Reproducibility**: On TPU, Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 * **Distributed Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
-* * **Optimization**: Levanter supports the new [Sophia](https://arxiv.org/abs/2305.14342) optimizer, which can be 2x as fast as Adam. We also support ses [Optax](https://github.com/deepmind/optax) for optimization with AdamW, etc.
+* * **Optimization**: Levanter supports the new [Sophia](https://arxiv.org/abs/2305.14342) optimizer, which can be 2x as fast as Adam. We also support [Optax](https://github.com/deepmind/optax) for optimization with AdamW, etc.
 * * **Flexible**: Levanter supports tuning data mixtures without having to retokenize or shuffle data.
 
 <!--levanter-intro-end-->
@@ -173,13 +173,17 @@ optimizer:
 
 Currently, we support the following architectures:
 * GPT-2
-* [LLama 1 or 2](https://ai.meta.com/llama/)
+* [LLama](https://ai.meta.com/llama/)
 * [Backpacks](http://backpackmodels.science/)
-* MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)
+* [Gemma](https://ai.google.dev/gemma)
+* [Qwen](https://huggingface.co/Qwen/Qwen2.5-7B)
+* [Mistral](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3)
 
 We plan to add more in the future.
 
-#### Continued Pretraining with Llama 1 or Llama 2
+For speech, we currently only support [Whisper](https://huggingface.co/openai/whisper-large-v3).
+
+#### Continued Pretraining with Llama
 
 Here's an example of how to continue pretraining a Llama 1 or Llama 2 model on the OpenWebText dataset:
 

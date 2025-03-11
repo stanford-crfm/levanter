@@ -1,9 +1,10 @@
+import asyncio
 import dataclasses
 import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Union
+from typing import Iterator, List, Optional, Union
 
 import jax.random as jrandom
 import transformers
@@ -15,18 +16,22 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data import PermutationDataset
+from levanter.data import PermutationDataset, batched
+from levanter.data.dataset import AsyncDataset
+from levanter.data.loader import stack_batches
+from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
     EpochDataset,
     SupervisedSourceConfig,
-    mk_chat_sft_dataset,
+    mk_cached_sft_dataset,
     mk_supervised_dataset,
 )
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
+from levanter.utils.background_iterable import BackgroundIterator
 
 
 logger = logging.getLogger(__name__)
@@ -145,7 +150,7 @@ def train(config: SFTConfig):
             input_role=config.input_role,
             output_role=config.output_role,
         )
-        train_dataset = mk_chat_sft_dataset(chat_config, tokenizer, model_config.Pos)
+        train_dataset = mk_cached_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
         if isinstance(config.supervised_data, dict):
@@ -179,7 +184,6 @@ def train(config: SFTConfig):
 
         # some axes we need
         Pos = config.model.Pos
-
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
         # tokens: gpt-2 has 50257, for example. So we round up.
@@ -202,8 +206,41 @@ def train(config: SFTConfig):
         trainer.add_hook(
             callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size, flops_per_example), every=1
         )
+        # Get current step from trainer state
+        current_step = int(state.step)
 
-        loader = trainer.data_loader(train_dataset, trainer.TrainBatch)
+        logger.info("Creating prompt completion iterator")
+        prompt_completion_iterator = create_prompt_completion_iterator(train_dataset, Pos)
+
+        if current_step > 0:
+            logger.info(f"Resuming training from step {current_step}")
+            # Calculate how many examples to skip based on batch size
+            examples_to_skip = current_step * trainer.config.train_batch_size
+
+            # Skip through the iterator until we reach the right position
+            for _ in range(examples_to_skip):
+                try:
+                    next(prompt_completion_iterator)
+                except StopIteration:
+                    logger.warning("Ran out of examples while seeking - restarting from beginning")
+                    # Recreate iterator and continue skipping
+                    prompt_completion_iterator = create_prompt_completion_iterator(train_dataset, Pos)
+        else:
+            logger.info("Starting SFT from scratch")
+
+        logger.info("Packing prompt completions")
+        packed_iterator = pack_prompt_completions(
+            Pos,
+            prompt_completion_iterator,
+            max_segments_per_example=4,
+            pad_token=tokenizer.pad_token_id,
+            max_buffered_examples=16,
+        )
+        logger.info("Stacking batches to train batch")
+        packed_iterator = stack_batches(example_iterator=packed_iterator, Pos=Pos, Batch=trainer.TrainBatch)
+        # TODO  what's a good number for max_capacity?
+        logger.info("Creating data loader")
+        packed_loader = BackgroundIterator(packed_iterator, max_capacity=1024)
 
         if config.hf_save_path is not None:
             # bit gross to reach this far into the config, but it's fine
@@ -217,7 +254,51 @@ def train(config: SFTConfig):
                 every=config.hf_save_steps,
             )
 
-        trainer.train(state, loader)
+        trainer.train(state, packed_loader)
+
+
+def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axis) -> Iterator[PromptCompletion]:
+    """
+    Creates an iterator that yields PromptCompletion objects from a cached dataset.
+
+    Args:
+        cached_dataset: The AsyncDataset containing preprocessed examples
+        Pos: The position axis defining maximum sequence length
+
+    Returns:
+        An iterator yielding PromptCompletion objects
+    """
+    # AsyncDataset already has a current_len method that returns current length or None
+    length = asyncio.run(cached_dataset.async_len())
+
+    if length is None:
+        raise ValueError("Dataset length cannot be None")
+
+    for indicies in batched(range(length), 4096):
+        examples = asyncio.run(cached_dataset.get_batch(indicies))
+
+        for i in range(len(examples)):
+            example = examples[i]
+            sources_len = example["sources_len"].item()
+            if sources_len > Pos.size - 1:
+                continue
+
+            ids = example["input_ids"].tolist()
+            if len(ids) > Pos.size:
+                ids = ids[: Pos.size]
+
+            if len(ids) <= sources_len:
+                continue
+
+            try:
+                yield PromptCompletion(ids=ids, prompt_length=sources_len, segment_id=indicies[i])
+            except ValueError as e:
+                # Likely error: PromptCompletion may raise a ValueError if the token list is empty or if its length is not greater than the prompt_length.
+                logger.error(
+                    f"Error creating PromptCompletion (ids length: {len(ids)}, sources_len: {sources_len}, segment id:"
+                    f" {indicies[i]}): {e}"
+                )
+                continue
 
 
 def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):

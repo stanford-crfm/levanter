@@ -29,9 +29,10 @@ from haliax import Axis
 
 from levanter.data import AsyncDataset
 from levanter.data.dataset import MappedAsyncDataset
-from levanter.data.mixture import MixtureDataset, StopStrategy
+from levanter.data.mixture import MixtureDataset, StopStrategy, rescale_mixture_schedule_for_batch_schedule
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
+from levanter.schedule import BatchSchedule
 from levanter.store.cache import CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
@@ -641,6 +642,7 @@ class LMTaskConfig(abc.ABC):
     def train_set(
         self,
         seq_len: int,
+        batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray],
@@ -1043,6 +1045,34 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     }
 
 
+def mk_cached_sft_dataset(
+    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+) -> AsyncDataset[dict]:
+    """Creates a dataset from JSONL files containing chat format data for SFT."""
+    source = config.get_shard_source("train")
+    if source is None:
+        raise ValueError("No training data source found")
+
+    # Set up example structure matching supervised case
+    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+
+    input_ids = tokenizer("hi there")["input_ids"]
+    should_append_eos = input_ids[-1] != tokenizer.eos_token_id
+    logger.info(f"Manual EOS Needed: {should_append_eos}")
+
+    # Process the dataset
+    dataset = source.map_batches(
+        lambda ex: preprocess_chat_example(ex, tokenizer, should_append_eos),
+        batch_size=128,
+        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
+        output_exemplar=output_exemplar,
+    )
+
+    # Cache the processed data
+    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
+    return cached_dataset
+
+
 def mk_chat_sft_dataset(
     config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
 ) -> AsyncDataset[LmExample]:
@@ -1072,7 +1102,6 @@ def mk_chat_sft_dataset(
     # Ensure padding token is set (needed by _prepare_supervised_example)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
     # Reuse the supervised prepare function directly
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
@@ -1086,11 +1115,13 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
     def train_set(
         self,
         seq_len: int,
+        batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray] = None,
         epochs: Optional[int] = None,
     ) -> AsyncDataset[np.ndarray]:
+        del batch_schedule  # unused
 
         ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
 
@@ -1243,7 +1274,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     experiment_budget: Optional[int] = None
 
     mixture_block_size: int = 2048
-    """ Block size for deterministic mixing """
+    """Block size for deterministic mixing. In each block, a given dataset will have exactly the same number
+    of samples, equal to the expected number of samples in the mixture, rounding in the expected way."""
 
     max_sequences_dict: Optional[Dict[str, int]] = None
     """ Maximum number of sequences to use from each dataset for training """
@@ -1272,6 +1304,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     def train_set(
         self,
         seq_len: int,
+        batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray],
@@ -1330,9 +1363,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                         logger.info(f"num_validation_sequences_dict[name]: {self.num_validation_sequences_dict[name]}")
                         raise ValueError(f"Dataset {name} is too small to supply unique training and validation sets")
 
+        weights = self.train_weights
+        if isinstance(weights, Sequence):
+            weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
+
         mixture = MixtureDataset(
             datasets=train_token_datasets,
-            weights=self.train_weights,
+            weights=weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
             block_size=self.mixture_block_size,

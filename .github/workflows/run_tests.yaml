@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10"]
-        jax-version: ["0.4.38"]
+        jax-version: ["0.5"]
 
     steps:
       - uses: actions/checkout@v3
@@ -25,4 +25,4 @@ jobs:
           pip install -r ./tests/requirements.txt
       - name: Test with pytest
         run: |
-          XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=tests:src:. pytest tests -m "not entry and not slow and not ray"
+          PYTHONPATH=tests:src:. pytest tests -m "not entry and not slow and not ray"

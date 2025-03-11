@@ -1076,10 +1076,13 @@ def _copy_temp_caches_to_final_cache(
 
     # initialize the data offset tree
     permanent_cache = TreeStore.open(processor.output_exemplar, cache_dir, mode="a", cache_metadata=False)
-    data_offset_tree = jax.tree_map(lambda x: x.data_size, permanent_cache.tree)
+    data_offset_tree = jax.tree.map(lambda x: x.data_size, permanent_cache.tree)
 
     total_rows_from_caches = overall_ledger.total_num_rows
     copy_refs: dict[str, ray.ObjectRef] = {}
+
+    metadata_copier = _MetadataCopier.options(name=f"metadata_copier::{cache_dir}").remote(parent)
+    copy_metadata_refs: dict[str, ray.ObjectRef] = {}
 
     parent._report_copy_progress.remote(
         _ProgressReport(new_shards=len(overall_ledger.finished_shards), new_rows=overall_ledger.total_num_rows)
@@ -1129,6 +1132,14 @@ def _copy_temp_caches_to_final_cache(
             total_rows_from_caches,
             parent,
         )
+        copy_metadata_refs[group] = metadata_copier.copy_metadata.remote(
+            cache_dir,
+            group_cache_paths[group],
+            processor_ref,
+            data_offset_tree,
+            total_rows_from_caches,
+        )
+
         this_rows = this_ledger.total_num_rows
         total_rows_from_caches += this_rows
 
@@ -1145,6 +1156,7 @@ def _copy_temp_caches_to_final_cache(
     num_available_rows = overall_ledger.total_num_rows
     for group, ref in copy_refs.items():
         ray.get(ref)  # block on data copy
+        ray.get(copy_metadata_refs[group])  # block on metadata copy
 
         group_ledger = group_ledgers[group]
         num_available_rows += group_ledger.total_num_rows
@@ -1195,6 +1207,39 @@ def _copy_cache_data(dest_path, source_path, processor, data_offset_tree, rows_s
         asyncio.run(_extend_cache_with_other_cache(dest_path, source_path, processor, data_offset_tree, rows_so_far))
 
 
+@ray.remote(
+    num_cpus=2,
+    memory=1 * 1024 * 1024 * 1024,
+    runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORMS": "cpu"}),
+)
+class _MetadataCopier:
+    """Copies the metadata from one cache to another. We use an actor because we want to impose the impliacit
+    actor mutex lock on the metadata file to prevent concurrent writes. We have found that using ts Transactions here
+    results in way too many retries, resulting in $$$$. If we prevent concurrent writes, we can avoid this."""
+
+    # DO NOT ADD ASYNC METHODS TO THIS CLASS. It will remove the implicit lock and cause concurrent writes.
+    def __init__(self, parent):
+        self.parent = parent
+
+    def copy_metadata(self, dest_path, source_path, processor, data_offset_tree, rows_so_far):
+        """
+        Copies the data from one cache to another, appending it to the end of the destination cache.
+
+        Once the copy is done and the last_ref is set, the data is "unlocked" in the destination cache by updating the
+        offsets[0] of the destination cache to the total number of rows in the cache.
+        Args:
+            dest_path:  The path to the destination cache.
+            source_path: The path to the source cache.
+            processor: The processor used to create the cache.
+            data_offset_tree: The data offset tree for the destination cache.
+            rows_so_far: The total number of rows in the destination cache before this copy.
+        """
+        with log_failures_to(self.parent):
+            asyncio.run(
+                _extend_cache_metadata_with_other(dest_path, source_path, processor, data_offset_tree, rows_so_far)
+            )
+
+
 async def _extend_cache_with_other_cache(
     dest_path: str, source_path: str, processor: BatchProcessor, data_offset_tree: PyTree[int], row_offset
 ) -> int:
@@ -1218,48 +1263,10 @@ async def _extend_cache_with_other_cache(
             # TODO: it'd be good if we just didn't expose the full data array (but only the used part)
             data_size = source_array.data_size
             data = source_array.data[0:data_size]
-            futures: list[ts.Future] = []
 
             # To prevent OOM, copy in smaller batches
             MAX_ELEMS = 1024 * 1024 * 1024
-            f = await _copy_in_batches(dest_array.data, data_offset, data, data_size, MAX_ELEMS)
-            if f is not None:
-                futures.append(f)
-
-            if source_array.shapes is not None:
-                source_shapes = source_array.shapes[0:source_num_rows]
-                async with ts.Transaction() as txn:
-                    dest_shapes = dest_array.shapes
-                    assert dest_shapes is not None
-                    out_end = row_offset + source_num_rows
-                    shape_future = dest_shapes.with_transaction(txn)[row_offset:out_end].write(source_shapes)
-                    futures.append(shape_future)
-
-            source_offsets = source_array.offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
-            source_offsets = _virtual_offset(source_offsets, data_offset)
-
-            delay = 4
-            while True:
-                try:
-                    async with ts.Transaction() as txn:
-                        dest_offsets = dest_array.offsets
-                        out_end = row_offset + 1 + source_num_rows
-                        offset_future = dest_offsets.with_transaction(txn)[row_offset + 1 : out_end].write(
-                            source_offsets
-                        )
-
-                    break
-                except ValueError as e:
-                    if "Please reduce your request rate." in str(e):
-                        logger.info("Rate limit exceeded. Retrying.")
-                        await asyncio.sleep(delay)
-                        delay *= 2
-                        if delay > 120:
-                            raise
-
-            futures.append(offset_future)
-
-            await asyncio.gather(*futures)
+            await _copy_in_batches(dest_array.data, data_offset, data, data_size, MAX_ELEMS)
 
         futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
 
@@ -1272,7 +1279,7 @@ async def _extend_cache_with_other_cache(
         raise
 
 
-async def _copy_in_batches(dest_array, dest_offset, src_array, src_len, elems_per_batch) -> ts.Future | None:
+async def _copy_in_batches(dest_array, dest_offset, src_array, src_len, elems_per_batch):
     """
     Copies the data from one array to another in batches.
     """
@@ -1291,7 +1298,67 @@ async def _copy_in_batches(dest_array, dest_offset, src_array, src_len, elems_pe
             start += num_to_copy
             out_start += num_to_copy
 
-    return last_future
+    if last_future is not None:
+        await last_future
+
+
+async def _extend_cache_metadata_with_other(
+    dest_path: str, source_path: str, processor: BatchProcessor, data_offset_tree: PyTree[int], row_offset
+) -> int:
+    """Copies just the offsets and shapes (if present)"""
+    try:
+        logger.info(f"Copying metadata from {source_path} to {dest_path}.")
+        dest = TreeStore.open(processor.output_exemplar, dest_path, mode="a")
+        source = TreeStore.open(processor.output_exemplar, source_path, mode="r", cache_metadata=True)
+
+        source_num_rows = await source.async_len()
+
+        async def _copy_one_array(dest_array: JaggedArrayStore, source_array: JaggedArrayStore, data_offset: int):
+            """Copies **just the data array** from one shard to the permanent cache at a given offset."""
+
+            if source_array.shapes is not None:
+                source_shapes = source_array.shapes[0:source_num_rows]
+                async with ts.Transaction() as txn:
+                    dest_shapes = dest_array.shapes
+                    assert dest_shapes is not None
+                    out_end = row_offset + source_num_rows
+                    shape_future = dest_shapes.with_transaction(txn)[row_offset:out_end].write(source_shapes)
+
+            # the 0th offset is the number of rows so we don't want to copy it into the destination
+            source_offsets = source_array.offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
+            source_offsets = _virtual_offset(source_offsets, data_offset)
+
+            delay = 4
+            while True:
+                try:
+                    async with ts.Transaction() as txn:
+                        dest_offsets = dest_array.offsets
+                        out_end = 1 + row_offset + source_num_rows
+                        offset_future = dest_offsets.with_transaction(txn)[row_offset + 1 : out_end].write(
+                            source_offsets
+                        )
+
+                    break
+                except ValueError as e:
+                    if "Please reduce your request rate." in str(e):
+                        logger.info("Rate limit exceeded. Retrying.")
+                        await asyncio.sleep(delay)
+                        delay *= 2
+                        if delay > 120:
+                            raise
+
+            await offset_future
+            if source_array.shapes is not None:
+                await shape_future
+
+        futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
+
+        await asyncio.gather(*jax.tree.leaves(futures))
+        logger.info(f"Finished copying metadata from {source_path} to {dest_path}.")
+        return source_num_rows
+    except Exception as e:
+        logger.exception(f"Failed to copy metadata from {source_path} to {dest_path}: {e}")
+        raise
 
 
 def _virtual_offset(base: ts.TensorStore, offset_amount):
