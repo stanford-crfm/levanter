@@ -1309,12 +1309,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             token_datasets = out_token_datasets
 
         train_token_datasets = {}
-        if self.max_sequences_dict is not None:
-            for name, ds in token_datasets.items():
-                if name in self.max_sequences_dict:
-                    train_token_datasets[name] = ds.slice_dataset(end_index=self.max_sequences_dict[name])
-                else:
-                    train_token_datasets[name] = ds
+        for name, ds in token_datasets.items():
+            if self.max_sequences_dict is not None and name in self.max_sequences_dict:
+                train_token_datasets[name] = ds.slice_dataset(end_index=self.max_sequences_dict[name])
+            else:
+                train_token_datasets[name] = ds
 
         self.validation_token_datasets = {}
         for name, ds in token_datasets.items():
@@ -1325,6 +1324,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 )
                 if self.max_sequences_dict is not None and name in self.max_sequences_dict:
                     if len_dataset < self.max_sequences_dict[name] + self.num_validation_sequences_dict[name]:
+                        logger.info(f"Dataset {name} is too small to supply unique training and validation sets")
+                        logger.info(f"len_dataset: {len_dataset}")
+                        logger.info(f"max_sequences_dict[name]: {self.max_sequences_dict[name]}")
+                        logger.info(f"num_validation_sequences_dict[name]: {self.num_validation_sequences_dict[name]}")
                         raise ValueError(f"Dataset {name} is too small to supply unique training and validation sets")
 
         mixture = MixtureDataset(
