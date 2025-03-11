@@ -79,22 +79,28 @@ def main(config: LoraLmConfig):
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-        eval_datasets = config.data.validation_sets(Pos.size)
+        train_dataset = config.data.train_set(
+            Pos.size,
+            batch_schedule=config.trainer.batch_schedule,
+            QPos=Pos,
+            KPos=KeyPos,
+        )
 
-        # data loaders
+        if train_dataset is None:
+            raise ValueError("No training set!")
+
+        eval_datasets = {
+            name: config.data.validation_set(
+                Pos.size,
+                QPos=Pos,
+                KPos=KeyPos,
+            )
+            for name in config.data.validation_splits
+        }
+
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 
-        train_dataset = CausalLmDataset(
-            config.data.train_set(
-                Pos.size,
-                key=data_key,
-                batch_schedule=config.trainer.batch_schedule,
-            ),
-            Pos,
-            KeyPos,
-            eos_id=tokenizer.eos_token_id,
-        )
         train_loader = trainer.data_loader(train_dataset, Batch)
 
         # load the underlying hf model

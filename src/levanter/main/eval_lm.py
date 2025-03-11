@@ -17,7 +17,7 @@ from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig
+from levanter.data.text import LMDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import TrainerConfig
@@ -38,6 +38,7 @@ class EvalLmConfig:
 
     compare_torch: bool = False
     eval_on_train: bool = False
+    max_batches: Optional[int] = None
 
 
 def main(config: EvalLmConfig):
@@ -49,18 +50,20 @@ def main(config: EvalLmConfig):
     KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = CausalLmDataset(
-            config.data.train_set(Pos.size, key=jax.random.PRNGKey(0), batch_schedule=config.trainer.batch_schedule),
+        raw_dataset = config.data.train_set(
             Pos,
-            KeyPos,
-            eos_id=tokenizer.eos_token_id,
+            config.trainer.batch_schedule,
+            key=jax.random.PRNGKey(0),
+            KPos=KeyPos,
         )
     else:
-        validation_set = config.data.validation_set(Pos.size)
-        if validation_set is None:
-            raise ValueError("Can't eval on validation_set b/c there isn't one!")
+        raw_dataset = config.data.validation_set(Pos, KPos=KeyPos)
 
-        raw_dataset = CausalLmDataset(validation_set, Pos, KeyPos)  # type: ignore
+    if raw_dataset is None:
+        raise ValueError("no dataset found!")
+
+    if config.max_batches is not None:
+        raw_dataset = raw_dataset.take(config.max_batches * config.trainer.eval_batch_size)
 
     eval_loader = DataLoader(
         raw_dataset,

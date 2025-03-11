@@ -626,10 +626,12 @@ class LMTaskConfig(abc.ABC):
     cache_options: CacheOptions = field(default_factory=CacheOptions)
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
-    ignore_token_id: Optional[int] = None
+    ignore_token_id: Optional[int] = DEFAULT_IGNORE_INDEX
     shuffle: bool | int = False
     """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
     If you want to shuffle in eras, set this to the era length"""
+
+    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
 
     @cached_property
     def the_tokenizer(self) -> HfTokenizer:
@@ -641,19 +643,24 @@ class LMTaskConfig(abc.ABC):
     @abc.abstractmethod
     def train_set(
         self,
-        seq_len: int,
+        Pos: Axis,
         batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray],
         epochs: Optional[int] = None,
-    ) -> AsyncDataset[np.ndarray]:
+        KPos: Axis,
+    ) -> AsyncDataset[LmExample]:
         pass
 
     @abc.abstractmethod
     def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+        self,
+        Pos: Axis,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        KPos: Axis,
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
         pass
 
     @property
@@ -662,10 +669,10 @@ class LMTaskConfig(abc.ABC):
         pass
 
     def tagged_eval_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
+        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, QPos: Axis, KPos: Axis
     ) -> list[Tuple[AsyncDataset[np.ndarray], List[str]]]:
         tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
-        eval_sets = self.validation_sets(seq_len, monitors)
+        eval_sets = self.validation_sets(seq_len, monitors, QPos=QPos, KPos=KPos)
 
         return [(eval_sets[name], tags[name]) for name in eval_sets]
 
@@ -1046,16 +1053,17 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
     def train_set(
         self,
-        seq_len: int,
+        Pos: Axis,
         batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray] = None,
         epochs: Optional[int] = None,
-    ) -> AsyncDataset[np.ndarray]:
+        KPos: Axis,
+    ) -> AsyncDataset[LmExample]:
         del batch_schedule  # unused
 
-        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", seq_len, monitors)
+        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", Pos.size, monitors)
 
         # add epoch flag here.
         if ds is None:
@@ -1070,17 +1078,44 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif isinstance(self.shuffle, int) and self.shuffle > 0:
             ds = ds.era_shuffle(self.shuffle, key=key)
 
-        return ds  # type: ignore
+        ds = CausalLmDataset(
+            ds,
+            Pos,
+            KPos,
+            fcm_prob=self.fcm_prob,
+            key=key,
+            ignore_index=self.ignore_token_id,
+            eos_id=self.the_tokenizer.eos_token_id,
+        )
+
+        return ds
 
     def validation_set(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        return self.token_seq_dataset("validation", seq_len, monitors)
+        self,
+        Pos: Axis,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        KPos: Axis,
+    ) -> AsyncDataset[LmExample]:
+        ds = self.token_seq_dataset("validation", Pos.size, monitors)
+        if ds is None:
+            return None  # type: ignore
+
+        ds = CausalLmDataset(
+            ds,
+            Pos,
+            KPos,
+            fcm_prob=self.fcm_prob,
+            ignore_index=self.ignore_token_id,
+            eos_id=self.the_tokenizer.eos_token_id,
+        )
+
+        return ds
 
     def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
-        validation_set = self.validation_set(seq_len, monitors)
+        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True, *, KPos: Axis
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
+        validation_set = self.validation_set(Pos, monitors, KPos=KPos)
         if validation_set is not None:
             return {"": validation_set}
         else:
@@ -1229,15 +1264,16 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
     def train_set(
         self,
-        seq_len: int,
+        Pos: Axis,
         batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
         key: Optional[PRNGKeyArray],
         epochs: Optional[int] = None,
+        KPos: Axis,
     ) -> AsyncDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+        token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
 
         if epochs:
             raise ValueError("Epochs are not supported for mixture datasets")
@@ -1295,19 +1331,22 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         return mixture
 
-    def training_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, TokenSeqDataset]:
-        doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
-        return token_datasets
-
     def validation_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, AsyncDataset[np.ndarray]]:
+        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True, *, KPos: Axis
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
-        return token_datasets
+        token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
+        return {
+            name: CausalLmDataset(
+                ds,
+                Pos,
+                KPos,
+                fcm_prob=self.fcm_prob,
+                ignore_index=self.ignore_token_id,
+                eos_id=self.the_tokenizer.eos_token_id,
+            )
+            for name, ds in token_datasets.items()
+        }
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True

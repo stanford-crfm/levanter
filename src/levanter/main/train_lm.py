@@ -52,7 +52,6 @@ class TrainLmConfig:
     # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
 
-    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
     z_loss_weight: float = 0.0
 
     hf_save_path: Optional[str] = None
@@ -133,20 +132,17 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        # TODO: fix this
-        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
-
-        train_sets = config.data.train_set(
-            Pos.size, key=data_key, epochs=config.epoch, batch_schedule=config.trainer.batch_schedule
-        )
-
-        train_dataset = CausalLmDataset(
-            train_sets,
+        # Get the training dataset
+        train_dataset = config.data.train_set(
             Pos,
-            KeyPos,
-            ignore_index=config.data.ignore_token_id,
-            eos_id=tokenizer.eos_token_id,
+            config.trainer.batch_schedule,
+            key=data_key,
+            epochs=config.epoch,
+            KPos=KeyPos,
         )
+
+        # Get the tagged evaluation datasets
+        tagged_eval_datasets = config.data.tagged_eval_sets(Pos, QPos=Pos, KPos=KeyPos)
 
         # add epoch logging if epochs specified
         if config.epoch > 0:
