@@ -5,6 +5,8 @@ import os
 import time
 from typing import Optional
 
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+
 import levanter.tracker
 from levanter.utils.jax_utils import jnp_to_python
 
@@ -43,19 +45,6 @@ def hparams_to_dict(hparams, **extra_hparams):
     return hparams_to_save
 
 
-def _find_git_root(dirname: str) -> Optional[str]:
-    """Find git root by walking up the directory tree looking for .git directory"""
-    current = os.path.abspath(dirname)
-    while current != "/":
-        if os.path.exists(os.path.join(current, ".git")):
-            return current
-        parent = os.path.dirname(current)
-        if parent == current:  # reached root
-            break
-        current = parent
-    return None
-
-
 def infer_experiment_git_root() -> Optional[str | os.PathLike[str]]:
     # sniff out the main directory (since we typically don't run from the root of the repo)
     # we'll walk the stack and directories for the files in the stack the until we're at a git root
@@ -65,20 +54,19 @@ def infer_experiment_git_root() -> Optional[str | os.PathLike[str]]:
     stack = traceback.extract_stack()
     # start from the top of the stack and work our way down since we want to hit the main file first
     top_git_root = None
-
     for frame in stack:
         dirname = os.path.dirname(frame.filename)
         # bit hacky but we want to skip anything that's in the python env
         if any(x in dirname for x in ["site-packages", "dist-packages", "venv", "opt/homebrew", "conda", "pyenv"]):
             continue
-
-        result = _find_git_root(dirname)
-        if result is not None:
-            top_git_root = result
+        # see if it's under a git root
+        try:
+            repo = Repo(dirname, search_parent_directories=True)
+            top_git_root = repo.working_dir
             break
-        else:
+        except (NoSuchPathError, InvalidGitRepositoryError):
             logger.debug(f"Skipping {dirname} since it's not a git root")
-
+            pass
     return top_git_root
 
 

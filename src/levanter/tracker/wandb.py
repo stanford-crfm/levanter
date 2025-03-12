@@ -9,6 +9,7 @@ from typing import Any, List, Optional, Union
 import jax
 import numpy as np
 from draccus import field
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from levanter.tracker import Tracker
 from levanter.tracker.helpers import generate_pip_freeze, infer_experiment_git_root
@@ -244,21 +245,25 @@ class WandbConfig(TrackerConfig):
             return os.environ["GIT_COMMIT"]
 
         try:
-            # Read HEAD file directly
-            head_path = os.path.join(code_dir, ".git", "HEAD")
-            if not os.path.exists(head_path):
-                return None
-
-            with open(head_path, "r") as f:
-                head_content = f.read().strip()
-
-            # If HEAD points to a branch, read the ref
-            if head_content.startswith("ref: "):
-                ref_path = os.path.join(code_dir, ".git", head_content[5:])
-                if os.path.exists(ref_path):
-                    with open(ref_path, "r") as f:
-                        return f.read().strip()
-                return None
-            return head_content  # Direct SHA
-        except Exception:
+            repo = Repo(code_dir)
+            git_sha = repo.head.commit.hexsha
+        except (NoSuchPathError, InvalidGitRepositoryError):
+            logger.warning(f"Could not find git repo at {code_dir}")
             return None
+        except ValueError as e:
+            if "SHA is empty" in str(e):
+                # we have another workaround, which is to use the git command line
+                # git --git-dir={code_dir}/.git rev-parse HEAD
+                import subprocess
+
+                try:
+                    out = subprocess.run(
+                        ["git", "--git-dir", f"{code_dir}/.git", "rev-parse", "HEAD"], check=True, capture_output=True
+                    )
+                    git_sha = out.stdout.decode().strip()
+                except subprocess.CalledProcessError:
+                    return None
+            else:
+                raise e
+
+        return git_sha
