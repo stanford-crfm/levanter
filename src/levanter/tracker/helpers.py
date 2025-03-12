@@ -12,7 +12,6 @@ from levanter.utils.jax_utils import jnp_to_python
 logger = logging.getLogger(__name__)
 
 
-
 def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=None):
     try:
         from optax._src.wrappers import MultiStepsState
@@ -47,14 +46,15 @@ def hparams_to_dict(hparams, **extra_hparams):
 def _find_git_root(dirname: str) -> Optional[str]:
     """Find git root by walking up the directory tree looking for .git directory"""
     current = os.path.abspath(dirname)
-    while current != '/':
-        if os.path.exists(os.path.join(current, '.git')):
+    while current != "/":
+        if os.path.exists(os.path.join(current, ".git")):
             return current
         parent = os.path.dirname(current)
         if parent == current:  # reached root
             break
         current = parent
     return None
+
 
 def infer_experiment_git_root() -> Optional[str | os.PathLike[str]]:
     # sniff out the main directory (since we typically don't run from the root of the repo)
@@ -65,7 +65,7 @@ def infer_experiment_git_root() -> Optional[str | os.PathLike[str]]:
     stack = traceback.extract_stack()
     # start from the top of the stack and work our way down since we want to hit the main file first
     top_git_root = None
-    
+
     for frame in stack:
         dirname = os.path.dirname(frame.filename)
         # bit hacky but we want to skip anything that's in the python env

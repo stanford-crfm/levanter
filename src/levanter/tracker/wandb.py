@@ -1,6 +1,5 @@
 import logging
 import os
-import subprocess
 import tempfile
 import typing
 import warnings
@@ -246,18 +245,18 @@ class WandbConfig(TrackerConfig):
 
         try:
             # Read HEAD file directly
-            head_path = os.path.join(code_dir, '.git', 'HEAD')
+            head_path = os.path.join(code_dir, ".git", "HEAD")
             if not os.path.exists(head_path):
                 return None
-                
-            with open(head_path, 'r') as f:
+
+            with open(head_path, "r") as f:
                 head_content = f.read().strip()
-                
+
             # If HEAD points to a branch, read the ref
-            if head_content.startswith('ref: '):
-                ref_path = os.path.join(code_dir, '.git', head_content[5:])
+            if head_content.startswith("ref: "):
+                ref_path = os.path.join(code_dir, ".git", head_content[5:])
                 if os.path.exists(ref_path):
-                    with open(ref_path, 'r') as f:
+                    with open(ref_path, "r") as f:
                         return f.read().strip()
                 return None
             return head_content  # Direct SHA

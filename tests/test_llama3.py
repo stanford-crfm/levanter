@@ -146,7 +146,6 @@ def test_llama3_rotary_embedding():
     hf_rope = HFLlamaRotaryEmbedding(config=llama_config, device=device)
     hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1))
 
-
     for jax_out, torch_out in zip(levanter_output, hf_output):
         torch_out = torch_out.numpy()
         assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"

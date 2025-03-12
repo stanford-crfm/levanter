@@ -62,7 +62,6 @@ def test_llama_rotary_embedding():
     llama_config = _get_llama_config()
     HeadSize = llama_config.HeadSize
     Pos = llama_config.Pos
-    hidden_dim = HeadSize.size
     seq_len = Pos.size
     key = random.PRNGKey(0)
     device = "cpu"
@@ -142,7 +141,8 @@ def test_apply_rotary_pos_emb(model_seq_len, test_seq_len):
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
 def test_llama_attention(use_flash, num_kv_heads):
     import torch
-    from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention, LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
+    from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
@@ -166,7 +166,9 @@ def test_llama_attention(use_flash, num_kv_heads):
     out = attention(x, mask)
     position_ids = torch.arange(config.Pos.size).unsqueeze(0)  # [1, seq_len]
     cos, sin = hf_rotary_emb(x_torch, position_ids)  # Pass x_torch instead of zeros tensor
-    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch, position_embeddings=(cos, sin))
+    hf_out = hf_attention(
+        x_torch, position_ids=position_ids, attention_mask=mask_torch, position_embeddings=(cos, sin)
+    )
 
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
@@ -201,7 +203,8 @@ def test_llama_rms_norm():
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
 def test_llama_decoder_layer(num_kv_heads):
     import torch
-    from transformers.models.llama.modeling_llama import LlamaDecoderLayer as HFLlamaDecoderLayer, LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
+    from transformers.models.llama.modeling_llama import LlamaDecoderLayer as HFLlamaDecoderLayer
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     llama_config = _get_llama_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
@@ -225,7 +228,9 @@ def test_llama_decoder_layer(num_kv_heads):
     cos, sin = hf_rotary_emb(x_torch, position_ids)
 
     out = llama_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin))
+    hf_out = hf_decoder_layer(
+        x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
+    )
 
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 

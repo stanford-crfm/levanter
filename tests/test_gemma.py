@@ -88,7 +88,8 @@ def test_gemma_rms_norm():
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
 def test_gemma_decoder_layer(num_kv_heads):
     import torch
-    from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer as HFGemmaDecoderLayer, GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
+    from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer as HFGemmaDecoderLayer
+    from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
 
     gemma_config = _get_gemma_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
@@ -112,7 +113,9 @@ def test_gemma_decoder_layer(num_kv_heads):
     cos, sin = hf_rotary_emb(x_torch, position_ids)
 
     out = gemma_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin))
+    hf_out = hf_decoder_layer(
+        x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
+    )
 
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
@@ -260,7 +263,8 @@ def test_pass_different_length_seq(num_kv_heads):
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
 def test_gemma_attention(use_flash, num_kv_heads):
     import torch
-    from transformers.models.gemma.modeling_gemma import GemmaAttention as HFGemmaAttention, GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
+    from transformers.models.gemma.modeling_gemma import GemmaAttention as HFGemmaAttention
+    from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
 
     config = _get_gemma_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
@@ -286,7 +290,9 @@ def test_gemma_attention(use_flash, num_kv_heads):
     out = attention(x, mask)
     position_ids = torch.arange(config.Pos.size).unsqueeze(0)  # [1, seq_len]
     cos, sin = hf_rotary_emb(x_torch, position_ids)
-    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch, position_embeddings=(cos, sin))
+    hf_out = hf_attention(
+        x_torch, position_ids=position_ids, attention_mask=mask_torch, position_embeddings=(cos, sin)
+    )
 
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
