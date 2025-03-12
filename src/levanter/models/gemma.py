@@ -226,7 +226,7 @@ class GemmaRMSNorm(hnn.LayerNorm):
 
 
 class GemmaDecoderLayer(ModuleWithStateDictSerialization):
-    config: GemmaConfig = eqx.static_field()
+    config: GemmaConfig = eqx.field(static=True)
     self_attn: LlamaAttention
     mlp: LlamaMlp
     input_layernorm: GemmaRMSNorm
@@ -267,7 +267,7 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
 
 
 class GemmaTransformer(ModuleWithStateDictSerialization):
-    config: GemmaConfig = eqx.static_field()
+    config: GemmaConfig = eqx.field(static=True)
     layers: BlockFoldable[GemmaDecoderLayer]
     norm: GemmaRMSNorm
 

@@ -291,7 +291,7 @@ class JaggedArrayStore:
         if shapes is None and self.item_rank != 1:
             raise ValueError("Shapes must be provided for non-vector data")
         elif shapes is not None and shapes.shape[1] != self.item_rank - 1:
-            raise ValueError(f"Shapes must have {self.item_rank-1} dimensions, but got {shapes.shape[1]}")
+            raise ValueError(f"Shapes must have {self.item_rank - 1} dimensions, but got {shapes.shape[1]}")
 
         num_rows = self.num_rows
         num_added = len(new_offsets)

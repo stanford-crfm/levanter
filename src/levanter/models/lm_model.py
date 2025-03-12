@@ -5,7 +5,7 @@ from typing import Generic, Optional, Type, TypeVar
 import draccus
 import equinox as eqx
 import jax.numpy as jnp
-from jax.random import PRNGKey
+from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis, NamedArray, NamedOrNumeric
@@ -138,7 +138,7 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def flops_per_token(self, vocab_size: int) -> Optional[float]:
         return None
 
-    def build(self, Vocab: Axis, *, key: PRNGKey) -> "LmT":
+    def build(self, Vocab: Axis, *, key: PRNGKeyArray) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 
 
@@ -171,7 +171,7 @@ class LmHeadModel(eqx.Module, Generic[LmConfigT]):
 
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: LmConfigT, *, key: PRNGKey) -> "LmHeadModel[LmConfigT]":
+    def init(cls, Vocab: Axis, config: LmConfigT, *, key: PRNGKeyArray) -> "LmHeadModel[LmConfigT]":
         pass
 
     def __call__(
@@ -182,7 +182,7 @@ class LmHeadModel(eqx.Module, Generic[LmConfigT]):
         Args:
             input_ids: token IDs with shape [..., Pos]
             attn_mask: attention mask with shape [..., Pos, KeyPos]
-            key: PRNGKey for random number generation
+            key: PRNGKeyArray for random number generation
 
         Returns:
             NamedArray: logits with shape [..., Pos, Vocab]
@@ -202,7 +202,7 @@ class LmHeadModel(eqx.Module, Generic[LmConfigT]):
         Args:
             input_ids: token IDs with shape {Pos}
             attn_mask: attention mask with shape {Pos, KeyPos}
-            key: PRNGKey for random number generation
+            key: PRNGKeyArray for random number generation
 
         Returns:
             NamedArray: activations with shape {Pos, Embed}
@@ -218,7 +218,7 @@ class LmHeadModel(eqx.Module, Generic[LmConfigT]):
         raise NotImplementedError("get_lm_head not implemented")
 
     @abc.abstractmethod
-    def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "LmHeadModel[LmConfigT]":
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "LmHeadModel[LmConfigT]":
         """
         Resizes the vocabulary of the model. Key may be provided to use random initialization, otherwise, there
         should be some deterministic initialization of any new parameters.
@@ -238,7 +238,7 @@ def compute_next_token_loss(
     reduction: Optional[hax.ReductionFunction] = hax.mean,
     reduction_axis: Optional[hax.AxisSelection] = None,
     logsumexp_weight: Optional[float] = None,
-    loss_dtype: Optional[Type[jnp.dtype]] = jnp.float32,
+    loss_dtype: Optional[jnp.dtype] = jnp.float32,
 ) -> jnp.ndarray | NamedArray:
     """
     Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced

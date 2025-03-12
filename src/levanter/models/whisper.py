@@ -123,7 +123,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
 class WhisperMlp(eqx.Module):
     fc1: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     fc2: hnn.Linear  # projection from Intermediate to Embed
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "WhisperMlp":
@@ -146,7 +146,7 @@ class WhisperMlp(eqx.Module):
 
 
 class WhisperAttention(eqx.Module):
-    config: WhisperConfig = eqx.static_field()
+    config: WhisperConfig = eqx.field(static=True)
 
     q_proj: hnn.Linear  # input projection from [embed] -> [q, heads, head_dim]
     k_proj: hnn.Linear  # input projection from [embed] -> [k, heads, head_dim]
@@ -296,10 +296,10 @@ class WhisperTransformer(ModuleWithStateDictSerialization):
 
 
 class WhisperEncoder(ModuleWithStateDictSerialization):
-    config: WhisperConfig = eqx.static_field()
+    config: WhisperConfig = eqx.field(static=True)
     conv1: hnn.Conv
     conv2: hnn.Conv
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     transformer: WhisperTransformer
 
@@ -350,8 +350,8 @@ class WhisperEncoder(ModuleWithStateDictSerialization):
 
 
 class WhisperDecoderEmbeddings(eqx.Module):
-    Vocab: Axis = eqx.static_field()
-    config: WhisperConfig = eqx.static_field()
+    Vocab: Axis = eqx.field(static=True)
+    config: WhisperConfig = eqx.field(static=True)
 
     token_embeddings: hnn.Embedding
     position_embeddings: hnn.Embedding
