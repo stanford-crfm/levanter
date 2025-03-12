@@ -53,9 +53,8 @@ def main(config: VizLmConfig):
     # some axes we use outside the model proper
     EvalBatch = config.trainer.EvalBatch
     Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
 
-    validation_sets = config.data.validation_sets(Pos, KPos=KeyPos)
+    validation_sets = config.data.validation_sets(Pos)
 
     # some axes we use outside the model proper
     Pos = config.model.Pos

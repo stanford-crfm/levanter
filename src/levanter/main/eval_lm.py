@@ -47,26 +47,25 @@ def main(config: EvalLmConfig):
 
     Batch = Axis("batch", config.trainer.eval_batch_size)
     Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
 
     if config.eval_on_train:
-        raw_dataset = config.data.train_set(
+        ds = config.data.train_set(
             Pos,
             config.trainer.batch_schedule,
             key=jax.random.PRNGKey(0),
-            KPos=KeyPos,
         )
     else:
-        raw_dataset = config.data.validation_set(Pos, KPos=KeyPos)
+        ds = config.data.validation_set(Pos)  # type: ignore
+        assert ds is not None, "No validation set found"
 
-    if raw_dataset is None:
+    if ds is None:
         raise ValueError("no dataset found!")
 
     if config.max_batches is not None:
-        raw_dataset = raw_dataset.take(config.max_batches * config.trainer.eval_batch_size)
+        ds = ds.take(config.max_batches * config.trainer.eval_batch_size)
 
     eval_loader = DataLoader(
-        raw_dataset,
+        ds,
         Batch,
         max_buffered_batches=None,
         mesh=config.trainer.device_mesh,

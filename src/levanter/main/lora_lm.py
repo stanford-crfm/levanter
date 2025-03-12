@@ -10,7 +10,7 @@ import haliax.random
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.data.text import CausalLmDataset, LMDatasetConfig
+from levanter.data.text import LMDatasetConfig
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,
@@ -80,23 +80,15 @@ def main(config: LoraLmConfig):
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
         train_dataset = config.data.train_set(
-            Pos.size,
+            Pos,
             batch_schedule=config.trainer.batch_schedule,
-            QPos=Pos,
-            KPos=KeyPos,
+            key=data_key,
         )
 
         if train_dataset is None:
             raise ValueError("No training set!")
 
-        eval_datasets = {
-            name: config.data.validation_set(
-                Pos.size,
-                QPos=Pos,
-                KPos=KeyPos,
-            )
-            for name in config.data.validation_splits
-        }
+        eval_datasets = config.data.validation_sets(Pos)
 
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
@@ -135,19 +127,25 @@ def main(config: LoraLmConfig):
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3e}")
 
-        for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
-            trainer.add_eval_hook(eval_dataset, name=name)
+        max_eval_examples_per_ds = config.trainer.max_eval_batches
+        if max_eval_examples_per_ds is not None:
+            max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
-        # boilerplate hooks and such
-        if len(eval_datasets) == 0:
+        tagged_eval_datasets = config.data.tagged_eval_sets(Pos)
+
+        if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
-
-        for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(
-                eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id, eos_id=tokenizer.eos_token_id
+        else:
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                trainer.EvalBatch,
+                tagged_eval_datasets,
+                tokenizer,
+                trainer.device_mesh,
+                trainer.compute_axis_mapping,
+                max_eval_examples_per_ds,
+                mp=config.trainer.mp,
             )
-            trainer.add_eval_hook(eval_dataset, name=name)
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
