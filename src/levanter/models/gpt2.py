@@ -130,7 +130,7 @@ class Gpt2Config(HFCompatConfig):
 class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "Gpt2Mlp":
@@ -153,7 +153,7 @@ class Gpt2Mlp(eqx.Module):
 
 
 class Gpt2Attention(eqx.Module):
-    config: Gpt2Config = eqx.static_field()
+    config: Gpt2Config = eqx.field(static=True)
 
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
@@ -246,7 +246,7 @@ class Gpt2Block(eqx.Module):
 
 
 class Gpt2Transformer(ModuleWithStateDictSerialization):
-    config: Gpt2Config = eqx.static_field()
+    config: Gpt2Config = eqx.field(static=True)
     blocks: Stacked[Gpt2Block]
     ln_f: hnn.LayerNorm
 
@@ -274,8 +274,8 @@ class Gpt2Transformer(ModuleWithStateDictSerialization):
 
 
 class Gpt2Embeddings(ModuleWithStateDictSerialization, eqx.Module):
-    Vocab: Axis = eqx.static_field()
-    config: Gpt2Config = eqx.static_field()
+    Vocab: Axis = eqx.field(static=True)
+    config: Gpt2Config = eqx.field(static=True)
 
     token_embeddings: hnn.Embedding
     position_embeddings: hnn.Embedding
