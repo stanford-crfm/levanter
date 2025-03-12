@@ -609,8 +609,6 @@ class LMTaskConfig(abc.ABC):
     """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
     If you want to shuffle in eras, set this to the era length"""
 
-    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
-
     @cached_property
     def the_tokenizer(self) -> HfTokenizer:
         if self.tokenizer == "passthrough":
