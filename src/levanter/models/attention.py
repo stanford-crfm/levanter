@@ -581,7 +581,7 @@ class AttentionMask(eqx.Module):
 
     """
 
-    is_causal: bool = eqx.static_field()
+    is_causal: bool = eqx.field(static=True)
     explicit_mask: Optional[NamedArray] = None
     segment_ids: Optional[NamedArray] = None
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34

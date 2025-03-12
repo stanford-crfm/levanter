@@ -33,7 +33,7 @@ class EmaModelAveraging(ModelAveraging[M]):
     """
 
     model: M
-    beta: float = eqx.static_field()
+    beta: float = eqx.field(static=True)
 
     def update(self: S, new_model: M, step: int) -> S:
         del step
