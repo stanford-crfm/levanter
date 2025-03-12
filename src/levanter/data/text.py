@@ -221,46 +221,26 @@ class CausalLmDataset(MappedAsyncDataset[np.ndarray, LmExample]):
     def __init__(
         self,
         dataset: AsyncDataset[np.ndarray],
-        QPos: Axis,
-        KPos: Axis,
+        Pos: Axis,
         *,
-        fcm_prob: float = 0.0,
-        key: Optional[PRNGKey] = None,
         ignore_index: Optional[int] = None,
         eos_id: Optional[int] = None,
     ):
         self.dataset = dataset
-        self.QPos = QPos
-        self.KPos = KPos
-        self.fcm_prob = fcm_prob
+        self.Pos = Pos
         self.ignore_id = ignore_index
         self.eos_id = eos_id
-        self.key = key
-
-        if self.fcm_prob > 0.0 and self.key is None:
-            raise ValueError("must provide key if fcm_prob > 0.0")
 
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
 
         @functools.partial(eqx.filter_jit, out_shardings=sharding)
-        def _create_lm_example(tokens, key):
-            tokens = hax.named(tokens, self.QPos)
+        def _create_lm_example(tokens):
+            tokens = hax.named(tokens, self.Pos)
             example = LmExample.causal(tokens=tokens, ignore_id=self.ignore_id, eos_id=eos_id)
-
-            if self.fcm_prob > 0:
-                # masks for attention
-                # We support forgetful causal masking (FCM) which is a technique that improves training speed by
-                # randomly masking out some of the context. This is a bit like dropout, but it's applied to the attention
-                # mask instead of the activations. It's described in https://arxiv.org/abs/2210.13432
-                assert self.key is not None
-                this_key, key = jax.random.split(key)
-                fcm_mask = hax.nn.attention.forgetful_causal_mask(self.KPos, self.fcm_prob, key=this_key)
-                attn_mask = example.attn_mask & AttentionMask.explicit(fcm_mask)
-                example = dataclasses.replace(example, attn_mask=attn_mask)
 
             return example
 
-        super().__init__(self.dataset, _create_lm_example, key=key)
+        super().__init__(self.dataset, _create_lm_example)
 
     async def async_len(self) -> int:
         return await self.dataset.async_len()
@@ -647,9 +627,7 @@ class LMTaskConfig(abc.ABC):
         batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
-        key: Optional[PRNGKeyArray],
         epochs: Optional[int] = None,
-        KPos: Axis,
     ) -> AsyncDataset[LmExample]:
         pass
 
@@ -658,8 +636,6 @@ class LMTaskConfig(abc.ABC):
         self,
         Pos: Axis,
         monitors: Union[bool, List[MetricsMonitor]] = True,
-        *,
-        KPos: Axis,
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         pass
 
@@ -669,10 +645,10 @@ class LMTaskConfig(abc.ABC):
         pass
 
     def tagged_eval_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True, *, QPos: Axis, KPos: Axis
-    ) -> list[Tuple[AsyncDataset[np.ndarray], List[str]]]:
+        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> list[Tuple[AsyncDataset[LmExample], List[str]]]:
         tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
-        eval_sets = self.validation_sets(seq_len, monitors, QPos=QPos, KPos=KPos)
+        eval_sets = self.validation_sets(Pos, monitors)
 
         return [(eval_sets[name], tags[name]) for name in eval_sets]
 
@@ -1059,7 +1035,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         *,
         key: Optional[PRNGKeyArray] = None,
         epochs: Optional[int] = None,
-        KPos: Axis,
     ) -> AsyncDataset[LmExample]:
         del batch_schedule  # unused
 
@@ -1078,15 +1053,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif isinstance(self.shuffle, int) and self.shuffle > 0:
             ds = ds.era_shuffle(self.shuffle, key=key)
 
-        ds = CausalLmDataset(
-            ds,
-            Pos,
-            KPos,
-            fcm_prob=self.fcm_prob,
-            key=key,
-            ignore_index=self.ignore_token_id,
-            eos_id=self.the_tokenizer.eos_token_id,
-        )
+        ds = CausalLmDataset( ds, Pos, ignore_index=self.ignore_token_id, eos_id=self.the_tokenizer.eos_token_id)
 
         return ds
 
@@ -1094,8 +1061,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         self,
         Pos: Axis,
         monitors: Union[bool, List[MetricsMonitor]] = True,
-        *,
-        KPos: Axis,
     ) -> AsyncDataset[LmExample]:
         ds = self.token_seq_dataset("validation", Pos.size, monitors)
         if ds is None:
@@ -1104,8 +1069,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         ds = CausalLmDataset(
             ds,
             Pos,
-            KPos,
-            fcm_prob=self.fcm_prob,
             ignore_index=self.ignore_token_id,
             eos_id=self.the_tokenizer.eos_token_id,
         )
@@ -1113,9 +1076,9 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         return ds
 
     def validation_sets(
-        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True, *, KPos: Axis
+        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
-        validation_set = self.validation_set(Pos, monitors, KPos=KPos)
+        validation_set = self.validation_set(Pos, monitors)
         if validation_set is not None:
             return {"": validation_set}
         else:
@@ -1270,7 +1233,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         *,
         key: Optional[PRNGKeyArray],
         epochs: Optional[int] = None,
-        KPos: Axis,
     ) -> AsyncDataset[np.ndarray]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
@@ -1332,16 +1294,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         return mixture
 
     def validation_sets(
-        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True, *, KPos: Axis
-    ) -> Mapping[str, AsyncDataset[LmExample]]:
+        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
         return {
             name: CausalLmDataset(
                 ds,
                 Pos,
-                KPos,
-                fcm_prob=self.fcm_prob,
                 ignore_index=self.ignore_token_id,
                 eos_id=self.the_tokenizer.eos_token_id,
             )

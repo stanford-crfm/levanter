@@ -19,8 +19,10 @@ def test_dont_blow_up_without_validation_set():
             cache_dir=tmpdir,
         )
 
+        Pos = hax.Axis("Pos", 10)
+        KPos = hax.Axis("KPos", 10)
         # mostly just making sure this doesn't blow up
-        assert config.validation_set(10) is None
+        assert config.validation_set(Pos, KPos=KPos) is None
 
 
 def test_lm_example_handles_ignore_id():

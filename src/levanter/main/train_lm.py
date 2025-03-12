@@ -138,11 +138,10 @@ def main(config: TrainLmConfig):
             config.trainer.batch_schedule,
             key=data_key,
             epochs=config.epoch,
-            KPos=KeyPos,
         )
 
         # Get the tagged evaluation datasets
-        tagged_eval_datasets = config.data.tagged_eval_sets(Pos, QPos=Pos, KPos=KeyPos)
+        tagged_eval_datasets = config.data.tagged_eval_sets(Pos)
 
         # add epoch logging if epochs specified
         if config.epoch > 0:
@@ -204,7 +203,7 @@ def main(config: TrainLmConfig):
             causal_datasets = [
                 (
                     CausalLmDataset(
-                        ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id, eos_id=tokenizer.eos_token_id
+                        ds, Pos, ignore_index=config.data.ignore_token_id, eos_id=tokenizer.eos_token_id
                     ),
                     tags,
                 )
