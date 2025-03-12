@@ -27,7 +27,7 @@ from huggingface_hub import HfApi, hf_hub_download, repo_exists, snapshot_downlo
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError, RepositoryNotFoundError
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
-from jaxtyping import Array
+from jaxtyping import Array, PRNGKeyArray
 from tqdm import tqdm
 
 import haliax
@@ -146,7 +146,7 @@ class ModelWithHfSerializationMixin(Generic[MConfig]):
 
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "ModelWithHfSerializationMixin":
+    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKeyArray) -> "ModelWithHfSerializationMixin":
         pass
 
 
@@ -157,7 +157,7 @@ class ASRWithHfSerializationMixin(ASRMixin, ModelWithHfSerializationMixin[MConfi
 class LmWithHfSerializationMixin(LmHeadModel, ModelWithHfSerializationMixin[MConfig]):
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "LmWithHfSerializationMixin":
+    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKeyArray) -> "LmWithHfSerializationMixin":
         pass
 
 

@@ -125,7 +125,7 @@ class DataLoader(Iterable[Ex]):
                 logger.warning("Data store currently has no data. We will block until data is available.")
 
             initial_example = blocking_wait(self.data_store.getitem_async(0))
-            self._ex_leaves, self._ex_structure = jax.tree_flatten(initial_example, is_leaf=is_named_array)
+            self._ex_leaves, self._ex_structure = jax.tree.flatten(initial_example, is_leaf=is_named_array)
             self._padding_example = _make_padding_example(initial_example)
 
         if not self._allow_non_divisible_batch_size:

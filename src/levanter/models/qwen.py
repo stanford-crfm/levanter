@@ -117,7 +117,7 @@ class QwenConfig(LlamaConfig):
 
 # Modified attention class for Qwen
 class QwenAttention(eqx.Module):
-    config: QwenConfig = eqx.static_field()
+    config: QwenConfig = eqx.field(static=True)
     q_proj: hnn.Linear
     k_proj: hnn.Linear
     v_proj: hnn.Linear
@@ -201,7 +201,7 @@ class QwenAttention(eqx.Module):
 
 # Modified decoder layer for Qwen
 class QwenDecoderLayer(eqx.Module):
-    config: QwenConfig = eqx.static_field()
+    config: QwenConfig = eqx.field(static=True)
     self_attn: QwenAttention
     mlp: LlamaMlp  # Can reuse Llama MLP as structure is similar
     input_layernorm: LlamaRMSNorm
@@ -242,7 +242,7 @@ class QwenDecoderLayer(eqx.Module):
 
 # Modified transformer for Qwen
 class QwenTransformer(LlamaTransformer):
-    config: QwenConfig = eqx.static_field()
+    config: QwenConfig = eqx.field(static=True)
     layers: BlockFoldable[QwenDecoderLayer]
     norm: LlamaRMSNorm
 
@@ -286,7 +286,7 @@ class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization)
         Args:
             input_ids: token IDs with shape {Pos}
             attn_mask: attention mask with shape {Pos, KeyPos}
-            key: PRNGKey for random number generation
+            key: PRNGKeyArray for random number generation
 
         Returns:
             NamedArray: activations with shape {Pos, Embed}

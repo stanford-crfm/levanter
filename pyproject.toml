@@ -7,11 +7,11 @@ name = "levanter"
 version = "1.2"
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
-    { name = "Jason Wang", email = "jsywang@cs.stanford.edu"},
-    { name = "Ahmed Ahmed"},
+    { name = "Jason Wang", email = "jsywang@cs.stanford.edu" },
+    { name = "Ahmed Ahmed" },
     { name = "Ivan Zhou", email = "ivanz@stanford.edu" },
-    { name = "Will Held"},
-    { name = "Virginia Adams"}
+    { name = "Will Held" },
+    { name = "Virginia Adams" },
 ]
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
@@ -40,7 +40,7 @@ dependencies = [
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
     "fsspec[http]>=2024.2,<2026",
-    "tensorstore>=0.1.65",
+    "tensorstore>=0.1.65,<0.1.70",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]>=0.4.2,<0.6.0",
@@ -53,8 +53,8 @@ dependencies = [
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
     "deepdiff",
-#    "lm-eval==0.4.2",
-#    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+    #    "lm-eval==0.4.2",
+    #    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
 
 [project.urls]
@@ -100,6 +100,7 @@ markers = [
     "entry: marks tests as entry point tests (deselect with '-m \"not entry\"')",
     "ray: marks tests that require Ray (deselect with '-m \"not ray\"')",
 ]
+asyncio_default_fixture_loop_scope = "function"
 
 [project.optional-dependencies]
 test = [
@@ -109,6 +110,7 @@ test = [
     "flake8",
     "soundfile",
     "librosa",
+    "tensorboardX>=2.6",
 ]
 
 [tool.setuptools.packages.find]
