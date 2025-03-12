@@ -43,7 +43,7 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
   checkpointer:
-    base_path: "gs://levanter-checkpoints/marin/llama_3.1_tulusft/"
+    base_path: "gs://marin-us-central2/checkpoints/llama_3.1_tulusft/seed_0/"
 optimizer:
   learning_rate: 5e-6
   weight_decay: 0.0
@@ -52,7 +52,7 @@ optimizer:
   warmup: 0.03
 
 hf_save_steps: 500
-hf_save_path: "gs://levanter-checkpoints/marin/llama_3.1_tulusft/hf/"
+hf_save_path: "gs://marin-us-central2/checkpoints/llama_3.1_tulusft/hf/seed_0/"
 
 initialize_from_hf: True
 model_name_or_path: "meta-llama/Llama-3.1-8B"
