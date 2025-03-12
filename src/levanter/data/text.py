@@ -20,7 +20,6 @@ import numpy as np
 import regex
 import tensorstore as ts
 from draccus import field
-from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 from tokenizers import normalizers
 
@@ -30,7 +29,6 @@ from haliax import Axis
 from levanter.data import AsyncDataset
 from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy, rescale_mixture_schedule_for_batch_schedule
-from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.schedule import BatchSchedule
 from levanter.store.cache import CacheOptions, TreeCache
@@ -627,6 +625,7 @@ class LMTaskConfig(abc.ABC):
         batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
+        key: PRNGKeyArray,
         epochs: Optional[int] = None,
     ) -> AsyncDataset[LmExample]:
         pass
@@ -884,7 +883,7 @@ def mk_supervised_dataset(
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
-def _cache_supervised_set(source, cache_dir, tokenizer, Pos, input_field, output_field):
+def _cache_supervised_set(source, cache_dir, tokenizer, Pos: hax.Axis, input_field, output_field):
     """
     Cache a supervised dataset into input_ids and sources_len.
     """
@@ -1033,7 +1032,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
         epochs: Optional[int] = None,
     ) -> AsyncDataset[LmExample]:
         del batch_schedule  # unused
@@ -1044,6 +1043,8 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         if ds is None:
             raise ValueError("No training set!")
 
+        assert ds is not None
+
         if epochs:
             logger.info("Wrapping dataset in epoch dataset")
             ds = EpochDataset(ds, max_epochs=epochs)
@@ -1053,27 +1054,23 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         elif isinstance(self.shuffle, int) and self.shuffle > 0:
             ds = ds.era_shuffle(self.shuffle, key=key)
 
-        ds = CausalLmDataset( ds, Pos, ignore_index=self.ignore_token_id, eos_id=self.the_tokenizer.eos_token_id)
-
-        return ds
+        return CausalLmDataset(ds, Pos, ignore_index=self.ignore_token_id, eos_id=self.the_tokenizer.eos_token_id)  # type: ignore
 
     def validation_set(
         self,
         Pos: Axis,
         monitors: Union[bool, List[MetricsMonitor]] = True,
-    ) -> AsyncDataset[LmExample]:
+    ) -> AsyncDataset[LmExample] | None:
         ds = self.token_seq_dataset("validation", Pos.size, monitors)
         if ds is None:
-            return None  # type: ignore
+            return None
 
-        ds = CausalLmDataset(
+        return CausalLmDataset(
             ds,
             Pos,
             ignore_index=self.ignore_token_id,
             eos_id=self.the_tokenizer.eos_token_id,
         )
-
-        return ds
 
     def validation_sets(
         self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
@@ -1231,9 +1228,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         batch_schedule: BatchSchedule,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
-        key: Optional[PRNGKeyArray],
+        key: PRNGKeyArray,
         epochs: Optional[int] = None,
-    ) -> AsyncDataset[np.ndarray]:
+    ) -> AsyncDataset[LmExample]:
         doc_caches = self.build_caches("train", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
 
@@ -1279,12 +1276,22 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             token_datasets = sliced_token_datasets
 
+        causal_datasets = {
+            name: CausalLmDataset(
+                ds,
+                Pos,
+                ignore_index=self.ignore_token_id,
+                eos_id=self.the_tokenizer.eos_token_id,
+            )
+            for name, ds in token_datasets.items()
+        }
+
         weights = self.train_weights
         if isinstance(weights, Sequence):
             weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
 
         mixture = MixtureDataset(
-            datasets=token_datasets,
+            datasets=causal_datasets,
             weights=weights,
             stop_strategy=self.stop_strategy,
             key=mix_key,
@@ -1294,7 +1301,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         return mixture
 
     def validation_sets(
-        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True) -> Mapping[str, AsyncDataset[LmExample]]:
+        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
         token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
         return {
