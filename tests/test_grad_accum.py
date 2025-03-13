@@ -18,9 +18,9 @@ class Mlp(eqx.Module):
 
     w_in: hax.NamedArray
     w_out: hax.NamedArray
-    In: hax.Axis = eqx.static_field()
-    Out: hax.Axis = eqx.static_field()
-    Mid: hax.Axis = eqx.static_field()
+    In: hax.Axis = eqx.field(static=True)
+    Out: hax.Axis = eqx.field(static=True)
+    Mid: hax.Axis = eqx.field(static=True)
 
     @staticmethod
     def init(In: hax.Axis, Out: hax.Axis, Mid: hax.Axis, *, key):
