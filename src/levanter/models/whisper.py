@@ -50,6 +50,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
 
     initializer_range: float = 0.02
     gradient_checkpointing: bool = True
+    reference_checkpoint: str = "openai/whisper-base"
 
     # Attention-related config
     upcast_attn: bool = True
@@ -66,7 +67,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
         return WhisperASRModel
 
     def hf_checkpoint_converter(self) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
-        return HFCheckpointConverter(self, "openai/whisper-base", ignore_prefix="model")
+        return HFCheckpointConverter(self, self.reference_checkpoint, ignore_prefix="model")
 
     # Axis
     MelPos = property(lambda self: Axis(name="position", size=self.max_source_positions * 2))
@@ -84,6 +85,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     DecoderHeadSize = property(lambda self: Axis(name="head_size", size=self.d_model // self.decoder_attention_heads))
     DecoderLayer = property(lambda self: Axis(name="decoder_layers", size=self.decoder_layers))
     Mels = property(lambda self: Axis(name="n_mels", size=self.num_mel_bins))
+    AudioPos = property(lambda self: [self.Mels, self.MelPos])
 
     def to_hf_config(self, vocab_size, config_overrides=None):
         if config_overrides is None:
@@ -104,8 +106,9 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
         )
 
     @classmethod
-    def from_hf_config(cls, hf_config: HfConfig):
+    def from_hf_config(cls, hf_config: HfConfig, reference_checkpoint: str = "openai/whisper-base"):
         return cls(
+            reference_checkpoint=reference_checkpoint,
             vocab_size=hf_config.vocab_size,
             num_mel_bins=hf_config.num_mel_bins,
             encoder_layers=hf_config.encoder_layers,
@@ -128,8 +131,8 @@ class WhisperMlp(eqx.Module):
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "WhisperMlp":
         k_fc, k_proj = haliax.jax_utils.maybe_rng_split(key, 2)
-        fc1 = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
-        fc2 = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
+        fc1 = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias)
+        fc2 = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias)
         if isinstance(activation_fn, str):
             activation_fn = ACT2FN[activation_fn]
         act = activation_fn  # type: ignore
@@ -161,10 +164,30 @@ class WhisperAttention(eqx.Module):
         Embed = config.Embed
 
         k_q, k_k, k_v, k_out = haliax.jax_utils.maybe_rng_split(key, 4)
-        q_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_q, use_bias=use_bias, out_first=False)
-        k_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_k, use_bias=False, out_first=False)
-        v_proj = hnn.Linear.init(In=Embed, Out=(Heads, HeadSize), key=k_v, use_bias=use_bias, out_first=False)
-        out_proj = hnn.Linear.init(In=(Heads, HeadSize), Out=Embed, key=k_out, use_bias=use_bias, out_first=False)
+        q_proj = hnn.Linear.init(
+            In=Embed,
+            Out=(Heads, HeadSize),
+            key=k_q,
+            use_bias=use_bias,
+        )
+        k_proj = hnn.Linear.init(
+            In=Embed,
+            Out=(Heads, HeadSize),
+            key=k_k,
+            use_bias=False,
+        )
+        v_proj = hnn.Linear.init(
+            In=Embed,
+            Out=(Heads, HeadSize),
+            key=k_v,
+            use_bias=use_bias,
+        )
+        out_proj = hnn.Linear.init(
+            In=(Heads, HeadSize),
+            Out=Embed,
+            key=k_out,
+            use_bias=use_bias,
+        )
 
         return WhisperAttention(config, q_proj, k_proj, v_proj, out_proj, inference=False)
 
@@ -307,10 +330,9 @@ class WhisperEncoder(ModuleWithStateDictSerialization):
     def init(cls, config: WhisperConfig, *, key) -> "WhisperEncoder":
         k_conv1, k_conv2, k_t = haliax.jax_utils.maybe_rng_split(key, 3)
 
-        Len = hax.Axis("position", size=config.SourcePos.size * 2)
         Mid = hax.Axis("mid", config.Embed.size)
-        conv1 = hnn.Conv.init(Len, config.Mels, Mid, kernel_size=3, padding=1, key=k_conv1)
-        conv2 = hnn.Conv.init(Len, Mid, config.Embed, kernel_size=3, stride=2, padding=1, key=k_conv2)
+        conv1 = hnn.Conv.init(config.MelPos, config.Mels, Mid, kernel_size=3, padding=1, key=k_conv1)
+        conv2 = hnn.Conv.init(config.MelPos, Mid, config.Embed, kernel_size=3, stride=2, padding=1, key=k_conv2)
         if isinstance(config.activation_function, str):
             act = ACT2FN[config.activation_function]  # type: ignore
         else:
