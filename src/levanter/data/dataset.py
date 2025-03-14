@@ -123,7 +123,16 @@ class AsyncDataset(DatasetBase[T_co]):
         return BatchMappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
 
     def slice_dataset(self, start_index: Optional[int] = None, end_index: Optional[int] = None):
+        """
+        Slices the dataset from `start_index` to `end_index`.
+        """
         return SlicedAsyncDataset(self, start_index, end_index)
+
+    def take(self, n: int):
+        """
+        Alias for `slice_dataset(end_index=n)`.
+        """
+        return self.slice_dataset(end_index=n)
 
     def shuffle(self, key: PRNGKeyArray):
         import levanter.data.permutation as permutation

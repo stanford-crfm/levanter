@@ -89,6 +89,7 @@ def test_gemma_rms_norm():
 def test_gemma_decoder_layer(num_kv_heads):
     import torch
     from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer as HFGemmaDecoderLayer
+    from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
 
     gemma_config = _get_gemma_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
@@ -96,7 +97,8 @@ def test_gemma_decoder_layer(num_kv_heads):
 
     state = hax.state_dict.to_torch_compatible_state_dict(gemma_decoder_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_decoder_layer = HFGemmaDecoderLayer(gemma_config.to_hf_config(32000), layer_idx=0)
+    hf_config = gemma_config.to_hf_config(32000)
+    hf_decoder_layer = HFGemmaDecoderLayer(hf_config, layer_idx=0)
     hf_decoder_layer.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(gemma_config)
@@ -106,10 +108,14 @@ def test_gemma_decoder_layer(num_kv_heads):
     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
     mask_torch = (mask_torch == 0).float() * -1e10
 
-    position_ids = torch.arange(gemma_config.Pos.size).reshape(1, -1)
+    position_ids = torch.arange(gemma_config.Pos.size).unsqueeze(0)
+    hf_rotary_emb = HFGemmaRotaryEmbedding(config=hf_config)
+    cos, sin = hf_rotary_emb(x_torch, position_ids)
 
     out = gemma_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+    hf_out = hf_decoder_layer(
+        x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
+    )
 
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
@@ -258,6 +264,7 @@ def test_pass_different_length_seq(num_kv_heads):
 def test_gemma_attention(use_flash, num_kv_heads):
     import torch
     from transformers.models.gemma.modeling_gemma import GemmaAttention as HFGemmaAttention
+    from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
 
     config = _get_gemma_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
@@ -265,7 +272,10 @@ def test_gemma_attention(use_flash, num_kv_heads):
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_attention = HFGemmaAttention(config.to_hf_config(32000))
+    hf_config = config.to_hf_config(32000)
+
+    hf_rotary_emb = HFGemmaRotaryEmbedding(config=hf_config)
+    hf_attention = HFGemmaAttention(hf_config, layer_idx=0)
     hf_attention.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(config)
@@ -278,8 +288,11 @@ def test_gemma_attention(use_flash, num_kv_heads):
     mask_torch = (mask_torch == 0).float() * -1e9
 
     out = attention(x, mask)
-    position_ids = torch.arange(config.Pos.size).reshape(1, -1)
-    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+    position_ids = torch.arange(config.Pos.size).unsqueeze(0)  # [1, seq_len]
+    cos, sin = hf_rotary_emb(x_torch, position_ids)
+    hf_out = hf_attention(
+        x_torch, position_ids=position_ids, attention_mask=mask_torch, position_embeddings=(cos, sin)
+    )
 
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
