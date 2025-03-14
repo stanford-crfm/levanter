@@ -16,15 +16,9 @@ import levanter
 import levanter.eval
 import levanter.eval_harness
 from levanter import callbacks
-from levanter.checkpoint import EpochCheckpointer, load_checkpoint
+from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import (
-    CausalLmDataset,
-    LMDatasetConfig,
-    LMMixtureDatasetConfig,
-    SupervisedSourceConfig,
-    mk_supervised_datasets,
-)
+from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, SupervisedSourceConfig, mk_supervised_datasets
 from levanter.eval_harness import LmEvalHarnessConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, compute_next_token_loss
@@ -52,7 +46,6 @@ class TrainLmConfig:
     # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
 
-    fcm_prob: float = 0.0  # forgetful context masking prob. recommended 0.15
     z_loss_weight: float = 0.0
 
     hf_save_path: Optional[str] = None
@@ -123,7 +116,6 @@ def main(config: TrainLmConfig):
         # some axes we need
         EvalBatch = config.trainer.EvalBatch
         Pos = config.model.Pos
-        KeyPos = config.model.KeyPos
 
         # to do partitioning, our dimensions have to be divisible by the size of the physical axes they're mapped to
         # For most things, we just insist you specify the config right, but tokenizers often have strange numbers of
@@ -133,39 +125,16 @@ def main(config: TrainLmConfig):
         if vocab_size != Vocab.size:
             logger.info(f"Rounding vocab size from {vocab_size} to {Vocab.size} for partitioning")
 
-        # TODO: fix this
-        tagged_eval_datasets: list = config.data.tagged_eval_sets(Pos.size)
-
-        train_sets = config.data.train_set(
-            Pos.size, key=data_key, epochs=config.epoch, batch_schedule=config.trainer.batch_schedule
-        )
-
-        train_dataset = CausalLmDataset(
-            train_sets,
+        # Get the training dataset
+        train_dataset = config.data.train_set(
             Pos,
-            KeyPos,
-            ignore_index=config.data.ignore_token_id,
-            eos_id=tokenizer.eos_token_id,
+            config.trainer.batch_schedule,
+            key=data_key,
+            epochs=config.epoch,
         )
 
-        # add epoch logging if epochs specified
-        if config.epoch > 0:
-            total_tokens_future = callbacks.get_total_dataset_tokens(train_dataset.dataset, config.model.seq_len)
-            trainer.add_hook(
-                callbacks.log_epoch_progress(
-                    total_tokens_future, Pos.size, trainer.config.train_batch_size, max_epochs=config.epoch
-                ),
-                every=1,
-            )
-
-            # Add epoch checkpoint callback
-            epoch_checkpointer = EpochCheckpointer(
-                checkpointer=trainer.config.checkpointer.create(trainer.run_id),
-                every_n_epochs=1,  # Or configure as needed
-                total_dataset_size=total_tokens_future.result(),
-                batch_size=trainer.config.train_batch_size,
-            )
-            trainer.add_hook(epoch_checkpointer, every=1)
+        # Get the tagged evaluation datasets
+        tagged_eval_datasets = config.data.tagged_eval_sets(Pos)
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
@@ -205,18 +174,9 @@ def main(config: TrainLmConfig):
         if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
         else:
-            causal_datasets = [
-                (
-                    CausalLmDataset(
-                        ds, Pos, KeyPos, ignore_index=config.data.ignore_token_id, eos_id=tokenizer.eos_token_id
-                    ),
-                    tags,
-                )
-                for ds, tags in tagged_eval_datasets
-            ]
             cb = levanter.eval.cb_tagged_lm_evaluate(
                 EvalBatch,
-                causal_datasets,
+                tagged_eval_datasets,
                 tokenizer,
                 trainer.device_mesh,
                 compute_axis_mapping,

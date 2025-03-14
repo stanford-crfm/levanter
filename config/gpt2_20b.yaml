@@ -10,7 +10,6 @@ model:
   attn_pdrop: 0.0
   resid_pdrop: 0.0
   use_bias: false
-fcm_prob: 0.15
 trainer:
   tracker:
     project: "levanter"
