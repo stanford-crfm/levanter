@@ -33,8 +33,8 @@ class MLP(eqx.Module):
     """slightly less annoying MLP, used for testing purposes"""
 
     layers: List[nn.Linear]
-    activation: Callable = eqx.static_field()
-    final_activation: Callable = eqx.static_field()
+    activation: Callable = eqx.field(static=True)
+    final_activation: Callable = eqx.field(static=True)
     in_size: int = static_field()
     out_size: int = static_field()
     width_size: int = static_field()

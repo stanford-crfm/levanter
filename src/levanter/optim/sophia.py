@@ -8,7 +8,6 @@ import jax
 import jaxtyping
 import optax
 from jax import numpy as jnp
-from jax.random import PRNGKey
 from jaxtyping import PRNGKeyArray
 
 import levanter.tracker
@@ -31,7 +30,7 @@ class ScaleBySophiaState(NamedTuple):
     hessian_count: jaxtyping.Array  # shape=(), dtype=jnp.int32.
     mu: optax.Updates  # momentum
     h: optax.Updates  # EMA of hessian diagonal
-    hess_key: PRNGKey
+    hess_key: PRNGKeyArray
 
 
 # @runtime_checkable
@@ -52,7 +51,7 @@ class ScaleBySophiaState(NamedTuple):
 #         """
 #         ...
 #
-#     def sample(self, logits, *example, key: PRNGKey, **kwargs) -> Ex:
+#     def sample(self, logits, *example, key: PRNGKeyArray, **kwargs) -> Ex:
 #         """
 #         Samples a new example with the same shape as the original example, but with
 #         the "labels" replaced with some sampled values
@@ -106,7 +105,7 @@ class ScaleBySophiaState(NamedTuple):
 #     def logits(self, parameters: M, *args, **kwargs) -> Any:
 #         return self.objective.logits(parameters, *self.args, *args, **self.kwargs, **kwargs)
 #
-#     def sample(self, logits, *example, key: PRNGKey, **kwargs) -> Ex:
+#     def sample(self, logits, *example, key: PRNGKeyArray, **kwargs) -> Ex:
 #         return self.objective.sample(logits, *self.args, *example, key=key, **self.kwargs, **kwargs)
 #
 #     def loss(self, logits, *example: Ex, **kwargs) -> jnp.ndarray:
@@ -140,7 +139,7 @@ class BaseSophiaConfig(HessianOptConfig):
         fn,
         model,
         *batch,
-        hess_key: PRNGKey,
+        hess_key: PRNGKeyArray,
         **batch_kwargs,
     ):
         raise NotImplementedError
@@ -190,7 +189,7 @@ class BaseSophiaConfig(HessianOptConfig):
 # class SophiaGConfig(BaseSophiaConfig):
 #     gamma: float = GAMMA_SOPHIA_G
 #
-#     def compute_hessian(self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+#     def compute_hessian(self, fn, model, *batch, hess_key: PRNGKeyArray, **batch_kwargs):
 #         return stochastic_diag_gauss_newton(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
 #
 
@@ -200,7 +199,7 @@ class BaseSophiaConfig(HessianOptConfig):
 class SophiaHConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_H
 
-    def compute_hessian(self, fn, model, *batch, hess_key: PRNGKey, **batch_kwargs):
+    def compute_hessian(self, fn, model, *batch, hess_key: PRNGKeyArray, **batch_kwargs):
         return stochastic_hessian_diagonal(fn, model, *batch, **batch_kwargs, hess_key=hess_key)
 
 
@@ -214,7 +213,7 @@ def sophia_h(
     weight_decay: float = 0.0,
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
-    key: PRNGKey,
+    key: PRNGKeyArray,
 ) -> optax.GradientTransformation:
     """Sophia-H: https://arxiv.org/pdf/2305.14342.pdf Algorithm 1&3"""
     components = []
@@ -237,7 +236,7 @@ def scale_by_sophia_h(
     clip_threshold: Optional[float] = 1.0,
     update_interval=10,
     *,
-    key: PRNGKey,
+    key: PRNGKeyArray,
 ):
 
     return _sophia_gradient_transform(
@@ -262,7 +261,7 @@ def sophia_g(
     weight_decay: float = 0.0,
     clip_threshold: Optional[float] = 1.0,
     update_interval: int = 10,
-    key: PRNGKey,
+    key: PRNGKeyArray,
 ) -> optax.GradientTransformation:
     """Sophia-G: https://arxiv.org/pdf/2305.14342.pdf Algorithm 2&3"""
     components = []
@@ -389,7 +388,7 @@ def _sophia_gradient_transform(
 
 
 # use this for Sophia-G
-def stochastic_diag_gauss_newton(fn, model, *args, hess_key: PRNGKey, **kwargs):
+def stochastic_diag_gauss_newton(fn, model, *args, hess_key: PRNGKeyArray, **kwargs):
     """
 
     Approximate the diagonal of the Hessian using an approximation to the Gauss Newton matrix.
@@ -423,7 +422,7 @@ def stochastic_diag_gauss_newton(fn, model, *args, hess_key: PRNGKey, **kwargs):
 
 
 # Use this for Sophia-H
-def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKey, **kwargs):
+def stochastic_hessian_diagonal(fn, model, *args, hess_key: PRNGKeyArray, **kwargs):
     """Compute the diagonal of the Hessian of a function using a normal distribution.
 
     https://arxiv.org/pdf/2305.14342.pdf Algorithm 1

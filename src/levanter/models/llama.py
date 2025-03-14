@@ -181,7 +181,7 @@ class LlamaMlp(eqx.Module):
     gate_proj: hnn.Linear  # projection from Embed to Mlp
     up_proj: hnn.Linear  # projection from Embed to Mlp
     down_proj: hnn.Linear  # projection from Mlp to Embed
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     @staticmethod
     def init(
@@ -207,7 +207,7 @@ class LlamaMlp(eqx.Module):
 
 
 class LlamaAttention(eqx.Module):
-    config: LlamaConfig = eqx.static_field()
+    config: LlamaConfig = eqx.field(static=True)
     q_proj: hnn.Linear  # projection from Embed to query
     k_proj: hnn.Linear  # projection from Embed to key
     v_proj: hnn.Linear  # projection from Embed to value
@@ -276,12 +276,12 @@ class LlamaRMSNorm(eqx.Module):
     Similar to LayerNorm, but uses the RMS of the input along the specified axis (or axes) instead of variance.
     """
 
-    axis: AxisSpec = eqx.static_field()
+    axis: AxisSpec = eqx.field(static=True)
     weight: Optional[NamedArray]
     bias: Optional[NamedArray]
 
-    eps: float = eqx.static_field(default=1e-5)
-    dtype: Optional[jnp.dtype] = eqx.static_field(default=jnp.float32)
+    eps: float = eqx.field(static=True, default=1e-5)
+    dtype: Optional[jnp.dtype] = eqx.field(static=True, default=jnp.float32)
 
     @staticmethod
     def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True, dtype=jnp.float32):
@@ -316,7 +316,7 @@ class LlamaRMSNorm(eqx.Module):
 
 
 class LlamaDecoderLayer(eqx.Module):
-    config: LlamaConfig = eqx.static_field()
+    config: LlamaConfig = eqx.field(static=True)
     self_attn: LlamaAttention
     mlp: LlamaMlp
     input_layernorm: LlamaRMSNorm
@@ -357,7 +357,7 @@ class LlamaDecoderLayer(eqx.Module):
 
 
 class LlamaTransformer(eqx.Module):
-    config: LlamaConfig = eqx.static_field()
+    config: LlamaConfig = eqx.field(static=True)
     layers: BlockFoldable[LlamaDecoderLayer]
     norm: LlamaRMSNorm
 
@@ -392,7 +392,7 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
     - Llama doesn't use dropout.
     """
 
-    Vocab: Axis = eqx.static_field()
+    Vocab: Axis = eqx.field(static=True)
     token_embeddings: hnn.Embedding
 
     @staticmethod
@@ -477,7 +477,7 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         Args:
             input_ids: token IDs with shape {Pos}
             attn_mask: attention mask with shape {Pos, KeyPos}
-            key: PRNGKey for random number generation
+            key: PRNGKeyArray for random number generation
 
         Returns:
             NamedArray: activations with shape {Pos, Embed}
