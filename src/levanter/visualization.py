@@ -135,12 +135,17 @@ def visualize_log_prob_diff(
 ):
     """
     Visualizes the difference in token log probabilities between two models by embedding
-    data attributes in spans and computing their color using JavaScript.
+    data attributes in spans and computing their color and border styles using JavaScript.
 
-    For each token, the difference (log_probs_a - log_probs_b) is computed and clamped to
-    [-diff_threshold, diff_threshold]. Very positive differences appear in blue,
-    very negative differences in orange. Near-zero differences are nearly transparent,
-    with opacity computed via exponential scaling.
+    In the generated HTML:
+      - The **background color** indicates the difference between model1 and model2 log probabilities.
+          - **Blue** for positive differences.
+          - **Orange** for negative differences.
+          - Near-zero differences are nearly transparent.
+      - The **overline** (top border) represents model1's absolute log probability using the absolute color scale.
+      - The **underline** (bottom border) represents model2's absolute log probability using the same scale.
+      - Extra vertical spacing is added to prevent the border lines from bleeding into adjacent rows.
+      - Hover over a token to see a tooltip with the difference and both models’ log probabilities.
 
     Args:
         tokens: List of list of tokens for each document.
@@ -149,44 +154,90 @@ def visualize_log_prob_diff(
         output_path: Path to write the HTML file to. Fsspec paths are supported.
         diff_threshold: Maximum absolute difference to consider; differences beyond this are clamped.
     """
-    html = (
+    html_str = (
         "<html><head><meta charset='utf-8'><style>"
-        ".lp span { font-family: monospace; padding: 0.2em; border-radius: 2px; }"
-        "</style></head><body><div class='lp'>"
+        ".lp span { font-family: monospace; padding: 0.2em; border-radius: 2px; display: inline-block; margin: 0.2em"
+        " 0; }"
+        "</style></head><body>"
+        # Quick description at the top of the page
+        "<div style='font-family: sans-serif; margin-bottom: 1em;'>"
+        "<h2>Log Probability Difference Visualization</h2>"
+        "<p>"
+        "Each token's <strong>background color</strong> indicates the difference between "
+        "model1 and model2 log probabilities (<em>blue</em> for positive, <em>orange</em> for negative differences). "
+        "An <strong>overline</strong> (top border) shows model1's absolute log probability and an "
+        "<strong>underline</strong> (bottom border) shows model2's absolute log probability, both using the same"
+        " absolute color scale. "
+        "Extra spacing between tokens prevents the border lines from bleeding into adjacent rows. "
+        "Hover over a token to see exact values."
+        "</p>"
+        "</div>"
+        "<div class='lp'>"
     )
     for doc, lp_a_doc, lp_b_doc in zip(tokens, log_probs_a, log_probs_b):
         for token, lp_a, lp_b in zip(doc, lp_a_doc, lp_b_doc):
             diff = lp_a - lp_b
-            html += f"<span data-diff='{diff:.3f}'>{_escape(token)}</span>"
-        html += "<br><br>"
-    html += (
+            html_str += (
+                f"<span data-diff='{diff:.3f}' data-lp1='{lp_a:.3f}' data-lp2='{lp_b:.3f}'>{_escape(token)}</span>"
+            )
+        html_str += "<br><br>"
+    html_str += (
         "</div>"
         "<script>\n"
         "const SCALE = 3;\n"
         f"const threshold = {diff_threshold};\n"
+        "\n"
+        "// Helper function to compute border thickness from a log probability.\n"
+        "function thicknessFromLP(lp) {\n"
+        "  lp = Math.max(lp, -10);\n"
+        "  const norm = (lp + 10) / 10;\n"
+        "  return (1 + (1 - norm) * 4).toFixed(1) + 'px';\n"
+        "}\n"
+        "\n"
+        "// Helper function that computes a color from an absolute log probability using the same scale\n"
+        "function absoluteColor(lp) {\n"
+        "  let clamped = Math.max(lp, -10);\n"
+        "  const norm = (clamped + 10) / 10;\n"
+        "  const hue = (60 * norm).toFixed(0); // 0° for very low, 60° for higher probabilities\n"
+        "  const alpha = (1 - Math.exp(clamped / SCALE)).toFixed(2);\n"
+        "  return `hsla(${hue}, 100%, 50%, ${alpha})`;\n"
+        "}\n"
+        "\n"
         "document.querySelectorAll('.lp span').forEach(el => {\n"
         "  let diff = parseFloat(el.getAttribute('data-diff'));\n"
-        "  // Clamp the difference\n"
-        "  clamp_diff = Math.max(-threshold, Math.min(threshold, diff));\n"
-        "  // Compute alpha using exponential scaling so small differences are nearly transparent\n"
-        "  const alpha = (1 - Math.exp(-Math.abs(clamp_diff) / SCALE)).toFixed(2);\n"
-        "  let color = 'transparent';\n"
+        "  diff = Math.max(-threshold, Math.min(threshold, diff));\n"
+        "  const alpha = (1 - Math.exp(-Math.abs(diff) / SCALE)).toFixed(2);\n"
+        "  let bgColor = 'transparent';\n"
         "  if(diff > 0) {\n"
-        "    // Positive difference: use blue (e.g., hsla(219,70%,50%,alpha))\n"
-        "    color = `hsla(219, 70%, 50%, ${alpha})`;\n"
+        "    bgColor = `hsla(219, 70%, 50%, ${alpha})`;\n"
         "  } else if(diff < 0) {\n"
-        "    // Negative difference: use orange (e.g., hsla(39,100%,50%,alpha))\n"
-        "    color = `hsla(39, 100%, 50%, ${alpha})`;\n"
+        "    bgColor = `hsla(39, 100%, 50%, ${alpha})`;\n"
         "  }\n"
-        "  el.style.background = color;\n"
-        "  el.title = `diff: ${diff.toFixed(3)}`;\n"
+        "  el.style.background = bgColor;\n"
+        "\n"
+        "  let lp1 = parseFloat(el.getAttribute('data-lp1'));\n"
+        "  let lp2 = parseFloat(el.getAttribute('data-lp2'));\n"
+        "\n"
+        "  // Compute border thickness based on each model's log probability\n"
+        "  let thickness1 = thicknessFromLP(lp1);\n"
+        "  let thickness2 = thicknessFromLP(lp2);\n"
+        "\n"
+        "  // Use the absolute color scale for each model's log probability\n"
+        "  let color1 = absoluteColor(lp1);\n"
+        "  let color2 = absoluteColor(lp2);\n"
+        "\n"
+        "  // Set an overline (top border) for model1 and an underline (bottom border) for model2\n"
+        "  el.style.borderTop = thickness1 + ' solid ' + color1;\n"
+        "  el.style.borderBottom = thickness2 + ' solid ' + color2;\n"
+        "\n"
+        "  el.title = `diff: ${diff.toFixed(3)} | model1: ${lp1.toFixed(3)}, model2: ${lp2.toFixed(3)}`;\n"
         "});\n"
         "</script>\n"
         "</body></html>"
     )
 
     with fsspec.open(output_path, "w") as f:
-        f.write(html)
+        f.write(html_str)
 
 
 def compute_and_diff_log_probs(path: str, model, comparison_model, tokenizer, log_prob_fn, test_data, max_docs=128):
