@@ -20,7 +20,7 @@ from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Embeddings, Gpt2Mlp
 from levanter.models.hyena import HyenaConfig, HyenaOperator
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.utils.activation import ActivationFunctionName
+from levanter.utils.activation import ActivationFunctionEnum
 
 
 @LmConfig.register_subclass("gpt2_hyena")
@@ -40,7 +40,7 @@ class Gpt2HyenaConfig(LmConfig):
     resid_pdrop: float = 0.0
     hyena_pdrop: float = 0.0
     layer_norm_epsilon: float = 1e-5
-    activation_function: ActivationFunctionName = ActivationFunctionName.GELU_NEW
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.GELU_NEW
 
     gradient_checkpointing: bool = True  # better to just always use this
     gradient_checkpointing_block_size: int = 5
@@ -124,7 +124,9 @@ class Gpt2HyenaBlock(eqx.Module):
         hyena_operator = HyenaOperator.init(hyena_config, key=k_hyena)
 
         ln_2 = hnn.LayerNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        mlp = Gpt2Mlp.init(config.Embed, config.Mlp, config.activation_function, key=k_mlp, use_bias=config.use_bias)
+        mlp = Gpt2Mlp.init(
+            config.Embed, config.Mlp, config.activation_function.to_fn(), key=k_mlp, use_bias=config.use_bias
+        )
         resid_dropout = hnn.Dropout(pdrop=config.resid_pdrop)
 
         return Gpt2HyenaBlock(config, ln_1, hyena_operator, ln_2, mlp, resid_dropout)

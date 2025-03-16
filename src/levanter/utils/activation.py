@@ -11,17 +11,8 @@ import haliax.nn as hnn
 _A = typing.TypeVar("_A", hax.Scalar, hax.NamedArray, jax.Array)
 ActivationFunction = typing.Callable[[_A], _A]
 
-TO_FN: dict[str, ActivationFunction] = {
-    "relu": hnn.relu,
-    "silu": hnn.silu,
-    "swish": hnn.swish,
-    "gelu": partial(hnn.gelu, approximate=False),
-    "gelu_new": partial(hnn.gelu, approximate=True),
-    "quick_gelu": hnn.quick_gelu,
-}
 
-
-class ActivationFunctionName(enum.StrEnum):
+class ActivationFunctionEnum(enum.Enum):
     RELU = enum.auto()
     SILU = enum.auto()
     SWISH = enum.auto()
@@ -30,4 +21,14 @@ class ActivationFunctionName(enum.StrEnum):
     QUICK_GELU = enum.auto()
 
     def to_fn(self) -> ActivationFunction:
-        return TO_FN[self.value]
+        return TO_FN[self]
+
+
+TO_FN: dict[ActivationFunctionEnum, ActivationFunction] = {
+    ActivationFunctionEnum.RELU: hnn.relu,
+    ActivationFunctionEnum.SILU: hnn.silu,
+    ActivationFunctionEnum.SWISH: hnn.swish,
+    ActivationFunctionEnum.GELU: partial(hnn.gelu, approximate=False),
+    ActivationFunctionEnum.GELU_NEW: partial(hnn.gelu, approximate=True),
+    ActivationFunctionEnum.QUICK_GELU: hnn.quick_gelu,
+}
