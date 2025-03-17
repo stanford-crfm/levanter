@@ -279,7 +279,7 @@ class LlamaAttention(eqx.Module):
         return attn_output
 
 
-class LlamaRMSNorm(eqx.Module, ModuleWithStateDictSerialization):
+class LlamaRMSNorm(ModuleWithStateDictSerialization):
     """
     Similar to LayerNorm, but uses the RMS of the input along the specified axis (or axes) instead of variance.
     """
