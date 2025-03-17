@@ -1,6 +1,5 @@
 import tempfile
 
-import chex
 import equinox as eqx
 import numpy as np
 import pytest
@@ -10,9 +9,8 @@ import haliax as hax
 
 from levanter.models.attention import AttentionMask
 from levanter.models.olmo import Olmo2Attention, Olmo2Config, Olmo2DecoderLayer, Olmo2LMHeadModel, Olmo2RMSNorm
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig
 from levanter.utils.jax_utils import parameter_count
-from test_utils import check_load_config, check_model_works_with_seqlen, skip_if_no_torch
+from test_utils import skip_if_no_torch
 
 
 def _get_olmo2_config(use_flash=False, num_kv_heads=4, seq_len=128) -> Olmo2Config:
@@ -38,20 +36,15 @@ def _get_random_inputs(config: Olmo2Config, override_Pos=None):
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
     mask = AttentionMask.causal()
-    
-    # For Olmo2, position embeddings are created from position_ids
-    # Let's use default positioning for tests
-    position_ids = hax.arange(Pos)
-    position_embeddings = config.rope.build(config.HeadSize, Pos)(position_ids)
-    
-    return x, mask, position_embeddings
+
+    return x, mask
 
 
 @skip_if_no_torch
 def test_olmo2_config():
     # Check we can create a config
     config = _get_olmo2_config()
-    
+
     # Check that model axes are properly set
     assert config.Pos.size == 128
     assert config.Embed.size == 16
@@ -60,7 +53,7 @@ def test_olmo2_config():
     assert config.Layers.size == 4
     assert config.Mlp.size == 32
     assert config.HeadSize.size == 4
-    
+
     # Check HF config conversion
     hf_config = config.to_hf_config(vocab_size=100352)
     assert hf_config.hidden_size == 16
@@ -68,7 +61,7 @@ def test_olmo2_config():
     assert hf_config.max_position_embeddings == 128
     assert hf_config.num_attention_heads == 4
     assert hf_config.num_key_value_heads == 4
-    
+
     # Convert back and check fields
     config2 = Olmo2Config.from_hf_config(hf_config)
     assert config2.hidden_dim == 16
@@ -87,7 +80,7 @@ def test_olmo2_rms_norm():
     ln = Olmo2RMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight)
     hf_ln = HFOlmo2RMSNorm(config.Embed.size, eps=config.layer_norm_epsilon)
 
-    x, _, _ = _get_random_inputs(config)
+    x, _ = _get_random_inputs(config)
     x_torch = torch.from_numpy(np.array(x.array))
 
     out = ln(x)
@@ -102,14 +95,14 @@ def test_olmo2_rms_norm():
 def test_olmo2_mlp(num_kv_heads):
     config = _get_olmo2_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
-    
+
     mlp = config.model_type.transformer.mlp.__class__.init(
         config.Embed, config.Mlp, config.activation_function, key=key, use_bias=config.use_bias
     )
-    
-    x, _, _ = _get_random_inputs(config)
+
+    x, _ = _get_random_inputs(config)
     out = mlp(x)
-    
+
     # Check output has correct shape
     assert out.array.shape == x.array.shape
     assert out.axes == x.axes
@@ -120,12 +113,12 @@ def test_olmo2_mlp(num_kv_heads):
 def test_olmo2_attention(use_flash, num_kv_heads):
     config = _get_olmo2_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
-    
+
     attention = Olmo2Attention.init(config=config, key=key)
-    
-    x, mask, position_embeddings = _get_random_inputs(config)
-    out = attention(x, position_embeddings, mask)
-    
+
+    x, mask = _get_random_inputs(config)
+    out = attention(x, mask)
+
     # Check output has correct shape
     assert out.array.shape == x.array.shape
     assert out.axes == x.axes
@@ -136,12 +129,12 @@ def test_olmo2_attention(use_flash, num_kv_heads):
 def test_olmo2_decoder_layer(use_flash, num_kv_heads):
     config = _get_olmo2_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
-    
+
     layer = Olmo2DecoderLayer.init(config=config, layer_idx=0, key=key)
-    
-    x, mask, position_embeddings = _get_random_inputs(config)
-    out = layer(x, position_embeddings, mask)
-    
+
+    x, mask = _get_random_inputs(config)
+    out = layer(x, mask)
+
     # Check output has correct shape
     assert out.array.shape == x.array.shape
     assert out.axes == x.axes
@@ -178,7 +171,7 @@ def test_olmo2_lm_head_model_bwd(use_flash, num_kv_heads):
         return hax.sum(out).scalar()
 
     _, grads = eqx.filter_value_and_grad(f)(olmo2_model, input_ids, mask)
-    
+
     # Check that we can compute gradients
     assert grads is not None
 
@@ -239,13 +232,13 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
 
         # Check shapes match
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-        
+
         # Check outputs are close
         assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
 
         # Save our model
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
-        
+
         # Load saved model into HF
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
         torch_model2.eval()

@@ -180,6 +180,7 @@ class Olmo2RMSNorm(eqx.Module):
     """
     RMS normalization layer for Olmo2
     """
+
     axis: AxisSpec = eqx.field(static=True)
     weight: Optional[NamedArray]
     bias: Optional[NamedArray]
@@ -250,7 +251,7 @@ class Olmo2MLP(eqx.Module):
         return outputs
 
 
-class Olmo2Attention(eqx.Module):
+class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
     config: Olmo2Config = eqx.field(static=True)
     q_proj: hnn.Linear  # projection from Embed to query
     k_proj: hnn.Linear  # projection from Embed to key
@@ -278,26 +279,42 @@ class Olmo2Attention(eqx.Module):
         o_proj = hnn.Linear.init(
             In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True
         )
-        
+
+        # OLMo2 uses normalization over the entire hidden dimension for q and k
         q_norm = Olmo2RMSNorm.init(
-            config.num_heads * config.HeadSize, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
+            config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
         )
         k_norm = Olmo2RMSNorm.init(
-            config.num_kv_heads * config.HeadSize, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
+            config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
         )
-        
+
         return Olmo2Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
 
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        """Map model parameter names to HF parameter names"""
+        return {
+            "q_proj": "self_attn.q_proj",
+            "k_proj": "self_attn.k_proj",
+            "v_proj": "self_attn.v_proj",
+            "o_proj": "self_attn.o_proj",
+            "q_norm": "self_attn.q_norm",
+            "k_norm": "self_attn.k_norm",
+        }
+
     @named_call
-    def __call__(self, x: NamedArray, position_embeddings: tuple, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
-        # Apply projections with query and key normalization (Olmo2 specific)
-        q = self.q_norm(self.q_proj(x))
-        k = self.k_norm(self.k_proj(x))
+        # OLMo2 applies normalization BEFORE projection
+        norm_x = self.q_norm(x)
+        q = self.q_proj(norm_x, key=key_q)
+
+        norm_x = self.k_norm(x)
+        k = self.k_proj(norm_x, key=key_k)
+
         v = self.v_proj(x, key=key_v)
 
-        # Reshape heads for attention
+        # Reshape for attention
         q = q.rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
         k = k.rearrange((..., "kv_heads", "position", "head_size"))
         v = v.rearrange((..., "kv_heads", "position", "head_size"))
@@ -306,13 +323,12 @@ class Olmo2Attention(eqx.Module):
         rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
         q, k = rot_embs(self.config.HeadSize, q, k)
 
-        # Rename position axis to key_position for k and v
+        # Rename position axis for attention
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
-        # Apply scaled dot-product attention
+        # Apply attention
         c = self.config
-        scaling = 1.0 / (self.config.HeadSize.size ** 0.5)
         attn_output = dot_product_attention(
             "position",
             "key_position",
@@ -330,15 +346,15 @@ class Olmo2Attention(eqx.Module):
             prng=key,
         )
 
-        # Flatten heads dimensions and apply output projection
+        # Flatten heads and apply output projection
         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
-        
+
         return attn_output
 
 
-class Olmo2DecoderLayer(eqx.Module):
+class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
     config: Olmo2Config = eqx.field(static=True)
     self_attn: Olmo2Attention
     mlp: Olmo2MLP
@@ -357,32 +373,41 @@ class Olmo2DecoderLayer(eqx.Module):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        
+
         post_attention_ln = config.mk_LayerNorm(config.Embed)
         post_feedforward_ln = config.mk_LayerNorm(config.Embed)
 
         return Olmo2DecoderLayer(config, attn, mlp, post_attention_ln, post_feedforward_ln)
 
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        """Map model parameter names to HF parameter names"""
+        return {
+            "self_attn": None,  # Handled by Olmo2Attention._state_dict_key_map
+            "mlp": "mlp",
+            "post_attention_layernorm": "post_attention_layernorm",
+            "post_feedforward_layernorm": "post_feedforward_layernorm",
+        }
+
     @named_call
-    def __call__(self, x: NamedArray, position_embeddings: tuple, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
-        
-        # Self attention with residual connection and post-attention normalization
+
+        # Self attention with residual connection
         residual = x
-        attn_output = self.self_attn(x=x, position_embeddings=position_embeddings, mask=mask, key=k_attn)
+        attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
         x = residual + attn_output
         x = self.post_attention_layernorm(x)
 
-        # MLP with residual connection and post-feedforward normalization
+        # MLP with residual connection
         residual = x
         mlp_output = self.mlp(x, key=k_mlp)
         x = residual + mlp_output
         x = self.post_feedforward_layernorm(x)
-        
+
         return x
 
 
-class Olmo2Transformer(eqx.Module):
+class Olmo2Transformer(ModuleWithStateDictSerialization, eqx.Module):
     config: Olmo2Config = eqx.field(static=True)
     layers: Stacked[Olmo2DecoderLayer]
     norm: Olmo2RMSNorm
@@ -392,6 +417,7 @@ class Olmo2Transformer(eqx.Module):
         S = Stacked
         if not config.scan_layers:
             from haliax.nn.scan import BlockSeq
+
             S = BlockSeq
 
         layers = S.init(config.Layers, Olmo2DecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
@@ -403,16 +429,24 @@ class Olmo2Transformer(eqx.Module):
 
         return Olmo2Transformer(config, layers, ln_f)
 
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        """Map model parameter names to HF parameter names"""
+        return {
+            "layers": "layers",
+            "norm": "norm",
+        }
+
     @named_call
-    def __call__(self, x: NamedArray, position_embeddings: tuple, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, position_embeddings=position_embeddings, mask=attn_mask, key=keys)
+        x = self.layers.fold(x, mask=attn_mask, key=keys)
         x = self.norm(x)
         return x
 
 
 class Olmo2Embedding(ModuleWithStateDictSerialization, eqx.Module):
     """Token embedding for Olmo2"""
+
     Vocab: Axis = eqx.field(static=True)
     token_embeddings: hnn.Embedding
 
@@ -429,7 +463,7 @@ class Olmo2Embedding(ModuleWithStateDictSerialization, eqx.Module):
         return self.token_embeddings.unembed(x)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"token_embeddings": "model.embed_tokens"}
+        return {"token_embeddings": "embed_tokens"}
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
@@ -440,7 +474,6 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
     transformer: Olmo2Transformer
     embeddings: Olmo2Embedding
     lm_head: Optional[hnn.Linear]
-    rotary_emb: RotaryEmbeddingsConfig = eqx.field(static=True)
 
     @property
     def config(self):
@@ -464,7 +497,15 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
         else:
             lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_head, use_bias=False, out_first=True)
 
-        return Olmo2LMHeadModel(transformer, embeddings, lm_head, config.rope)
+        return Olmo2LMHeadModel(transformer, embeddings, lm_head)
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        """Map model parameter names to HF parameter names"""
+        return {
+            "transformer": "model",
+            "embeddings": "model",
+            "lm_head": "lm_head",
+        }
 
     def __call__(
         self,
@@ -472,7 +513,6 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
         *,
         key=None,
-        position_ids=None,
     ) -> NamedArray:
         """
         Args:
@@ -480,34 +520,25 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
                 Indices of input sequence tokens in the vocabulary.
             attn_mask (Union[NamedArray, AttentionMask], optional): [batch, position]
                 Mask to avoid performing attention on the padding token indices of the encoder input.
-            position_ids (NamedArray, optional): [batch, position]
-                Indices of positions of each input sequence tokens. Defaults to None.
         """
         k_t, k_head = maybe_rng_split(key, 2)
-        
+
         # Get token embeddings
         x = self.embeddings.embed(input_ids)
-        
-        # Generate position embeddings
-        if position_ids is None:
-            position_ids = hax.arange(self.config.Pos)
-        
-        # Create rotary position embeddings
-        position_embeddings = self.rotary_emb.build(self.config.HeadSize, self.config.Pos)(position_ids)
-        
+
         # Pass through transformer
-        x = self.transformer(x, position_embeddings=position_embeddings, attn_mask=attn_mask, key=k_t)
-        
+        x = self.transformer(x, attn_mask=attn_mask, key=k_t)
+
         # Apply language modeling head
         if self.lm_head:
             lm_logits = self.lm_head(x, key=k_head)
         else:
             lm_logits = self.embeddings.unembed(x)
-            
+
         return lm_logits
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None, position_ids=None
+        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
     ) -> NamedArray:
         """
         Compute the activations for the next token in a sequence.
@@ -515,24 +546,16 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
             input_ids: token IDs with shape {Pos}
             attn_mask: attention mask with shape {Pos, KeyPos}
             key: PRNGKeyArray for random number generation
-            position_ids: optional position indices
 
         Returns:
             NamedArray: activations with shape {Pos, Embed}
         """
         # Get token embeddings
         x = self.embeddings.embed(input_ids)
-        
-        # Generate position embeddings
-        if position_ids is None:
-            position_ids = hax.arange(self.config.Pos)
-        
-        # Create rotary position embeddings
-        position_embeddings = self.rotary_emb.build(self.config.HeadSize, self.config.Pos)(position_ids)
-        
+
         # Pass through transformer
-        x = self.transformer(x, position_embeddings=position_embeddings, attn_mask=attn_mask, key=key)
-        
+        x = self.transformer(x, attn_mask=attn_mask, key=key)
+
         return x
 
     def get_lm_head(self) -> hax.NamedArray:
@@ -551,6 +574,3 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
             return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
         else:
             return dataclasses.replace(self, embeddings=new_embeddings)
-
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        return {"transformer": "model", "embeddings": None}
