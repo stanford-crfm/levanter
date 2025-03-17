@@ -17,7 +17,7 @@ mixture_block_size: 2048
 stop_strategy: restart
 
 max_seq_len: 4096
-tokenizer: "allenai/OLMo-2-1124-7B"  # Olmo2 uses a BPE tokenizer
+tokenizer: "allenai/OLMo-2-1124-7B"
 model:  # Olmo2 7B model config
   type: olmo2
   seq_len: 4096
@@ -43,15 +43,13 @@ trainer:
   tracker:
     type: wandb
     project: "marin"
-    tags: ["dolma", "olmo", "llama", "mixture"]
+    tags: ["dolma", "olmo", "mixture"]
   wandb:
     project: "marin"
     name: "olmo2_sft"
 
-
   mp: p=f32,c=bfloat16
   train_batch_size: 128
-  # Adjust steps based on your dataset size and desired epochs
   num_train_steps: 3000
   steps_per_eval: 500
   tensor_parallel_axes: ["mlp", "heads"]
@@ -62,10 +60,11 @@ trainer:
 
 optimizer:
   learning_rate: 2e-5
-  weight_decay: 0.0
+  weight_decay: 0.0  # Keep at 0.0, OLMo 2 doesn't use weight decay on embeddings
   min_lr_ratio: 0.0
   lr_schedule: "cosine"
   warmup: 0.03
+
 
 hf_save_steps: 1000
 hf_save_path: "gs://marin-us-central2/checkpoints/olmo2_sft/hf/seed_0/"
