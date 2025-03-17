@@ -254,7 +254,8 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             cooldown_points = []
 
         cooldown_points.insert(0, 0)
-        cooldown_points.append(total_main_steps)
+        if cooldown_points[-1] != total_main_steps:
+            cooldown_points.append(total_main_steps)
         return cooldown_points
 
 

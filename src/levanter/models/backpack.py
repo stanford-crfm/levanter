@@ -97,7 +97,7 @@ class BackpackConfig(Gpt2Config):
 class BackpackMlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     @staticmethod
     def init(
@@ -134,7 +134,7 @@ class WeightsOnlyAttention(ModuleWithStateDictSerialization):
     """
 
     # No projection
-    config: Gpt2Config = eqx.static_field()
+    config: Gpt2Config = eqx.field(static=True)
 
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     dropout: hnn.Dropout
@@ -225,7 +225,7 @@ class BackpackSenses(eqx.Module):
     ln: hnn.LayerNorm
     final_mlp: BackpackMlp
 
-    Pos: Axis = eqx.static_field()
+    Pos: Axis = eqx.field(static=True)
 
     @staticmethod
     def init(
@@ -266,8 +266,8 @@ class BackpackSenses(eqx.Module):
 
 
 class BackpackGpt2Embeddings(eqx.Module):
-    Vocab: Axis = eqx.static_field()
-    config: Gpt2Config = eqx.static_field()
+    Vocab: Axis = eqx.field(static=True)
+    config: Gpt2Config = eqx.field(static=True)
 
     token_embeddings: NamedArray
     position_embeddings: NamedArray

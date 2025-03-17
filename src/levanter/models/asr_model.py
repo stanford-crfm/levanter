@@ -3,7 +3,7 @@ from typing import Optional, Type
 
 import equinox as eqx
 import jax.numpy as jnp
-from jax.random import PRNGKey
+from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 from haliax import Axis, NamedArray
@@ -49,7 +49,7 @@ class AudioTextExample(eqx.Module):
 
 
 class ASRConfig(LmConfig):
-    def build_asr(self, Vocab: Axis, *, key: PRNGKey) -> "ASRMixin":
+    def build_asr(self, Vocab: Axis, *, key: PRNGKeyArray) -> "ASRMixin":
         return self.asr_model_type.init(Vocab, self, key=key)  # type: ignore
 
     @property
@@ -74,7 +74,7 @@ class ASRMixin(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def resize_vocab(self, new_size: int, key: Optional[PRNGKey] = None) -> "ASRMixin":
+    def resize_vocab(self, new_size: int, key: Optional[PRNGKeyArray] = None) -> "ASRMixin":
         """
         Resizes the vocabulary of the ASR Output space. Key may be provided to use random initialization, otherwise,
         there should be some deterministic initialization of any new parameters.

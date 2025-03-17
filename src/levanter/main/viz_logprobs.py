@@ -15,7 +15,7 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import DataLoader
-from levanter.data.text import CausalLmDataset, LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.models.loss import next_token_loss
@@ -53,12 +53,8 @@ def main(config: VizLmConfig):
     # some axes we use outside the model proper
     EvalBatch = config.trainer.EvalBatch
     Pos = config.model.Pos
-    KeyPos = config.model.KeyPos
 
-    validation_sets = {
-        k: CausalLmDataset(v, Pos, KeyPos, eos_id=tokenizer.eos_token_id)  # type: ignore
-        for k, v in config.data.validation_sets(Pos.size).items()
-    }
+    validation_sets = config.data.validation_sets(Pos)
 
     # some axes we use outside the model proper
     Pos = config.model.Pos

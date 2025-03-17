@@ -6,7 +6,7 @@ from typing import Callable, Generic, Optional, Sequence, TypeAlias, TypeVar
 
 import jax.random
 import numpy as np
-from jax.random import PRNGKey
+from jaxtyping import PRNGKeyArray
 
 from levanter.utils import thread_utils
 
@@ -123,14 +123,23 @@ class AsyncDataset(DatasetBase[T_co]):
         return BatchMappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
 
     def slice_dataset(self, start_index: Optional[int] = None, end_index: Optional[int] = None):
+        """
+        Slices the dataset from `start_index` to `end_index`.
+        """
         return SlicedAsyncDataset(self, start_index, end_index)
 
-    def shuffle(self, key: PRNGKey):
+    def take(self, n: int):
+        """
+        Alias for `slice_dataset(end_index=n)`.
+        """
+        return self.slice_dataset(end_index=n)
+
+    def shuffle(self, key: PRNGKeyArray):
         import levanter.data.permutation as permutation
 
         return permutation.PermutationDataset(self, key)
 
-    def era_shuffle(self, era_length: int, key: PRNGKey):
+    def era_shuffle(self, era_length: int, key: PRNGKeyArray):
         import levanter.data.permutation as permutation
 
         return permutation.EraShufflingDataset(self, era_length, key=key)

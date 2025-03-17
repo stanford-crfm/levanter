@@ -117,7 +117,6 @@ def test_lora_peft_integration():
     lev_model = converter.load_pretrained(converter.default_config.model_type, "stanford-crfm/expanse-gpt2-small-x777")
 
     lora_lev_model = loraize(lev_model, LoraConfig(r=8, target_modules=["c_attn"]), key=jax.random.PRNGKey(0))
-    # for some dumb reason, the hf state dict starts with this prefix
     lev_dict = lora_state_dict(lora_lev_model)
 
     assert lev_dict.keys() == hf_dict.keys()
