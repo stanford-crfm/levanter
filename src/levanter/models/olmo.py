@@ -275,14 +275,23 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_v, use_bias=use_bias, out_first=True)
         o_proj = hnn.Linear.init(In=(config.Heads, HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True)
 
-        # Fix this line - k_norm should be the size of kv_heads * head_size (if that's what HF is doing)
+        # For q_norm, normalization is over the entire hidden dimension
         q_norm = Olmo2RMSNorm.init(
             config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
         )
 
-        # Define a specific KVHeadSize axis for k_norm if needed
-        KVEmbedSize = Axis("kv_embed", config.KVHeads.size * HeadSize.size)
-        k_norm = Olmo2RMSNorm.init(KVEmbedSize, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight)
+        # For k_norm, we need to be careful with the axis
+        if config.num_kv_heads == config.num_heads:
+            # If num_kv_heads equals num_heads, use the same axis as q_norm
+            k_norm = Olmo2RMSNorm.init(
+                config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
+            )
+        else:
+            # If using grouped query attention, the k_norm needs a smaller size
+            k_norm_axis = Axis("embed", config.num_kv_heads * HeadSize.size)
+            k_norm = Olmo2RMSNorm.init(
+                k_norm_axis, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
+            )
 
         return Olmo2Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
 
@@ -305,9 +314,25 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         norm_x = self.q_norm(x)
         q = self.q_proj(norm_x, key=key_q)
 
-        norm_x = self.k_norm(x)
-        k = self.k_proj(norm_x, key=key_k)
+        # For k_norm, we need special handling if num_kv_heads != num_heads
+        if self.config.num_kv_heads == self.config.num_heads:
+            # Same normalization as q
+            norm_x = self.k_norm(x)
+        else:
+            # We need to project x to the right dimensionality for k_norm
+            # This is specific to OLMo2's implementation
+            HeadSize = self.config.HeadSize
 
+            # Project to the smaller embedding used for KV heads
+            # We can use a simple reshape or slice operation since the weight tensor
+            # is just a subset of the full embedding
+            norm_x_for_k = x.array[:, : self.config.num_kv_heads * HeadSize.size]
+            norm_x_for_k = hax.named(
+                norm_x_for_k, (x.axes[0], Axis("embed", self.config.num_kv_heads * HeadSize.size))
+            )
+            norm_x = self.k_norm(norm_x_for_k)
+
+        k = self.k_proj(norm_x, key=key_k)
         v = self.v_proj(x, key=key_v)
 
         # Reshape for attention
