@@ -28,6 +28,14 @@ silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
+from haliax.state_dict import (
+    ModuleWithStateDictSerialization,
+    StateDict,
+    save_state_dict,
+    to_torch_compatible_state_dict,
+    with_prefix,
+)
+
 
 @LmConfig.register_subclass("llama")
 @dataclass(frozen=True)
@@ -271,7 +279,7 @@ class LlamaAttention(eqx.Module):
         return attn_output
 
 
-class LlamaRMSNorm(eqx.Module):
+class LlamaRMSNorm(eqx.Module, ModuleWithStateDictSerialization):
     """
     Similar to LayerNorm, but uses the RMS of the input along the specified axis (or axes) instead of variance.
     """
@@ -313,6 +321,40 @@ class LlamaRMSNorm(eqx.Module):
 
         # second cast in case params are in float32
         return out.astype(in_dtype)
+
+    def to_state_dict(self, prefix: Optional[str] = None) -> StateDict:
+        # need to flatten any named arrays in the state dict
+        state_dict = {}
+
+        if self.weight is not None:
+            flattened = self.weight.flatten("__OUT")
+            name = with_prefix(prefix, "weight")
+            state_dict[name] = flattened.array
+            # state_dict[f"{prefix}.weight"] = flattened.array
+
+        if self.bias is not None:
+            flattened = self.bias.flatten("__OUT")
+            name = with_prefix(prefix, "bias")
+            state_dict[name] = flattened.array
+
+        return state_dict
+
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        if self.weight is not None:
+            name = with_prefix(prefix, "weight")
+            weight = hax.named(state_dict[name], "__OUT")
+            weight = weight.unflatten_axis("__OUT", self.axis)
+        else:
+            weight = None
+
+        if self.bias is not None:
+            name = with_prefix(prefix, "bias")
+            bias = hax.named(state_dict[name], "__OUT")
+            bias = bias.unflatten_axis("__OUT", self.axis)
+        else:
+            bias = None
+
+        return dataclasses.replace(self, weight=weight, bias=bias)
 
 
 class LlamaDecoderLayer(eqx.Module):
