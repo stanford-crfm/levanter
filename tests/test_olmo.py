@@ -96,9 +96,10 @@ def test_olmo2_mlp(num_kv_heads):
     config = _get_olmo2_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
 
-    mlp = config.model_type.transformer.mlp.__class__.init(
-        config.Embed, config.Mlp, config.activation_function, key=key, use_bias=config.use_bias
-    )
+    # Direct reference to Olmo2MLP instead of going through model_type
+    from levanter.models.olmo import Olmo2MLP
+
+    mlp = Olmo2MLP.init(config.Embed, config.Mlp, config.activation_function, key=key, use_bias=config.use_bias)
 
     x, _ = _get_random_inputs(config)
     out = mlp(x)
@@ -213,6 +214,16 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
 
+    # Add this before the roundtrip test fails
+    print("HF model params:", {k: v.shape for k, v in torch_model.state_dict().items() if "layers.0" in k})
+    print(
+        "Levanter model expected:",
+        {
+            "layers.0.mlp.gate_proj.weight": (config.hidden_dim, config.intermediate_dim),
+            "layers.0.mlp.up_proj.weight": (config.hidden_dim, config.intermediate_dim),
+            "layers.0.mlp.down_proj.weight": (config.intermediate_dim, config.hidden_dim),
+        },
+    )
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save HF model
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
