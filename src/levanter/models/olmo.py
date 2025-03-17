@@ -265,28 +265,24 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         use_bias = config.attention_bias
         Embed = config.Embed
         QHeadsPerGroup = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
+        HeadSize = config.HeadSize
 
         k_q, k_k, k_v, k_o, k_q_norm, k_k_norm = jrandom.split(key, 6)
         q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias, out_first=True
+            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, HeadSize), key=k_q, use_bias=use_bias, out_first=True
         )
-        k_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
-        )
-        v_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
-        )
-        o_proj = hnn.Linear.init(
-            In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True
-        )
+        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_k, use_bias=use_bias, out_first=True)
+        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_v, use_bias=use_bias, out_first=True)
+        o_proj = hnn.Linear.init(In=(config.Heads, HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True)
 
-        # OLMo2 uses normalization over the entire hidden dimension for q and k
+        # Fix this line - k_norm should be the size of kv_heads * head_size (if that's what HF is doing)
         q_norm = Olmo2RMSNorm.init(
             config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
         )
-        k_norm = Olmo2RMSNorm.init(
-            config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
-        )
+
+        # Define a specific KVHeadSize axis for k_norm if needed
+        KVEmbedSize = Axis("kv_embed", config.KVHeads.size * HeadSize.size)
+        k_norm = Olmo2RMSNorm.init(KVEmbedSize, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight)
 
         return Olmo2Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
 
