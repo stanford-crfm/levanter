@@ -204,6 +204,13 @@ class Olmo2RMSNorm(eqx.Module):
     def __call__(self, x: NamedArray) -> NamedArray:
         in_dtype = x.dtype
         x = x.astype(self.dtype)
+
+        # Check if we need to adapt the input to match the axis dimension
+        if isinstance(self.axis, Axis) and self.axis.name == "embed" and self.axis.size != x.axis_size("embed"):
+            # Reshape the input to match the expected size
+            new_x = x.array[:, : self.axis.size]
+            x = hax.named(new_x, (x.axes[0], Axis("embed", self.axis.size)))
+
         var = hax.mean(hax.square(x), axis=self.axis)
         inv = hax.rsqrt(var + self.eps)
         out = x * inv
@@ -314,25 +321,21 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         norm_x = self.q_norm(x)
         q = self.q_proj(norm_x, key=key_q)
 
-        # For k_norm, we need special handling if num_kv_heads != num_heads
-        if self.config.num_kv_heads == self.config.num_heads:
-            # Same normalization as q
-            norm_x = self.k_norm(x)
+        # When using GQA, we need to handle the k_norm differently
+        if self.config.num_kv_heads < self.config.num_heads:
+            # For GQA, k_norm operates on a smaller dimension
+            k_embed_size = self.config.num_kv_heads * self.config.HeadSize.size
+            reshaped_x = x.array[:, :k_embed_size]
+            reshaped_x = hax.named(reshaped_x, (x.axes[0], Axis("embed", k_embed_size)))
+            norm_x = self.k_norm(reshaped_x)
         else:
-            # We need to project x to the right dimensionality for k_norm
-            # This is specific to OLMo2's implementation
-            HeadSize = self.config.HeadSize
+            # Regular operation when num_kv_heads == num_heads
+            norm_x = self.k_norm(x)
 
-            # Project to the smaller embedding used for KV heads
-            # We can use a simple reshape or slice operation since the weight tensor
-            # is just a subset of the full embedding
-            norm_x_for_k = x.array[:, : self.config.num_kv_heads * HeadSize.size]
-            norm_x_for_k = hax.named(
-                norm_x_for_k, (x.axes[0], Axis("embed", self.config.num_kv_heads * HeadSize.size))
-            )
-            norm_x = self.k_norm(norm_x_for_k)
-
+        # Project to key
         k = self.k_proj(norm_x, key=key_k)
+
+        # Regular projection for value
         v = self.v_proj(x, key=key_v)
 
         # Reshape for attention
