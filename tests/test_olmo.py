@@ -214,20 +214,31 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
 
-    # Add this before the roundtrip test fails
-    print("HF model params:", {k: v.shape for k, v in torch_model.state_dict().items() if "layers.0" in k})
-    print(
-        "Levanter model expected:",
-        {
-            "layers.0.mlp.gate_proj.weight": (config.hidden_dim, config.intermediate_dim),
-            "layers.0.mlp.up_proj.weight": (config.hidden_dim, config.intermediate_dim),
-            "layers.0.mlp.down_proj.weight": (config.intermediate_dim, config.hidden_dim),
-        },
-    )
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save HF model
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
+        # Add this before the converter.load_pretrained line
+        torch_state_dict = torch.load(f"{tmpdir}/torch_model/pytorch_model.bin")
+        print("\nDetailed HF Shapes:")
+        for k, v in torch_state_dict.items():
+            if "layers.0" in k:
+                print(f"{k}: {v.shape}")
+
+        # Create a template model to inspect
+        template_model = Olmo2LMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+        print("\nLevanter Model Parameter Structure:")
+        for layer_idx in range(config.num_layers):
+            print(f"Layer {layer_idx}:")
+
+            # Print the attention module params shapes
+            attn = template_model.transformer.layers.blocks[layer_idx].self_attn
+            print(f"  q_proj: {attn.q_proj.weight.array.shape}")
+            print(f"  k_proj: {attn.k_proj.weight.array.shape}")
+            print(f"  v_proj: {attn.v_proj.weight.array.shape}")
+            print(f"  o_proj: {attn.o_proj.weight.array.shape}")
+            print(f"  q_norm: {attn.q_norm.weight.array.shape if attn.q_norm.weight is not None else None}")
+            print(f"  k_norm: {attn.k_norm.weight.array.shape if attn.k_norm.weight is not None else None}")
         # Load into our model
         model = converter.load_pretrained(
             Olmo2LMHeadModel, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
