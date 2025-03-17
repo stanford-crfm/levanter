@@ -1,3 +1,4 @@
+import os
 import tempfile
 
 import equinox as eqx
