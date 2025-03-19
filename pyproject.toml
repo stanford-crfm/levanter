@@ -25,7 +25,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 dependencies = [
-    "haliax>=1.4.dev330",
+    # "haliax>=1.4.dev330",
     "equinox>=0.11.7",
     "jaxtyping>=0.2.34",
     "tokenizers>=0.15.2",
@@ -53,6 +53,7 @@ dependencies = [
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
     "deepdiff",
+    "haliax @ git+https://github.com/stanford-crfm/haliax.git@export_flatten",
     #    "lm-eval==0.4.2",
     #    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]

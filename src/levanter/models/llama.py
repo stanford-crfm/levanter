@@ -322,39 +322,39 @@ class LlamaRMSNorm(ModuleWithStateDictSerialization):
         # second cast in case params are in float32
         return out.astype(in_dtype)
 
-    # def to_state_dict(self, prefix: Optional[str] = None) -> StateDict:
-    #     # need to flatten any named arrays in the state dict
-    #     state_dict = {}
+    def to_state_dict(self, prefix: Optional[str] = None) -> StateDict:
+        # need to flatten any named arrays in the state dict
+        state_dict = {}
 
-    #     if self.weight is not None:
-    #         flattened = self.weight.flatten("__OUT__")
-    #         name = with_prefix(prefix, "weight")
-    #         state_dict[name] = flattened.array
-    #         # state_dict[f"{prefix}.weight"] = flattened.array
+        if self.weight is not None:
+            flattened = self.weight.flatten("__OUT__")
+            name = with_prefix(prefix, "weight")
+            state_dict[name] = flattened.array
+            # state_dict[f"{prefix}.weight"] = flattened.array
 
-    #     if self.bias is not None:
-    #         flattened = self.bias.flatten("__OUT__")
-    #         name = with_prefix(prefix, "bias")
-    #         state_dict[name] = flattened.array
+        if self.bias is not None:
+            flattened = self.bias.flatten("__OUT__")
+            name = with_prefix(prefix, "bias")
+            state_dict[name] = flattened.array
 
-    #     return state_dict
+        return state_dict
 
-    # def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-    #     if self.weight is not None:
-    #         name = with_prefix(prefix, "weight")
-    #         weight = hax.named(state_dict[name], "__OUT__")
-    #         weight = weight.unflatten_axis("__OUT__", self.axis)
-    #     else:
-    #         weight = None
+    def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
+        if self.weight is not None:
+            name = with_prefix(prefix, "weight")
+            weight = hax.named(state_dict[name], "__OUT__")
+            weight = weight.unflatten_axis("__OUT__", self.axis)
+        else:
+            weight = None
 
-    #     if self.bias is not None:
-    #         name = with_prefix(prefix, "bias")
-    #         bias = hax.named(state_dict[name], "__OUT__")
-    #         bias = bias.unflatten_axis("__OUT__", self.axis)
-    #     else:
-    #         bias = None
+        if self.bias is not None:
+            name = with_prefix(prefix, "bias")
+            bias = hax.named(state_dict[name], "__OUT__")
+            bias = bias.unflatten_axis("__OUT__", self.axis)
+        else:
+            bias = None
 
-    #     return dataclasses.replace(self, weight=weight, bias=bias)
+        return dataclasses.replace(self, weight=weight, bias=bias)
 
 
 class LlamaDecoderLayer(eqx.Module):
