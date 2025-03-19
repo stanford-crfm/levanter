@@ -28,14 +28,6 @@ silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
-from haliax.state_dict import (
-    ModuleWithStateDictSerialization,
-    StateDict,
-    save_state_dict,
-    to_torch_compatible_state_dict,
-    with_prefix,
-)
-
 
 @LmConfig.register_subclass("llama")
 @dataclass(frozen=True)

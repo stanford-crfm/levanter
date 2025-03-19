@@ -227,36 +227,27 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     print("\nLevanter Model Parameter Structure:")
     # Print the structure of the first layer in our model
     try:
-        layer0 = template_model.transformer.layers.stacked[0]
-        # Print attention shapes
-        print(f"  self_attn.q_proj.weight: {layer0.self_attn.q_proj.weight.array.shape}")
-        print(f"  self_attn.k_proj.weight: {layer0.self_attn.k_proj.weight.array.shape}")
-        print(f"  self_attn.v_proj.weight: {layer0.self_attn.v_proj.weight.array.shape}")
-        print(f"  self_attn.o_proj.weight: {layer0.self_attn.o_proj.weight.array.shape}")
-        print(
-            "  self_attn.q_norm.weight:"
-            f" {layer0.self_attn.q_norm.weight.array.shape if layer0.self_attn.q_norm.weight is not None else None}"
-        )
-        print(
-            "  self_attn.k_norm.weight:"
-            f" {layer0.self_attn.k_norm.weight.array.shape if layer0.self_attn.k_norm.weight is not None else None}"
-        )
-
-        # Print MLP shapes
-        print(f"  mlp.gate_proj.weight: {layer0.mlp.gate_proj.weight.array.shape}")
-        print(f"  mlp.up_proj.weight: {layer0.mlp.up_proj.weight.array.shape}")
-        print(f"  mlp.down_proj.weight: {layer0.mlp.down_proj.weight.array.shape}")
+        for layer in template_model.transformer.layers.stacked.unstacked():
+            # Print attention shapes
+            print(f"  self_attn.q_proj.weight: {layer.self_attn.q_proj.weight.array.shape}")
+            print(f"  self_attn.k_proj.weight: {layer.self_attn.k_proj.weight.array.shape}")
+            print(f"  self_attn.v_proj.weight: {layer.self_attn.v_proj.weight.array.shape}")
+            print(f"  self_attn.o_proj.weight: {layer.self_attn.o_proj.weight.array.shape}")
+            print(
+                "  self_attn.q_norm.weight:"
+                f" {layer.self_attn.q_norm.weight.array.shape if layer.self_attn.q_norm.weight is not None else None}"
+            )
+            print(
+                "  self_attn.k_norm.weight:"
+                f" {layer.self_attn.k_norm.weight.array.shape if layer.self_attn.k_norm.weight is not None else None}"
+            )
+            # Print MLP shapes
+            print(f"  mlp.gate_proj.weight: {layer.mlp.gate_proj.weight.array.shape}")
+            print(f"  mlp.up_proj.weight: {layer.mlp.up_proj.weight.array.shape}")
+            print(f"  mlp.down_proj.weight: {layer.mlp.down_proj.weight.array.shape}")
+            break
     except (AttributeError, IndexError) as e:
         print(f"Error accessing model structure: {e}")
-        # Try alternative structure
-        print("Trying alternative model structure...")
-        if hasattr(template_model.transformer, "layers"):
-            if hasattr(template_model.transformer.layers, "element"):
-                layer0 = template_model.transformer.layers.element
-                print(f"Found layer structure: {type(layer0)}")
-                if hasattr(layer0, "self_attn"):
-                    print(f"  self_attn.q_proj.weight: {layer0.self_attn.q_proj.weight.array.shape}")
-                    # Add similar prints for other components
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save HF model
