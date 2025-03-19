@@ -299,7 +299,7 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     print("\nLevanter Model Parameter Structure:")
     # Print the structure of the first layer in our model
     try:
-        for layer in template_model.transformer.layers.stacked.unstacked():
+        for layer in template_model.transformer.layers.unstacked():
             # Print attention shapes
             print(f"  self_attn.q_proj.weight: {layer.self_attn.q_proj.weight.array.shape}")
             print(f"  self_attn.k_proj.weight: {layer.self_attn.k_proj.weight.array.shape}")
