@@ -1,0 +1,61 @@
+dataset_type: chat_jsonl
+chat_train_urls:
+  - "gs://marin-us-central2/documents/cognitivecomputations--dolphin-r1-f6ac651-3b5c9f/reasoning-deepseek/**/*.jsonl.gz"
+supervised_data:
+# cache_dir before trying sequence packing
+  cache_dir: "gs://marin-us-central2/tokenized/override_dolphin_reasondeepseek"
+  #cache_dir: "gs://marin-us-central2/tokenized/tulu_sft_v3_llama3_tokenizer_retrypack-bca8bd/"
+
+max_seq_len: 4096
+tokenizer: "meta-llama/Meta-Llama-3.1-8B"
+model:  # 8B llama3 class model
+  type: llama
+  seq_len: 4096
+  hidden_dim: 4096
+  intermediate_dim: 14336
+  num_layers: 32
+  num_heads: 32
+  num_kv_heads: 8
+  use_flash_attention: True
+  flash_attention_block_size: 512
+  use_bias: false
+  use_layer_norm_weight: true
+  initializer_range: 0.02
+  rope:
+    type: "llama3"
+
+trainer:
+  seed: 1
+  tracker:
+    type: wandb
+    project: "marin"
+    tags: ["dolma", "olmo", "llama"]
+  wandb:
+    project: "marin"
+    name: "llama3.1_tulu_sft_packed"
+
+  mp: p=f32,c=bfloat16
+  # same as 606 sft in marin
+  train_batch_size: 8
+  # number of steps until we hit stop iteration
+  num_train_steps: 2574 # 3,000,000,000,000 / 4,000,000 = 750,000
+  steps_per_eval: 1000
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+  #initialize_from: "gs://marin-us-central2/checkpoints/llama-8b-tootsie-cooldown-9e999c/checkpoints/step-670954" #"gs://marin-us-central2/checkpoints/llama3.1_8b_tulu_3-12305c/checkpoints/step-9980/"
+  checkpointer:
+    base_path: "gs://levanter-checkpoints/marin/debug/"
+optimizer:
+  learning_rate: 5e-6
+  weight_decay: 0.0
+  min_lr_ratio: 0.0
+  lr_schedule: "linear"
+  warmup: 0.03
+
+hf_save_steps: 500
+hf_save_path: "gs://levanter-checkpoints/marin/debug/"
+
+initialize_from_hf: True
+model_name_or_path: "meta-llama/Meta-Llama-3.1-8B" #"gs://marin-us-central2/checkpoints/llama-8b-tootsie-cooldown-9e999c/hf/step-670000"
+epoch: 0
