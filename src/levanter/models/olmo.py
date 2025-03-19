@@ -11,13 +11,13 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
+from haliax.nn.normalization import RmsNorm as Olmo2RMSNorm
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.gpt2 import ACT2FN
-from levanter.models.llama import LlamaRMSNorm as Olmo2RMSNorm
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.flop_utils import lm_flops_per_token
