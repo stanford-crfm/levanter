@@ -11,7 +11,8 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
-from haliax.nn.normalization import RmsNorm as Olmo2RMSNorm
+#from haliax.nn.normalization import RmsNorm as Olmo2RMSNorm
+from levanter.models.llama import LlamaRMSNorm as Olmo2RMSNorm
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
