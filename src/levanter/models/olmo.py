@@ -13,7 +13,7 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 
 # from haliax.nn.normalization import RmsNorm as Olmo2RMSNorm
-from levanter.models.llama import LlamaRMSNorm as Olmo2RMSNorm
+# from levanter.models.llama import LlamaRMSNorm as Olmo2RMSNorm
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
@@ -179,53 +179,53 @@ class Olmo2Config(HFCompatConfig):
         )
 
 
-# class Olmo2RMSNorm(eqx.Module):
-#     """
-#     RMS normalization layer for Olmo2 (Same as Llama2)
-#     """
+class Olmo2RMSNorm(eqx.Module):
+    """
+    RMS normalization layer for Olmo2 (Same as Llama2)
+    """
 
-#     axis: AxisSpec = eqx.field(static=True)
-#     weight: Optional[NamedArray]
-#     bias: Optional[NamedArray]
+    axis: AxisSpec = eqx.field(static=True)
+    weight: Optional[NamedArray]
+    bias: Optional[NamedArray]
 
-#     eps: float = eqx.field(static=True, default=1e-6)
-#     dtype: Optional[jnp.dtype] = eqx.field(static=True, default=jnp.float32)
+    eps: float = eqx.field(static=True, default=1e-6)
+    dtype: Optional[jnp.dtype] = eqx.field(static=True, default=jnp.float32)
 
-#     @staticmethod
-#     def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False, dtype=jnp.float32):
-#         if use_weight:
-#             weight = hax.ones(axis)
-#         else:
-#             weight = None
-#         if use_bias:
-#             bias = hax.zeros(axis)
-#         else:
-#             bias = None
+    @staticmethod
+    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False, dtype=jnp.float32):
+        if use_weight:
+            weight = hax.ones(axis)
+        else:
+            weight = None
+        if use_bias:
+            bias = hax.zeros(axis)
+        else:
+            bias = None
 
-#         return Olmo2RMSNorm(axis, weight, bias, eps, dtype)
+        return Olmo2RMSNorm(axis, weight, bias, eps, dtype)
 
-#     def __call__(self, x: NamedArray) -> NamedArray:
-#         in_dtype = x.dtype
-#         x = x.astype(self.dtype)
+    def __call__(self, x: NamedArray) -> NamedArray:
+        in_dtype = x.dtype
+        x = x.astype(self.dtype)
 
-#         # Check if we need to adapt the input to match the axis dimension
-#         # if isinstance(self.axis, Axis) and self.axis.name == "embed" and self.axis.size != x.axis_size("embed"):
-#         #     # Reshape the input to match the expected size
-#         #     new_x = x.array[:, : self.axis.size]
-#         #     x = hax.named(new_x, (x.axes[0], Axis("embed", self.axis.size)))
+        # Check if we need to adapt the input to match the axis dimension
+        # if isinstance(self.axis, Axis) and self.axis.name == "embed" and self.axis.size != x.axis_size("embed"):
+        #     # Reshape the input to match the expected size
+        #     new_x = x.array[:, : self.axis.size]
+        #     x = hax.named(new_x, (x.axes[0], Axis("embed", self.axis.size)))
 
-#         var = hax.mean(hax.square(x), axis=self.axis)
-#         inv = hax.rsqrt(var + self.eps)
-#         out = x * inv
-#         out = out.astype(in_dtype)
+        var = hax.mean(hax.square(x), axis=self.axis)
+        inv = hax.rsqrt(var + self.eps)
+        out = x * inv
+        out = out.astype(in_dtype)
 
-#         if self.weight is not None:
-#             out = self.weight * out
-#         if self.bias is not None:
-#             out = out + self.bias
+        if self.weight is not None:
+            out = self.weight * out
+        if self.bias is not None:
+            out = out + self.bias
 
-#         # second cast in case params are in float32
-#         return out.astype(in_dtype)
+        # second cast in case params are in float32
+        return out.astype(in_dtype)
 
 
 class Olmo2MLP(eqx.Module):
