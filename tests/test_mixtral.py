@@ -6,9 +6,12 @@ import numpy as np
 import pytest
 import transformers
 from jax import random
+from jax.sharding import Mesh
 
 import haliax as hax
+from haliax.partitioning import ResourceAxis
 
+from levanter.models.attention import AttentionMask
 from levanter.models.loss import next_token_loss
 from levanter.models.mixtral import MixtralConfig, MixtralDecoderLayer, MixtralLMHeadModel, MixtralSparseMoeBlock
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
@@ -48,7 +51,8 @@ def test_mixtral_moe_block():
     mixtral_config = _get_mixtral_config(num_kv_heads=4)
     key = random.PRNGKey(0)
     mixtral_moe_layer = MixtralSparseMoeBlock.init(config=mixtral_config, key=key)
-    state = mixtral_moe_layer.to_state_dict()
+
+    state = hax.state_dict.to_torch_compatible_state_dict(mixtral_moe_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_moe_layer = HFMixtralSparseMoeBlock(mixtral_config.to_hf_config(32000))
     hf_moe_layer.load_state_dict(state, strict=True)
@@ -56,7 +60,10 @@ def test_mixtral_moe_block():
     x, _ = _get_random_inputs(mixtral_config)
     x_torch = torch.from_numpy(np.array(x.array))
 
-    out = mixtral_moe_layer(x)
+    with Mesh(
+        np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    ):
+        out = mixtral_moe_layer(x)
     hf_out = hf_moe_layer(x_torch)
 
     assert np.isclose(
@@ -72,7 +79,8 @@ def test_mixtral_moe_block_bwd():
     mixtral_config = _get_mixtral_config(num_kv_heads=4)
     key = random.PRNGKey(0)
     mixtral_moe_layer = MixtralSparseMoeBlock.init(config=mixtral_config, key=key)
-    state = mixtral_moe_layer.to_state_dict()
+
+    state = hax.state_dict.to_torch_compatible_state_dict(mixtral_moe_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_moe_layer = HFMixtralSparseMoeBlock(mixtral_config.to_hf_config(32000))
     hf_moe_layer.load_state_dict(state, strict=True)
@@ -88,7 +96,9 @@ def test_mixtral_moe_block_bwd():
         out, _ = layer(x)
         return out.sum()
 
-    with hax.enable_shape_checks(False):
+    with hax.enable_shape_checks(False), Mesh(
+        np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    ):
         _, jax_grad = eqx.filter_value_and_grad(jax_compute)(mixtral_moe_layer, x)
 
     loss = torch_compute(hf_moe_layer, x_torch)
@@ -97,7 +107,7 @@ def test_mixtral_moe_block_bwd():
     state_dict = hf_moe_layer.state_dict(keep_vars=True)
     state_dict = {k: v.grad for k, v in state_dict.items()}
 
-    jax_grad_dict = jax_grad.to_state_dict()
+    jax_grad_dict = hax.state_dict.to_torch_compatible_state_dict(jax_grad)
 
     for jax_key, jax_g in jax_grad_dict.items():
         if jax_key not in state_dict:
@@ -118,7 +128,7 @@ def test_mixtral_decoder_layer(num_kv_heads):
     key = random.PRNGKey(0)
     mixtral_decoder_layer = MixtralDecoderLayer.init(config=mixtral_config, key=key)
 
-    state = mixtral_decoder_layer.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(mixtral_decoder_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
     hf_decoder_layer = HFMixtralDecoderLayer(mixtral_config.to_hf_config(32000), layer_idx=0)
     hf_decoder_layer.load_state_dict(state, strict=True)
@@ -126,11 +136,17 @@ def test_mixtral_decoder_layer(num_kv_heads):
     x, mask = _get_random_inputs(mixtral_config)
     x_torch = torch.from_numpy(np.array(x.array))
     batch_size = x_torch.shape[0]
-    mask_torch = torch.from_numpy(np.array(mask.array)).broadcast_to((batch_size, 1, -1, -1))
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(mixtral_config.Pos, mixtral_config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
     mask_torch = (mask_torch == 0).float() * -1e9
 
-    out = mixtral_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, mask_torch)
+    position_ids = torch.arange(mixtral_config.Pos.size).reshape(1, -1)
+
+    with Mesh(
+        np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    ):
+        out = mixtral_decoder_layer(x, mask)
+    hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
 
     assert np.isclose(
         hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
@@ -147,7 +163,10 @@ def test_mixtral_lm_head_model(num_kv_heads):
     mask = hax.nn.attention.causal_mask(Pos, mixtral_config.KeyPos)
 
     mixtral_model = MixtralLMHeadModel.init(Vocab=Vocab, config=mixtral_config, key=random.PRNGKey(0))
-    out = mixtral_model(input_ids, mask)
+    with Mesh(
+        np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    ):
+        out = mixtral_model(input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
 
 
@@ -156,7 +175,7 @@ def test_mixtral_lm_head_model_bwd(use_flash):
     import torch
     from transformers import MixtralForCausalLM
 
-    converter = MixtralConfig.default_hf_checkpoint_converter
+    converter = MixtralConfig().hf_checkpoint_converter()
     config = _get_mixtral_config(use_flash=use_flash, num_kv_heads=2)
     Batch = hax.Axis("batch", 2)
     Vocab = hax.Axis("vocab", 1000)
@@ -181,7 +200,9 @@ def test_mixtral_lm_head_model_bwd(use_flash):
 
         return hax.mean(next_token_loss(model.Pos, model.Vocab, pred_y, input_ids)).scalar()
 
-    with hax.enable_shape_checks(False):
+    with hax.enable_shape_checks(False), Mesh(
+        np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    ):
         _, jax_grad = eqx.filter_value_and_grad(compute_loss)(model, input_ids, mask)
 
     # gradients are kind of a pain to get at in torch, but we do it anyway
@@ -189,7 +210,7 @@ def test_mixtral_lm_head_model_bwd(use_flash):
     state_dict = torch_model.state_dict(keep_vars=True)
     state_dict = {k: v.grad for k, v in state_dict.items()}
 
-    jax_grad_dict = jax_grad.to_state_dict()
+    jax_grad_dict = hax.state_dict.to_torch_compatible_state_dict(jax_grad)
 
     for jax_key, jax_g in jax_grad_dict.items():
         if jax_key not in state_dict:
@@ -206,11 +227,12 @@ def test_mixtral_roundtrip():
     import torch
     from transformers import AutoModelForCausalLM, MixtralForCausalLM
 
-    converter = MixtralConfig.default_hf_checkpoint_converter
+    converter = MixtralConfig().hf_checkpoint_converter()
 
     config = MixtralConfig(
         seq_len=128,
         hidden_dim=16,
+        intermediate_dim=64,
         num_heads=4,
         num_kv_heads=2,
         gradient_checkpointing=False,
@@ -244,7 +266,10 @@ def test_mixtral_roundtrip():
             return hax.nn.softmax(model_output, axis=model.Vocab)
 
         compute = jax.jit(compute)
-        jax_out = compute(input).array
+        with Mesh(
+            np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+        ):
+            jax_out = compute(input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
         assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
@@ -260,30 +285,28 @@ def test_mixtral_roundtrip():
         assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
 
 
-def _get_mixtral_config(use_flash=False, num_kv_heads=4) -> MixtralConfig:
-    rope_scaling = {
-        "type": "linear",
-        "factor": 2.0,
-    }
+def _get_mixtral_config(use_flash=False, num_kv_heads=4, seq_len=128) -> MixtralConfig:
     return MixtralConfig(
-        seq_len=128,
+        seq_len=seq_len,
         hidden_dim=16,
         intermediate_dim=32,
         num_heads=4,
         num_kv_heads=num_kv_heads,
-        rope_scaling=rope_scaling,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,
     )
 
 
-def _get_random_inputs(config: MixtralConfig):
+def _get_random_inputs(config: MixtralConfig, override_Pos=None):
     Embed = config.Embed
-    Pos = config.Pos
+    if override_Pos is not None:
+        Pos = override_Pos
+    else:
+        Pos = config.Pos
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
-    mask = hax.nn.attention.causal_mask(config.Pos, config.KeyPos)
+    mask = AttentionMask.causal()
     return x, mask
 
 
@@ -299,10 +322,38 @@ def test_mixtral_configs(config_file):
 @pytest.mark.parametrize("num_kv_heads", [1, 2])
 def test_pass_different_length_seq(num_kv_heads):
     config = MixtralConfig(
-        seq_len=32,
-        hidden_dim=16,
+        seq_len=128,
+        hidden_dim=64,
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
+        use_flash_attention=True,
     )
-    check_model_works_with_seqlen(MixtralLMHeadModel, config, 16)
+    with Mesh(
+        np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
+    ):
+        check_model_works_with_seqlen(MixtralLMHeadModel, config, 64)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [2, 4])
+def test_state_dict_consistency(scan_layers, num_kv_heads):
+    from transformers import MixtralForCausalLM
+
+    config = MixtralConfig(
+        seq_len=128,
+        hidden_dim=16,
+        intermediate_dim=32,
+        num_heads=4,
+        num_layers=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+        scan_layers=scan_layers,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+    model = MixtralLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+    hf_config = config.to_hf_config(Vocab.size)
+    hf_model = MixtralForCausalLM(hf_config)
+    levanter_state_dict = hax.state_dict.to_torch_compatible_state_dict(model)
+    assert set(hf_model.state_dict().keys()) == set(levanter_state_dict.keys())
