@@ -327,13 +327,13 @@ class LlamaRMSNorm(ModuleWithStateDictSerialization):
         state_dict = {}
 
         if self.weight is not None:
-            flattened = self.weight.flatten("__OUT")
+            flattened = self.weight.flatten("__OUT__")
             name = with_prefix(prefix, "weight")
             state_dict[name] = flattened.array
             # state_dict[f"{prefix}.weight"] = flattened.array
 
         if self.bias is not None:
-            flattened = self.bias.flatten("__OUT")
+            flattened = self.bias.flatten("__OUT__")
             name = with_prefix(prefix, "bias")
             state_dict[name] = flattened.array
 
@@ -342,15 +342,15 @@ class LlamaRMSNorm(ModuleWithStateDictSerialization):
     def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
         if self.weight is not None:
             name = with_prefix(prefix, "weight")
-            weight = hax.named(state_dict[name], "__OUT")
-            weight = weight.unflatten_axis("__OUT", self.axis)
+            weight = hax.named(state_dict[name], "__OUT__")
+            weight = weight.unflatten_axis("__OUT__", self.axis)
         else:
             weight = None
 
         if self.bias is not None:
             name = with_prefix(prefix, "bias")
-            bias = hax.named(state_dict[name], "__OUT")
-            bias = bias.unflatten_axis("__OUT", self.axis)
+            bias = hax.named(state_dict[name], "__OUT__")
+            bias = bias.unflatten_axis("__OUT__", self.axis)
         else:
             bias = None
 
