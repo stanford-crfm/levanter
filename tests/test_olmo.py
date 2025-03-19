@@ -177,7 +177,6 @@ def test_olmo2_lm_head_model_bwd(use_flash, num_kv_heads):
     # Check that we can compute gradients
     assert grads is not None
 
-
 @skip_if_no_torch
 @pytest.mark.parametrize("scan_layers", [True, False])
 @pytest.mark.parametrize("num_kv_heads", [2, 4])
@@ -215,156 +214,228 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
 
-    # Print key shapes for debugging
-    print("\nHF model detailed params:")
-    for name, param in torch_model.named_parameters():
-        if "layers.0" in name:
-            print(f"{name}: {param.shape}")
-
-    # Create template model for comparison
-    template_model = Olmo2LMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
-
-    print("\nLevanter Model Parameter Structure:")
-    # Print the structure of the first layer in our model
-    try:
-        for layer in template_model.transformer.layers.stacked.unstacked():
-            # Print attention shapes
-            print(f"  self_attn.q_proj.weight: {layer.self_attn.q_proj.weight.array.shape}")
-            print(f"  self_attn.k_proj.weight: {layer.self_attn.k_proj.weight.array.shape}")
-            print(f"  self_attn.v_proj.weight: {layer.self_attn.v_proj.weight.array.shape}")
-            print(f"  self_attn.o_proj.weight: {layer.self_attn.o_proj.weight.array.shape}")
-            print(
-                "  self_attn.q_norm.weight:"
-                f" {layer.self_attn.q_norm.weight.array.shape if layer.self_attn.q_norm.weight is not None else None}"
-            )
-            print(
-                "  self_attn.k_norm.weight:"
-                f" {layer.self_attn.k_norm.weight.array.shape if layer.self_attn.k_norm.weight is not None else None}"
-            )
-            # Print MLP shapes
-            print(f"  mlp.gate_proj.weight: {layer.mlp.gate_proj.weight.array.shape}")
-            print(f"  mlp.up_proj.weight: {layer.mlp.up_proj.weight.array.shape}")
-            print(f"  mlp.down_proj.weight: {layer.mlp.down_proj.weight.array.shape}")
-            break
-    except (AttributeError, IndexError) as e:
-        print(f"Error accessing model structure: {e}")
-
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save HF model
-        model_path = f"{tmpdir}/torch_model"
-        torch_model.save_pretrained(model_path)
-
-        # Check saved files
-        print("\nSaved files in model directory:")
-        for file in os.listdir(model_path):
-            print(f"  {file}")
-
-        # Get the correct file path for the PyTorch model
-        state_dict_files = [f for f in os.listdir(model_path) if f.endswith(".bin")]
-        if state_dict_files:
-            state_dict_file = state_dict_files[0]
-            print(f"\nFound state dict file: {state_dict_file}")
-
-            # Load and print state dict details
-            state_dict_path = os.path.join(model_path, state_dict_file)
-            hf_state_dict = torch.load(state_dict_path)
-            print("\nState dict keys:")
-            for key in list(hf_state_dict.keys())[:10]:  # First 10 keys
-                print(f"  {key}")
-
-            print("\nDetailed HF Shapes for key components:")
-            for k, v in hf_state_dict.items():
-                if "layers.0" in k and any(comp in k for comp in ["self_attn", "mlp"]):
-                    print(f"{k}: {v.shape}")
-
-            # Print QKV dimension comparison
-            print("\nQKV Dimension Comparison:")
-            q_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.q_proj.weight" in k), None)
-            k_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.k_proj.weight" in k), None)
-            v_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.v_proj.weight" in k), None)
-
-            if q_key and k_key and v_key:
-                print(
-                    f"Q: {hf_state_dict[q_key].shape}, K: {hf_state_dict[k_key].shape}, V:"
-                    f" {hf_state_dict[v_key].shape}"
-                )
-                print(f"Hidden dim: {config.hidden_dim}, Head dim: {config.hidden_dim // config.num_heads}")
-                print(f"Num heads: {config.num_heads}, Num KV heads: {config.num_kv_heads}")
+        torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         # Load into our model
-        try:
-            model = converter.load_pretrained(Olmo2LMHeadModel, ref=model_path, resize_vocab_to_match_tokenizer=False)
+        model = converter.load_pretrained(
+            Olmo2LMHeadModel, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+        )
 
-            # Forward pass through our model
-            @hax.named_jit
-            def compute(model, input):
-                model_output = model(input, attn_mask=attn_mask)
-                return model_output
+        # Forward pass through our model
+        @hax.named_jit
+        def compute(model, input):
+            model_output = model(input, attn_mask=attn_mask)
+            return model_output
 
-            jax_out = compute(model, input).array
+        jax_out = compute(model, input).array
 
-            # Check shapes match
-            assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+        # Check shapes match
+        assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+        
+        # Check outputs are close
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
 
-            # Print sample output values for comparison
-            print("\nOutput values comparison:")
-            print("HF output (first 5 values):", torch_out[0, :5])
-            print("JAX output (first 5 values):", jax_out[0, :5])
+        # Save our model
+        converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+        
+        # Load saved model into HF
+        torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
+        torch_model2.eval()
 
-            # For more detail on significant differences:
-            abs_diff = np.abs(torch_out - jax_out.astype(np.float32))
-            max_diff_idx = np.unravel_index(np.argmax(abs_diff), abs_diff.shape)
-            print(f"\nMaximum difference at {max_diff_idx}: {abs_diff[max_diff_idx]}")
-            print(f"HF value: {torch_out[max_diff_idx]}, JAX value: {jax_out[max_diff_idx]}")
+        # Check forward pass still works
+        torch_out2 = torch_model2(input_torch)
+        torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
+        assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
+        np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
+# @skip_if_no_torch
+# @pytest.mark.parametrize("scan_layers", [True, False])
+# @pytest.mark.parametrize("num_kv_heads", [2, 4])
+# def test_olmo2_roundtrip(scan_layers, num_kv_heads):
+#     import torch
+#     from transformers import AutoModelForCausalLM, Olmo2ForCausalLM
 
-            # Check outputs are close
-            assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
+#     converter = Olmo2Config().hf_checkpoint_converter()
 
-            # Save our model
-            converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+#     config = Olmo2Config(
+#         seq_len=128,
+#         hidden_dim=16,
+#         intermediate_dim=32,
+#         num_heads=4,
+#         num_kv_heads=num_kv_heads,
+#         num_layers=4,
+#         gradient_checkpointing=False,
+#         scan_layers=scan_layers,
+#     )
+#     Vocab = hax.Axis("vocab", 1000)
+#     hf_config = config.to_hf_config(Vocab.size)
 
-            # Load saved model into HF
-            torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
-            torch_model2.eval()
+#     # Make input and attn_mask
+#     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
+#     attn_mask = AttentionMask.causal()
+#     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
 
-            # Check forward pass still works
-            torch_out2 = torch_model2(input_torch)
-            torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-            assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-            np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
+#     torch.random.manual_seed(0)
 
-        except Exception as e:
-            print(f"\nException occurred: {e}")
-            print(f"Exception type: {type(e)}")
-            import traceback
+#     # Create HF model with our config
+#     torch_model = Olmo2ForCausalLM(hf_config)
+#     torch_model.eval()
 
-            traceback.print_exc()
+#     # Forward pass through HF model
+#     torch_out = torch_model(input_torch)
+#     torch_out = torch_out.logits[0].detach().cpu().numpy()
 
-            # Additional diagnostics
-            print("\nState dict expected vs found keys comparison:")
+#     # Print key shapes for debugging
+#     print("\nHF model detailed params:")
+#     for name, param in torch_model.named_parameters():
+#         if "layers.0" in name:
+#             print(f"{name}: {param.shape}")
 
-            expected_keys = list(hax.state_dict.to_torch_compatible_state_dict(template_model).keys())
-            print(f"Expected keys (first 10): {expected_keys[:10]}")
+#     # Create template model for comparison
+#     template_model = Olmo2LMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
 
-            # Compare with actual keys
-            if "hf_state_dict" in locals():
-                actual_keys = list(hf_state_dict.keys())
-                missing_keys = [k for k in expected_keys if k not in actual_keys]
-                extra_keys = [k for k in actual_keys if k not in expected_keys]
-                print(f"Missing keys (first 10): {missing_keys[:10]}")
-                print(f"Extra keys (first 10): {extra_keys[:10]}")
+#     print("\nLevanter Model Parameter Structure:")
+#     # Print the structure of the first layer in our model
+#     try:
+#         for layer in template_model.transformer.layers.stacked.unstacked():
+#             # Print attention shapes
+#             print(f"  self_attn.q_proj.weight: {layer.self_attn.q_proj.weight.array.shape}")
+#             print(f"  self_attn.k_proj.weight: {layer.self_attn.k_proj.weight.array.shape}")
+#             print(f"  self_attn.v_proj.weight: {layer.self_attn.v_proj.weight.array.shape}")
+#             print(f"  self_attn.o_proj.weight: {layer.self_attn.o_proj.weight.array.shape}")
+#             print(
+#                 "  self_attn.q_norm.weight:"
+#                 f" {layer.self_attn.q_norm.weight.array.shape if layer.self_attn.q_norm.weight is not None else None}"
+#             )
+#             print(
+#                 "  self_attn.k_norm.weight:"
+#                 f" {layer.self_attn.k_norm.weight.array.shape if layer.self_attn.k_norm.weight is not None else None}"
+#             )
+#             # Print MLP shapes
+#             print(f"  mlp.gate_proj.weight: {layer.mlp.gate_proj.weight.array.shape}")
+#             print(f"  mlp.up_proj.weight: {layer.mlp.up_proj.weight.array.shape}")
+#             print(f"  mlp.down_proj.weight: {layer.mlp.down_proj.weight.array.shape}")
+#             break
+#     except (AttributeError, IndexError) as e:
+#         print(f"Error accessing model structure: {e}")
 
-                # Check specific problem area
-                print("\nChecking specific problem areas:")
-                for key in expected_keys:
-                    if "k_norm" in key and key in actual_keys:
-                        expected_shape = next((s for s in template_model.transformer.layers.stacked), None)
-                        if expected_shape:
-                            expected_shape = expected_shape.self_attn.k_norm.weight.array.shape
-                            actual_shape = hf_state_dict[key].shape
-                            print(f"Key {key}: expected shape {expected_shape}, actual shape {actual_shape}")
+#     with tempfile.TemporaryDirectory() as tmpdir:
+#         # Save HF model
+#         model_path = f"{tmpdir}/torch_model"
+#         torch_model.save_pretrained(model_path)
 
-            raise
+#         # Check saved files
+#         print("\nSaved files in model directory:")
+#         for file in os.listdir(model_path):
+#             print(f"  {file}")
+
+#         # Get the correct file path for the PyTorch model
+#         state_dict_files = [f for f in os.listdir(model_path) if f.endswith(".bin")]
+#         if state_dict_files:
+#             state_dict_file = state_dict_files[0]
+#             print(f"\nFound state dict file: {state_dict_file}")
+
+#             # Load and print state dict details
+#             state_dict_path = os.path.join(model_path, state_dict_file)
+#             hf_state_dict = torch.load(state_dict_path)
+#             print("\nState dict keys:")
+#             for key in list(hf_state_dict.keys())[:10]:  # First 10 keys
+#                 print(f"  {key}")
+
+#             print("\nDetailed HF Shapes for key components:")
+#             for k, v in hf_state_dict.items():
+#                 if "layers.0" in k and any(comp in k for comp in ["self_attn", "mlp"]):
+#                     print(f"{k}: {v.shape}")
+
+#             # Print QKV dimension comparison
+#             print("\nQKV Dimension Comparison:")
+#             q_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.q_proj.weight" in k), None)
+#             k_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.k_proj.weight" in k), None)
+#             v_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.v_proj.weight" in k), None)
+
+#             if q_key and k_key and v_key:
+#                 print(
+#                     f"Q: {hf_state_dict[q_key].shape}, K: {hf_state_dict[k_key].shape}, V:"
+#                     f" {hf_state_dict[v_key].shape}"
+#                 )
+#                 print(f"Hidden dim: {config.hidden_dim}, Head dim: {config.hidden_dim // config.num_heads}")
+#                 print(f"Num heads: {config.num_heads}, Num KV heads: {config.num_kv_heads}")
+
+#         # Load into our model
+#         try:
+#             model = converter.load_pretrained(Olmo2LMHeadModel, ref=model_path, resize_vocab_to_match_tokenizer=False)
+
+#             # Forward pass through our model
+#             @hax.named_jit
+#             def compute(model, input):
+#                 model_output = model(input, attn_mask=attn_mask)
+#                 return model_output
+
+#             jax_out = compute(model, input).array
+
+#             # Check shapes match
+#             assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+
+#             # Print sample output values for comparison
+#             print("\nOutput values comparison:")
+#             print("HF output (first 5 values):", torch_out[0, :5])
+#             print("JAX output (first 5 values):", jax_out[0, :5])
+
+#             # For more detail on significant differences:
+#             abs_diff = np.abs(torch_out - jax_out.astype(np.float32))
+#             max_diff_idx = np.unravel_index(np.argmax(abs_diff), abs_diff.shape)
+#             print(f"\nMaximum difference at {max_diff_idx}: {abs_diff[max_diff_idx]}")
+#             print(f"HF value: {torch_out[max_diff_idx]}, JAX value: {jax_out[max_diff_idx]}")
+
+#             # Check outputs are close
+#             assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
+
+#             # Save our model
+#             converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+
+#             # Load saved model into HF
+#             torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
+#             torch_model2.eval()
+
+#             # Check forward pass still works
+#             torch_out2 = torch_model2(input_torch)
+#             torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
+#             assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
+#             np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
+
+#         except Exception as e:
+#             print(f"\nException occurred: {e}")
+#             print(f"Exception type: {type(e)}")
+#             import traceback
+
+#             traceback.print_exc()
+
+#             # Additional diagnostics
+#             print("\nState dict expected vs found keys comparison:")
+
+#             expected_keys = list(hax.state_dict.to_torch_compatible_state_dict(template_model).keys())
+#             print(f"Expected keys (first 10): {expected_keys[:10]}")
+
+#             # Compare with actual keys
+#             if "hf_state_dict" in locals():
+#                 actual_keys = list(hf_state_dict.keys())
+#                 missing_keys = [k for k in expected_keys if k not in actual_keys]
+#                 extra_keys = [k for k in actual_keys if k not in expected_keys]
+#                 print(f"Missing keys (first 10): {missing_keys[:10]}")
+#                 print(f"Extra keys (first 10): {extra_keys[:10]}")
+
+#                 # Check specific problem area
+#                 print("\nChecking specific problem areas:")
+#                 for key in expected_keys:
+#                     if "k_norm" in key and key in actual_keys:
+#                         expected_shape = next((s for s in template_model.transformer.layers.stacked), None)
+#                         if expected_shape:
+#                             expected_shape = expected_shape.self_attn.k_norm.weight.array.shape
+#                             actual_shape = hf_state_dict[key].shape
+#                             print(f"Key {key}: expected shape {expected_shape}, actual shape {actual_shape}")
+
+#             raise
 
 
 def test_olmo2_param_counts_dont_change_with_seqlen():
