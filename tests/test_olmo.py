@@ -227,7 +227,7 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     print("\nLevanter Model Parameter Structure:")
     # Print the structure of the first layer in our model
     try:
-        layer0 = template_model.transformer.layers.blocks[0]
+        layer0 = template_model.transformer.layers.stacked[0]
         # Print attention shapes
         print(f"  self_attn.q_proj.weight: {layer0.self_attn.q_proj.weight.array.shape}")
         print(f"  self_attn.k_proj.weight: {layer0.self_attn.k_proj.weight.array.shape}")
@@ -367,7 +367,7 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
                 print("\nChecking specific problem areas:")
                 for key in expected_keys:
                     if "k_norm" in key and key in actual_keys:
-                        expected_shape = next((s for s in template_model.transformer.layers.blocks), None)
+                        expected_shape = next((s for s in template_model.transformer.layers.stacked), None)
                         if expected_shape:
                             expected_shape = expected_shape.self_attn.k_norm.weight.array.shape
                             actual_shape = hf_state_dict[key].shape
@@ -394,6 +394,7 @@ def test_olmo2_state_dict_consistency(num_kv_heads):
         num_layers=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
+        use_bias=False,
         scan_layers=True,
     )
     Vocab = hax.Axis("vocab", 1000)
