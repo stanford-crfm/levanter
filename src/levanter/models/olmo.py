@@ -9,7 +9,6 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import Axis, NamedArray
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 
@@ -208,12 +207,6 @@ class Olmo2RMSNorm(eqx.Module):
     def __call__(self, x: NamedArray) -> NamedArray:
         in_dtype = x.dtype
         x = x.astype(self.dtype)
-
-        # Check if we need to adapt the input to match the axis dimension
-        # if isinstance(self.axis, Axis) and self.axis.name == "embed" and self.axis.size != x.axis_size("embed"):
-        #     # Reshape the input to match the expected size
-        #     new_x = x.array[:, : self.axis.size]
-        #     x = hax.named(new_x, (x.axes[0], Axis("embed", self.axis.size)))
 
         var = hax.mean(hax.square(x), axis=self.axis)
         inv = hax.rsqrt(var + self.eps)
