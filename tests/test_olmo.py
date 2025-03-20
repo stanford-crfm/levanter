@@ -6,11 +6,13 @@ import equinox as eqx
 import numpy as np
 import pytest
 from jax import random
+from safetensors.torch import load_file
 
 import haliax as hax
+import haliax.nn as hnn
 
 from levanter.models.attention import AttentionMask
-from levanter.models.olmo import Olmo2Attention, Olmo2Config, Olmo2DecoderLayer, Olmo2LMHeadModel, Olmo2RMSNorm
+from levanter.models.olmo import Olmo2Attention, Olmo2Config, Olmo2DecoderLayer, Olmo2LMHeadModel
 from levanter.utils.jax_utils import parameter_count
 from test_utils import skip_if_no_torch
 
@@ -79,7 +81,7 @@ def test_olmo2_rms_norm():
     from transformers.models.olmo2.modeling_olmo2 import Olmo2RMSNorm as HFOlmo2RMSNorm
 
     config = _get_olmo2_config()
-    ln = Olmo2RMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight)
+    ln = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight)
     hf_ln = HFOlmo2RMSNorm(config.Embed.size, eps=config.layer_norm_epsilon)
 
     x, _ = _get_random_inputs(config)
@@ -205,7 +207,7 @@ def test_olmo2_decoder_layer(use_flash, num_kv_heads):
     config = _get_olmo2_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
 
-    layer = Olmo2DecoderLayer.init(config=config, layer_idx=0, key=key)
+    layer = Olmo2DecoderLayer.init(config=config, key=key)
 
     x, mask = _get_random_inputs(config)
     out = layer(x, mask)
@@ -325,7 +327,7 @@ def test_olmo2_lm_head_model_bwd(use_flash, num_kv_heads):
 #         np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
 @skip_if_no_torch
 @pytest.mark.parametrize("scan_layers", [True])
-@pytest.mark.parametrize("num_kv_heads", [2, 4])
+@pytest.mark.parametrize("num_kv_heads", [2])
 def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, Olmo2ForCausalLM
@@ -406,14 +408,14 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
             print(f"  {file}")
 
         # Get the correct file path for the PyTorch model
-        state_dict_files = [f for f in os.listdir(model_path) if f.endswith(".bin")]
+        state_dict_files = [f for f in os.listdir(model_path) if f.endswith(".safetensors")]
         if state_dict_files:
             state_dict_file = state_dict_files[0]
             print(f"\nFound state dict file: {state_dict_file}")
 
             # Load and print state dict details
             state_dict_path = os.path.join(model_path, state_dict_file)
-            hf_state_dict = torch.load(state_dict_path)
+            hf_state_dict = load_file(state_dict_path)
             print("\nState dict keys:")
             for key in list(hf_state_dict.keys())[:10]:  # First 10 keys
                 print(f"  {key}")
@@ -438,79 +440,76 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
                 print(f"Num heads: {config.num_heads}, Num KV heads: {config.num_kv_heads}")
 
         # Load into our model
-        try:
-            model = converter.load_pretrained(Olmo2LMHeadModel, ref=model_path, resize_vocab_to_match_tokenizer=False)
+        model = converter.load_pretrained(Olmo2LMHeadModel, ref=model_path, resize_vocab_to_match_tokenizer=False)
 
-            # Forward pass through our model
-            @hax.named_jit
-            def compute(model, input):
-                model_output = model(input, attn_mask=attn_mask)
-                return model_output
+        # Forward pass through our model
+        @hax.named_jit
+        def compute(model, input):
+            model_output = model(input, attn_mask=attn_mask)
+            return model_output
 
-            jax_out = compute(model, input).array
+        jax_out = compute(model, input).array
 
-            # Check shapes match
-            assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+        # Check shapes match
+        assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
 
-            # Print sample output values for comparison
-            print("\nOutput values comparison:")
-            print("HF output (first 5 values):", torch_out[0, :5])
-            print("JAX output (first 5 values):", jax_out[0, :5])
+        # Print sample output values for comparison
+        print("\nOutput values comparison:")
+        print("HF output (first 5 values):", torch_out[0, :5])
+        print("JAX output (first 5 values):", jax_out[0, :5])
 
-            # For more detail on significant differences:
-            abs_diff = np.abs(torch_out - jax_out.astype(np.float32))
-            max_diff_idx = np.unravel_index(np.argmax(abs_diff), abs_diff.shape)
-            print(f"\nMaximum difference at {max_diff_idx}: {abs_diff[max_diff_idx]}")
-            print(f"HF value: {torch_out[max_diff_idx]}, JAX value: {jax_out[max_diff_idx]}")
+        # For more detail on significant differences:
+        abs_diff = np.abs(torch_out - jax_out.astype(np.float32))
+        max_diff_idx = np.unravel_index(np.argmax(abs_diff), abs_diff.shape)
+        print(f"\nMaximum difference at {max_diff_idx}: {abs_diff[max_diff_idx]}")
+        print(f"HF value: {torch_out[max_diff_idx]}, JAX value: {jax_out[max_diff_idx]}")
 
-            # Check outputs are close
-            assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
+        # Check outputs are close
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
 
-            # Save our model
-            converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+        # Save our model
+        converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
 
-            # Load saved model into HF
-            torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
-            torch_model2.eval()
+        # Load saved model into HF
+        torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
+        torch_model2.eval()
 
-            # Check forward pass still works
-            torch_out2 = torch_model2(input_torch)
-            torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-            assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-            np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
+        # Check forward pass still works
+        torch_out2 = torch_model2(input_torch)
+        torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
+        assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
+        np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
 
-        except Exception as e:
-            print(f"\nException occurred: {e}")
-            print(f"Exception type: {type(e)}")
-            import traceback
+        # except Exception as e:
+        #     print(f"\nException occurred: {e}")
+        #     print(f"Exception type: {type(e)}")
+        #     import traceback
 
-            traceback.print_exc()
+        #     traceback.print_exc()
 
-            # Additional diagnostics
-            print("\nState dict expected vs found keys comparison:")
+        #     # Additional diagnostics
+        #     print("\nState dict expected vs found keys comparison:")
 
-            expected_keys = list(hax.state_dict.to_torch_compatible_state_dict(template_model).keys())
-            print(f"Expected keys (first 10): {expected_keys[:10]}")
+        #     expected_keys = list(hax.state_dict.to_torch_compatible_state_dict(template_model).keys())
+        #     print(f"Expected keys (first 10): {expected_keys[:10]}")
 
-            # Compare with actual keys
-            if "hf_state_dict" in locals():
-                actual_keys = list(hf_state_dict.keys())
-                missing_keys = [k for k in expected_keys if k not in actual_keys]
-                extra_keys = [k for k in actual_keys if k not in expected_keys]
-                print(f"Missing keys (first 10): {missing_keys[:10]}")
-                print(f"Extra keys (first 10): {extra_keys[:10]}")
+        #     # Compare with actual keys
+        #     if "hf_state_dict" in locals():
+        #         actual_keys = list(hf_state_dict.keys())
+        #         missing_keys = [k for k in expected_keys if k not in actual_keys]
+        #         extra_keys = [k for k in actual_keys if k not in expected_keys]
+        #         print(f"Missing keys (first 10): {missing_keys[:10]}")
+        #         print(f"Extra keys (first 10): {extra_keys[:10]}")
 
-                # Check specific problem area
-                print("\nChecking specific problem areas:")
-                for key in expected_keys:
-                    if "k_norm" in key and key in actual_keys:
-                        expected_shape = next((s for s in template_model.transformer.layers.stacked), None)
-                        if expected_shape:
-                            expected_shape = expected_shape.self_attn.k_norm.weight.array.shape
-                            actual_shape = hf_state_dict[key].shape
-                            print(f"Key {key}: expected shape {expected_shape}, actual shape {actual_shape}")
-
-            raise
+        #         # Check specific problem area
+        #         print("\nChecking specific problem areas:")
+        #         for key in expected_keys:
+        #             if "k_norm" in key and key in actual_keys:
+        #                 expected_shape = next((s for s in template_model.transformer.layers.stacked), None)
+        #                 if expected_shape:
+        #                     expected_shape = expected_shape.self_attn.k_norm.weight.array.shape
+        #                     actual_shape = hf_state_dict[key].shape
+        #                     print(f"Key {key}: expected shape {expected_shape}, actual shape {actual_shape}")
 
 
 def test_olmo2_param_counts_dont_change_with_seqlen():

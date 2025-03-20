@@ -11,7 +11,6 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
-from haliax.nn.normalization import RmsNorm as Olmo2RMSNorm
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
@@ -160,8 +159,8 @@ class Olmo2Config(HFCompatConfig):
     def model_type(self) -> Type["Olmo2LMHeadModel"]:
         return Olmo2LMHeadModel
 
-    def mk_LayerNorm(self, axis: AxisSpec) -> "Olmo2RMSNorm":
-        return Olmo2RMSNorm.init(
+    def mk_LayerNorm(self, axis: AxisSpec) -> hnn.RmsNorm:
+        return hnn.RmsNorm.init(
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
         )
 
@@ -217,8 +216,8 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
     k_proj: hnn.Linear  # projection from Embed to key
     v_proj: hnn.Linear  # projection from Embed to value
     o_proj: hnn.Linear  # projection from Heads to output
-    q_norm: Olmo2RMSNorm  # normalization for query
-    k_norm: Olmo2RMSNorm  # normalization for key
+    q_norm: hnn.RmsNorm  # normalization for query
+    k_norm: hnn.RmsNorm  # normalization for key
 
     @staticmethod
     def init(config: Olmo2Config, *, key) -> "Olmo2Attention":
@@ -249,7 +248,6 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         # OLMo2 project for q and k and then normalizes
         q_proj = self.q_proj(x, key=key_q)
         q = self.q_norm(q_proj)
-        # q = self.q_proj(norm_x, key=key_q)
 
         # Project to key
         k_proj = self.k_proj(x, key=key_k)
@@ -302,12 +300,12 @@ class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
     config: Olmo2Config = eqx.field(static=True)
     self_attn: Olmo2Attention
     mlp: Olmo2MLP
-    post_attention_layernorm: Olmo2RMSNorm
-    post_feedforward_layernorm: Olmo2RMSNorm
+    post_attention_layernorm: hnn.RmsNorm
+    post_feedforward_layernorm: hnn.RmsNorm
 
     @staticmethod
-    def init(config: Olmo2Config, layer_idx: int, *, key) -> "Olmo2DecoderLayer":
-        k_attn, k_mlp, k_attn_ln, k_ff_ln = jrandom.split(key, 4)
+    def init(config: Olmo2Config, *, key) -> "Olmo2DecoderLayer":
+        k_attn, k_mlp = jrandom.split(key, 2)
 
         attn = Olmo2Attention.init(config, key=k_attn)
         mlp = Olmo2MLP.init(
@@ -343,7 +341,7 @@ class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
 class Olmo2Transformer(ModuleWithStateDictSerialization, eqx.Module):
     config: Olmo2Config = eqx.field(static=True)
     layers: Stacked[Olmo2DecoderLayer]
-    norm: Olmo2RMSNorm
+    norm: hnn.RmsNorm
 
     @staticmethod
     def init(config: Olmo2Config, *, key) -> "Olmo2Transformer":
@@ -355,7 +353,6 @@ class Olmo2Transformer(ModuleWithStateDictSerialization, eqx.Module):
 
         layers = S.init(config.Layers, Olmo2DecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
-            jnp.arange(config.num_layers),
             key=shaped_rng_split(key, config.num_layers),
         )
         ln_f = config.mk_LayerNorm(config.Embed)
