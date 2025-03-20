@@ -9,9 +9,10 @@ import transformers
 from jax import random
 
 import haliax as hax
+import haliax.nn as hnn
 
 from levanter.models.attention import AttentionMask
-from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
+from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
 from levanter.models.rotary import _rotate_half as levanter_rotate_half
 from levanter.utils.jax_utils import parameter_count
@@ -185,7 +186,7 @@ def test_llama_rms_norm():
     from transformers.models.llama.modeling_llama import LlamaRMSNorm as HFLlamaRMSNorm
 
     config = _get_llama_config()
-    ln = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+    ln = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
     hf_ln = HFLlamaRMSNorm(config.Embed.size, eps=config.layer_norm_epsilon)
 
     x, _ = _get_random_inputs(config)

@@ -15,7 +15,7 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.attention import AttentionMask, dot_product_attention
-from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaRMSNorm, LlamaTransformer
+from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import RotaryEmbeddingsConfig
 from levanter.utils.flop_utils import lm_flops_per_token
@@ -204,8 +204,8 @@ class QwenDecoderLayer(eqx.Module):
     config: QwenConfig = eqx.field(static=True)
     self_attn: QwenAttention
     mlp: LlamaMlp  # Can reuse Llama MLP as structure is similar
-    input_layernorm: LlamaRMSNorm
-    post_attention_layernorm: LlamaRMSNorm
+    input_layernorm: hnn.RmsNorm
+    post_attention_layernorm: hnn.RmsNorm
 
     @staticmethod
     def init(config: QwenConfig, *, key) -> "QwenDecoderLayer":
@@ -244,7 +244,7 @@ class QwenDecoderLayer(eqx.Module):
 class QwenTransformer(LlamaTransformer):
     config: QwenConfig = eqx.field(static=True)
     layers: BlockFoldable[QwenDecoderLayer]
-    norm: LlamaRMSNorm
+    norm: hnn.RmsNorm
 
     @staticmethod
     def init(config: QwenConfig, *, key) -> "QwenTransformer":
