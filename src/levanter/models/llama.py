@@ -11,7 +11,7 @@ import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
-from haliax.nn.scan import Stacked
+from haliax.nn.scan import Stacked, StackedCheckpointPolicy
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
@@ -64,7 +64,7 @@ class LlamaConfig(HFCompatConfig):
     attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool | StackedCheckpointPolicy = True
     gradient_checkpointing_block_size: int = 5
     scan_layers: bool = True
 
