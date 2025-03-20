@@ -458,12 +458,15 @@ class DataLoaderIterator(Iterator[Ex]):
         task = asyncio.create_task(self.dl.data_store.get_batch(indices))
 
         async def watchdog():
+            total = 0.0
 
             while not task.done():
                 await asyncio.sleep(threshold)
+                total += threshold
                 if not task.done():
-                    logging.warning(f"Fetching data is taking longer than {threshold} seconds...")
-                    logging.warning(f"Indices: {indices}")
+                    logging.warning(
+                        f"Data loading is taking a long time: {total:.1f} seconds.Looking for {len(indices)} items."
+                    )
 
         watchdog_task = asyncio.create_task(watchdog())
 
