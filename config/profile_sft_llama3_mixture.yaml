@@ -75,7 +75,7 @@ trainer:
     tags: ["dolma", "olmo", "llama", "mixture", "profiling"]
   wandb:
     project: "marin"
-    name: "tootsie_8b_totalmix_sft_5e-6_shfp_packing_benchmark?" 
+    name: "tootsie_8b_totalmix_sft_5e-6_shfp_packing_benchmark?"
   profiler: False
   profiler_perfetto_link: False
   profiler_num_steps: 10

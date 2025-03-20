@@ -38,11 +38,11 @@ supervised_data:
 # only train on tulu 3
 mixture_weights:
   tulu: 1
-  openthoughts: 0 
+  openthoughts: 0
   prime_verified_math: 0
   acecode: 0
-  smoltalk: 0 
-  natural_reasoning: 0 
+  smoltalk: 0
+  natural_reasoning: 0
   stratos: 0
   dolphinr1: 0
 
