@@ -7,6 +7,7 @@ import jax
 import haliax as hax
 import haliax.nn as hnn
 
+
 _A = typing.TypeVar("_A", hax.Scalar, hax.NamedArray, jax.Array)
 ActivationFunction = typing.Callable[[_A], _A]
 

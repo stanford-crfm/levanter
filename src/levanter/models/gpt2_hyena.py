@@ -20,7 +20,6 @@ from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Embeddings, Gpt2Mlp
 from levanter.models.hyena import HyenaConfig, HyenaOperator
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.utils.activation import ActivationFunctionEnum
 
 
 @LmConfig.register_subclass("gpt2_hyena")
