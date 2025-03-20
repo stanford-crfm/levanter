@@ -18,7 +18,7 @@ def test_causality():
         hidden_dim=512,
         order=2,
         filter_order=64,
-        activation=ActivationFunctionEnum.GELU_NEW,
+        activation=ActivationFunctionEnum.gelu_new,
     )
 
     # Initialize the model with a fixed key for reproducibility

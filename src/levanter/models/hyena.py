@@ -44,7 +44,7 @@ class HyenaConfig:
     filter_order: int = 16  # width of the FFN parametrizing the implicit filter
     short_filter_order: int = 3  # length of the explicit input convolutional filter
     outer_mixing: bool = False  # whether to use outer mixing
-    activation: ActivationFunctionEnum = ActivationFunctionEnum.GELU_NEW
+    activation: ActivationFunctionEnum = ActivationFunctionEnum.gelu_new
     num_blocks: int = 1  # number of blocks to split the sequence into
     num_hidden_layers_filter_mlp: int = 2  # number of inner linear layers inside filter MLP
 

@@ -40,7 +40,7 @@ class Gpt2HyenaConfig(LmConfig):
     resid_pdrop: float = 0.0
     hyena_pdrop: float = 0.0
     layer_norm_epsilon: float = 1e-5
-    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.GELU_NEW
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.gelu_new
 
     gradient_checkpointing: bool = True  # better to just always use this
     gradient_checkpointing_block_size: int = 5
