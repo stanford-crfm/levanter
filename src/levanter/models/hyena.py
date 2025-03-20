@@ -102,7 +102,7 @@ class PositionalEmbedding(eqx.Module):
         if Embed.size <= 1:
             raise ValueError("emb_dim must be greater than 1")
 
-        # The time embedding fed to the filteres is normalized so that t_f = 1
+        # The time embedding fed to the filters is normalized so that t_f = 1
         t = hax.linspace(PosPerBlock, start=0, stop=1)
 
         # Calculate number of frequency bands
