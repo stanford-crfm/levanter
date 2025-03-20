@@ -4,3 +4,4 @@ soundfile
 librosa
 pytest-forked
 pytest-asyncio
+tensorboard
