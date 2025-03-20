@@ -7,10 +7,9 @@ https://github.com/HazyResearch/safari/blob/541902aca88cb11af4d816ac762f3303e4ff
 Current diffences from the official impl:
 - We don't support inner_factor.
 - We don't support post_order_ffn.
-- We don't support num_heads (the PyTorch impl's support for multiple heads seems incomplete, or at least
-  I don't understand it).
 - We more efficiently support multiple blocks. I believe the PyTorch version is inefficient: It uses
-  the full sequence length in the PositionalEmbedding.
+  the full sequence length in the PositionalEmbedding, where it should only be operating over a
+  single block.
 """
 
 from dataclasses import dataclass
@@ -38,8 +37,8 @@ from levanter.utils.activation import ActivationFunction, ActivationFunctionEnum
 class HyenaConfig:
     seq_len: int = 1024  # l_max from PyTorch impl
     hidden_dim: int = 768  # d_model from PyTorch impl
+    num_heads: int = 1
 
-    # hyena specific parameters
     order: int = 2  # depth of the Hyena recurrence
     filter_order: int = 16  # width of the FFN parametrizing the implicit filter
     short_filter_order: int = 3  # length of the explicit input convolutional filter
@@ -71,11 +70,20 @@ class HyenaConfig:
     PosPerBlock = property(lambda self: Axis(name="pos_per_block", size=self.seq_len // self.num_blocks))
     FilterOrder = property(lambda self: Axis(name="hyena_filter_order", size=self.filter_order))
     FilterEmbed = property(lambda self: Axis(name="hyena_filter_embed", size=self.filter_emb_dim))
-    EmbedOrderMinus1 = property(lambda self: Axis(name="embed_order_minus_1", size=self.hidden_dim * (self.order - 1)))
+    HeadSizeOrderMinus1 = property(
+        lambda self: Axis(name="head_size_order_minus_1", size=(self.hidden_dim // self.num_heads) * (self.order - 1))
+    )
     EmbedOrderPlus1 = property(lambda self: Axis(name="embed_order_plus_1", size=self.hidden_dim * (self.order + 1)))
     OrderMinus1 = property(lambda self: Axis(name="order_minus_1", size=self.order - 1))
+    Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
+    HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+    HeadSizeOrderPlus1 = property(
+        lambda self: Axis(name="head_size_order_plus_1", size=(self.hidden_dim * (self.order + 1)) // self.num_heads)
+    )
 
     def __post_init__(self):
+        if self.hidden_dim % self.num_heads:
+            raise ValueError(f"hidden_dim {self.hidden_dim} must be divisible by num_heads {self.num_heads}")
         if self.seq_len % self.num_blocks:
             raise ValueError(f"seq_len {self.seq_len} must be divisible by num_blocks {self.num_blocks}")
 
@@ -152,7 +160,7 @@ class ExponentialModulation(eqx.Module):
 
     @staticmethod
     def init(
-        EmbedOrderMinus1: Axis,
+        HeadSizeOrderMinus1: Axis,
         PosPerBlock: Axis,
         fast_decay_pct: float,
         slow_decay_pct: float,
@@ -165,7 +173,8 @@ class ExponentialModulation(eqx.Module):
         """Initialize exponential modulation for Hyena filter.
 
         Args:
-            Embed: Embedding dimension axis
+            HeadSizeOrderMinus1: Embedding dimension axis
+            PosPerBlock: Position axis
             fast_decay_pct: Fast decay percentage
             slow_decay_pct: Slow decay percentage
             target: Target value for decay
@@ -176,8 +185,8 @@ class ExponentialModulation(eqx.Module):
         max_decay = jnp.log(target) / fast_decay_pct
         min_decay = jnp.log(target) / slow_decay_pct
 
-        decays = jnp.linspace(min_decay, max_decay, EmbedOrderMinus1.size)
-        deltas = hax.named(decays, (EmbedOrderMinus1,))
+        decays = jnp.linspace(min_decay, max_decay, HeadSizeOrderMinus1.size)
+        deltas = hax.named(decays, (HeadSizeOrderMinus1,))
 
         return ExponentialModulation(hax.abs(deltas), modulate, shift, PosPerBlock)
 
@@ -346,7 +355,7 @@ class HyenaFilter(eqx.Module):
         implicit_filter = MLPTrainableActivation.init(
             Input=config.FilterEmbed,
             width=config.FilterOrder,
-            Output=config.EmbedOrderMinus1,
+            Output=config.HeadSizeOrderMinus1,
             depth=config.num_hidden_layers_filter_mlp,
             activation=Sin.init(config.FilterOrder, w=1),
             use_bias=config.use_bias,
@@ -354,7 +363,7 @@ class HyenaFilter(eqx.Module):
         )
 
         modulation = ExponentialModulation.init(
-            config.EmbedOrderMinus1,
+            config.HeadSizeOrderMinus1,
             config.PosPerBlock,
             config.fast_decay_pct,
             config.slow_decay_pct,
@@ -364,7 +373,7 @@ class HyenaFilter(eqx.Module):
             key=keys[2],
         )
 
-        bias = hax.random.normal(keys[3], (config.Embed,))
+        bias = hax.random.normal(keys[3], (config.HeadSize,))
 
         dropout = hnn.Dropout(pdrop=config.filter_dropout)
 
@@ -400,7 +409,7 @@ class HyenaFilter(eqx.Module):
 
         Args:
             x: Input tensor with shape (batch, seq_len, channels)
-            k: Optional filter to use
+            k: Filter to use
             bias: Optional bias to use (if None, uses self.bias)
             key: Optional PRNG key for dropout
 
@@ -506,16 +515,16 @@ class HyenaOperator(eqx.Module):
 
         # Now we need to reshape to match the PyTorch implementation's:
         # 'b (ho v) (z l) -> b ho v z l'
-        # we don't have ho (hard-coding num_heads to 1)
         uc = hax.unflatten_axis(uc, Pos, (Block, PosPerBlock))
+        uc = hax.unflatten_axis(uc, EmbedOrderPlus1, (self.config.Heads, self.config.HeadSizeOrderPlus1))
 
-        components = hax.split(uc, EmbedOrderPlus1, [Embed] * (self.config.order + 1))
+        components = hax.split(uc, self.config.HeadSizeOrderPlus1, [self.config.HeadSize] * (self.config.order + 1))
         v = components[-1]
         x = components[:-1]
         assert len(x) == self.config.order
         filters = self.filter_fn.generate_filters(l_filter, key=key_dropout)
         filters = hax.unflatten_axis(
-            filters, self.config.EmbedOrderMinus1, (self.config.OrderMinus1, self.config.Embed)
+            filters, self.config.HeadSizeOrderMinus1, (self.config.OrderMinus1, self.config.HeadSize)
         )
         filters_list = filters.unbind(self.config.OrderMinus1)
 
@@ -537,6 +546,7 @@ class HyenaOperator(eqx.Module):
 
         v = v * x[0]
         v = hax.flatten_axes(v, (Block, PosPerBlock), Pos)
+        v = hax.flatten_axes(v, (self.config.Heads, self.config.HeadSize), Embed)
         y = self.activation(v)
         y = self.out_proj(y, key=key_dropout).rename({"output_embed": Embed})
         return y

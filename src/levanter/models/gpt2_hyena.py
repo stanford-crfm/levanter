@@ -27,7 +27,6 @@ from levanter.utils.activation import ActivationFunctionEnum
 @dataclass(frozen=True)
 class Gpt2HyenaConfig(LmConfig):
     num_layers: int = 12
-    num_heads: int = 12
 
     # how much to scale the embedding dim for the mlp layer
     mlp_scale: int = 4
@@ -50,10 +49,8 @@ class Gpt2HyenaConfig(LmConfig):
     Pos = property(lambda self: self.hyena.Pos)
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     Embed = property(lambda self: self.hyena.Embed)
-    Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.Embed.size * self.mlp_scale))
-    HeadSize = property(lambda self: Axis(name="head_size", size=self.Embed.size // self.num_heads))
 
     @property
     def model_type(cls) -> Type["Gpt2HyenaModel"]:
