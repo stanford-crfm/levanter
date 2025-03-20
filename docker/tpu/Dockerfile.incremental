@@ -1,28 +1,19 @@
 ARG IMAGE=ghcr.io/stanford-crfm/levanter-base
 ARG TAG=latest
-ARG USE_LOCAL_HALIAX=0
 
 FROM ${IMAGE}:${TAG}
 
 # This usually is a config directory so users can have their own config directory outside the repo.
 ARG EXTRA_CTX=/config
-ARG USE_LOCAL_HALIAX
 
 ENV TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60\
     TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=1024\
     RAY_USAGE_STATS_ENABLED=0\
     PATH=/opt/levanter/.venv/bin:$PATH\
-    PYTHONPATH=/opt/levanter:/opt/levanter/src:/opt/levanter/examples:/opt/levanter/tests:/opt/haliax\
+    PYTHONPATH=/opt/levanter:/opt/levanter/src:/opt/levanter/examples:/opt/levanter/tests\
     HOME=/home/levanter
 
 WORKDIR /opt/levanter
-
-# Copy and install haliax conditionally from local checkout
-COPY --from=haliax-src . /opt/haliax
-RUN if [ "$USE_LOCAL_HALIAX" = "1" ]; then \
-      echo "Installing local haliax..." && \
-      pip install -e /opt/haliax; \
-    fi
 
 ADD pyproject.toml README.md /opt/levanter/
 RUN mkdir -p /opt/levanter/src/levanter
