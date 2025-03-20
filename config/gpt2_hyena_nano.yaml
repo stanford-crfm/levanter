@@ -3,9 +3,10 @@ data:
 
 model:
   type: gpt2_hyena
-  hidden_dim: 32     # Default: 768
+  hyena:
+    hidden_dim: 32     # Default: 768
+    filter_order: 16   # Default: 64
   num_layers: 2      # Default: 12
-  hyena_filter_order: 16   # Default: 64
 
 trainer:
   num_train_steps: 100
