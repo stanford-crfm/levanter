@@ -1,6 +1,7 @@
 import os
 import tempfile
 
+import chex
 import equinox as eqx
 import numpy as np
 import pytest
@@ -108,6 +109,78 @@ def test_olmo2_mlp(num_kv_heads):
     # Check output has correct shape
     assert out.array.shape == x.array.shape
     assert out.axes == x.axes
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("use_flash", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_olmo2_attention_vs_hf(use_flash, num_kv_heads):
+    import torch
+    from transformers.models.olmo2.modeling_olmo2 import Olmo2Attention as HFOlmo2Attention
+    from transformers.models.olmo2.modeling_olmo2 import Olmo2RotaryEmbedding as HFOlmo2RotaryEmbedding
+
+    config = _get_olmo2_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+
+    attention = Olmo2Attention.init(config=config, key=random.PRNGKey(0))  # type: ignore
+
+    state = hax.state_dict.to_torch_compatible_state_dict(attention)
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_config = config.to_hf_config(32000)
+
+    hf_rotary_emb = HFOlmo2RotaryEmbedding(config=hf_config)
+    hf_attention = HFOlmo2Attention(hf_config, layer_idx=0)
+    hf_attention.load_state_dict(state, strict=True)
+
+    x, mask = _get_random_inputs(config)
+    x_torch = torch.from_numpy(np.array(x.array))
+    batch_size = x_torch.shape[0]
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
+    mask_torch = (mask_torch == 0).float() * -1e9
+
+    out = attention(x, mask)
+    position_ids = torch.arange(config.Pos.size).unsqueeze(0)  # [1, seq_len]
+    cos, sin = hf_rotary_emb(x_torch, position_ids)  # Pass x_torch instead of zeros tensor
+    hf_out = hf_attention(
+        x_torch, position_ids=position_ids, attention_mask=mask_torch, position_embeddings=(cos, sin)
+    )
+
+    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
+def test_olmo2_decoder_layer_vs_hf(num_kv_heads):
+    import torch
+    from transformers.models.olmo2.modeling_olmo2 import Olmo2DecoderLayer as HFOlmo2DecoderLayer
+    from transformers.models.olmo2.modeling_olmo2 import Olmo2RotaryEmbedding as HFOlmo2RotaryEmbedding
+
+    olmo2_config = _get_olmo2_config(num_kv_heads=num_kv_heads)
+    key = random.PRNGKey(0)
+    olmo2_decoder_layer = Olmo2DecoderLayer.init(config=olmo2_config, key=key, layer_idx=0)
+
+    state = hax.state_dict.to_torch_compatible_state_dict(olmo2_decoder_layer)
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_config = olmo2_config.to_hf_config(32000)
+    hf_decoder_layer = HFOlmo2DecoderLayer(hf_config, layer_idx=0)
+    hf_decoder_layer.load_state_dict(state, strict=True)
+
+    x, mask = _get_random_inputs(olmo2_config)
+    x_torch = torch.from_numpy(np.array(x.array))
+    batch_size = x_torch.shape[0]
+    explicit_mask = torch.from_numpy(np.array(mask.materialize(olmo2_config.Pos, olmo2_config.KeyPos).array))
+    mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
+    mask_torch = (mask_torch == 0).float() * -1e10
+
+    position_ids = torch.arange(olmo2_config.Pos.size).unsqueeze(0)
+    hf_rotary_emb = HFOlmo2RotaryEmbedding(config=hf_config)
+    cos, sin = hf_rotary_emb(x_torch, position_ids)
+
+    out = olmo2_decoder_layer(x, mask)
+    hf_out = hf_decoder_layer(
+        x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
+    )
+
+    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("use_flash", [True, False])
@@ -269,7 +342,8 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
         gradient_checkpointing=False,
         scan_layers=scan_layers,
     )
-    Vocab = hax.Axis("vocab", 1000)
+    # olmo2 gets mad if vocab size < 100278
+    Vocab = hax.Axis("vocab", 150000)
     hf_config = config.to_hf_config(Vocab.size)
 
     # Make input and attn_mask

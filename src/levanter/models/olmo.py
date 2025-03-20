@@ -12,8 +12,6 @@ import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.normalization import RmsNorm as Olmo2RMSNorm
-
-# from levanter.models.llama import LlamaRMSNorm as Olmo2RMSNorm
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
@@ -154,6 +152,7 @@ class Olmo2Config(HFCompatConfig):
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
             vocab_size=vocab_size,
+            pad_token_id=None,
             **config_overrides,
         )
 
@@ -161,7 +160,7 @@ class Olmo2Config(HFCompatConfig):
     def model_type(self) -> Type["Olmo2LMHeadModel"]:
         return Olmo2LMHeadModel
 
-    def mk_LayerNorm(self, axis: Axis) -> "Olmo2RMSNorm":
+    def mk_LayerNorm(self, axis: AxisSpec) -> "Olmo2RMSNorm":
         return Olmo2RMSNorm.init(
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
         )
@@ -177,49 +176,6 @@ class Olmo2Config(HFCompatConfig):
             vocab_size=vocab_size,
             glu=True,
         )
-
-
-# class Olmo2RMSNorm(eqx.Module):
-#     """
-#     RMS normalization layer for Olmo2 (Same as Llama2)
-#     """
-
-#     axis: AxisSpec = eqx.field(static=True)
-#     weight: Optional[NamedArray]
-#     bias: Optional[NamedArray]
-
-#     eps: float = eqx.field(static=True, default=1e-6)
-#     dtype: Optional[jnp.dtype] = eqx.field(static=True, default=jnp.float32)
-
-#     @staticmethod
-#     def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False, dtype=jnp.float32):
-#         if use_weight:
-#             weight = hax.ones(axis)
-#         else:
-#             weight = None
-#         if use_bias:
-#             bias = hax.zeros(axis)
-#         else:
-#             bias = None
-
-#         return Olmo2RMSNorm(axis, weight, bias, eps, dtype)
-
-#     def __call__(self, x: NamedArray) -> NamedArray:
-#         in_dtype = x.dtype
-#         x = x.astype(self.dtype)
-
-#         var = hax.mean(hax.square(x), axis=self.axis)
-#         inv = hax.rsqrt(var + self.eps)
-#         out = x * inv
-#         out = out.astype(in_dtype)
-
-#         if self.weight is not None:
-#             out = self.weight * out
-#         if self.bias is not None:
-#             out = out + self.bias
-
-#         # second cast in case params are in float32
-#         return out.astype(in_dtype)
 
 
 class Olmo2MLP(eqx.Module):
@@ -281,40 +237,10 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         o_proj = hnn.Linear.init(In=(config.Heads, HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True)
 
         # For q_norm, normalization is over the entire hidden dimension
-        q_norm = Olmo2RMSNorm.init(
-            (config.KVHeads, QHeadsPerGroup, HeadSize),
-            eps=config.layer_norm_epsilon,
-            use_weight=config.use_layer_norm_weight,
-        )
-
-        k_norm = Olmo2RMSNorm.init(
-            (config.KVHeads, HeadSize), eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
-        )
-        # For k_norm, we need to be careful with the axis
-        # if config.num_kv_heads == config.num_heads:
-        #     # If num_kv_heads equals num_heads, use the same axis as q_norm
-        #     k_norm = Olmo2RMSNorm.init(
-        #         config.Embed, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
-        #     )
-        # else:
-        #     # If using grouped query attention, the k_norm needs a smaller size
-        #     k_norm_axis = Axis("embed", config.num_kv_heads * HeadSize.size)
-        #     k_norm = Olmo2RMSNorm.init(
-        #         k_norm_axis, eps=config.layer_norm_epsilon, use_weight=config.use_layer_norm_weight
-        #     )
+        q_norm = config.mk_LayerNorm((config.KVHeads, QHeadsPerGroup, HeadSize))
+        k_norm = config.mk_LayerNorm((config.KVHeads, HeadSize))
 
         return Olmo2Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
-
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        """Map model parameter names to HF parameter names"""
-        return {
-            "q_proj": "self_attn.q_proj",
-            "k_proj": "self_attn.k_proj",
-            "v_proj": "self_attn.v_proj",
-            "o_proj": "self_attn.o_proj",
-            "q_norm": "self_attn.q_norm",
-            "k_norm": "self_attn.k_norm",
-        }
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
@@ -324,17 +250,6 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         q_proj = self.q_proj(x, key=key_q)
         q = self.q_norm(q_proj)
         # q = self.q_proj(norm_x, key=key_q)
-
-        # When using GQA, we need to handle the k_norm differently
-        # if self.config.num_kv_heads < self.config.num_heads:
-        #     # For GQA, k_norm operates on a smaller dimension
-        #     k_embed_size = self.config.num_kv_heads * self.config.HeadSize.size
-        #     reshaped_x = x.array[:, :k_embed_size]
-        #     reshaped_x = hax.named(reshaped_x, (x.axes[0], Axis("embed", k_embed_size)))
-        #     norm_x = self.k_norm(reshaped_x)
-        # else:
-        #     # Regular operation when num_kv_heads == num_heads
-        #     norm_x = self.k_norm(x)
 
         # Project to key
         k_proj = self.k_proj(x, key=key_k)
@@ -408,21 +323,9 @@ class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
 
         return Olmo2DecoderLayer(config, attn, mlp, post_attention_ln, post_feedforward_ln)
 
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        """Map model parameter names to HF parameter names"""
-        return {
-            "self_attn": None,  # Handled by Olmo2Attention._state_dict_key_map
-            "mlp": "mlp",
-            "post_attention_layernorm": "post_attention_layernorm",
-            "post_feedforward_layernorm": "post_feedforward_layernorm",
-        }
-
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
-
-        # Keep original input for MLP
-        original_x = x
 
         # Self attention with norm before residual
         attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
@@ -430,7 +333,7 @@ class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
         h = x + attn_output
 
         # MLP with norm before residual
-        mlp_output = self.mlp(original_x, key=k_mlp)
+        mlp_output = self.mlp(h, key=k_mlp)
         mlp_output = self.post_feedforward_layernorm(mlp_output)
         x = h + mlp_output
 
