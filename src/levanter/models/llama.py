@@ -9,7 +9,7 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import Axis, AxisSpec, NamedArray
+from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
@@ -154,8 +154,8 @@ class LlamaConfig(HFCompatConfig):
     def model_type(self) -> Type["LlamaLMHeadModel"]:
         return LlamaLMHeadModel
 
-    def mk_LayerNorm(self, axis: Axis) -> "LlamaRMSNorm":
-        return LlamaRMSNorm.init(
+    def mk_LayerNorm(self, axis: Axis) -> hnn.RmsNorm:
+        return hnn.RmsNorm.init(
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
         )
 
@@ -271,90 +271,12 @@ class LlamaAttention(eqx.Module):
         return attn_output
 
 
-class LlamaRMSNorm(ModuleWithStateDictSerialization):
-    """
-    Similar to LayerNorm, but uses the RMS of the input along the specified axis (or axes) instead of variance.
-    """
-
-    axis: AxisSpec = eqx.field(static=True)
-    weight: Optional[NamedArray]
-    bias: Optional[NamedArray]
-
-    eps: float = eqx.field(static=True, default=1e-5)
-    dtype: Optional[jnp.dtype] = eqx.field(static=True, default=jnp.float32)
-
-    @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True, dtype=jnp.float32):
-        if use_weight:
-            weight = hax.ones(axis)
-        else:
-            weight = None
-        if use_bias:
-            bias = hax.zeros(axis)
-        else:
-            bias = None
-
-        return LlamaRMSNorm(axis, weight, bias, eps, dtype)
-
-    def __call__(self, x: NamedArray) -> NamedArray:
-        # This gives a different result than jnp.var(), which is
-        # defined as the average of the squared deviations from the mean
-        in_dtype = x.dtype
-        x = x.astype(self.dtype)
-        var = hax.mean(hax.square(x), axis=self.axis)
-        inv = hax.rsqrt(var + self.eps)
-        out = x * inv
-        out = out.astype(in_dtype)
-
-        if self.weight is not None:
-            out = self.weight * out
-        if self.bias is not None:
-            out = out + self.bias
-
-        # second cast in case params are in float32
-        return out.astype(in_dtype)
-
-    # def to_state_dict(self, prefix: Optional[str] = None) -> StateDict:
-    #     # need to flatten any named arrays in the state dict
-    #     state_dict = {}
-
-    #     if self.weight is not None:
-    #         flattened = self.weight.flatten("__OUT__")
-    #         name = with_prefix(prefix, "weight")
-    #         state_dict[name] = flattened.array
-    #         # state_dict[f"{prefix}.weight"] = flattened.array
-
-    #     if self.bias is not None:
-    #         flattened = self.bias.flatten("__OUT__")
-    #         name = with_prefix(prefix, "bias")
-    #         state_dict[name] = flattened.array
-
-    #     return state_dict
-
-    # def from_state_dict(self, state_dict: StateDict, prefix: Optional[str] = None):
-    #     if self.weight is not None:
-    #         name = with_prefix(prefix, "weight")
-    #         weight = hax.named(state_dict[name], "__OUT__")
-    #         weight = weight.unflatten_axis("__OUT__", self.axis)
-    #     else:
-    #         weight = None
-
-    #     if self.bias is not None:
-    #         name = with_prefix(prefix, "bias")
-    #         bias = hax.named(state_dict[name], "__OUT__")
-    #         bias = bias.unflatten_axis("__OUT__", self.axis)
-    #     else:
-    #         bias = None
-
-    #     return dataclasses.replace(self, weight=weight, bias=bias)
-
-
 class LlamaDecoderLayer(eqx.Module):
     config: LlamaConfig = eqx.field(static=True)
     self_attn: LlamaAttention
     mlp: LlamaMlp
-    input_layernorm: LlamaRMSNorm
-    post_attention_layernorm: LlamaRMSNorm
+    input_layernorm: hnn.RmsNorm
+    post_attention_layernorm: hnn.RmsNorm
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
@@ -393,7 +315,7 @@ class LlamaDecoderLayer(eqx.Module):
 class LlamaTransformer(eqx.Module):
     config: LlamaConfig = eqx.field(static=True)
     layers: BlockFoldable[LlamaDecoderLayer]
-    norm: LlamaRMSNorm
+    norm: hnn.RmsNorm
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaTransformer":
