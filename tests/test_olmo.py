@@ -158,7 +158,7 @@ def test_olmo2_decoder_layer_vs_hf(num_kv_heads):
 
     olmo2_config = _get_olmo2_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
-    olmo2_decoder_layer = Olmo2DecoderLayer.init(config=olmo2_config, key=key, layer_idx=0)
+    olmo2_decoder_layer = Olmo2DecoderLayer.init(config=olmo2_config, key=key)
 
     state = hax.state_dict.to_torch_compatible_state_dict(olmo2_decoder_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
@@ -252,82 +252,9 @@ def test_olmo2_lm_head_model_bwd(use_flash, num_kv_heads):
     # Check that we can compute gradients
     assert grads is not None
 
-
-# @skip_if_no_torch
-# @pytest.mark.parametrize("scan_layers", [True, False])
-# @pytest.mark.parametrize("num_kv_heads", [2, 4])
-# def test_olmo2_roundtrip(scan_layers, num_kv_heads):
-#     import torch
-#     from transformers import AutoModelForCausalLM, Olmo2ForCausalLM
-
-#     converter = Olmo2Config().hf_checkpoint_converter()
-
-#     config = Olmo2Config(
-#         seq_len=128,
-#         hidden_dim=16,
-#         intermediate_dim=32,
-#         num_heads=4,
-#         num_kv_heads=num_kv_heads,
-#         num_layers=4,
-#         gradient_checkpointing=False,
-#         scan_layers=scan_layers,
-#     )
-#     Vocab = hax.Axis("vocab", 1000)
-#     hf_config = config.to_hf_config(Vocab.size)
-
-#     # Make input and attn_mask
-#     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
-#     attn_mask = AttentionMask.causal()
-#     input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
-
-#     torch.random.manual_seed(0)
-
-#     # Create HF model with our config
-#     torch_model = Olmo2ForCausalLM(hf_config)
-#     torch_model.eval()
-
-#     # Forward pass through HF model
-#     torch_out = torch_model(input_torch)
-#     torch_out = torch_out.logits[0].detach().cpu().numpy()
-
-#     with tempfile.TemporaryDirectory() as tmpdir:
-#         # Save HF model
-#         torch_model.save_pretrained(f"{tmpdir}/torch_model")
-
-#         # Load into our model
-#         model = converter.load_pretrained(
-#             Olmo2LMHeadModel, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
-#         )
-
-#         # Forward pass through our model
-#         @hax.named_jit
-#         def compute(model, input):
-#             model_output = model(input, attn_mask=attn_mask)
-#             return model_output
-
-#         jax_out = compute(model, input).array
-
-#         # Check shapes match
-#         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-
-#         # Check outputs are close
-#         assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
-
-#         # Save our model
-#         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
-
-#         # Load saved model into HF
-#         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
-#         torch_model2.eval()
-
-#         # Check forward pass still works
-#         torch_out2 = torch_model2(input_torch)
-#         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-#         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-#         np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
 @skip_if_no_torch
-@pytest.mark.parametrize("scan_layers", [True])
-@pytest.mark.parametrize("num_kv_heads", [2])
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [2, 4])
 def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, Olmo2ForCausalLM
@@ -479,38 +406,6 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
         np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
-
-        # except Exception as e:
-        #     print(f"\nException occurred: {e}")
-        #     print(f"Exception type: {type(e)}")
-        #     import traceback
-
-        #     traceback.print_exc()
-
-        #     # Additional diagnostics
-        #     print("\nState dict expected vs found keys comparison:")
-
-        #     expected_keys = list(hax.state_dict.to_torch_compatible_state_dict(template_model).keys())
-        #     print(f"Expected keys (first 10): {expected_keys[:10]}")
-
-        #     # Compare with actual keys
-        #     if "hf_state_dict" in locals():
-        #         actual_keys = list(hf_state_dict.keys())
-        #         missing_keys = [k for k in expected_keys if k not in actual_keys]
-        #         extra_keys = [k for k in actual_keys if k not in expected_keys]
-        #         print(f"Missing keys (first 10): {missing_keys[:10]}")
-        #         print(f"Extra keys (first 10): {extra_keys[:10]}")
-
-        #         # Check specific problem area
-        #         print("\nChecking specific problem areas:")
-        #         for key in expected_keys:
-        #             if "k_norm" in key and key in actual_keys:
-        #                 expected_shape = next((s for s in template_model.transformer.layers.stacked), None)
-        #                 if expected_shape:
-        #                     expected_shape = expected_shape.self_attn.k_norm.weight.array.shape
-        #                     actual_shape = hf_state_dict[key].shape
-        #                     print(f"Key {key}: expected shape {expected_shape}, actual shape {actual_shape}")
-
 
 def test_olmo2_param_counts_dont_change_with_seqlen():
     model = Olmo2LMHeadModel.init(hax.Axis("v", 2048), _get_olmo2_config(seq_len=128), key=random.PRNGKey(0))
