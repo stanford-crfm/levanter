@@ -47,7 +47,7 @@ trainer:
     tags: ["dolma", "olmo", "mixture"]
   wandb:
     project: "marin"
-    name: "olmo2_sft"
+    name: "olmo2_sft_5e-6"
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128
@@ -60,10 +60,10 @@ trainer:
     base_path: "gs://marin-us-central2/checkpoints/olmo2_sft/seed_0/"
 
 optimizer:
-  learning_rate: 2e-5
+  learning_rate: 5e-6
   weight_decay: 0.0  # Keep at 0.0, OLMo 2 doesn't use weight decay on embeddings
   min_lr_ratio: 0.0
-  lr_schedule: "cosine"
+  lr_schedule: "linear"
   warmup: 0.03
 
 

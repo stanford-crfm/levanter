@@ -252,6 +252,7 @@ def test_olmo2_lm_head_model_bwd(use_flash, num_kv_heads):
     # Check that we can compute gradients
     assert grads is not None
 
+
 @skip_if_no_torch
 @pytest.mark.parametrize("scan_layers", [True, False])
 @pytest.mark.parametrize("num_kv_heads", [2, 4])
@@ -406,6 +407,7 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
         np.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
+
 
 def test_olmo2_param_counts_dont_change_with_seqlen():
     model = Olmo2LMHeadModel.init(hax.Axis("v", 2048), _get_olmo2_config(seq_len=128), key=random.PRNGKey(0))
