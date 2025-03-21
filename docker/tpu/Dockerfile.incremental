@@ -17,6 +17,7 @@ WORKDIR /opt/levanter
 
 ADD pyproject.toml README.md /opt/levanter/
 RUN mkdir -p /opt/levanter/src/levanter
+RUN pip install -e '.[test]'
 RUN pip install "haliax@git+https://github.com/stanford-crfm/haliax.git@main"
 RUN pip install "lm-eval@git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 RUN pip install "draccus@git+https://github.com/dlwh/draccus.git"
