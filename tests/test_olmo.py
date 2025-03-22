@@ -301,30 +301,6 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     # Create template model for comparison
     template_model = Olmo2LMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
 
-    print("\nLevanter Model Parameter Structure:")
-    # Print the structure of the first layer in our model
-    try:
-        for layer in template_model.transformer.layers.unstacked():
-            # Print attention shapes
-            print(f"  self_attn.q_proj.weight: {layer.self_attn.q_proj.weight.array.shape}")
-            print(f"  self_attn.k_proj.weight: {layer.self_attn.k_proj.weight.array.shape}")
-            print(f"  self_attn.v_proj.weight: {layer.self_attn.v_proj.weight.array.shape}")
-            print(f"  self_attn.o_proj.weight: {layer.self_attn.o_proj.weight.array.shape}")
-            print(
-                "  self_attn.q_norm.weight:"
-                f" {layer.self_attn.q_norm.weight.array.shape if layer.self_attn.q_norm.weight is not None else None}"
-            )
-            print(
-                "  self_attn.k_norm.weight:"
-                f" {layer.self_attn.k_norm.weight.array.shape if layer.self_attn.k_norm.weight is not None else None}"
-            )
-            # Print MLP shapes
-            print(f"  mlp.gate_proj.weight: {layer.mlp.gate_proj.weight.array.shape}")
-            print(f"  mlp.up_proj.weight: {layer.mlp.up_proj.weight.array.shape}")
-            print(f"  mlp.down_proj.weight: {layer.mlp.down_proj.weight.array.shape}")
-            break
-    except (AttributeError, IndexError) as e:
-        print(f"Error accessing model structure: {e}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save HF model
