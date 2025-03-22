@@ -308,41 +308,6 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
         torch_model.save_pretrained(model_path)
 
         # Check saved files
-        print("\nSaved files in model directory:")
-        for file in os.listdir(model_path):
-            print(f"  {file}")
-
-        # Get the correct file path for the PyTorch model
-        state_dict_files = [f for f in os.listdir(model_path) if f.endswith(".safetensors")]
-        if state_dict_files:
-            state_dict_file = state_dict_files[0]
-            print(f"\nFound state dict file: {state_dict_file}")
-
-            # Load and print state dict details
-            state_dict_path = os.path.join(model_path, state_dict_file)
-            hf_state_dict = load_file(state_dict_path)
-            print("\nState dict keys:")
-            for key in list(hf_state_dict.keys())[:10]:  # First 10 keys
-                print(f"  {key}")
-
-            print("\nDetailed HF Shapes for key components:")
-            for k, v in hf_state_dict.items():
-                if "layers.0" in k and any(comp in k for comp in ["self_attn", "mlp"]):
-                    print(f"{k}: {v.shape}")
-
-            # Print QKV dimension comparison
-            print("\nQKV Dimension Comparison:")
-            q_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.q_proj.weight" in k), None)
-            k_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.k_proj.weight" in k), None)
-            v_key = next((k for k in hf_state_dict.keys() if "layers.0.self_attn.v_proj.weight" in k), None)
-
-            if q_key and k_key and v_key:
-                print(
-                    f"Q: {hf_state_dict[q_key].shape}, K: {hf_state_dict[k_key].shape}, V:"
-                    f" {hf_state_dict[v_key].shape}"
-                )
-                print(f"Hidden dim: {config.hidden_dim}, Head dim: {config.hidden_dim // config.num_heads}")
-                print(f"Num heads: {config.num_heads}, Num KV heads: {config.num_kv_heads}")
 
         # Load into our model
         model = converter.load_pretrained(Olmo2LMHeadModel, ref=model_path, resize_vocab_to_match_tokenizer=False)
