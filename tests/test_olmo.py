@@ -1,4 +1,3 @@
-import os
 import tempfile
 
 import chex
@@ -6,7 +5,6 @@ import equinox as eqx
 import numpy as np
 import pytest
 from jax import random
-from safetensors.torch import load_file
 
 import haliax as hax
 import haliax.nn as hnn
@@ -292,16 +290,6 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
 
-    # Print key shapes for debugging
-    print("\nHF model detailed params:")
-    for name, param in torch_model.named_parameters():
-        if "layers.0" in name:
-            print(f"{name}: {param.shape}")
-
-    # Create template model for comparison
-    template_model = Olmo2LMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
-
-
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save HF model
         model_path = f"{tmpdir}/torch_model"
@@ -322,7 +310,6 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
 
         # Check shapes match
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-
 
         # For more detail on significant differences:
         abs_diff = np.abs(torch_out - jax_out.astype(np.float32))

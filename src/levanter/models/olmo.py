@@ -359,7 +359,6 @@ class Olmo2Transformer(ModuleWithStateDictSerialization, eqx.Module):
 
         return Olmo2Transformer(config, layers, ln_f)
 
-
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
