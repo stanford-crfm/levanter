@@ -150,6 +150,7 @@ def test_olmo2_attention_vs_hf(use_flash, num_kv_heads):
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
 
+@skip_if_no_torch
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
 def test_olmo2_decoder_layer_vs_hf(num_kv_heads):
     import torch
