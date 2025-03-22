@@ -460,7 +460,7 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
         x = self.transformer(x, attn_mask=attn_mask, key=k_t)
 
         # Apply language modeling head
-        if self.lm_head:
+        if self.lm_head is not None:
             lm_logits = self.lm_head(x, key=k_head)
         else:
             lm_logits = self.embeddings.unembed(x)
