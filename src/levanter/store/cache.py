@@ -300,7 +300,12 @@ class TreeCache(AsyncDataset[T_co]):
     def load(cache_dir: str, exemplar: T, options: Optional["CacheMetadata"] = None) -> "TreeCache":
         """Loads a cache from disk or an object store. Raises FileNotFoundError if the cache doesn't exist"""
         logger.info(f"Loading cache from {cache_dir}")
+        time_in = time.time()
         ledger = CacheLedger.load(cache_dir, options)
+        time_out = time.time()
+        if time_out - time_in > 4:
+            logger.info(f"Loaded cache ledger in {time_out - time_in:.2f}s")
+
         if not ledger.is_finished:
             raise FileNotFoundError(f"Cache at {cache_dir} is not finished. Use build_or_load to build it.")
         return TreeCache(cache_dir, exemplar, ledger, None)
@@ -319,6 +324,7 @@ class TreeCache(AsyncDataset[T_co]):
         try:
             return TreeCache.load(cache_dir, processor.output_exemplar, metadata)
         except FileNotFoundError:
+            logger.info(f"Cache not found at {cache_dir}. Building.")
             broker = _get_builder_actor(
                 cache_dir=cache_dir,
                 shard_source=shard_source,
