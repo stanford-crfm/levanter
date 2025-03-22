@@ -323,10 +323,6 @@ def test_olmo2_roundtrip(scan_layers, num_kv_heads):
         # Check shapes match
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
 
-        # Print sample output values for comparison
-        print("\nOutput values comparison:")
-        print("HF output (first 5 values):", torch_out[0, :5])
-        print("JAX output (first 5 values):", jax_out[0, :5])
 
         # For more detail on significant differences:
         abs_diff = np.abs(torch_out - jax_out.astype(np.float32))
