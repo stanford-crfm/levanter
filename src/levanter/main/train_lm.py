@@ -54,7 +54,10 @@ class TrainLmConfig:
 
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
-    # if provided, will initialize from this checkpoint, used for llama style ablation
+    """
+    If provided, will initialize from this checkpoint, used for llama style ablation. This resets the data loader.
+    Note that this differs from --trainer.initialize_from, which does not reset the data loader.
+    """
     epoch: int = 0
     eval_harness: Optional[LmEvalHarnessConfig] = None
     eval_harness_steps: int = 10000
@@ -98,7 +101,7 @@ def main(config: TrainLmConfig):
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer, loss_function) as trainer:
+    with (Trainer(config.trainer, optimizer, loss_function) as trainer):
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -248,6 +251,7 @@ def main(config: TrainLmConfig):
         if seek_dataloader:
             train_loader = train_loader.iter_from_step(state.step)
         else:
+            logger.warn("Not seeking dataloader")
             train_loader = iter(train_loader)
 
         ## OK, actually run training!

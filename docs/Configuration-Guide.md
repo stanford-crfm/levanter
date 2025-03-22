@@ -147,14 +147,13 @@ reasonable defaults and an "advanced" mode that gives you more control.
 
 See also [Checkpointer](#checkpointer).
 
-| Parameter                    | Description                                       | Default                                    |
-|------------------------------|---------------------------------------------------|--------------------------------------------|
-| `load_checkpoint`            | Whether to load checkpoint from `base_path`       | `None`: load if possible, but don't error. |
-| `load_checkpoint_path`       | Path to load checkpoint from. May be a parent     | `checkpointer.base_path`                   |
-| `initialize_from`            | Path to initialize model from. May be a parent    | `None`                                     |
-| `checkpointer.base_path`     | Base path to save checkpoints to                  | `checkpoints/${run_id}`                    |
-| `checkpointer.save_interval` | How often to save checkpoints (time)              | 15 minutes                                 |
-| `checkpointer.keep`          | How often to keep checkpoints (steps). See below. | 10000 steps                                |
+| Parameter                    | Description                                                                                   | Default                                    |
+|------------------------------|-----------------------------------------------------------------------------------------------|--------------------------------------------|
+| `load_checkpoint`            | Whether to load checkpoint from `base_path`                                                   | `None`: load if possible, but don't error. |
+| `initialize_from`            | Initialize training state from this path. May be a parent dir. Useful for continued training. | `None`                                     |
+| `checkpointer.base_path`     | Base path to save checkpoints to                                                              | `checkpoints/${run_id}`                    |
+| `checkpointer.save_interval` | How often to save checkpoints (time)                                                          | 15 minutes                                 |
+| `checkpointer.keep`          | How often to keep checkpoints (steps). See below.                                             | 10000 steps                                |
 
 #### Checkpointer Save Policy
 

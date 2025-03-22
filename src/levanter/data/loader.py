@@ -217,7 +217,9 @@ class DataLoader(Iterable[Ex]):
     def __len__(self):
         if not self.has_len():
             raise ValueError("DataLoader has no length")
-        return blocking_wait(self.data_store.async_len())
+        total_length = blocking_wait(self.data_store.current_len())
+        step = self.scheduler.find_step_containing_offset(total_length)
+        return step
 
 
 class DataLoaderIterator(Iterator[Ex]):
