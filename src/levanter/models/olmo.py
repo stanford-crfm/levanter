@@ -359,12 +359,6 @@ class Olmo2Transformer(ModuleWithStateDictSerialization, eqx.Module):
 
         return Olmo2Transformer(config, layers, ln_f)
 
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
-        """Map model parameter names to HF parameter names"""
-        return {
-            "layers": "layers",
-            "norm": "norm",
-        }
 
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
