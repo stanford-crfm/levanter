@@ -253,7 +253,7 @@ def main(config: TrainLmConfig):
                         compute_logits,
                         Vocab,
                         dataset,
-                        key=os.path.join("entropy", name) if name else "entropy",
+                        prefix=os.path.join("analysis", name) if name else "analysis",
                         batch_size=EvalBatch.size,
                         mapping=compute_axis_mapping,
                     ),
