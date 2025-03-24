@@ -1,4 +1,5 @@
 import html
+import os
 import re
 from typing import Any, List, Optional
 
@@ -6,6 +7,10 @@ import fsspec
 import jax.numpy as jnp
 import numpy as np
 from jax.experimental import multihost_utils
+
+from levanter.callbacks import StepInfo
+from levanter.data import DataLoader
+from levanter.utils.hf_utils import HfTokenizer
 
 
 def visualize_log_probs(
@@ -251,3 +256,34 @@ def _decode_tokens_pretty(tok, ids):
         return [str(t) for t in tok.convert_ids_to_tokens(ids)]
     else:
         return [str(t) for t in tok.decode(ids)]
+
+
+def cb_compute_and_visualize_log_probs(
+    test_data: DataLoader, tokenizer: HfTokenizer, log_prob_fn, html_dir: str, max_docs=128
+):
+    """
+        Computes log probabilities for a dataset and visualizes them using visdom.
+
+        Args:
+            test_data (DataLoader): The test data to use.
+            tokenizer (HfTokenizer): The tokenizer to use.
+            log_prob_fn (function): A function that takes a model and a batch; then returns the log probabilities for each token.
+            html_dir (str): The directory where the HTML output will be written.
+            max_docs (int): The maximum number of documents to process.
+
+        Returns:
+    function: A function that takes a step info and computes and visualizes the log probabilities.
+    """
+
+    def compute_and_viz_log_probs(step: StepInfo):
+        model = step.eval_model
+        os.makedirs(html_dir, exist_ok=True)
+        path = os.path.join(html_dir, f"step_{step.step}.html")
+
+        compute_and_visualize_log_probs(path, model, tokenizer, log_prob_fn, test_data, max_docs=max_docs)
+        # TODO: convert to generic logging
+        import wandb
+
+        wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
+
+    return compute_and_viz_log_probs
