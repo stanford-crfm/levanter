@@ -70,7 +70,7 @@ class DataLoader(Iterable[Ex]):
         batch_axis_name: str | None = None,
         max_buffered_batches: Optional[int] = 64,
         mesh: Mesh | None = None,
-        axis_resources: Optional[ResourceMapping],
+        axis_resources: Optional[ResourceMapping] = None,
         prefetch_size: int = 32,
         pad_final_batch: bool = True,
         allow_nondivisible_batch_size: bool = False,

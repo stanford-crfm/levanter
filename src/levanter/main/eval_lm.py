@@ -13,6 +13,7 @@ from haliax.partitioning import fsdp, round_axis_for_partitioning
 import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
+from levanter.data import DataLoader
 from levanter.data.text import LMDatasetConfig
 from levanter.eval import TaggedEvaluator, eval_model
 from levanter.models.gpt2 import Gpt2Config
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EvalLmConfig:
+
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -36,6 +38,7 @@ class EvalLmConfig:
     compare_torch: bool = False
     eval_on_train: bool = False
     max_batches: Optional[int] = None
+    log_entropy: bool = True
 
 
 def main(config: EvalLmConfig):
@@ -97,8 +100,34 @@ def main(config: EvalLmConfig):
             levanter.tracker.log(log_dict, step=0)
 
             # loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
-            del model
             print("Levanter loss:", log_dict["eval/loss"])
+
+            @hax.named_jit(
+                in_axis_resources=parameter_axis_mapping,
+                axis_resources=compute_axis_mapping,
+                out_axis_resources=compute_axis_mapping,
+            )
+            def compute_logits(model: LmHeadModel, example: LmExample):
+                model = mp.cast_to_compute(model)
+                activations = model.activations(example.tokens, key=None, attn_mask=example.attn_mask)
+                head = model.get_lm_head()
+                logits = hax.dot(activations, head, axis=model.Embed)
+                return logits
+
+            if config.log_entropy:
+                for name, dataset in config.data.validation_sets(Pos).items():
+                    loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
+                    entropy_hist, gap_hist = levanter.analysis.compute_entropy_and_gap_histograms(
+                        model,
+                        Vocab,
+                        compute_logits,  # type: ignore
+                        loader,
+                    )
+
+                    levanter.tracker.log(
+                        {f"analysis/{name}/entropy": entropy_hist, f"analysis/{name}/top2_gap": gap_hist}, step=0
+                    )
+            del model
 
         if config.hf_checkpoint is not None:
             # load the huggingface model
@@ -114,8 +143,23 @@ def main(config: EvalLmConfig):
 
             log_dict = eval_model(evaluator, model_from_hf_checkpoint, prefix="eval/hf")  # type: ignore
             levanter.tracker.log(log_dict, step=0)
-            del model_from_hf_checkpoint
             print(f"Loss from HF model: {log_dict['eval/hf/loss']}")
+
+            if config.log_entropy:
+                for name, dataset in config.data.validation_sets(Pos).items():
+                    loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
+                    entropy_hist, gap_hist = levanter.analysis.compute_entropy_and_gap_histograms(
+                        model_from_hf_checkpoint,
+                        Vocab,
+                        compute_logits,  # type: ignore
+                        loader,
+                    )
+
+                    levanter.tracker.log(
+                        {f"analysis/hf/{name}/entropy": entropy_hist, f"analysis/hf/{name}/top2_gap": gap_hist}, step=0
+                    )
+
+            del model_from_hf_checkpoint
 
 
 if __name__ == "__main__":
