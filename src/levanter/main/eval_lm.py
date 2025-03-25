@@ -8,7 +8,7 @@ import jmp
 
 import haliax as hax
 from haliax import Axis
-from haliax.partitioning import fsdp, round_axis_for_partitioning
+from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
 from levanter.checkpoint import load_checkpoint
@@ -37,7 +37,6 @@ class EvalLmConfig:
 
     compare_torch: bool = False
     eval_on_train: bool = False
-    max_batches: Optional[int] = None
     log_entropy: bool = True
 
 
@@ -58,18 +57,20 @@ def main(config: EvalLmConfig):
     if not datasets:
         raise ValueError("no dataset found!")
 
-    if config.max_batches is not None:
-        max_examples = config.max_batches * config.trainer.eval_batch_size
+    if config.trainer.max_eval_batches is not None:
+        max_examples = config.trainer.max_eval_batches * config.trainer.eval_batch_size
         datasets = [(ds.take(max_examples), tags) for ds, tags in datasets]
     else:
         max_examples = None
-
-    evaluator = TaggedEvaluator(Batch, datasets, tokenizer, max_examples_per_dataset=max_examples)
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
+        evaluator = TaggedEvaluator(
+            Batch, datasets, tokenizer, max_examples_per_dataset=max_examples, axis_mapping=compute_axis_mapping
+        )
+
         key = jax.random.PRNGKey(0)
 
         vocab_size = len(tokenizer)
@@ -79,11 +80,12 @@ def main(config: EvalLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        @fsdp(parameter_axis_mapping, compute_axis_mapping)
+        @hax.named_jit
         def compute_loss(model: LmHeadModel, example: LmExample):
-            model = inference_mode(model, True)
-            model = mp.cast_to_compute(model)
-            return compute_next_token_loss(model, example, key=None)
+            with hax.axis_mapping(compute_axis_mapping):
+                model = inference_mode(model, True)
+                model = mp.cast_to_compute(model)
+                return compute_next_token_loss(model, example, key=None)
 
         # initialize the model
         if config.checkpoint_path is not None:
@@ -116,6 +118,8 @@ def main(config: EvalLmConfig):
 
             if config.log_entropy:
                 for name, dataset in config.data.validation_sets(Pos).items():
+                    if config.trainer.max_eval_batches is not None:
+                        dataset = dataset.take(config.trainer.max_eval_batches * config.trainer.eval_batch_size)
                     loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
                     entropy_hist, gap_hist = levanter.analysis.compute_entropy_and_gap_histograms(
                         model,

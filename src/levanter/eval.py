@@ -62,6 +62,8 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
     ):
         super().__init__()
         self.datasets = []
+        self._max_examples_per_dataset = max_examples_per_dataset
+
         tag_index: dict[str, int] = {}
         for i, (dataset, tags) in enumerate(datasets):
             if not tags and len(datasets) > 1:
@@ -71,14 +73,15 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
                 if tag not in tag_index:
                     tag_index[tag] = len(tag_index)
 
+            if self._max_examples_per_dataset:
+                dataset = dataset.take(self._max_examples_per_dataset)
+
             self.datasets.append((dataset, tags))
 
         self.tag_to_index = tag_index
         self.Tag = hax.Axis("tag", len(self.tag_to_index))
-        self.max_examples_per_dataset = max_examples_per_dataset
         self._tag_arrays = self._compute_tag_arrays()
         self._offsets: Optional[np.ndarray] = None
-        self._max_examples_per_dataset = max_examples_per_dataset
 
     async def _get_offsets(self) -> np.ndarray:
         if self._offsets is None:
@@ -124,8 +127,6 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
         grouped_indices = defaultdict(list)
         for idx, dataset_index in zip(sorted_indices, dataset_indices):
             grouped_indices[dataset_index].append(int(idx - offsets[dataset_index]))
-
-        logger.info(grouped_indices)
 
         # Retrieve the batch for each group
         batch_futures: list = []
@@ -208,7 +209,7 @@ def cb_tagged_lm_evaluate(
         step_count = step.step
 
         if eval_current:
-            log_dict = eval_model(step.eval_model, step.model, prefix=prefix)
+            log_dict = eval_model(evaluator, step.model, prefix=prefix)
             levanter.tracker.log(log_dict, step=step_count)
 
         if not eval_current and step.state.model_averaging is None:
@@ -231,6 +232,7 @@ def eval_model(evaluator: "TaggedEvaluator", model: LmHeadModel, prefix: str = "
 
 
 def _construct_log_dict(evaluator, eval_result, total_time, prefix):
+    tokenizer = evaluator.tokenizer
     log_dict = {
         # log micro average as just "loss"
         _join_prefix(prefix, "loss"): eval_result.micro_avg_loss,
@@ -320,14 +322,20 @@ class TaggedEvaluator:
 
         self.hierarchy = hierarchy
 
-        @hax.named_jit(out_axis_resources=axis_mapping)
+        @hax.named_jit
         def accum_for_batch(m: LmHeadModel, state: _EvalRunningMeans, batch: LmExample, tags: hax.NamedArray):
             m = inference_mode(m, True)
 
             if self.mp is not None:
                 m = self.mp.cast_to_compute(m)
 
-            with hax.axis_mapping(axis_mapping):
+            from contextlib import ExitStack
+
+            context = ExitStack()
+
+            with context:
+                if axis_mapping is not None:
+                    context.enter_context(hax.axis_mapping(axis_mapping))
                 losses = compute_next_token_loss(m, batch, reduction=None, reduction_axis=())
                 mask = batch.loss_mask  # [Batch, Pos]
                 this_tokens = hax.sum(mask)
