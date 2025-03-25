@@ -5,19 +5,16 @@ from typing import Optional
 import equinox as eqx
 import jax
 import jmp
-import numpy
-import tqdm
 
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import fsdp, round_axis_for_partitioning
 
 import levanter
-from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
-from levanter.data import DataLoader
 from levanter.data.text import LMDatasetConfig
+from levanter.eval import TaggedEvaluator, eval_model
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import TrainerConfig
@@ -49,28 +46,23 @@ def main(config: EvalLmConfig):
     Pos = config.model.Pos
 
     if config.eval_on_train:
-        ds = config.data.train_set(
-            Pos,
-            config.trainer.batch_schedule,
-            key=jax.random.PRNGKey(0),
-        )
+        datasets_dict = config.data.train_sets(Pos, key=jax.random.PRNGKey(0))
+        # need tagged eval sets for the evaluator
+        datasets = [(ds, [name]) for name, ds in datasets_dict.items()]
     else:
-        ds = config.data.validation_set(Pos)  # type: ignore
-        assert ds is not None, "No validation set found"
+        datasets = config.data.tagged_eval_sets(Pos)
 
-    if ds is None:
+    if not datasets:
         raise ValueError("no dataset found!")
 
     if config.max_batches is not None:
-        ds = ds.take(config.max_batches * config.trainer.eval_batch_size)
+        max_examples = config.max_batches * config.trainer.eval_batch_size
+        datasets = [(ds.take(max_examples), tags) for ds, tags in datasets]
+    else:
+        max_examples = None
 
-    eval_loader = DataLoader(
-        ds,
-        Batch,
-        max_buffered_batches=None,
-        mesh=config.trainer.device_mesh,
-        axis_resources=config.trainer.parameter_axis_mapping,
-    )
+    evaluator = TaggedEvaluator(Batch, datasets, tokenizer, max_examples_per_dataset=max_examples)
+
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
@@ -90,22 +82,23 @@ def main(config: EvalLmConfig):
             model = mp.cast_to_compute(model)
             return compute_next_token_loss(model, example, key=None)
 
-        total = config.trainer.max_eval_batches
-
         # initialize the model
         if config.checkpoint_path is not None:
             # initialize the model
             with use_cpu_device():
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
+                # TODO: can't load the EMA model with current setup here. Not a big deal for now.
                 # TODO: don't load the entire checkpoint into CPU memory when we only need our share of the model
                 model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
+            log_dict = eval_model(evaluator, model, prefix="eval")
 
-            loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
+            levanter.tracker.log(log_dict, step=0)
 
+            # loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
             del model
-            print("Loss from Levanter model: ", loss)
+            print("Levanter loss:", log_dict["eval/loss"])
 
         if config.hf_checkpoint is not None:
             # load the huggingface model
@@ -117,31 +110,12 @@ def main(config: EvalLmConfig):
             model_from_hf_checkpoint = converter.load_pretrained(
                 model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
             )
-            loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
+            # loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 
-            print("Loss from HF model: ", loss)
-
-            if config.compare_torch:
-                import torch
-                from transformers import GPT2LMHeadModel as TorchGPT2LMHeadModel
-
-                torch_model: TorchGPT2LMHeadModel = TorchGPT2LMHeadModel.from_pretrained(
-                    config.hf_checkpoint.model_name_or_path, revision=config.hf_checkpoint.revision
-                )
-                torch_model.eval()
-                torch_model.to("cpu")
-
-                loss = 0.0
-                n = 0
-                for batch in tqdm.tqdm(eval_loader, total=total, desc="Evaluating (torch)"):
-                    torch_ids = torch.from_numpy(numpy.array(batch)).to(torch.int64)
-                    with torch.no_grad():
-                        loss += torch_model(input_ids=torch_ids, labels=torch_ids)[0].item()
-                    n += 1
-                    if total is not None and n >= total:
-                        break
-
-                print("Loss from Torch model: ", loss / n)
+            log_dict = eval_model(evaluator, model_from_hf_checkpoint, prefix="eval/hf")  # type: ignore
+            levanter.tracker.log(log_dict, step=0)
+            del model_from_hf_checkpoint
+            print(f"Loss from HF model: {log_dict['eval/hf/loss']}")
 
 
 if __name__ == "__main__":

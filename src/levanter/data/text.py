@@ -629,6 +629,17 @@ class LMTaskConfig(abc.ABC):
         pass
 
     @abc.abstractmethod
+    def train_sets(
+        self,
+        Pos: Axis,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: PRNGKeyArray,
+        epochs: Optional[int] = None,
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
+        pass
+
+    @abc.abstractmethod
     def validation_sets(
         self,
         Pos: Axis,
@@ -1054,6 +1065,19 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
 
         return CausalLmDataset(ds, Pos, ignore_index=self.ignore_token_id, eos_id=self.the_tokenizer.eos_token_id)  # type: ignore
 
+    def train_sets(
+        self,
+        Pos: Axis,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        key: PRNGKeyArray,
+        epochs: Optional[int] = None,
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
+        return {
+            # we don't care about BatchSchedule in this class
+            "": self.train_set(Pos, BatchSchedule(32), monitors, key=key, epochs=epochs)
+        }
+
     def validation_set(
         self,
         Pos: Axis,
@@ -1229,16 +1253,38 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         key: PRNGKeyArray,
         epochs: Optional[int] = None,
     ) -> AsyncDataset[LmExample]:
-        doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
+        mix_key, shuffle_key = jax.random.split(key)
+        causal_datasets = self.train_sets(Pos, monitors, key=shuffle_key, epochs=epochs)
 
+        weights = self.train_weights
+        if isinstance(weights, Sequence):
+            weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
+
+        mixture = MixtureDataset(
+            datasets=causal_datasets,
+            weights=weights,
+            stop_strategy=self.stop_strategy,
+            key=mix_key,
+            block_size=self.mixture_block_size,
+        )
+
+        return mixture
+
+    def train_sets(
+        self,
+        Pos: Axis,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        epochs: Optional[int] = None,
+        key: PRNGKeyArray,
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        token_datasets = self._token_seq_datasets(Pos, doc_caches)
         if epochs:
             raise ValueError("Epochs are not supported for mixture datasets")
 
         if key is None:
             key = jax.random.PRNGKey(0)
-
-        mix_key, shuffle_key = jax.random.split(key)
 
         # We shuffle the components and not the overall mixture because this lets us preserve
         # the "stable batch" property of the mixture dataset.
@@ -1252,11 +1298,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         if self.shuffle:
             out_token_datasets = {}
-            key_iter = key_iterator(shuffle_key)
+            key_iter = key_iterator(key)
             for name, ds in token_datasets.items():
                 out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
             token_datasets = out_token_datasets
-
         if (
             self.experiment_budget is not None and self.target_budget is not None
         ) and self.experiment_budget > self.target_budget:
@@ -1273,7 +1318,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
                 sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             token_datasets = sliced_token_datasets
-
         causal_datasets = {
             name: CausalLmDataset(
                 ds,
@@ -1283,26 +1327,17 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
             for name, ds in token_datasets.items()
         }
+        return causal_datasets
 
-        weights = self.train_weights
-        if isinstance(weights, Sequence):
-            weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
-
-        mixture = MixtureDataset(
-            datasets=causal_datasets,
-            weights=weights,
-            stop_strategy=self.stop_strategy,
-            key=mix_key,
-            block_size=self.mixture_block_size,
-        )
-
-        return mixture
+    def _token_seq_datasets(self, Pos, doc_caches):
+        token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
+        return token_datasets
 
     def validation_sets(
         self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
+        token_datasets = self._token_seq_datasets(Pos, doc_caches)
         return {
             name: CausalLmDataset(
                 ds,

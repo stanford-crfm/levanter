@@ -172,7 +172,7 @@ def cb_tagged_lm_evaluate(
     eval_ema: bool = True,
     prefix: str = "eval",
     mp: jmp.Policy = None,
-) -> Callable[[StepInfo], EvalResult]:
+) -> Callable[[StepInfo], None]:
     """
     Evaluates multiple tagged datasets using a given evaluation function.
     Scores for each tag are aggregated and logged separately, as well as getting
@@ -205,69 +205,71 @@ def cb_tagged_lm_evaluate(
         raise ValueError("At least one of eval_current or eval_ema should be True")
 
     def eval_callback(step: StepInfo):
+        step_count = step.step
+
         if eval_current:
-            with levanter.tracker.capture_time() as time_fn:
-                result = evaluator.evaluate(step.model)
-
-            log_dict = _construct_log_dict(result, time_fn())
-
-            levanter.tracker.log(log_dict, step=step.step)
+            log_dict = eval_model(step.eval_model, step.model, prefix=prefix)
+            levanter.tracker.log(log_dict, step=step_count)
 
         if not eval_current and step.state.model_averaging is None:
             raise ValueError("Cannot evaluate EMA model without model averaging, but you only want to evaluate EMA")
 
         if eval_ema and step.state.model_averaging is not None:
-            with levanter.tracker.capture_time() as time_fn:
-                result = evaluator.evaluate(step.eval_model)
+            log_dict = eval_model(evaluator, step.eval_model, prefix=_join_prefix(prefix, "ema"))
+            levanter.tracker.log(log_dict, step=step_count)
 
-            log_dict = _construct_log_dict(result, time_fn(), prefix=_join_prefix(prefix, "ema"))
-
-            levanter.tracker.log(log_dict, step=step.step)
-
-        return result
-
-    def _construct_log_dict(eval_result, total_time, prefix=prefix):
-        log_dict = {
-            # log micro average as just "loss"
-            _join_prefix(prefix, "loss"): eval_result.micro_avg_loss,
-            _join_prefix(prefix, "loading_time"): eval_result.total_eval_loading_time,
-            _join_prefix(prefix, "total_time"): total_time,
-        }
-        logger.info(f"{prefix} loss: {eval_result.micro_avg_loss:.3f}")
-        has_tags = len(evaluator.dataset.tag_to_index) > 1  # 1 tag means there's no difference between micro and macro
-        if has_tags:
-            log_dict[_join_prefix(prefix, "macro_loss")] = eval_result.macro_avg_loss
-
-            for tag, loss in eval_result.tag_macro_losses.items():
-                # don't log leaf tag macro losses because it doesn't mean anything different than micro loss
-                if tag in evaluator.dataset.tag_to_index:
-                    continue
-                if not tag:
-                    continue
-                log_dict[_join_prefix(prefix, tag) + "/macro_loss"] = loss
-                logger.info(f"{tag} macro loss: {loss:.3f}")
-        for tag, loss in eval_result.tag_micro_losses.items():
-            if not tag:
-                continue
-            if tag in evaluator.dataset.tag_to_index:
-                log_dict[_join_prefix(prefix, tag) + "/loss"] = loss
-                logger.info(f"{tag} loss: {loss:.3f}")
-            else:
-                log_dict[_join_prefix(prefix, tag) + "/micro_loss"] = loss
-                logger.info(f"{tag} micro loss: {loss:.3f}")
-        if tokenizer is not None:
-            log_dict[_join_prefix(prefix, "bpb")] = eval_result.micro_bpb
-            if has_tags:
-                log_dict[_join_prefix(prefix, "macro_bpb")] = eval_result.macro_bpb
-            for tag, bpb in eval_result.tag_micro_bpb.items():
-                log_dict[_join_prefix(prefix, tag) + "/bpb"] = bpb
-
-            if has_tags:
-                for tag, bpb in eval_result.tag_macro_bpb.items():
-                    log_dict[_join_prefix(prefix, tag) + "/macro_bpb"] = bpb
-        return log_dict
+        return
 
     return eval_callback
+
+
+def eval_model(evaluator: "TaggedEvaluator", model: LmHeadModel, prefix: str = "") -> dict[str, float]:
+    with levanter.tracker.capture_time() as time_fn:
+        result = evaluator.evaluate(model)
+    log_dict = _construct_log_dict(evaluator, result, time_fn(), prefix=prefix)
+    return log_dict
+
+
+def _construct_log_dict(evaluator, eval_result, total_time, prefix):
+    log_dict = {
+        # log micro average as just "loss"
+        _join_prefix(prefix, "loss"): eval_result.micro_avg_loss,
+        _join_prefix(prefix, "loading_time"): eval_result.total_eval_loading_time,
+        _join_prefix(prefix, "total_time"): total_time,
+    }
+    logger.info(f"{prefix} loss: {eval_result.micro_avg_loss:.3f}")
+    has_tags = len(evaluator.dataset.tag_to_index) > 1  # 1 tag means there's no difference between micro and macro
+    if has_tags:
+        log_dict[_join_prefix(prefix, "macro_loss")] = eval_result.macro_avg_loss
+
+        for tag, loss in eval_result.tag_macro_losses.items():
+            # don't log leaf tag macro losses because it doesn't mean anything different than micro loss
+            if tag in evaluator.dataset.tag_to_index:
+                continue
+            if not tag:
+                continue
+            log_dict[_join_prefix(prefix, tag) + "/macro_loss"] = loss
+            logger.info(f"{tag} macro loss: {loss:.3f}")
+    for tag, loss in eval_result.tag_micro_losses.items():
+        if not tag:
+            continue
+        if tag in evaluator.dataset.tag_to_index:
+            log_dict[_join_prefix(prefix, tag) + "/loss"] = loss
+            logger.info(f"{tag} loss: {loss:.3f}")
+        else:
+            log_dict[_join_prefix(prefix, tag) + "/micro_loss"] = loss
+            logger.info(f"{tag} micro loss: {loss:.3f}")
+    if tokenizer is not None:
+        log_dict[_join_prefix(prefix, "bpb")] = eval_result.micro_bpb
+        if has_tags:
+            log_dict[_join_prefix(prefix, "macro_bpb")] = eval_result.macro_bpb
+        for tag, bpb in eval_result.tag_micro_bpb.items():
+            log_dict[_join_prefix(prefix, tag) + "/bpb"] = bpb
+
+        if has_tags:
+            for tag, bpb in eval_result.tag_macro_bpb.items():
+                log_dict[_join_prefix(prefix, tag) + "/macro_bpb"] = bpb
+    return log_dict
 
 
 class TaggedEvaluator:
