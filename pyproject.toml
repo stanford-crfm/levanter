@@ -25,7 +25,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 dependencies = [
-    "haliax>=1.4.dev341",
+    "haliax>=1.4.dev343",
     "equinox>=0.11.7",
     "jaxtyping>=0.2.34",
     "tokenizers>=0.15.2",
