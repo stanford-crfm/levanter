@@ -146,7 +146,7 @@ def main(config: EvalLmConfig):
             # loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 
             prefix = "eval" if config.checkpoint_path is None else "eval/hf"
-            log_dict = eval_model(evaluator, model_from_hf_checkpoint, prefix=prefix)
+            log_dict = eval_model(evaluator, model_from_hf_checkpoint, prefix=prefix)  # type: ignore
             levanter.tracker.log(log_dict, step=0)
             print(f"Loss from HF model: {log_dict[f'{prefix}/loss']}")
 

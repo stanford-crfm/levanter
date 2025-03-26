@@ -432,6 +432,8 @@ class SlicedAsyncDataset(AsyncDataset[U]):
     async def current_len(self) -> Optional[int]:
         underlying_length = await self.dataset.current_len()
         if self.end_index is not None:
+            if underlying_length is None:
+                return self.end_index - self.start_index
             return min(self.end_index, underlying_length) - self.start_index
         elif underlying_length is not None:
             return underlying_length - self.start_index
