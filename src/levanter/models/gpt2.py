@@ -52,7 +52,6 @@ class Gpt2Config(HFCompatConfig):
     upcast_attn: bool = False
 
     gradient_checkpointing: bool = True  # better to just always use this
-    gradient_checkpointing_block_size: int = 5
 
     use_bias: bool = True
 
