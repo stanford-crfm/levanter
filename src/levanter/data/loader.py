@@ -218,7 +218,7 @@ class DataLoader(Iterable[Ex]):
         if not self.has_len():
             raise ValueError("DataLoader has no length")
         total_length = blocking_wait(self.data_store.current_len())
-        step = self.scheduler.find_step_containing_offset(total_length)
+        step = self.scheduler.find_step_containing_offset(total_length) + 1
         return step
 
 
