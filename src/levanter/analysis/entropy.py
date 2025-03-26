@@ -69,13 +69,11 @@ def compute_entropy_histogram(
     """
 
     entropies_list: list[jnp.ndarray] = []
-    gaps_list: list[jnp.ndarray] = []
     total_tokens = 0
 
     for batch in test_data:
-        entropy_vals, gap_vals = _compute_entropy_on_device(logit_fn, model, batch, Vocab)
+        entropy_vals = _compute_entropy_on_device(logit_fn, model, batch, Vocab)
         entropies_list.append(entropy_vals)
-        gaps_list.append(gap_vals)
         total_tokens += entropy_vals.size
 
         if total_tokens >= max_tokens:
