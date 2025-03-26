@@ -210,6 +210,7 @@ class ExponentialModulation(eqx.Module):
 class MLPTrainableActivation(eqx.Module):
     """
     hax.nn.MLP with a trainable activation function.
+    Activation parameters are shared across all layers.
     """
 
     activation: Callable = eqx.field(static=False)  # this is the main difference from hax.nn.MLP
