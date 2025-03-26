@@ -34,7 +34,7 @@ import levanter.tracker.wandb
 import levanter.utils.logging
 from levanter import tracker
 from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
-from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
+from levanter.checkpoint import CheckpointerConfig, is_checkpoint_path, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
 from levanter.data.loader import _round_to_nearest_multiple
@@ -325,22 +325,12 @@ class Trainer:
             load_checkpoint = levanter.checkpoint.is_checkpoint_path(checkpoint_path)
 
         if load_checkpoint is False and self.config.initialize_from is not None:
-            # we're not going to load a checkpoint, so see if we can initialize from a model
+            # we're not going to load a checkpoint from this run, so instead we can initialize from a different run
             logger.info(f"Initializing from {self.config.initialize_from}")
-            # todo: we are potentially holding two models in memory at once here, if we pass in a model
-            # instead of a model_init and we use initialize_from. We could avoid this by deleting
-            # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
-            # it also seems unlikely that we'd want to do this, so I'm not going to bother for now
-            loaded_model = load_checkpoint_or_initialize(
-                model_init,
-                self.config.initialize_from,
-                axis_mapping=self.parameter_axis_mapping,
-                mesh=self.device_mesh,
-                subpath="model",
-                do_load=True,
-                allow_partial=self.config.allow_partial_checkpoint,
-            )()
-            model_init = jax.tree_util.Partial(lambda m: m, loaded_model)
+            load_checkpoint = True
+            checkpoint_path = self.config.initialize_from
+            if not is_checkpoint_path(checkpoint_path):
+                raise ValueError(f"initialize_from must be a checkpoint path, got {checkpoint_path}")
 
         def init_state_and_model(model_init, training_key):
             model = model_init()
@@ -651,6 +641,7 @@ class TrainerConfig:
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
     initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
+    """Load and continue training from a checkpoint. If None, will initialize from model_init."""
     allow_partial_checkpoint: bool = False
     """If True, we allow loading a checkpoint that doesn't have all the parameters in the model.
         Missing parameters are initialized from the model_init function."""
