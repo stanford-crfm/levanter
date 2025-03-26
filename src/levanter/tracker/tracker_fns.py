@@ -33,7 +33,7 @@ def log(metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[in
     Args:
         metrics: Metrics to log. We use LoggableValues just to give you a sense of what you can log. Backends may
             support additional types.
-        step: Step to log at
+        step: Step to log at. If None, uses the default for the tracker.
         commit: Whether to commit the metrics. If None, uses the default for the tracker.
     """
     global _global_tracker

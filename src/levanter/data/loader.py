@@ -69,8 +69,8 @@ class DataLoader(Iterable[Ex]):
         *,
         batch_axis_name: str | None = None,
         max_buffered_batches: Optional[int] = 64,
-        mesh: Mesh,
-        axis_resources: Optional[ResourceMapping],
+        mesh: Mesh | None = None,
+        axis_resources: Optional[ResourceMapping] = None,
         prefetch_size: int = 32,
         pad_final_batch: bool = True,
         allow_nondivisible_batch_size: bool = False,
@@ -99,6 +99,9 @@ class DataLoader(Iterable[Ex]):
         self.prefetch_size = prefetch_size
         self.axis_resources = axis_resources
         self.data_store = data
+
+        if mesh is None:
+            mesh = hax.partitioning._get_mesh()
         self.mesh = mesh
 
         if isinstance(batch_size, hax.Axis):
