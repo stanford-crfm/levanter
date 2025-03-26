@@ -7,9 +7,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax as hax
-import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
+from haliax.nn.normalization import LayerNormBase
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
@@ -194,7 +194,7 @@ class GemmaConfig(HFCompatConfig):
         )
 
 
-class GemmaRMSNorm(hnn.LayerNorm):
+class GemmaRMSNorm(LayerNormBase):
     """
     Like Llama, Gemma uses an RMSNorm instead of a layer norm.
 
@@ -202,15 +202,15 @@ class GemmaRMSNorm(hnn.LayerNorm):
     we do the same for compatibility.
     """
 
-    @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False):
+    @classmethod
+    def init(cls, axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False, dtype=None):
         assert use_weight, "GemmaRMSNorm does not support use_weight=False"
         assert not use_bias, "GemmaRMSNorm does not support use_bias=True"
 
         weight = hax.zeros(axis)
         bias = None
 
-        return GemmaRMSNorm(axis, weight, bias, eps)
+        return GemmaRMSNorm(axis, weight, bias, eps, dtype=jnp.float32)
 
     def __call__(self, x: NamedArray) -> NamedArray:
         # Gemma's norm is calculated in fp32 explicitly
