@@ -1,7 +1,6 @@
 import abc
 import copy
 import logging as pylogging
-import os
 import sys
 import threading
 import time
@@ -31,7 +30,6 @@ from levanter.trainer_state import TrainerState
 from levanter.utils import flop_utils, jax_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
 from levanter.utils.logging import save_xla_dumps_to_wandb
-from levanter.visualization import compute_and_visualize_log_probs as viz_probs
 
 
 logger = pylogging.getLogger(__name__)
@@ -362,35 +360,6 @@ def _flush_while_waiting(event):
 
     thread = threading.Thread(target=flush_stdout)
     thread.start()
-
-
-def compute_and_visualize_log_probs(test_data, tokenizer, log_prob_fn, html_dir: str, max_docs=128):
-    """
-        Computes log probabilities for a dataset and visualizes them using visdom.
-
-        Args:
-            test_data (Type): The test dataset for computation. Specify the type expected.
-            tokenizer (Type): The tokenizer to be used. Specify the type expected.
-            log_prob_fn (function): A function that takes a model and a batch; then returns the log probabilities for each token.
-            html_dir (str): The directory where the HTML output will be written.
-            max_docs (int): The maximum number of documents to process.
-
-        Returns:
-    function: A function that takes a step info and computes and visualizes the log probabilities.
-    """
-
-    def compute_and_viz_log_probs(step: StepInfo):
-        model = step.eval_model
-        os.makedirs(html_dir, exist_ok=True)
-        path = os.path.join(html_dir, f"step_{step.step}.html")
-
-        viz_probs(path, model, tokenizer, log_prob_fn, test_data, max_docs=max_docs)
-        # TODO: convert to generic logging
-        import wandb
-
-        wandb.log({"log_probs": wandb.Html(path)}, step=step.step)
-
-    return compute_and_viz_log_probs
 
 
 _did_tqdm_logging_one_time_setup = False

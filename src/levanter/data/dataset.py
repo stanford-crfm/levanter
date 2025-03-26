@@ -400,8 +400,8 @@ class SlicedAsyncDataset(AsyncDataset[U]):
         if end_index is not None and start_index > end_index:
             raise ValueError("End index must come after start index.")
 
-        self.start_index = start_index
-        self.end_index = end_index
+        self.start_index: int = start_index
+        self.end_index: int | None = end_index
         self.dataset = dataset
         self._min_known_len = dataset._min_known_len if end_index is None else (end_index - start_index)
 
@@ -416,6 +416,7 @@ class SlicedAsyncDataset(AsyncDataset[U]):
 
     async def async_len(self) -> int:
         underlying_length = await self.dataset.async_len()
+
         if self.end_index is None:
             return underlying_length - self.start_index
         else:
@@ -431,7 +432,9 @@ class SlicedAsyncDataset(AsyncDataset[U]):
     async def current_len(self) -> Optional[int]:
         underlying_length = await self.dataset.current_len()
         if self.end_index is not None:
-            return self.end_index - self.start_index
+            if underlying_length is None:
+                return self.end_index - self.start_index
+            return min(self.end_index, underlying_length) - self.start_index
         elif underlying_length is not None:
             return underlying_length - self.start_index
         else:
