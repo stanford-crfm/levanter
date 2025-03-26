@@ -106,7 +106,7 @@ def next_token_loss(
     Returns:
         NamedArray: computed loss
     """
-    Pos = logits.resolve_axis(Pos)
+    Pos = logits.resolve_axis(hax.axis_name(Pos))
 
     target_y = hax.roll(true_ids, -1, Pos)
     target_y_full = hax.nn.one_hot(target_y, Vocab, dtype=logits.dtype)
