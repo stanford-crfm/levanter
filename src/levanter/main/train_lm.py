@@ -60,7 +60,7 @@ class TrainLmConfig:
     eval_harness_steps: int = 10000
 
     # TODO: really need to add callback framework
-    log_entropy: bool = True
+    log_entropy: bool = False
 
 
 def main(config: TrainLmConfig):

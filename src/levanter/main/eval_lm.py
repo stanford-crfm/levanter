@@ -14,7 +14,7 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
-from levanter.data.text import LMDatasetConfig
+from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig
 from levanter.eval import TaggedEvaluator, eval_model
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
@@ -32,7 +32,7 @@ class EvalLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    data: LMDatasetConfig | LMMixtureDatasetConfig = field(default_factory=LMDatasetConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
 
     compare_torch: bool = False
@@ -87,6 +87,14 @@ def main(config: EvalLmConfig):
                 model = mp.cast_to_compute(model)
                 return compute_next_token_loss(model, example, key=None)
 
+        def compute_logits(model: LmHeadModel, example: LmExample):
+            model = mp.cast_to_compute(model)
+            with hax.axis_mapping(compute_axis_mapping):
+                activations = model.activations(example.tokens, key=None, attn_mask=example.attn_mask)
+                head = model.get_lm_head()
+                logits = hax.dot(activations, head, axis=model.Embed)
+                return logits
+
         # initialize the model
         if config.checkpoint_path is not None:
             # initialize the model
@@ -104,18 +112,6 @@ def main(config: EvalLmConfig):
             # loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
             print("Levanter loss:", log_dict["eval/loss"])
 
-            @hax.named_jit(
-                in_axis_resources=parameter_axis_mapping,
-                axis_resources=compute_axis_mapping,
-                out_axis_resources=compute_axis_mapping,
-            )
-            def compute_logits(model: LmHeadModel, example: LmExample):
-                model = mp.cast_to_compute(model)
-                activations = model.activations(example.tokens, key=None, attn_mask=example.attn_mask)
-                head = model.get_lm_head()
-                logits = hax.dot(activations, head, axis=model.Embed)
-                return logits
-
             if config.log_entropy:
                 for name, dataset in config.data.validation_sets(Pos).items():
                     if config.trainer.max_eval_batches is not None:
@@ -124,7 +120,7 @@ def main(config: EvalLmConfig):
                     entropy_hist, gap_hist = levanter.analysis.compute_entropy_and_gap_histograms(
                         model,
                         Vocab,
-                        compute_logits,  # type: ignore
+                        compute_logits,
                         loader,
                     )
 
@@ -164,6 +160,9 @@ def main(config: EvalLmConfig):
                     )
 
             del model_from_hf_checkpoint
+
+    # ray tasks don't reliably wait for the subprocesses to finish, so we need to manually finish the tracker
+    levanter.tracker.current_tracker().finish()
 
 
 if __name__ == "__main__":

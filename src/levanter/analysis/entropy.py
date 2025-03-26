@@ -3,11 +3,13 @@ import logging
 from typing import Callable, TypeVar
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import PyTree
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.jax_utils import named_call
 
 import levanter.tracker
 
@@ -21,6 +23,7 @@ B = TypeVar("B")
 logger = logging.getLogger(__name__)
 
 
+@named_call
 def entropy_from_logits(logits: hax.NamedArray, axis: hax.AxisSelector) -> hax.NamedArray:
     """
     Computes entropy over the given axis in a numerically stable way using raw logits.
@@ -31,6 +34,7 @@ def entropy_from_logits(logits: hax.NamedArray, axis: hax.AxisSelector) -> hax.N
     return entropy
 
 
+@named_call
 def top2_gap_from_logits(logits: hax.NamedArray, axis: hax.AxisSelector) -> hax.NamedArray:
     """
     Computes the difference between the top 2 logits along the specified axis.
@@ -89,8 +93,11 @@ def compute_entropy_and_gap_histograms(
 # Top level to avoid recompilation
 @eqx.filter_jit
 def _compute_entropy_and_gap_on_device(logit_fn, model, batch: B, Vocab) -> tuple[jnp.ndarray, jnp.ndarray]:
-    logits = logit_fn(model, batch)
+    with jax.named_scope("logits"):
+        logits = logit_fn(model, batch)
     entropies = entropy_from_logits(logits, axis=Vocab)
+    # reduce precision to bfloat16 to save memory since this hits oom
+    logits = logits.astype(jnp.bfloat16)
     top2_gaps = top2_gap_from_logits(logits, axis=Vocab)
     return entropies.flatten("token").array, top2_gaps.flatten("token").array
 

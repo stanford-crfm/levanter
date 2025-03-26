@@ -90,9 +90,6 @@ class DomainTaggedDataset(AsyncDataset[tuple[T, hax.NamedArray]]):
                 lengths = [min(length, self._max_examples_per_dataset) for length in lengths]
             self._offsets = np.cumsum([0] + lengths)
 
-            for (ds, tags), length in zip(self.datasets, lengths):
-                logger.info(f"Dataset {ds} has {length} examples and tags {tags}")
-
         return self._offsets  # type: ignore
 
     def _compute_tag_arrays(self):
@@ -355,7 +352,9 @@ class TaggedEvaluator:
                     state = dataclasses.replace(state, loss_per_tag=mean_per_tag)
 
                 if self.bytes_per_token is not None:
-                    next_tokens = hax.roll(batch.tokens, -1, m.Pos)  # [Batch, Pos], rolled by 1 for next token task
+                    next_tokens = hax.roll(
+                        batch.tokens, -1, m.Pos.name
+                    )  # [Batch, Pos], rolled by 1 for next token task
                     bytes_per_pos = self.bytes_per_token.take("vocab", next_tokens)  # [Batch, Pos]
                     bytes_per_tag = hax.einsum("-> tag", mask, bytes_per_pos, tags)  # [Tag]
                     this_bytes = hax.einsum("->", bytes_per_pos, mask)  # Scalar
