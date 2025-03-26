@@ -84,7 +84,6 @@ class GemmaConfig(HFCompatConfig):
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
-    gradient_checkpointing_block_size: int = 5
     scan_layers: bool = True
 
     use_bias: bool = False

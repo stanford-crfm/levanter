@@ -43,6 +43,22 @@ def register_codecs():
     draccus.decode.register(timedelta, parse_timedelta)
     draccus.encode.register(timedelta, encode_timedelta)
 
+    from haliax import ScanCheckpointPolicy
+
+    def scan_checkpoint_policy_encode(policy: ScanCheckpointPolicy):
+        return policy
+
+    def scan_checkpoint_policy_decode(policy: str | dict | bool):
+        if not isinstance(policy, dict):
+            return ScanCheckpointPolicy.from_bool_or_str(policy)
+
+        from draccus.parsers.decoding import decode_dataclass
+
+        return decode_dataclass(ScanCheckpointPolicy, policy)
+
+    draccus.decode.register(ScanCheckpointPolicy, scan_checkpoint_policy_decode)
+    draccus.encode.register(ScanCheckpointPolicy, scan_checkpoint_policy_encode)
+
 
 register_codecs()
 

@@ -59,7 +59,6 @@ class MistralConfig(LlamaConfig):
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
-    gradient_checkpointing_block_size: int = 5
 
     use_bias: bool = False
     rope_scaling: Optional[dict] = None
