@@ -340,6 +340,7 @@ def test_olmo2_param_counts_dont_change_with_seqlen():
     assert parameter_count(model) == parameter_count(model2)
 
 
+@skip_if_no_torch
 @pytest.mark.parametrize("num_kv_heads", [2, 4])
 def test_olmo2_state_dict_consistency(num_kv_heads):
     from transformers import Olmo2ForCausalLM
