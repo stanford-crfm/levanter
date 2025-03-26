@@ -117,7 +117,7 @@ def main(config: EvalLmConfig):
                     if config.trainer.max_eval_batches is not None:
                         dataset = dataset.take(config.trainer.max_eval_batches * config.trainer.eval_batch_size)
                     loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
-                    entropy_hist, gap_hist = levanter.analysis.compute_entropy_and_gap_histograms(
+                    entropy_hist = levanter.analysis.compute_entropy_histogram(
                         model,
                         Vocab,
                         compute_logits,
@@ -125,7 +125,11 @@ def main(config: EvalLmConfig):
                     )
 
                     levanter.tracker.log(
-                        {f"analysis/{name}/entropy": entropy_hist, f"analysis/{name}/top2_gap": gap_hist}, step=0
+                        {
+                            f"analysis/{name}/entropy": entropy_hist,
+                            f"analysis/{name}/entropy_mean": entropy_hist.mean(),
+                        },
+                        step=0,
                     )
             del model
 
@@ -150,7 +154,7 @@ def main(config: EvalLmConfig):
                 prefix = "analysis" if config.checkpoint_path is None else "analysis/hf"
                 for name, dataset in config.data.validation_sets(Pos).items():
                     loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
-                    entropy_hist, gap_hist = levanter.analysis.compute_entropy_and_gap_histograms(
+                    entropy_hist = levanter.analysis.compute_entropy_histogram(
                         model_from_hf_checkpoint,
                         Vocab,
                         compute_logits,  # type: ignore
@@ -158,7 +162,11 @@ def main(config: EvalLmConfig):
                     )
 
                     levanter.tracker.log(
-                        {f"{prefix}/{name}/entropy": entropy_hist, f"analysis/hf/{name}/top2_gap": gap_hist}, step=0
+                        {
+                            f"{prefix}/{name}/entropy": entropy_hist,
+                            f"analysis/hf/{name}/entropy_mean": entropy_hist.mean(),
+                        },
+                        step=0,
                     )
 
             del model_from_hf_checkpoint

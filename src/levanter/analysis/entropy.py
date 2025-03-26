@@ -53,16 +53,16 @@ def top2_gap_from_logits(logits: hax.NamedArray, axis: hax.AxisSelector) -> hax.
     return top1 - top2
 
 
-def compute_entropy_and_gap_histograms(
+def compute_entropy_histogram(
     model,
     Vocab: hax.AxisSelector,
     logit_fn: Callable[[PyTree, B], hax.NamedArray],
     test_data,
     max_tokens: int = 1024 * 1024,
     num_bins: int = 64,
-) -> tuple[Histogram, Histogram]:
+) -> Histogram:
     """
-    Compute both entropy and top-2 logit gap histograms for a given model and dataset.
+    Compute entropy histograms for a given model and dataset.
 
     Returns:
         Tuple of two Histogram objects: (entropy_histogram, top2_gap_histogram)
@@ -73,7 +73,7 @@ def compute_entropy_and_gap_histograms(
     total_tokens = 0
 
     for batch in test_data:
-        entropy_vals, gap_vals = _compute_entropy_and_gap_on_device(logit_fn, model, batch, Vocab)
+        entropy_vals, gap_vals = _compute_entropy_on_device(logit_fn, model, batch, Vocab)
         entropies_list.append(entropy_vals)
         gaps_list.append(gap_vals)
         total_tokens += entropy_vals.size
@@ -82,24 +82,20 @@ def compute_entropy_and_gap_histograms(
             break
 
     entropies = jnp.concatenate(entropies_list)
-    gaps = jnp.concatenate(gaps_list)
 
     if not entropies.size:
         raise ValueError("No tokens processed")
 
-    return Histogram.from_array(entropies, num_bins=num_bins), Histogram.from_array(gaps, num_bins=num_bins)
+    return Histogram.from_array(entropies, num_bins=num_bins)
 
 
 # Top level to avoid recompilation
 @eqx.filter_jit
-def _compute_entropy_and_gap_on_device(logit_fn, model, batch: B, Vocab) -> tuple[jnp.ndarray, jnp.ndarray]:
+def _compute_entropy_on_device(logit_fn, model, batch: B, Vocab) -> jnp.ndarray:
     with jax.named_scope("logits"):
         logits = logit_fn(model, batch)
     entropies = entropy_from_logits(logits, axis=Vocab)
-    # reduce precision to bfloat16 to save memory since this hits oom
-    logits = logits.astype(jnp.bfloat16)
-    top2_gaps = top2_gap_from_logits(logits, axis=Vocab)
-    return entropies.flatten("token").array, top2_gaps.flatten("token").array
+    return entropies.flatten("token").array
 
 
 def cb_compute_entropies(
@@ -134,7 +130,7 @@ def cb_compute_entropies(
         model = step.eval_model
 
         try:
-            entropy_hist, gap_hist = compute_entropy_and_gap_histograms(
+            entropy_hist = compute_entropy_histogram(
                 model=model,
                 Vocab=Vocab,
                 logit_fn=logit_fn,
@@ -148,6 +144,8 @@ def cb_compute_entropies(
             logger.exception(f"Error computing entropy for {prefix}")
             raise
 
-        levanter.tracker.log({f"{prefix}/entropy": entropy_hist, f"{prefix}/top2_gap": gap_hist}, step=step.step)
+        levanter.tracker.log(
+            {f"{prefix}/entropy": entropy_hist, f"{prefix}/entropy_mean": entropy_hist.mean()}, step=step.step
+        )
 
     return compute_entropy
