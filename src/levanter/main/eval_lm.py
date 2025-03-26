@@ -141,11 +141,13 @@ def main(config: EvalLmConfig):
             )
             # loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 
-            log_dict = eval_model(evaluator, model_from_hf_checkpoint, prefix="eval/hf")  # type: ignore
+            prefix = "eval" if config.checkpoint_path is None else "eval/hf"
+            log_dict = eval_model(evaluator, model_from_hf_checkpoint, prefix=prefix)
             levanter.tracker.log(log_dict, step=0)
-            print(f"Loss from HF model: {log_dict['eval/hf/loss']}")
+            print(f"Loss from HF model: {log_dict[f'{prefix}/loss']}")
 
             if config.log_entropy:
+                prefix = "analysis" if config.checkpoint_path is None else "analysis/hf"
                 for name, dataset in config.data.validation_sets(Pos).items():
                     loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
                     entropy_hist, gap_hist = levanter.analysis.compute_entropy_and_gap_histograms(
@@ -156,7 +158,7 @@ def main(config: EvalLmConfig):
                     )
 
                     levanter.tracker.log(
-                        {f"analysis/hf/{name}/entropy": entropy_hist, f"analysis/hf/{name}/top2_gap": gap_hist}, step=0
+                        {f"{prefix}/{name}/entropy": entropy_hist, f"analysis/hf/{name}/top2_gap": gap_hist}, step=0
                     )
 
             del model_from_hf_checkpoint
