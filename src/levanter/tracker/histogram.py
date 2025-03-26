@@ -50,6 +50,9 @@ class Histogram(equinox.Module):
     def to_numpy_histogram(self) -> tuple[np.ndarray, np.ndarray]:
         return np.array(self.bucket_counts), np.array(self.bucket_limits)
 
+    def mean(self) -> Scalar:
+        return self.sum / self.num
+
 
 def sharded_histogram(a: NamedArray, bins: int | ArrayLike = 10) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
