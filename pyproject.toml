@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "haliax>=1.4.dev343",
-    "equinox>=0.11.7",
+    "equinox>=0.11.7,<0.12",
     "jaxtyping>=0.2.34",
     "tokenizers>=0.15.2",
     "transformers>=4.49.0,<5.0",
