@@ -65,6 +65,8 @@ class TrainLmConfig:
     # TODO: really need to add callback framework
     log_entropy: bool = False
 
+    log_norms: int | None = None
+
 
 def main(config: TrainLmConfig):
     tokenizer = config.data.the_tokenizer
@@ -236,6 +238,15 @@ def main(config: TrainLmConfig):
                 ),
                 every=config.eval_harness_steps,
             )
+
+        if config.log_norms is not None:
+            # log all the things
+            logger.info("Logging norms of parameters and gradients")
+            from levanter.callbacks import GradWatchCallback, OptStateWatchCallback, ParamWatchCallback
+
+            trainer.add_hook(GradWatchCallback(), every=config.log_norms)
+            trainer.add_hook(OptStateWatchCallback(), every=config.log_norms)
+            trainer.add_hook(ParamWatchCallback(), every=config.log_norms)
 
         @named_jit(
             in_axis_resources=parameter_axis_mapping,

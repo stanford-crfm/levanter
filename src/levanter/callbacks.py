@@ -8,10 +8,11 @@ from abc import ABC
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable, Generic, Optional, TypeVar
+from typing import Any, Callable, Generic, Optional, Sequence, TypeVar
 
 import jax
 import jax.numpy as jnp
+from jax.tree_util import DictKey, FlattenedIndexKey, GetAttrKey, SequenceKey
 from jaxtyping import PyTree
 from tqdm_loggable import tqdm_logging
 from tqdm_loggable.auto import tqdm
@@ -26,7 +27,7 @@ from levanter.schedule import BatchSchedule
 from levanter.tracker.helpers import log_optimizer_hyperparams
 from levanter.tracker.histogram import Histogram
 from levanter.tracker.wandb import WandbConfig
-from levanter.trainer_state import TrainerState
+from levanter.trainer_state import InsideJitInfo, TrainerState
 from levanter.utils import flop_utils, jax_utils
 from levanter.utils.jax_utils import barrier_sync, jnp_to_python
 from levanter.utils.logging import save_xla_dumps_to_wandb
@@ -86,11 +87,20 @@ class LambdaCallback(Callback[S]):
 class JitCallback(ABC, Generic[S, M, CBInfo]):
     """
     A callback that gets called in two phases: inside the step (inside jit), and after the step (outside jit).
-    You have access to the gradients inside the step, so you can compute statistics on them.
+    You have access to [levanter.trainer_state.InsideJitInfo][] inside the step, which allows you to track gradients,
+    updates, etc.
+
+    Note that JitCallbacks tend to be quite heavy, and you should try to line up  all jit callbacks to
+    proc on the same steps.
+
+    The basic flow of a JitCallback is as follows:
+    1. `inside_step` is called inside the JIT-compiled function. This is where you can compute gradients, updates,
+       and other information that you want to track. You should return a PyTree of information that you want to log or use later.
+    2. The returned information from `inside_step` is passed to `on_step` after the JIT-compiled function has completed.
     """
 
     @abc.abstractmethod
-    def inside_step(self, state: S, grad: M) -> CBInfo:
+    def inside_step(self, state: S, inside_info: InsideJitInfo[M]) -> CBInfo:
         ...
 
     @abc.abstractmethod
@@ -393,8 +403,10 @@ class GradWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
         self.include_histogram = include_histogram
         self.split_scan_layers = split_scan_layers
 
-    def inside_step(self, state: TrainerState[M], grad: M):
-        return summary_statistics_for_tree(self.prefix, grad, self.split_scan_layers, self.include_histogram)
+    def inside_step(self, state: TrainerState[M], inside_info: InsideJitInfo[M]):
+        return summary_statistics_for_tree(
+            self.prefix, inside_info.grads, self.split_scan_layers, self.include_histogram
+        )
 
     def on_step(self, step_info: StepInfo[S], cb_info: dict[str, float | Histogram]):
         levanter.tracker.log(cb_info, step=step_info.step)
@@ -420,13 +432,88 @@ class ParamWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
         self.include_histogram = include_histogram
         self.split_scan_layers = split_scan_layers
 
-    def inside_step(self, state: TrainerState[M], grad: M):
+    def inside_step(self, state: TrainerState[M], inside_info: InsideJitInfo[M]):
         return summary_statistics_for_tree(
             self.prefix, state.trainable_model, self.split_scan_layers, self.include_histogram
         )
 
     def on_step(self, step_info: StepInfo[S], cb_info: dict[str, float | Histogram]):
         levanter.tracker.log(cb_info, step=step_info.step)
+
+
+class OptStateWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
+    """
+    Same as [levanter.callbacks.GradWatchCallback][], but for the optimizer state.
+
+    Args:
+        prefix (str): The prefix to use for logging.
+        include_histogram (bool): Whether to include histograms of the gradients.
+        split_scan_layers (bool): Whether to split the scan layers into separate histograms/norms
+    """
+
+    def __init__(
+        self,
+        prefix: str = "opt_state",
+        include_histogram: bool = True,
+        split_scan_layers: bool = True,
+    ):
+        self.prefix = prefix
+        self.include_histogram = include_histogram
+        self.split_scan_layers = split_scan_layers
+
+    def inside_step(self, state: TrainerState[M], inside_info: InsideJitInfo[M]):
+        to_return = {}
+        # return summary_statistics_for_tree(
+        #     self.prefix, state.opt_state, self.split_scan_layers, self.include_histogram
+        # )
+
+        leaves = jax.tree.leaves_with_path(
+            state.opt_state, is_leaf=lambda m: isinstance(m, type(state.model))
+        )  # noqa: E731
+        for path, v in leaves:
+            if not isinstance(v, type(state.model)):
+                continue
+
+            name = self._munge_key_name(path)
+
+            if name:
+                name_to_log = f"{self.prefix}/{name}"
+            else:
+                name_to_log = self.prefix
+
+            this_hists = summary_statistics_for_tree(name_to_log, v, self.split_scan_layers, self.include_histogram)
+
+            to_return.update(this_hists)
+
+        return to_return
+
+    def on_step(self, step_info: StepInfo[S], cb_info: dict[str, float | Histogram]):
+        levanter.tracker.log(cb_info, step=step_info.step)
+
+    # Optimizer states can have weird/arbitrary structures, but the states we care about
+    # are PyTrees with the same class as our model parameters (e.g., NamedArray, jax arrays, etc.)
+    # opt_state/inner_state/1/nu/ --> we want nu
+    def _munge_key_name(self, path: Sequence[Any]) -> str:
+        if not path:
+            return ""
+        path_elem = path[-1]  # Get the last element in the path, which is the actual value
+        match path_elem:
+            case SequenceKey(idx):  # type: ignore
+                out = f"{idx}"
+            case DictKey(key):  # type: ignore
+                out = f"{key}"
+            case GetAttrKey():  # type: ignore
+                out = str(path_elem)
+            case FlattenedIndexKey(idx):  # type: ignore
+                out = f"{idx}"
+            case _:
+                path_elem = str(path_elem)
+                out = f"{path_elem}"
+
+        if out.startswith("."):
+            out = out[1:]  # Remove leading dot if it exists
+
+        return out
 
 
 def summary_statistics_for_tree(
