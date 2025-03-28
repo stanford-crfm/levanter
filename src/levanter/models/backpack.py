@@ -16,8 +16,9 @@ from haliax.state_dict import ModuleWithStateDictSerialization, StateDict, with_
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
 from levanter.models.attention import AttentionMask, materialize_mask
-from levanter.models.gpt2 import ACT2FN, Gpt2Config, Gpt2Transformer
+from levanter.models.gpt2 import Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.logging import silence_transformer_nag
 
 
@@ -104,7 +105,7 @@ class BackpackMlp(eqx.Module):
         Embed: Axis,
         Mlp: Axis,
         Out: AxisSpec,
-        activation_fn: Union[str, Callable],
+        activation_fn: Union[ActivationFunctionEnum, Callable],
         *,
         key,
         use_bias: bool = True,
@@ -112,11 +113,10 @@ class BackpackMlp(eqx.Module):
         k_fc, k_proj = jrandom.split(key, 2)
         c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
         c_proj = hnn.Linear.init(Out=Out, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
-        if isinstance(activation_fn, str):
-            activation_fn = ACT2FN[activation_fn]
-        act = activation_fn  # type: ignore
+        if isinstance(activation_fn, ActivationFunctionEnum):
+            activation_fn = activation_fn.to_fn()
 
-        return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=act)
+        return BackpackMlp(c_fc=c_fc, c_proj=c_proj, act=activation_fn)
 
     @named_call
     def __call__(self, x: NamedArray):

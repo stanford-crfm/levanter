@@ -43,6 +43,7 @@ from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
+from levanter.utils.json_utils import ConfigJSONEncoder
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
@@ -738,7 +739,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
 
         with open(os.path.join(path, "config.json"), "w") as f:
-            json.dump(dict_config, f)
+            json.dump(dict_config, f, cls=ConfigJSONEncoder)
 
         # Model
         state_dict = to_torch_compatible_state_dict(model)

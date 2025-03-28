@@ -22,6 +22,7 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
 )
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.types import BlockFoldable
@@ -60,7 +61,7 @@ class GemmaConfig(HFCompatConfig):
         rope_scaling (Dict, ignored): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
-    activation_function: str = "gelu_new"
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.gelu_new
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
 
@@ -132,9 +133,11 @@ class GemmaConfig(HFCompatConfig):
             activation_function = "gelu_new"
 
         assert activation_function is not None, "No activation function found in HF configuration."
+        activation_function_enum = getattr(ActivationFunctionEnum, activation_function)
+
         return GemmaConfig(
             seq_len=hf_config.max_position_embeddings,
-            activation_function=activation_function,
+            activation_function=activation_function_enum,
             hidden_dim=hf_config.hidden_size,
             intermediate_dim=hf_config.intermediate_size,
             num_layers=hf_config.num_hidden_layers,
