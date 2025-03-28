@@ -43,7 +43,7 @@ from levanter.grad_accum import microbatched
 from levanter.optim.model_averaging import ModelAveragingConfig
 from levanter.schedule import BatchSchedule, IntSchedule, ScheduleStep, value_at_step
 from levanter.tracker import TrackerConfig, capture_time
-from levanter.trainer_state import TrainerState, saveable_training_mask
+from levanter.trainer_state import InsideJitInfo, TrainerState, saveable_training_mask
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh, zeros_like_tree
 from levanter.utils.tree_utils import inference_mode
@@ -79,11 +79,11 @@ class _JitHook:
 
 class TrainerHooks:
     hooks: List[_Hook]
-    stateful_hooks: List[_JitHook]
+    jit_hooks: List[_JitHook]
 
     def __init__(self):
         self.hooks = []
-        self.stateful_hooks = []
+        self.jit_hooks = []
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
@@ -91,18 +91,18 @@ class TrainerHooks:
                 hook.fn.on_step(info, force=force)
 
     def run_jit_hooks_outside_step(self, info: StepInfo, cb_infos: Sequence[PyTree], force: bool = False):
-        for s_hook, cb_info in zip(self.stateful_hooks, cb_infos):
+        for s_hook, cb_info in zip(self.jit_hooks, cb_infos):
             if force or (info.step % s_hook.every == 0):
                 s_hook.fn.on_step(info, cb_info)
 
-    def run_jit_hooks(self, state: TrainerState, grad: M, force: bool = False) -> tuple[PyTree, ...]:
+    def run_jit_hooks(self, state: TrainerState, jit_info: InsideJitInfo, force: bool = False) -> tuple[PyTree, ...]:
         hook: _JitHook
         hook_infos = []
-        for hook in self.stateful_hooks:
-            hook_shape = eqx.filter_eval_shape(hook.fn.inside_step, state, grad)
+        for hook in self.jit_hooks:
+            hook_shape = eqx.filter_eval_shape(hook.fn.inside_step, state, jit_info)
             new_s = jax.lax.cond(
                 force or (state.step % hook.every == 0),
-                lambda: hook.fn.inside_step(state, grad),
+                lambda: hook.fn.inside_step(state, jit_info),
                 lambda: zeros_like_tree(hook_shape),
             )
             hook_infos.append(new_s)
@@ -118,7 +118,7 @@ class TrainerHooks:
                 is_something = True
 
             if isinstance(fn, JitCallback):
-                self.stateful_hooks.append(_JitHook(fn, every))
+                self.jit_hooks.append(_JitHook(fn, every))
                 is_something = True
 
             if not is_something:
@@ -375,7 +375,7 @@ class Trainer:
         # jit hooks impose a nontrivial cost even when they're not run (since they defeat some compiler optimizations)
         # so we avoid running them when they're not needed
         # this results in two compiles, but the cost of the second compile is worth it
-        hooks_this_time = any(state.step % h.every == 0 for h in self.hooks.stateful_hooks)
+        hooks_this_time = any(state.step % h.every == 0 for h in self.hooks.jit_hooks)
 
         with capture_time() as step_time:
             if hooks_this_time:
@@ -530,10 +530,6 @@ class Trainer:
 
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
-        with hax.axis_mapping(self.parameter_axis_mapping):
-            if not _no_hooks:
-                hook_infos = self.hooks.run_jit_hooks(state, grads, force=False)
-
         # Sophia needs to be able to access the loss function in the optimizer
         def obj_fun(trainable_model):
             model = eqx.combine(trainable_model, state.model)
@@ -541,8 +537,14 @@ class Trainer:
                 model = self.mp.cast_to_compute(model)
                 return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
-        new_state = state.take_step(grads, obj_fun=obj_fun)
+        new_state, updates = state.take_step(grads, obj_fun=obj_fun)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)
+
+        if not _no_hooks:
+            with hax.axis_mapping(self.parameter_axis_mapping):
+                jit_info: InsideJitInfo = InsideJitInfo(grads=grads, updates=updates)
+                hook_infos = self.hooks.run_jit_hooks(state, jit_info, force=False)
+
         if _no_hooks:
             return loss, new_state
         else:
