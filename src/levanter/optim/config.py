@@ -63,6 +63,8 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 return False
             if "RMSNorm" in path:
                 return False
+            if "RmsNorm" in path:
+                return False
             if "Embedding" in path:
                 return False
             if path.endswith("bias"):
