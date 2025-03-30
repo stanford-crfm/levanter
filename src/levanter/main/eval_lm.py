@@ -127,7 +127,6 @@ def main(config: EvalLmConfig):
                     levanter.tracker.log(
                         {
                             f"analysis/{name}/entropy": entropy_hist,
-                            f"analysis/{name}/entropy_mean": entropy_hist.mean(),
                         },
                         step=0,
                     )
@@ -164,7 +163,6 @@ def main(config: EvalLmConfig):
                     levanter.tracker.log(
                         {
                             f"{prefix}/{name}/entropy": entropy_hist,
-                            f"analysis/hf/{name}/entropy_mean": entropy_hist.mean(),
                         },
                         step=0,
                     )
