@@ -67,8 +67,14 @@ class TrainLmConfig:
     log_entropy: bool = False
 
     log_norms: int | None = None
+    """Whether to log norms of parameters and gradients. If set to an integer, it will log every N steps."""
     log_hists: bool = False
+    """Whether to log histograms of parameters and gradients. If set to True, it will log histograms. Only works
+    if log_norms is also set."""
     split_scan_layers_for_log: bool = False
+    """
+    Whether to split scan layers for logging histograms and norms. This hurts perf a lot currently. (~5x more overhead)
+    """
 
 
 def main(config: TrainLmConfig):
