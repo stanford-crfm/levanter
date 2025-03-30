@@ -16,6 +16,7 @@ import levanter
 import levanter.eval
 import levanter.eval_harness
 from levanter import callbacks
+from levanter.callbacks import UpdatesWatchCallback
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, SupervisedSourceConfig, mk_supervised_datasets
@@ -66,6 +67,8 @@ class TrainLmConfig:
     log_entropy: bool = False
 
     log_norms: int | None = None
+    log_hists: bool = False
+    split_scan_layers_for_log: bool = False
 
 
 def main(config: TrainLmConfig):
@@ -244,9 +247,21 @@ def main(config: TrainLmConfig):
             logger.info("Logging norms of parameters and gradients")
             from levanter.callbacks import GradWatchCallback, OptStateWatchCallback, ParamWatchCallback
 
-            trainer.add_hook(GradWatchCallback(), every=config.log_norms)
-            trainer.add_hook(OptStateWatchCallback(), every=config.log_norms)
-            trainer.add_hook(ParamWatchCallback(), every=config.log_norms)
+            hists = config.log_hists
+            split = config.split_scan_layers_for_log
+
+            trainer.add_hook(
+                GradWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
+            )
+            trainer.add_hook(
+                OptStateWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
+            )
+            trainer.add_hook(
+                ParamWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
+            )
+            trainer.add_hook(
+                UpdatesWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
+            )
 
         @named_jit(
             in_axis_resources=parameter_axis_mapping,
