@@ -66,7 +66,27 @@ class WandbTracker(Tracker):
 
         step = int(step)
 
-        self.run.log(_convert_value_to_loggable_rec(metrics), step=step, commit=commit)
+        # wandb histograms are pretty limited: they log only the counts and the bin edges.
+        # Our histograms have the same set of things Tensorboard. we log those as separate values.
+        to_log = {}
+        for k, v in metrics.items():
+            if isinstance(v, Histogram):
+                # if the value is a Histogram, convert it to a wandb Histogram
+                # this will log the histogram counts and bin edges
+                import wandb
+
+                counts, limits = v.to_numpy_histogram()
+                wandb_hist = wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
+                to_log[k] = wandb_hist
+                to_log[f"{k}/min"] = v.min
+                to_log[f"{k}/max"] = v.max
+                to_log[f"{k}/mean"] = v.mean
+                to_log[f"{k}/variance"] = v.variance
+            else:
+                # otherwise, just log the value normally
+                to_log[k] = _convert_value_to_loggable_rec(v)
+
+        self.run.log(to_log, step=step, commit=commit)
 
     def log_summary(self, metrics: typing.Mapping[str, Any]):
         self.run.summary.update(_convert_value_to_loggable_rec(metrics))
