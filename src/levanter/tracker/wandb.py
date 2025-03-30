@@ -77,7 +77,7 @@ class WandbTracker(Tracker):
 
                 counts, limits = v.to_numpy_histogram()
                 wandb_hist = wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
-                to_log[k] = wandb_hist
+                to_log[f"{k}/histogram"] = wandb_hist
                 to_log[f"{k}/min"] = v.min
                 to_log[f"{k}/max"] = v.max
                 to_log[f"{k}/mean"] = v.mean
