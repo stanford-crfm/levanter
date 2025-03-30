@@ -50,7 +50,7 @@ class WandbTracker(Tracker):
         self._last_warning_step = -500
 
     def log_hyperparameters(self, hparams: dict[str, Any]):
-        self.run.config.update(_convert_values_to_loggable(hparams), allow_val_change=True)
+        self.run.config.update(_convert_value_to_loggable_rec(hparams), allow_val_change=True)
 
     def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         if step is None and not commit:
@@ -66,10 +66,10 @@ class WandbTracker(Tracker):
 
         step = int(step)
 
-        self.run.log(_convert_values_to_loggable(metrics), step=step, commit=commit)
+        self.run.log(_convert_value_to_loggable_rec(metrics), step=step, commit=commit)
 
     def log_summary(self, metrics: typing.Mapping[str, Any]):
-        self.run.summary.update(_convert_values_to_loggable(metrics))
+        self.run.summary.update(_convert_value_to_loggable_rec(metrics))
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         self.run.log_artifact(artifact_path, name=name, type=type)
@@ -79,27 +79,24 @@ class WandbTracker(Tracker):
         self.run.finish()
 
 
-def _convert_values_to_loggable(values: typing.Mapping[str, Any]):
-    def convert_value_to_loggable(value: Any):
-        if isinstance(value, (list, tuple)):
-            return [convert_value_to_loggable(v) for v in value]
-        elif isinstance(value, typing.Mapping):
-            return {k: convert_value_to_loggable(v) for k, v in value.items()}
-        elif isinstance(value, jax.Array):
-            if value.ndim == 0:
-                return value.item()
-            else:
-                return np.array(value)
-        elif isinstance(value, Histogram):
-            import wandb
-
-            counts, limits = value.to_numpy_histogram()
-
-            return wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
+def _convert_value_to_loggable_rec(value: Any):
+    if isinstance(value, (list, tuple)):
+        return [_convert_value_to_loggable_rec(v) for v in value]
+    elif isinstance(value, typing.Mapping):
+        return {k: _convert_value_to_loggable_rec(v) for k, v in value.items()}
+    elif isinstance(value, jax.Array):
+        if value.ndim == 0:
+            return value.item()
         else:
-            return value
+            return np.array(value)
+    elif isinstance(value, Histogram):
+        import wandb
 
-    return convert_value_to_loggable(values)
+        counts, limits = value.to_numpy_histogram()
+
+        return wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
+    else:
+        return value
 
 
 def is_wandb_available():

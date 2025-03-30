@@ -101,10 +101,25 @@ class JitCallback(ABC, Generic[S, M, CBInfo]):
 
     @abc.abstractmethod
     def inside_step(self, state: S, inside_info: InsideJitInfo[M]) -> CBInfo:
+        """
+        This function is called inside the JIT-compiled function. You have access to the `inside_info` which contains
+        information about the gradients, updates, and other information that was computed during the step.
+        Args:
+            state:
+            inside_info:
+
+        Returns:
+
+        """
         ...
 
     @abc.abstractmethod
     def on_step(self, step_info: S, cb_info: CBInfo):
+        """
+        This function is called after the JIT-compiled function has completed. You have access to the `step_info`
+        which contains information about the step that just completed, as well as the `cb_info` which is whatever
+        was returned from `inside_step`.
+        """
         ...
 
 
@@ -516,6 +531,35 @@ class OptStateWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
         return out
 
 
+class UpdatesWatchCallback(JitCallback[S, M, dict[str, float | Histogram]]):
+    """
+    Same as [levanter.callbacks.GradWatchCallback][], but for the updates to the model parameters.
+
+    Args:
+        prefix (str): The prefix to use for logging.
+        include_histogram (bool): Whether to include histograms of the updates.
+        split_scan_layers (bool): Whether to split the scan layers into separate histograms/norms
+    """
+
+    def __init__(
+        self,
+        prefix: str = "updates",
+        include_histogram: bool = True,
+        split_scan_layers: bool = True,
+    ):
+        self.prefix = prefix
+        self.include_histogram = include_histogram
+        self.split_scan_layers = split_scan_layers
+
+    def inside_step(self, state: TrainerState[M], inside_info: InsideJitInfo[M]):
+        return summary_statistics_for_tree(
+            self.prefix, inside_info.updates, self.split_scan_layers, self.include_histogram
+        )
+
+    def on_step(self, step_info: StepInfo[S], cb_info: dict[str, float | Histogram]):
+        levanter.tracker.log(cb_info, step=step_info.step)
+
+
 def summary_statistics_for_tree(
     prefix: str, tree: M, split_scan_layers: bool, include_histogram: bool
 ) -> dict[str, float | Histogram]:
@@ -569,8 +613,9 @@ def summary_statistics_for_tree(
                 norms[key_path] = jnp.linalg.norm(g)
 
                 if include_histogram:
-                    hist = Histogram.from_array(g)
-                    hists[key_path] = hist
+                    with jax.named_scope(f"histogram({prefix}/{key_path})"):
+                        hist = Histogram.from_array(g)
+                        hists[key_path] = hist
 
         return norms, hists
 

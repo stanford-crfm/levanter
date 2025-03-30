@@ -1,3 +1,6 @@
+import functools
+
+import equinox
 import jax
 import numpy as np
 from jax.random import PRNGKey
@@ -43,3 +46,30 @@ def test_sharded_histogram_tp():
 
     assert jax.numpy.allclose(hist, jnp_hist)
     assert jax.numpy.allclose(bins, jnp_bins)
+
+
+def test_sharded_histogram_with_vmap():
+    mesh = Mesh((jax.devices()), (ResourceAxis.DATA,))
+
+    Layer = hax.Axis("layer", 4)
+    Batch = hax.Axis("batch", 16)
+    Feature = hax.Axis("feature", 128)
+
+    @equinox.filter_jit
+    def jit_vmap_hist(a):
+        """
+        This function will be JIT compiled and VMapped.
+        """
+        # Call the sharded histogram function
+        hist, bins = hax.vmap(levanter.tracker.histogram.sharded_histogram, Layer)(a, bins=32)
+        return hist, bins
+
+    with mesh, hax.axis_mapping({"batch": ResourceAxis.DATA}):
+        a = hax.random.normal(PRNGKey(1), (Layer, Batch, Feature))
+        a = hax.shard(a)
+        hist, bins = jit_vmap_hist(a)
+
+    hist_normal, bins_normal = jax.vmap(functools.partial(jax.numpy.histogram, bins=32), in_axes=0)(a.array)
+
+    assert jax.numpy.allclose(hist, hist_normal)
+    assert jax.numpy.allclose(bins, bins_normal)
