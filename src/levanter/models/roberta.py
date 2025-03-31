@@ -630,7 +630,7 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings, key=key)
 
-        # jax.debug.breakpoint()
+        jax.debug.breakpoint()
 
         return embeddings
 
