@@ -574,7 +574,7 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
     def create_position_ids_from_input_ids(self, input_ids, past_key_values_length=0):
         mask = hax.not_equal(input_ids, self.padding_idx) * 1
         incremental_indices = (hax.cumsum(mask, axis=self.Pos).astype(mask) + past_key_values_length) * mask
-        # incremental_indices -= mask.all(axis=self.Pos)
+        incremental_indices -= mask.all(axis=self.Pos) #TODO: sus
         return incremental_indices + self.padding_idx
 
     # def create_position_ids_from_inputs_embeds(self, input_axes, PosInput):
