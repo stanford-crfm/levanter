@@ -69,8 +69,8 @@ class DataLoader(Iterable[Ex]):
         *,
         batch_axis_name: str | None = None,
         max_buffered_batches: Optional[int] = 64,
-        mesh: Mesh,
-        axis_resources: Optional[ResourceMapping],
+        mesh: Mesh | None = None,
+        axis_resources: Optional[ResourceMapping] = None,
         prefetch_size: int = 32,
         pad_final_batch: bool = True,
         allow_nondivisible_batch_size: bool = False,
@@ -99,6 +99,9 @@ class DataLoader(Iterable[Ex]):
         self.prefetch_size = prefetch_size
         self.axis_resources = axis_resources
         self.data_store = data
+
+        if mesh is None:
+            mesh = hax.partitioning._get_mesh()
         self.mesh = mesh
 
         if isinstance(batch_size, hax.Axis):
@@ -217,7 +220,9 @@ class DataLoader(Iterable[Ex]):
     def __len__(self):
         if not self.has_len():
             raise ValueError("DataLoader has no length")
-        return blocking_wait(self.data_store.async_len())
+        total_length = blocking_wait(self.data_store.current_len())
+        step = self.scheduler.find_step_containing_offset(total_length) + 1
+        return step
 
 
 class DataLoaderIterator(Iterator[Ex]):
@@ -458,12 +463,15 @@ class DataLoaderIterator(Iterator[Ex]):
         task = asyncio.create_task(self.dl.data_store.get_batch(indices))
 
         async def watchdog():
+            total = 0.0
 
             while not task.done():
                 await asyncio.sleep(threshold)
+                total += threshold
                 if not task.done():
-                    logging.warning(f"Fetching data is taking longer than {threshold} seconds...")
-                    logging.warning(f"Indices: {indices}")
+                    logging.warning(
+                        f"Data loading is taking a long time: {total:.1f} seconds.Looking for {len(indices)} items."
+                    )
 
         watchdog_task = asyncio.create_task(watchdog())
 

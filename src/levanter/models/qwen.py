@@ -15,7 +15,7 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.attention import AttentionMask, dot_product_attention
-from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaRMSNorm, LlamaTransformer
+from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import RotaryEmbeddingsConfig
 from levanter.utils.flop_utils import lm_flops_per_token
@@ -117,7 +117,7 @@ class QwenConfig(LlamaConfig):
 
 # Modified attention class for Qwen
 class QwenAttention(eqx.Module):
-    config: QwenConfig = eqx.static_field()
+    config: QwenConfig = eqx.field(static=True)
     q_proj: hnn.Linear
     k_proj: hnn.Linear
     v_proj: hnn.Linear
@@ -201,11 +201,11 @@ class QwenAttention(eqx.Module):
 
 # Modified decoder layer for Qwen
 class QwenDecoderLayer(eqx.Module):
-    config: QwenConfig = eqx.static_field()
+    config: QwenConfig = eqx.field(static=True)
     self_attn: QwenAttention
     mlp: LlamaMlp  # Can reuse Llama MLP as structure is similar
-    input_layernorm: LlamaRMSNorm
-    post_attention_layernorm: LlamaRMSNorm
+    input_layernorm: hnn.RmsNorm
+    post_attention_layernorm: hnn.RmsNorm
 
     @staticmethod
     def init(config: QwenConfig, *, key) -> "QwenDecoderLayer":
@@ -242,9 +242,9 @@ class QwenDecoderLayer(eqx.Module):
 
 # Modified transformer for Qwen
 class QwenTransformer(LlamaTransformer):
-    config: QwenConfig = eqx.static_field()
+    config: QwenConfig = eqx.field(static=True)
     layers: BlockFoldable[QwenDecoderLayer]
-    norm: LlamaRMSNorm
+    norm: hnn.RmsNorm
 
     @staticmethod
     def init(config: QwenConfig, *, key) -> "QwenTransformer":
@@ -286,7 +286,7 @@ class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization)
         Args:
             input_ids: token IDs with shape {Pos}
             attn_mask: attention mask with shape {Pos, KeyPos}
-            key: PRNGKey for random number generation
+            key: PRNGKeyArray for random number generation
 
         Returns:
             NamedArray: activations with shape {Pos, Embed}

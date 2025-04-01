@@ -7,9 +7,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax as hax
-import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
+from haliax.nn.normalization import LayerNormBase
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
@@ -22,6 +22,7 @@ from levanter.models.llama import (  # Gemma attention and MLP is identical to L
 )
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.types import BlockFoldable
@@ -60,7 +61,7 @@ class GemmaConfig(HFCompatConfig):
         rope_scaling (Dict, ignored): dict containing the scaling configuration for the Rotary Positional Embedding.
     """
 
-    activation_function: str = "gelu_new"
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.gelu_new
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
 
@@ -84,7 +85,6 @@ class GemmaConfig(HFCompatConfig):
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
-    gradient_checkpointing_block_size: int = 5
     scan_layers: bool = True
 
     use_bias: bool = False
@@ -133,9 +133,11 @@ class GemmaConfig(HFCompatConfig):
             activation_function = "gelu_new"
 
         assert activation_function is not None, "No activation function found in HF configuration."
+        activation_function_enum = getattr(ActivationFunctionEnum, activation_function)
+
         return GemmaConfig(
             seq_len=hf_config.max_position_embeddings,
-            activation_function=activation_function,
+            activation_function=activation_function_enum,
             hidden_dim=hf_config.hidden_size,
             intermediate_dim=hf_config.intermediate_size,
             num_layers=hf_config.num_hidden_layers,
@@ -194,7 +196,7 @@ class GemmaConfig(HFCompatConfig):
         )
 
 
-class GemmaRMSNorm(hnn.LayerNorm):
+class GemmaRMSNorm(LayerNormBase):
     """
     Like Llama, Gemma uses an RMSNorm instead of a layer norm.
 
@@ -202,15 +204,15 @@ class GemmaRMSNorm(hnn.LayerNorm):
     we do the same for compatibility.
     """
 
-    @staticmethod
-    def init(axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False):
+    @classmethod
+    def init(cls, axis: AxisSpec, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = False, dtype=None):
         assert use_weight, "GemmaRMSNorm does not support use_weight=False"
         assert not use_bias, "GemmaRMSNorm does not support use_bias=True"
 
         weight = hax.zeros(axis)
         bias = None
 
-        return GemmaRMSNorm(axis, weight, bias, eps)
+        return GemmaRMSNorm(axis, weight, bias, eps, dtype=jnp.float32)
 
     def __call__(self, x: NamedArray) -> NamedArray:
         # Gemma's norm is calculated in fp32 explicitly
@@ -226,7 +228,7 @@ class GemmaRMSNorm(hnn.LayerNorm):
 
 
 class GemmaDecoderLayer(ModuleWithStateDictSerialization):
-    config: GemmaConfig = eqx.static_field()
+    config: GemmaConfig = eqx.field(static=True)
     self_attn: LlamaAttention
     mlp: LlamaMlp
     input_layernorm: GemmaRMSNorm
@@ -267,7 +269,7 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
 
 
 class GemmaTransformer(ModuleWithStateDictSerialization):
-    config: GemmaConfig = eqx.static_field()
+    config: GemmaConfig = eqx.field(static=True)
     layers: BlockFoldable[GemmaDecoderLayer]
     norm: GemmaRMSNorm
 

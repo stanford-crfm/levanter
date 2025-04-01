@@ -52,6 +52,7 @@ import equinox as eqx
 import jax
 from jaxtyping import PyTree
 
+import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis
@@ -195,7 +196,7 @@ def filter_lora_params(params: M) -> M:
     Filters LoRA parameters from the given parameter tree.
     """
 
-    return eqx.filter(params, is_lora_param, is_leaf=is_lora_param)
+    return eqx.filter(params, is_lora_param, is_leaf=lambda x: is_lora_param(x) or isinstance(x, haliax.NamedArray))
 
 
 def partition_lora_params(params: M) -> Tuple[M, M]:
