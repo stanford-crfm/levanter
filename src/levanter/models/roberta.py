@@ -575,13 +575,13 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
         mask = hax.not_equal(input_ids, self.padding_idx) * 1
         incremental_indices = (hax.cumsum(mask, axis=self.Pos).astype(mask) + past_key_values_length) * mask
         incremental_indices -= mask.all(axis=self.Pos) #TODO: sus
-        return incremental_indices + self.padding_idx
+        return incremental_indices # + self.padding_idx
 
-    # def create_position_ids_from_inputs_embeds(self, input_axes, PosInput):
-    #     position_ids = hax.arange(axis = PosInput, start = 0, dtype=jnp.int32)
-    #     # position_ids = hax.arange(axis = PosInput, start = self.padding_idx + 1, dtype=jnp.int32)
+    def create_position_ids_from_inputs_embeds(self, input_axes, PosInput):
+        position_ids = hax.arange(axis = PosInput, start = 0, dtype=jnp.int32)
+        # position_ids = hax.arange(axis = PosInput, start = self.padding_idx + 1, dtype=jnp.int32)
 
-    #     return hax.broadcast_to(position_ids, input_axes)
+        return hax.broadcast_to(position_ids, input_axes)
 
     @named_call
     def embed(self, input_ids=None, token_type_ids=None, position_ids=None, input_embeds=None, past_key_values_length=0, *, key = None):
@@ -594,15 +594,10 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
 
         # Get position_ids
         if position_ids is None:
-            # position_ids = hax.arange(axis = self.Pos, start = 0, dtype=jnp.int32)
             if input_ids is not None:
                 position_ids = self.create_position_ids_from_input_ids(input_ids, past_key_values_length)
-
-            # if input_ids is not None:
-            #     # Create the position ids from the input token ids. Any padded tokens remain padded.
-            #     position_ids = self.create_position_ids_from_input_ids(input_ids, past_key_values_length)
-            # else:
-            #     position_ids = self.create_position_ids_from_inputs_embeds(input_axes, input_embeds.resolve_axis("position"))
+            else:
+                position_ids = self.create_position_ids_from_inputs_embeds(input_axes, input_embeds.resolve_axis("position"))
         
         # Get token_type_ids
         if token_type_ids is None:
@@ -630,7 +625,7 @@ class RobertaEmbedding(eqx.Module, StateDictSerializationMixin):
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings, key=key)
 
-        jax.debug.breakpoint()
+        # jax.debug.breakpoint()
 
         return embeddings
 
