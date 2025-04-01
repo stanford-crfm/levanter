@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Sequence, Union
+from typing import Any, Literal, Sequence, Union
 
 import jax
 from jax import numpy as jnp
@@ -16,9 +16,12 @@ from levanter.trainer_state import InsideJitInfo, TrainerState
 from levanter.utils import jax_utils
 
 
-@dataclass
+Target = Literal["grads", "params", "opt_state", "updates"]
+
+
+@dataclass(frozen=True)
 class WatchConfig:
-    watch_targets: Union[Sequence[str], str] = ("grads", "params")
+    watch_targets: Union[Sequence[Target], Target] = ("grads", "params")
     include_norms: bool = True
     include_per_parameter_norms: bool = True
     include_histograms: bool = False
