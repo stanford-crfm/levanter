@@ -849,19 +849,20 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
             reduction: Optional[hax.ReductionFunction] = hax.mean,
             reduction_axis: Optional[hax.AxisSelection] = None,
     ) -> jnp.ndarray | NamedArray:
-        # logits = self(example.tokens, example.attn_mask, key=key)[0]
         logits = self(example.tokens, example.attn_mask, key=key)
-        # print(f"Logits: {logits}")
+
         logits = logits.astype(jnp.float32)
         targets = example.targets
 
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
-        #target_y = jax.debug.breakpoint(token=target_y)
-        loss = cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        )
+        
+        # loss = cross_entropy_loss(
+        #     logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
+        # )
 
-        # print(f"loss: {loss}")
+        loss = cross_entropy_loss(
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis
+        )
 
         return loss
     

@@ -108,7 +108,7 @@ class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
                     masked_tokens = jnp.where(mask, mask_token, tokens_array)
 
                     # Set targets to the original tokens where mask is True, otherwise set to mask_token_id
-                    targets = jnp.where(mask, tokens_array, self.mask_token_id)
+                    # targets = jnp.where(mask, tokens_array, self.mask_token_id)
 
                     masked_tokens_named = hax.named(masked_tokens, self.QPos)
                     targets_named = hax.named(targets, self.QPos)
