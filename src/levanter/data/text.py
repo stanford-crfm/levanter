@@ -1330,9 +1330,30 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         mix_key, shuffle_key = jax.random.split(key)
         causal_datasets = self.train_sets(Pos, monitors, key=shuffle_key, epochs=epochs)
 
-        if self.experiment_budget is not None or self.target_budget is not None:
-            raise ValueError("Do not support experiment budget or target budget for now")
+        weights = self.train_weights
+        if isinstance(weights, Sequence):
+            weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
 
+        mixture = MixtureDataset(
+            datasets=causal_datasets,
+            weights=weights,
+            stop_strategy=self.stop_strategy,
+            key=mix_key,
+            block_size=self.mixture_block_size,
+        )
+
+        return mixture
+
+    def train_sets(
+        self,
+        Pos: Axis,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        epochs: Optional[int] = None,
+        key: PRNGKeyArray,
+    ) -> Mapping[str, AsyncDataset[LmExample]]:
+        doc_caches = self.build_caches("train", monitors=monitors)
+        token_datasets = self._token_seq_datasets(Pos, doc_caches)
         if epochs:
             raise ValueError("Epochs are not supported for mixture datasets")
 
@@ -1355,6 +1376,17 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             for name, ds in token_datasets.items():
                 out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
             token_datasets = out_token_datasets
+
+        if (
+            self.experiment_budget is not None and self.target_budget is not None
+        ) and self.experiment_budget > self.target_budget:
+            raise ValueError(
+                f"Experiment budget should be smaller than target budget, got {self.experiment_budget} >"
+                f" {self.target_budget}"
+            )
+        
+        if self.experiment_budget is not None and self.target_budget is not None:
+            raise NotImplementedError("Simulated epoching is not implemented for mixture datasets")
 
         train_token_datasets = {}
         for name, ds in token_datasets.items():
@@ -1380,33 +1412,27 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                         logger.info(f"max_sequences_dict[name]: {self.max_sequences_dict[name]}")
                         logger.info(f"num_validation_sequences_dict[name]: {self.num_validation_sequences_dict[name]}")
                         raise ValueError(f"Dataset {name} is too small to supply unique training and validation sets")
-
-        weights = self.train_weights
-        if isinstance(weights, Sequence):
-            weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
-
-        mixture = MixtureDataset(
-            datasets=train_token_datasets,
-            weights=weights,
-            stop_strategy=self.stop_strategy,
-            key=mix_key,
-            block_size=self.mixture_block_size,
-        )
-
-        return mixture
-
-    def training_sets(
-        self, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Mapping[str, TokenSeqDataset]:
-        doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+        
+        causal_datasets = {
+            name: CausalLmDataset(
+                ds,
+                Pos,
+                ignore_index=self.ignore_token_id,
+                eos_id=self.the_tokenizer.eos_token_id,
+            )
+            for name, ds in train_token_datasets.items()
+        }
+        return causal_datasets
+    
+    def _token_seq_datasets(self, Pos, doc_caches):
+        token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
         return token_datasets
 
     def validation_sets(
         self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = {name: TokenSeqDataset(cache, seq_len) for name, cache in doc_caches.items()}
+        token_datasets = self._token_seq_datasets(Pos, doc_caches)
 
         if self.num_validation_sequences_dict is not None:
             logger.info("Uploading new validation sets from the training set")
@@ -1416,7 +1442,15 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                     logger.warning(f"Overwriting existing validation set for {name}")
                 token_datasets[name] = ds
 
-        return token_datasets
+        return {
+            name: CausalLmDataset(
+                ds,
+                Pos,
+                ignore_index=self.ignore_token_id,
+                eos_id=self.the_tokenizer.eos_token_id,
+            )
+            for name, ds in token_datasets.items()
+        }
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
