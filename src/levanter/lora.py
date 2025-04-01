@@ -64,8 +64,8 @@ from haliax.state_dict import (
     to_torch_compatible_state_dict,
 )
 
+from levanter.callbacks import StepInfo
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
-from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 from levanter.utils.logging import silence_transformer_nag
