@@ -142,8 +142,6 @@ def cb_compute_entropies(
             logger.exception(f"Error computing entropy for {prefix}")
             raise
 
-        levanter.tracker.log(
-            {f"{prefix}/entropy": entropy_hist, f"{prefix}/entropy_mean": entropy_hist.mean()}, step=step.step
-        )
+        levanter.tracker.log({f"{prefix}/entropy": entropy_hist}, step=step.step)
 
     return compute_entropy

@@ -54,8 +54,21 @@ class Histogram(equinox.Module):
     def to_numpy_histogram(self) -> tuple[np.ndarray, np.ndarray]:
         return np.array(self.bucket_counts), np.array(self.bucket_limits)
 
+    @property
     def mean(self) -> Scalar:
         return self.sum / self.num
+
+    @property
+    def variance(self) -> Scalar:
+        """
+        Calculate the variance of the histogram.
+        Variance = E[X^2] - (E[X])^2
+        where E[X] is the mean and E[X^2] is the mean of squares.
+        """
+        mean = self.mean
+        mean_of_squares = self.sum_squares / self.num
+        variance = mean_of_squares - (mean**2)
+        return variance
 
 
 def sharded_histogram(a: NamedArray, bins: int | ArrayLike = 10) -> tuple[jnp.ndarray, jnp.ndarray]:
