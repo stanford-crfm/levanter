@@ -4,7 +4,7 @@ import jax.random
 from async_lru import alru_cache
 
 from levanter.data import AsyncDataset
-from levanter.data._prp import Permutation
+from levanter.data._prp import PermType, Permutation
 from levanter.data.dataset import T_co
 
 
@@ -13,11 +13,12 @@ class PermutationDataset(AsyncDataset[T_co]):
 
     # TODO: add epoch reshuffling
 
-    def __init__(self, dataset: AsyncDataset[T_co], key: jax.random.PRNGKey):
+    def __init__(self, dataset: AsyncDataset[T_co], key: jax.random.PRNGKey, perm_type: PermType = "feistel"):
         super().__init__()
         self.dataset = dataset
         self.key = key
         self._permutation: Optional[Permutation] = None
+        self._perm_type = perm_type
 
     async def async_len(self) -> int:
         return await self.dataset.async_len()
@@ -47,7 +48,7 @@ class PermutationDataset(AsyncDataset[T_co]):
 
     async def _get_permutation(self):
         if self._permutation is None:
-            self._permutation = Permutation(await self.async_len(), self.key)
+            self._permutation = Permutation.make(self._perm_type, await self.async_len(), self.key)
         return self._permutation
 
     async def wait_until_len_at_least(self, length: int) -> int:
@@ -74,11 +75,14 @@ class EraShufflingDataset(AsyncDataset[T_co]):
     length # over time. This would be a nice feature to have.
     """
 
-    def __init__(self, dataset: AsyncDataset[T_co], era_length: int, *, key: jax.random.PRNGKey):
+    def __init__(
+        self, dataset: AsyncDataset[T_co], era_length: int, *, key: jax.random.PRNGKey, perm_type: PermType = "feistel"
+    ):
         super().__init__()
         self.dataset = dataset
         self.era_length = era_length
         self.key = key
+        self._perm_type = perm_type
 
         @alru_cache(maxsize=4)  # we're mostly going to be going sequentially
         async def gen_era_permutation(era: int) -> Permutation:
@@ -88,7 +92,7 @@ class EraShufflingDataset(AsyncDataset[T_co]):
             era_length_val = min(self.era_length, current_len - era * self.era_length)
 
             mix_key = jax.random.fold_in(key, era)
-            return Permutation(era_length_val, mix_key)
+            return Permutation.make(self._perm_type, era_length_val, mix_key)
 
         self.gen_era_permutation = gen_era_permutation
 

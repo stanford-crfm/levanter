@@ -10,7 +10,21 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeAlias, TypeVar, Union
+from typing import (
+    Any,
+    Dict,
+    Iterator,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeAlias,
+    TypeVar,
+    Union,
+)
 
 import datasets
 import equinox as eqx
@@ -608,6 +622,12 @@ class LMTaskConfig(abc.ABC):
     shuffle: bool | int = False
     """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
     If you want to shuffle in eras, set this to the era length"""
+    permutation_type: Literal["feistel", "linear"] | None = None
+    """
+    Type of permutation to use for shuffle.
+
+    If None, defaults to linear, but this will change in the future since Feistel is better.
+    """
 
     @cached_property
     def the_tokenizer(self) -> HfTokenizer:
@@ -1058,10 +1078,17 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             logger.info("Wrapping dataset in epoch dataset")
             ds = EpochDataset(ds, max_epochs=epochs)
 
+        perm_type = self.permutation_type
+        if perm_type is None:
+            logger.warning(
+                "Defaulting to linear permutation for shuffling. This will change to Feistel in the future."
+            )
+            perm_type = "linear"
+
         if self.shuffle is True:
-            ds = ds.shuffle(key)
+            ds = ds.shuffle(key, perm_type=perm_type)
         elif isinstance(self.shuffle, int) and self.shuffle > 0:
-            ds = ds.era_shuffle(self.shuffle, key=key)
+            ds = ds.era_shuffle(self.shuffle, key=key, perm_type=perm_type)
 
         return CausalLmDataset(ds, Pos, ignore_index=self.ignore_token_id, eos_id=self.the_tokenizer.eos_token_id)  # type: ignore
 
@@ -1288,11 +1315,18 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         # We shuffle the components and not the overall mixture because this lets us preserve
         # the "stable batch" property of the mixture dataset.
+        perm_type = self.permutation_type
+        if perm_type is None and self.shuffle is not False:
+            logger.warning(
+                "Defaulting to linear permutation for shuffling. This will change to Feistel in the future."
+            )
+            perm_type = "linear"
+
         def shuffle_ds(ds, key):
             if self.shuffle is True:
-                ds = ds.shuffle(key)
-            elif isinstance(self.shuffle, int):
-                ds = ds.era_shuffle(self.shuffle, key=key)
+                ds = ds.shuffle(key, perm_type=perm_type)
+            elif isinstance(self.shuffle, int) and self.shuffle > 0:
+                ds = ds.era_shuffle(self.shuffle, key=key, perm_type=perm_type)
 
             return ds
 
