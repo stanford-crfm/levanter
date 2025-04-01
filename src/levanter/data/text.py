@@ -1352,10 +1352,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         for name, ds in token_datasets.items():
             if self.num_validation_sequences_dict is not None and name in self.num_validation_sequences_dict:
                 len_dataset = len(ds.as_sync_dataset())
+                logger.info(f"len_dataset: {len_dataset}")
+                logger.info(f"num_validation_sequences_dict[name]: {self.num_validation_sequences_dict[name]}")
                 self.validation_token_datasets[name] = ds.slice_dataset(
                     start_index=len_dataset - self.num_validation_sequences_dict[name], end_index=len_dataset
                 )
                 if self.max_sequences_dict is not None and name in self.max_sequences_dict:
+                    logger.info(f"max_sequences_dict[name]: {self.max_sequences_dict[name]}")
                     if len_dataset < self.max_sequences_dict[name] + self.num_validation_sequences_dict[name]:
                         logger.info(f"Dataset {name} is too small to supply unique training and validation sets")
                         logger.info(f"len_dataset: {len_dataset}")
