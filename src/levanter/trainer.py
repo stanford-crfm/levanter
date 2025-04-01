@@ -28,12 +28,14 @@ from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 from haliax.quantization import QuantizationConfig
 from haliax.types import Scalar
 
+import levanter.callbacks._metrics
 import levanter.checkpoint
 import levanter.tracker
 import levanter.tracker.wandb
 import levanter.utils.logging
 from levanter import tracker
-from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
+from levanter.callbacks import JitCallback, M, S, StepInfo
+from levanter.callbacks._core import Callback, CBInfo, LambdaCallback
 from levanter.checkpoint import CheckpointerConfig, is_checkpoint_path, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
@@ -431,8 +433,8 @@ class Trainer:
     def _add_default_hooks(self):
         from levanter import callbacks
 
-        self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_step_info(self.config.num_train_steps), every=1)
+        self.add_hook(levanter.callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
+        self.add_hook(levanter.callbacks.log_step_info(self.config.num_train_steps), every=1)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency

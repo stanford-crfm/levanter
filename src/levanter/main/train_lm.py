@@ -13,10 +13,11 @@ from haliax import Axis
 from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
+import levanter.callbacks
 import levanter.eval
 import levanter.eval_harness
 from levanter import callbacks
-from levanter.callbacks import UpdatesWatchCallback
+from levanter.callbacks.watch import UpdatesWatchCallback
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, SupervisedSourceConfig, mk_supervised_datasets
@@ -245,7 +246,7 @@ def main(config: TrainLmConfig):
         if config.log_norms is not None:
             # log all the things
             logger.info("Logging norms of parameters and gradients")
-            from levanter.callbacks import GradWatchCallback, OptStateWatchCallback, ParamWatchCallback
+            from levanter.callbacks.watch import GradWatchCallback, OptStateWatchCallback, ParamWatchCallback
 
             hists = config.log_hists
             split = config.split_scan_layers_for_log
