@@ -7,7 +7,7 @@ import jax
 from tqdm_loggable.auto import tqdm
 
 import levanter.tracker
-from levanter.callbacks._core import Callback, JitCallback, M, S, StepInfo
+from levanter.callbacks._core import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
 from levanter.callbacks._metrics import (
     _tqdm_logging_one_time_setup,
     log_epoch_progress,
@@ -137,10 +137,24 @@ def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bo
 def _flush_while_waiting(event):
     def flush_stdout():
         sys.stdout.flush()
+        sys.stderr.flush()
         time.sleep(5)
         while not event.is_set():
             print("Waiting...", flush=True)
+            print("\n", file=sys.stderr, flush=True)
             time.sleep(5)
 
     thread = threading.Thread(target=flush_stdout)
     thread.start()
+
+
+__all__ = [
+    "eval_loss_loop",
+    "compute_validation_loss",
+    "wandb_xla_logger",
+    "profile",
+    "Callback",
+    "JitCallback",
+    "LambdaCallback",
+    "StepInfo",
+]

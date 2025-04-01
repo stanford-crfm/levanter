@@ -34,8 +34,8 @@ import levanter.tracker
 import levanter.tracker.wandb
 import levanter.utils.logging
 from levanter import tracker
-from levanter.callbacks import JitCallback, M, S, StepInfo
-from levanter.callbacks._core import Callback, CBInfo, LambdaCallback
+from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
+from levanter.callbacks.watch import WatchConfig
 from levanter.checkpoint import CheckpointerConfig, is_checkpoint_path, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
@@ -438,6 +438,11 @@ class Trainer:
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+
+        # Add watch callback if configured
+        if self.config.watch.is_enabled:
+            self.add_hook(self.config.watch.build(), every=self.config.watch.interval)
+
         if self.config.profiler:
             profile_path = self.config.log_dir / self.run_id / "profiler"
             total_prof_steps = self.config.profiler_num_steps
@@ -592,6 +597,7 @@ class TrainerConfig:
     id: Optional[str] = None  # run id. if None, will be set to a random string
 
     tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
+    watch: WatchConfig = WatchConfig()
 
     # TODO: refactor callbacks
     profiler: bool = False

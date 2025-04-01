@@ -168,4 +168,4 @@ def _tqdm_logging_one_time_setup():
     if _did_tqdm_logging_one_time_setup:
         return
     _did_tqdm_logging_one_time_setup = True
-    tqdm_logging.tqdm_logging.set_log_rate(timedelta(seconds=60))
+    tqdm_logging.set_log_rate(timedelta(seconds=60))

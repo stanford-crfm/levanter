@@ -17,7 +17,6 @@ import levanter.callbacks
 import levanter.eval
 import levanter.eval_harness
 from levanter import callbacks
-from levanter.callbacks.watch import UpdatesWatchCallback
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, SupervisedSourceConfig, mk_supervised_datasets
@@ -66,10 +65,6 @@ class TrainLmConfig:
 
     # TODO: really need to add callback framework
     log_entropy: bool = False
-
-    log_norms: int | None = None
-    log_hists: bool = False
-    split_scan_layers_for_log: bool = False
 
 
 def main(config: TrainLmConfig):
@@ -220,7 +215,7 @@ def main(config: TrainLmConfig):
         trainer.add_hook(
             callbacks.log_performance_stats(Pos.size, trainer.config.batch_schedule, flops_per_example), every=1
         )
-        # trainer.add_hook(callbacks.GradWatchCallback(include_histogram=True), every=5)
+        # trainer.add_hook(callbacks.GradWatchCallback(include_histograms=True), every=5)
 
         if config.hf_save_path is not None:
             # bit gross to reach this far into the config, but it's fine
@@ -241,27 +236,6 @@ def main(config: TrainLmConfig):
                     eval_harness, tokenizer, EvalBatch, compute_axis_mapping, trainer.mp
                 ),
                 every=config.eval_harness_steps,
-            )
-
-        if config.log_norms is not None:
-            # log all the things
-            logger.info("Logging norms of parameters and gradients")
-            from levanter.callbacks.watch import GradWatchCallback, OptStateWatchCallback, ParamWatchCallback
-
-            hists = config.log_hists
-            split = config.split_scan_layers_for_log
-
-            trainer.add_hook(
-                GradWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
-            )
-            trainer.add_hook(
-                OptStateWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
-            )
-            trainer.add_hook(
-                ParamWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
-            )
-            trainer.add_hook(
-                UpdatesWatchCallback(include_histogram=hists, split_scan_layers=split), every=config.log_norms
             )
 
         @named_jit(
