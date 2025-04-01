@@ -60,11 +60,12 @@ import haliax as hax
 from haliax.partitioning import ResourceMapping, round_axis_for_partitioning
 
 import levanter.config
+from levanter.callbacks import StepInfo
 from levanter.checkpoint import load_checkpoint
 from levanter.data import batched
 from levanter.data.loader import stack_batches
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
-from levanter.trainer import StepInfo, TrainerConfig
+from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import broadcast_shard, use_cpu_device
 from levanter.utils.tree_utils import inference_mode
 

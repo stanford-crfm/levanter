@@ -12,8 +12,8 @@ import haliax.nn as hnn
 from haliax.jax_utils import named_call
 
 import levanter.tracker
+from levanter.callbacks import StepInfo
 
-from ..callbacks import StepInfo
 from ..data import DataLoader
 from ..tracker.histogram import Histogram
 
