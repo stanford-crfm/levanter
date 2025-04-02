@@ -193,7 +193,7 @@ class AudioDatasetSourceConfig:
 
     def doc_iterator(self, split: str) -> Iterator[Tuple[np.ndarray, int, str]]:
         if self.id is not None:
-            data = datasets.load_dataset(self.id, split=split, name=self.name, streaming=self.stream)
+            data = datasets.load_dataset(self.id, split=split, name=self.name, streaming=self.stream, trust_remote_code=True)
             for doc in data:
                 yield (doc[self.audio_key]["array"], doc[self.audio_key]["sampling_rate"], doc[self.text_key])
         else:
@@ -385,7 +385,7 @@ class AudioIODatasetConfig(AudioDatasetSourceConfig, AudioTaskConfig):
 
         if self.id is not None:
             dataset = datasets.load_dataset(
-                self.id, name=self.name, streaming=self.stream, split=self.validation_split
+                self.id, name=self.name, streaming=self.stream, split=self.validation_split, trust_remote_code=True
             )
             try:
                 next(iter(dataset))
