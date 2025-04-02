@@ -25,6 +25,7 @@ from jaxtyping import PyTree
 import haliax.partitioning
 from haliax.jax_utils import is_in_jit, is_jax_array_like
 
+import levanter.tracker
 from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 from levanter.utils import fsspec_utils
 from levanter.utils.types import FilterSpec
@@ -222,6 +223,7 @@ class Checkpointer:
                     self._rm_checkpoint(last_checkpoint)
 
             self.save_checkpoint(info, destination, commit_callback=callback, is_temporary=not save_permanent_ckpt)
+            levanter.tracker.current_tracker().log({"logged_checkpoint": 1.0}, step=step)
 
     def _get_current_step_save_interval(self, step):
         # binary search for the correct interval
