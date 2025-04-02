@@ -11,7 +11,6 @@ model:
   cross_entropy_block_size: null
   flash_attention_block_size: null
   gradient_checkpointing: true
-  gradient_checkpointing_block_size: 5
   hidden_dim: 4096
   initializer_range: 0.02
   intermediate_dim: 14336

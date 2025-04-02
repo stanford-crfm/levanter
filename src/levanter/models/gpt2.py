@@ -1,7 +1,6 @@
 import dataclasses
 from dataclasses import dataclass
-from functools import partial
-from typing import Callable, Dict, Optional, Type
+from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -19,6 +18,7 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 
@@ -45,14 +45,13 @@ class Gpt2Config(HFCompatConfig):
     resid_pdrop: float = 0.0
     attn_pdrop: float = 0.0
     layer_norm_epsilon: float = 1e-5
-    activation_function: str = "gelu_new"
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.gelu_new
 
     # mistral tweaks:
     scale_attn_by_inverse_layer_idx: bool = False
     upcast_attn: bool = False
 
     gradient_checkpointing: bool = True  # better to just always use this
-    gradient_checkpointing_block_size: int = 5
 
     use_bias: bool = True
 
@@ -130,18 +129,19 @@ class Gpt2Config(HFCompatConfig):
 class Gpt2Mlp(eqx.Module):
     c_fc: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     c_proj: hnn.Linear  # projection from Intermediate to Embed
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     @staticmethod
-    def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "Gpt2Mlp":
+    def init(
+        Embed: Axis, Mlp: Axis, activation_fn: Union[ActivationFunctionEnum, Callable], *, key, use_bias: bool = True
+    ) -> "Gpt2Mlp":
         k_fc, k_proj = jrandom.split(key, 2)
         c_fc = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
         c_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
-        if isinstance(activation_fn, str):
-            activation_fn = ACT2FN[activation_fn]
-        act = activation_fn  # type: ignore
+        if isinstance(activation_fn, ActivationFunctionEnum):
+            activation_fn = activation_fn.to_fn()
 
-        return Gpt2Mlp(c_fc, c_proj, act)
+        return Gpt2Mlp(c_fc, c_proj, activation_fn)
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None):
@@ -153,7 +153,7 @@ class Gpt2Mlp(eqx.Module):
 
 
 class Gpt2Attention(eqx.Module):
-    config: Gpt2Config = eqx.static_field()
+    config: Gpt2Config = eqx.field(static=True)
 
     c_attn: hnn.Linear  # input projection from [embed] -> [(q, k, v), heads, head_dim]
     c_proj: hnn.Linear  # output projection from [heads, head_dim] -> [embed]
@@ -246,7 +246,7 @@ class Gpt2Block(eqx.Module):
 
 
 class Gpt2Transformer(ModuleWithStateDictSerialization):
-    config: Gpt2Config = eqx.static_field()
+    config: Gpt2Config = eqx.field(static=True)
     blocks: Stacked[Gpt2Block]
     ln_f: hnn.LayerNorm
 
@@ -274,8 +274,8 @@ class Gpt2Transformer(ModuleWithStateDictSerialization):
 
 
 class Gpt2Embeddings(ModuleWithStateDictSerialization, eqx.Module):
-    Vocab: Axis = eqx.static_field()
-    config: Gpt2Config = eqx.static_field()
+    Vocab: Axis = eqx.field(static=True)
+    config: Gpt2Config = eqx.field(static=True)
 
     token_embeddings: hnn.Embedding
     position_embeddings: hnn.Embedding
@@ -358,13 +358,3 @@ class Gpt2LMHeadModel(LmWithHfSerializationMixin[Gpt2Config]):
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": None, "embeddings": None}
-
-
-ACT2FN: Dict[str, Callable] = {
-    "relu": hnn.relu,
-    "silu": hnn.silu,
-    "swish": hnn.swish,
-    "gelu": partial(hnn.gelu, approximate=False),
-    "gelu_new": partial(hnn.gelu, approximate=True),
-    "quick_gelu": hnn.quick_gelu,
-}

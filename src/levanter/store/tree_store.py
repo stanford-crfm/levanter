@@ -105,7 +105,7 @@ class TreeStore(Generic[T]):
             is_leaf=heuristic_is_leaf_batched,
         )
 
-        await asyncio.gather(*jax.tree_leaves(futures))
+        await asyncio.gather(*jax.tree.leaves(futures))
 
     def trim_to_size(self, size: int):
         """
@@ -119,7 +119,7 @@ class TreeStore(Generic[T]):
         Trim the store to a given size.
         """
         futures = jtu.tree_map(lambda writer: writer.trim_to_size_async(size), self.tree, is_leaf=heuristic_is_leaf)
-        leaves, structure = jax.tree_flatten(futures)
+        leaves, structure = jax.tree.flatten(futures)
 
         await asyncio.gather(*leaves)
 

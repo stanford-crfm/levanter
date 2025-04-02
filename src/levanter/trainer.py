@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 import equinox as eqx
+import fsspec
 import jax
 import jmp
 import numpy as np
@@ -28,13 +29,15 @@ from haliax.partitioning import ResourceAxis, ResourceMapping, named_jit
 from haliax.quantization import QuantizationConfig
 from haliax.types import Scalar
 
+import levanter.callbacks._metrics
 import levanter.checkpoint
 import levanter.tracker
 import levanter.tracker.wandb
 import levanter.utils.logging
 from levanter import tracker
 from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
-from levanter.checkpoint import CheckpointerConfig, load_checkpoint_or_initialize
+from levanter.callbacks.watch import WatchConfig
+from levanter.checkpoint import CheckpointerConfig, is_checkpoint_path, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
 from levanter.data import AsyncDataset, DataLoader
 from levanter.data.loader import _round_to_nearest_multiple
@@ -43,7 +46,7 @@ from levanter.grad_accum import microbatched
 from levanter.optim.model_averaging import ModelAveragingConfig
 from levanter.schedule import BatchSchedule, IntSchedule, ScheduleStep, value_at_step
 from levanter.tracker import TrackerConfig, capture_time
-from levanter.trainer_state import TrainerState, saveable_training_mask
+from levanter.trainer_state import InsideJitInfo, TrainerState, saveable_training_mask
 from levanter.utils import cloud_utils, fsspec_utils
 from levanter.utils.jax_utils import create_fsdp_mesh, zeros_like_tree
 from levanter.utils.tree_utils import inference_mode
@@ -79,11 +82,11 @@ class _JitHook:
 
 class TrainerHooks:
     hooks: List[_Hook]
-    stateful_hooks: List[_JitHook]
+    jit_hooks: List[_JitHook]
 
     def __init__(self):
         self.hooks = []
-        self.stateful_hooks = []
+        self.jit_hooks = []
 
     def run_hooks(self, info: StepInfo, force: bool = False):
         for hook in self.hooks:
@@ -91,18 +94,18 @@ class TrainerHooks:
                 hook.fn.on_step(info, force=force)
 
     def run_jit_hooks_outside_step(self, info: StepInfo, cb_infos: Sequence[PyTree], force: bool = False):
-        for s_hook, cb_info in zip(self.stateful_hooks, cb_infos):
+        for s_hook, cb_info in zip(self.jit_hooks, cb_infos):
             if force or (info.step % s_hook.every == 0):
                 s_hook.fn.on_step(info, cb_info)
 
-    def run_jit_hooks(self, state: TrainerState, grad: M, force: bool = False) -> tuple[PyTree, ...]:
+    def run_jit_hooks(self, state: TrainerState, jit_info: InsideJitInfo, force: bool = False) -> tuple[PyTree, ...]:
         hook: _JitHook
         hook_infos = []
-        for hook in self.stateful_hooks:
-            hook_shape = eqx.filter_eval_shape(hook.fn.inside_step, state, grad)
+        for hook in self.jit_hooks:
+            hook_shape = eqx.filter_eval_shape(hook.fn.inside_step, state, jit_info)
             new_s = jax.lax.cond(
                 force or (state.step % hook.every == 0),
-                lambda: hook.fn.inside_step(state, grad),
+                lambda: hook.fn.inside_step(state, jit_info),
                 lambda: zeros_like_tree(hook_shape),
             )
             hook_infos.append(new_s)
@@ -118,7 +121,7 @@ class TrainerHooks:
                 is_something = True
 
             if isinstance(fn, JitCallback):
-                self.stateful_hooks.append(_JitHook(fn, every))
+                self.jit_hooks.append(_JitHook(fn, every))
                 is_something = True
 
             if not is_something:
@@ -186,6 +189,7 @@ class Trainer:
             self._add_default_hooks()
 
         self._cmanagers = []
+        self._logged_jaxprs: set[str] = set()
 
     @cached_property
     def loss_fn(self):
@@ -325,22 +329,12 @@ class Trainer:
             load_checkpoint = levanter.checkpoint.is_checkpoint_path(checkpoint_path)
 
         if load_checkpoint is False and self.config.initialize_from is not None:
-            # we're not going to load a checkpoint, so see if we can initialize from a model
+            # we're not going to load a checkpoint from this run, so instead we can initialize from a different run
             logger.info(f"Initializing from {self.config.initialize_from}")
-            # todo: we are potentially holding two models in memory at once here, if we pass in a model
-            # instead of a model_init and we use initialize_from. We could avoid this by deleting
-            # any to-be-loaded parameters from the model before loading, but that's a bit more complicated
-            # it also seems unlikely that we'd want to do this, so I'm not going to bother for now
-            loaded_model = load_checkpoint_or_initialize(
-                model_init,
-                self.config.initialize_from,
-                axis_mapping=self.parameter_axis_mapping,
-                mesh=self.device_mesh,
-                subpath="model",
-                do_load=True,
-                allow_partial=self.config.allow_partial_checkpoint,
-            )()
-            model_init = jax.tree_util.Partial(lambda m: m, loaded_model)
+            load_checkpoint = True
+            checkpoint_path = self.config.initialize_from
+            if not is_checkpoint_path(checkpoint_path):
+                raise ValueError(f"initialize_from must be a checkpoint path, got {checkpoint_path}")
 
         def init_state_and_model(model_init, training_key):
             model = model_init()
@@ -385,14 +379,18 @@ class Trainer:
         # jit hooks impose a nontrivial cost even when they're not run (since they defeat some compiler optimizations)
         # so we avoid running them when they're not needed
         # this results in two compiles, but the cost of the second compile is worth it
-        hooks_this_time = any(state.step % h.every == 0 for h in self.hooks.stateful_hooks)
+        hooks_this_time = any(state.step % h.every == 0 for h in self.hooks.jit_hooks)
 
         with capture_time() as step_time:
             if hooks_this_time:
-                loss, new_state, cb_states = self._jit_train_step_fn(state, batch, batch_kwargs)
+                loss, new_state, cb_states = self._maybe_save_jaxpr(
+                    "train_step", self._jit_train_step_fn, state, batch, batch_kwargs
+                )
                 # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             else:
-                loss, new_state = self._jit_train_step_fn_no_hook(state, batch, batch_kwargs)
+                loss, new_state = self._maybe_save_jaxpr(
+                    "train_step_hooks", self._jit_train_step_fn_no_hook, state, batch, batch_kwargs
+                )
             loss = loss.item()  # type: ignore
 
             info = StepInfo(new_state, loss, step_time())
@@ -441,11 +439,16 @@ class Trainer:
     def _add_default_hooks(self):
         from levanter import callbacks
 
-        self.add_hook(callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
-        self.add_hook(callbacks.log_step_info(self.config.num_train_steps), every=1)
+        self.add_hook(levanter.callbacks.pbar_logger(total=self.config.num_train_steps), every=1)
+        self.add_hook(levanter.callbacks.log_step_info(self.config.num_train_steps), every=1)
         # engine.add_hook(callbacks.log_memory_usage(), every=1)
         checkpointer = self.config.checkpointer.create(self.run_id)
         self.add_hook(checkpointer.on_step, every=1)  # checkpointer manages its own frequency
+
+        # Add watch callback if configured
+        if self.config.watch.is_enabled:
+            self.add_hook(self.config.watch.build(), every=self.config.watch.interval)
+
         if self.config.profiler:
             profile_path = self.config.log_dir / self.run_id / "profiler"
             total_prof_steps = self.config.profiler_num_steps
@@ -540,10 +543,6 @@ class Trainer:
 
         loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
-        with hax.axis_mapping(self.parameter_axis_mapping):
-            if not _no_hooks:
-                hook_infos = self.hooks.run_jit_hooks(state, grads, force=False)
-
         # Sophia needs to be able to access the loss function in the optimizer
         def obj_fun(trainable_model):
             model = eqx.combine(trainable_model, state.model)
@@ -551,8 +550,14 @@ class Trainer:
                 model = self.mp.cast_to_compute(model)
                 return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
-        new_state = state.take_step(grads, obj_fun=obj_fun)
+        new_state, updates = state.take_step(grads, obj_fun=obj_fun)
         new_state = hax.shard(new_state, self.parameter_axis_mapping)
+
+        if not _no_hooks:
+            with hax.axis_mapping(self.parameter_axis_mapping):
+                jit_info: InsideJitInfo = InsideJitInfo(grads=grads, updates=updates)
+                hook_infos = self.hooks.run_jit_hooks(state, jit_info, force=False)
+
         if _no_hooks:
             return loss, new_state
         else:
@@ -576,6 +581,40 @@ class Trainer:
         with hax.axis_mapping(self.compute_axis_mapping):
             return grad_fn(model, *batch, **batch_kwargs)
 
+    def write_artifact(self, name: str, artifact: Any, type: Optional[str] = None):
+        """Saves an artifact to disk (in the run dir) and logs it to the tracker."""
+        dir = self.config.log_dir / self.run_id / "artifacts"
+        if not os.path.exists(dir):
+            os.makedirs(dir, exist_ok=True)
+        artifact_path = dir / name
+
+        if isinstance(artifact, str):
+            with fsspec.open(str(artifact_path), "w", compression="infer") as f:
+                f.write(artifact)
+        else:
+            with fsspec.open(str(artifact_path), "wb", compression="infer") as f:
+                f.write(artifact)
+
+        self.tracker.log_artifact(artifact_path, name=name, type=type)
+
+    def _maybe_save_jaxpr(self, name: str, fn, *args, **kwargs):
+        logged = False
+        if self.config.log_jaxprs and name not in self._logged_jaxprs:
+            jaxpr = jax.make_jaxpr(fn)(*args, **kwargs)
+            pretty = jaxpr.pretty_print(name_stack=True, use_color=False)
+            self.write_artifact(f"{name}.jaxpr.txt.gz", pretty, type="jaxpr")
+            logged = True
+
+        if self.config.log_xla_hlo and name not in self._logged_jaxprs:
+            hlo = fn.lower(*args, **kwargs).as_text("stablehlo")
+            self.write_artifact(f"{name}.hlo.txt", hlo, type="hlo")
+            logged = True
+
+        if logged:
+            self._logged_jaxprs.add(name)
+
+        return fn(*args, **kwargs)
+
 
 def _initialize_global_tracker(config, run_id):
     if isinstance(config, Sequence):
@@ -598,12 +637,18 @@ class TrainerConfig:
     id: Optional[str] = None  # run id. if None, will be set to a random string
 
     tracker: TrackerConfig | Tuple[TrackerConfig, ...] = field(default_factory=tracker.wandb.WandbConfig)
+    watch: WatchConfig = WatchConfig()
 
     # TODO: refactor callbacks
     profiler: bool = False
     profiler_start_step: int = 5
     profiler_num_steps: int = 100
     profiler_perfetto_link: bool = False
+
+    log_jaxprs: bool = True
+    """Whether to log the jaxpr of the training step. This is useful for debugging and understanding the model."""
+    log_xla_hlo: bool = True
+    """Whether to log the XLA HLO of the training step. This is useful for debugging and understanding the model."""
 
     # config related to partitioning
 
@@ -651,6 +696,7 @@ class TrainerConfig:
     load_checkpoint_path: Optional[str] = None
     """can be a parent (to find latest) or a specific checkpoint. if None, will set to checkpointer.base_path."""
     initialize_from: Optional[str] = None  # Levanter trainer checkpoint to initialize from
+    """Load and continue training from a checkpoint. If None, will initialize from model_init."""
     allow_partial_checkpoint: bool = False
     """If True, we allow loading a checkpoint that doesn't have all the parameters in the model.
         Missing parameters are initialized from the model_init function."""

@@ -52,6 +52,7 @@ import equinox as eqx
 import jax
 from jaxtyping import PyTree
 
+import haliax
 import haliax as hax
 import haliax.nn as hnn
 from haliax import Axis
@@ -63,8 +64,8 @@ from haliax.state_dict import (
     to_torch_compatible_state_dict,
 )
 
+from levanter.callbacks import StepInfo
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, upload_to_hub
-from levanter.trainer import StepInfo
 from levanter.utils.cloud_utils import temp_dir_before_upload
 from levanter.utils.jax_utils import join_key, key_iterator, leaf_key_paths
 from levanter.utils.logging import silence_transformer_nag
@@ -195,7 +196,7 @@ def filter_lora_params(params: M) -> M:
     Filters LoRA parameters from the given parameter tree.
     """
 
-    return eqx.filter(params, is_lora_param, is_leaf=is_lora_param)
+    return eqx.filter(params, is_lora_param, is_leaf=lambda x: is_lora_param(x) or isinstance(x, haliax.NamedArray))
 
 
 def partition_lora_params(params: M) -> Tuple[M, M]:

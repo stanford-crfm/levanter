@@ -14,6 +14,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 
@@ -47,7 +48,7 @@ class MistralConfig(LlamaConfig):
     num_layers: int = 32
     num_heads: int = 32
     num_kv_heads: int = 8
-    activation_function: str = "silu"
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.silu
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-6
     sliding_window: int = 4096
@@ -59,7 +60,6 @@ class MistralConfig(LlamaConfig):
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
-    gradient_checkpointing_block_size: int = 5
 
     use_bias: bool = False
     rope_scaling: Optional[dict] = None
@@ -118,7 +118,7 @@ class MistralConfig(LlamaConfig):
             num_hidden_layers=self.num_layers,
             num_attention_heads=self.num_heads,
             num_key_value_heads=self.num_kv_heads,
-            hidden_act=self.activation_function,
+            hidden_act=self.activation_function.name,
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
             sliding_window=self.sliding_window,

@@ -6,8 +6,9 @@ from typing import Callable, Generic, Optional, Sequence, TypeAlias, TypeVar
 
 import jax.random
 import numpy as np
-from jax.random import PRNGKey
+from jaxtyping import PRNGKeyArray
 
+from levanter.data._prp import PermType
 from levanter.utils import thread_utils
 
 
@@ -123,17 +124,26 @@ class AsyncDataset(DatasetBase[T_co]):
         return BatchMappedAsyncDataset(self, fn, *extra_args, **extra_kwargs)
 
     def slice_dataset(self, start_index: Optional[int] = None, end_index: Optional[int] = None):
+        """
+        Slices the dataset from `start_index` to `end_index`.
+        """
         return SlicedAsyncDataset(self, start_index, end_index)
 
-    def shuffle(self, key: PRNGKey):
+    def take(self, n: int):
+        """
+        Alias for `slice_dataset(end_index=n)`.
+        """
+        return self.slice_dataset(end_index=n)
+
+    def shuffle(self, key: PRNGKeyArray, *, perm_type: PermType = "feistel"):
         import levanter.data.permutation as permutation
 
-        return permutation.PermutationDataset(self, key)
+        return permutation.PermutationDataset(self, key, perm_type=perm_type)
 
-    def era_shuffle(self, era_length: int, key: PRNGKey):
+    def era_shuffle(self, era_length: int, key: PRNGKeyArray, *, perm_type: PermType = "feistel"):
         import levanter.data.permutation as permutation
 
-        return permutation.EraShufflingDataset(self, era_length, key=key)
+        return permutation.EraShufflingDataset(self, era_length, key=key, perm_type=perm_type)
 
 
 async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length: int) -> int:
@@ -391,8 +401,8 @@ class SlicedAsyncDataset(AsyncDataset[U]):
         if end_index is not None and start_index > end_index:
             raise ValueError("End index must come after start index.")
 
-        self.start_index = start_index
-        self.end_index = end_index
+        self.start_index: int = start_index
+        self.end_index: int | None = end_index
         self.dataset = dataset
         self._min_known_len = dataset._min_known_len if end_index is None else (end_index - start_index)
 
@@ -407,6 +417,7 @@ class SlicedAsyncDataset(AsyncDataset[U]):
 
     async def async_len(self) -> int:
         underlying_length = await self.dataset.async_len()
+
         if self.end_index is None:
             return underlying_length - self.start_index
         else:
@@ -422,7 +433,9 @@ class SlicedAsyncDataset(AsyncDataset[U]):
     async def current_len(self) -> Optional[int]:
         underlying_length = await self.dataset.current_len()
         if self.end_index is not None:
-            return self.end_index - self.start_index
+            if underlying_length is None:
+                return self.end_index - self.start_index
+            return min(self.end_index, underlying_length) - self.start_index
         elif underlying_length is not None:
             return underlying_length - self.start_index
         else:

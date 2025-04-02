@@ -1,6 +1,5 @@
 import dataclasses
 from dataclasses import dataclass
-from functools import partial
 from typing import Callable, Dict, Optional, Type
 
 import equinox as eqx
@@ -20,6 +19,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.models.asr_model import ASRConfig, ASRMixin
 from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.logging import silence_transformer_nag
 
 
@@ -44,7 +44,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     max_source_positions: int = 1500
     max_length: int = 448
 
-    activation_function: str = "gelu"
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.gelu
     layer_norm_epsilon: float = 1e-5
     use_bias: bool = True
 
@@ -98,7 +98,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
             decoder_attention_heads=self.decoder_attention_heads,
             decoder_ffn_dim=self.decoder_ffn_dim,
             encoder_ffn_dim=self.encoder_ffn_dim,
-            activation_function=self.activation_function,
+            activation_function=self.activation_function.name,
             max_source_positions=self.max_source_positions,
             d_model=self.d_model,
         )
@@ -123,18 +123,17 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
 class WhisperMlp(eqx.Module):
     fc1: hnn.Linear  # projection from Embed to Intermediate (typically 4x Embed)
     fc2: hnn.Linear  # projection from Intermediate to Embed
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     @staticmethod
     def init(Embed: Axis, Mlp: Axis, activation_fn, *, key, use_bias: bool = True) -> "WhisperMlp":
         k_fc, k_proj = haliax.jax_utils.maybe_rng_split(key, 2)
         fc1 = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=False)
         fc2 = hnn.Linear.init(Out=Embed, In=Mlp, key=k_proj, use_bias=use_bias, out_first=False)
-        if isinstance(activation_fn, str):
-            activation_fn = ACT2FN[activation_fn]
-        act = activation_fn  # type: ignore
+        if isinstance(activation_fn, ActivationFunctionEnum):
+            activation_fn = activation_fn.to_fn()
 
-        return WhisperMlp(fc1, fc2, act)
+        return WhisperMlp(fc1, fc2, activation_fn)
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None):
@@ -146,7 +145,7 @@ class WhisperMlp(eqx.Module):
 
 
 class WhisperAttention(eqx.Module):
-    config: WhisperConfig = eqx.static_field()
+    config: WhisperConfig = eqx.field(static=True)
 
     q_proj: hnn.Linear  # input projection from [embed] -> [q, heads, head_dim]
     k_proj: hnn.Linear  # input projection from [embed] -> [k, heads, head_dim]
@@ -296,10 +295,10 @@ class WhisperTransformer(ModuleWithStateDictSerialization):
 
 
 class WhisperEncoder(ModuleWithStateDictSerialization):
-    config: WhisperConfig = eqx.static_field()
+    config: WhisperConfig = eqx.field(static=True)
     conv1: hnn.Conv
     conv2: hnn.Conv
-    act: Callable = eqx.static_field()
+    act: Callable = eqx.field(static=True)
 
     transformer: WhisperTransformer
 
@@ -311,10 +310,6 @@ class WhisperEncoder(ModuleWithStateDictSerialization):
         Mid = hax.Axis("mid", config.Embed.size)
         conv1 = hnn.Conv.init(Len, config.Mels, Mid, kernel_size=3, padding=1, key=k_conv1)
         conv2 = hnn.Conv.init(Len, Mid, config.Embed, kernel_size=3, stride=2, padding=1, key=k_conv2)
-        if isinstance(config.activation_function, str):
-            act = ACT2FN[config.activation_function]  # type: ignore
-        else:
-            act = config.activation_function
 
         transformer = WhisperTransformer.init(
             config.EncoderLayer,
@@ -326,7 +321,7 @@ class WhisperEncoder(ModuleWithStateDictSerialization):
             key=k_t,
         )
 
-        return WhisperEncoder(config, conv1, conv2, act, transformer)
+        return WhisperEncoder(config, conv1, conv2, config.activation_function.to_fn(), transformer)
 
     def __call__(self, spec: NamedArray, *, key=None) -> NamedArray:
         k_conv1, k_conv2, k_transformer = haliax.jax_utils.maybe_rng_split(key, 3)
@@ -350,8 +345,8 @@ class WhisperEncoder(ModuleWithStateDictSerialization):
 
 
 class WhisperDecoderEmbeddings(eqx.Module):
-    Vocab: Axis = eqx.static_field()
-    config: WhisperConfig = eqx.static_field()
+    Vocab: Axis = eqx.field(static=True)
+    config: WhisperConfig = eqx.field(static=True)
 
     token_embeddings: hnn.Embedding
     position_embeddings: hnn.Embedding
@@ -507,13 +502,3 @@ def whisper_sinusoids(Channels: Axis, SourcePos: Axis, base: int = 10000) -> Nam
         freqs = position_ids * inv_timescales.broadcast_axis(SourcePos)
         emb = hax.concatenate(Channels, (hax.sin(freqs), hax.cos(freqs)))
         return emb
-
-
-ACT2FN: Dict[str, Callable] = {
-    "relu": hnn.relu,
-    "silu": hnn.silu,
-    "swish": hnn.swish,
-    "gelu": partial(hnn.gelu, approximate=False),
-    "gelu_new": partial(hnn.gelu, approximate=True),
-    "quick_gelu": hnn.quick_gelu,
-}
