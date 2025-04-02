@@ -18,6 +18,7 @@ from levanter.models.attention import AttentionMask, dot_product_attention
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import RotaryEmbeddingsConfig
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.types import BlockFoldable
@@ -65,7 +66,7 @@ class QwenConfig(LlamaConfig):
             use_sliding_window=getattr(hf_config, "use_sliding_window", False),
             sliding_window=getattr(hf_config, "sliding_window", None),
             max_window_layers=getattr(hf_config, "max_window_layers", 0),
-            activation_function=hf_config.hidden_act,
+            activation_function=ActivationFunctionEnum(hf_config.hidden_act),
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
