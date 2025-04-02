@@ -8,30 +8,24 @@ import haliax as hax
 import haliax.nn as hnn
 
 
-try:
-    from enum import StrEnum
-except ImportError:
-    # <= Python 3.10
-    from backports.strenum import StrEnum
-
-
 _A = typing.TypeVar("_A", hax.Scalar, hax.NamedArray, jax.Array)
 ActivationFunction = typing.Callable[[_A], _A]
 
 
-class ActivationFunctionEnum(StrEnum):
-    relu = enum.auto()
-    silu = enum.auto()
-    swish = enum.auto()
-    gelu = enum.auto()
-    gelu_new = enum.auto()
-    quick_gelu = enum.auto()
-    tanh = enum.auto()
+class ActivationFunctionEnum(str, enum.Enum):
+    relu = "relu"
+    silu = "silu"
+    swish = "swish"
+    gelu = "gelu"
+    gelu_new = "gelu_new"
+    quick_gelu = "quick_gelu"
+    tanh = "tanh"
 
     def to_fn(self) -> ActivationFunction:
         return TO_FN[self]
 
 
+# type: ignore
 TO_FN: dict[ActivationFunctionEnum, ActivationFunction] = {
     ActivationFunctionEnum.relu: hnn.relu,
     ActivationFunctionEnum.silu: hnn.silu,
