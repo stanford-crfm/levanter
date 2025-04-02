@@ -55,7 +55,7 @@ def test_permutation_handles_edge_case_length_one(PermutationClass):
     prng_key = jrandom.PRNGKey(0)
     permutation = PermutationClass(length, prng_key)
     result = permutation(0)
-    assert result == 0  # With length 1, the only valid output is the input it
+    assert result == 0  # With length 1, the only valid output is the input
 
 
 @pytest.mark.parametrize("PermutationClass", [LcgPermutation, FeistelPermutation])

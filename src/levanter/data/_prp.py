@@ -151,9 +151,6 @@ class FeistelPermutation(Permutation):
         if rounds < 1:
             raise ValueError("Number of rounds must be at least 1.")
 
-        if length <= 1:
-            raise ValueError("Length must be greater than 1.")
-
         self.length = length
         self.m = next_power_of_two(length)  # m is a power-of-two >= length
         self.rounds = rounds
@@ -217,6 +214,9 @@ class FeistelPermutation(Permutation):
 
         if np.any(indices < 0) or np.any(indices >= self.length):
             raise IndexError(f"Index {indices} is out of bounds for length {self.length}")
+
+        if self.length == 1:
+            return 0 if was_int else np.zeros_like(indices)
 
         # Embed indices into the larger domain.
         x = indices
