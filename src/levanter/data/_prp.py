@@ -3,6 +3,7 @@ import typing
 import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
+from jaxtyping import PRNGKeyArray
 
 
 PermType = typing.Literal["feistel", "linear"]
@@ -51,7 +52,7 @@ class Permutation(typing.Protocol):
         pass
 
     @staticmethod
-    def make(kind: PermType, length: int, prng_key, **kwargs) -> "Permutation":
+    def make(kind: PermType, length: int, prng_key: PRNGKeyArray, **kwargs) -> "Permutation":
         """Create a permutation of the given kind.
 
         Args:
@@ -147,6 +148,12 @@ class FeistelPermutation(Permutation):
     """
 
     def __init__(self, length: int, prng_key, rounds: int = 5):
+        if rounds < 1:
+            raise ValueError("Number of rounds must be at least 1.")
+
+        if length <= 1:
+            raise ValueError("Length must be greater than 1.")
+
         self.length = length
         self.m = next_power_of_two(length)  # m is a power-of-two >= length
         self.rounds = rounds
@@ -165,7 +172,8 @@ class FeistelPermutation(Permutation):
 
         Operates modulo 2^(right_bits).
         """
-        return (right * np.uint64(2654435761) + key) & self.R_mask
+        masked_right = right & self.R_mask
+        return (masked_right * np.uint64(2654435761) + key) & self.R_mask
 
     def _feistel(self, x: np.ndarray) -> np.ndarray:
         """Apply the Feistel network to x, where x is assumed to be in [0, m)."""
