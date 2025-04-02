@@ -335,11 +335,17 @@ class RobertaSelfAttention(eqx.Module, StateDictSerializationMixin):
         
         attention_scores /= jnp.sqrt(self.HeadSize.size)
 
+        # jax.debug.print("Levanter attention_mask_real: {attention_scores}", attention_scores=attention_mask)
+        # jax.debug.print("Levanter attention_mask_real.shape: {attention_scores}",attention_scores=attention_mask.shape)
+
         if attention_mask is not None:
             # Apply the attention mask is (precomputed for all layers in RobertaModel forward() function)
             # Attention_mask should have shape Batch Pos, so it should broadcast to shape Batch Heads Pos KeyPos for summation
             attention_scores = attention_scores + attention_mask 
         
+        # jax.debug.print("Levanter attention_scores: {attention_scores}", attention_scores=attention_scores)
+        # jax.debug.print("Levanter attention_scores.shape: {attention_scores}",attention_scores=attention_scores.shape)
+
         attention_probs = hnn.softmax(attention_scores, axis=self.KeyPos)
 
         # This is actually dropping out entire tokens to attend to, which might
@@ -717,12 +723,16 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         if attention_mask is None:
             attention_mask = hax.ones(input_axes)
         
-        # print(f"attention_mask: {attention_mask}")
+        # print(f"Levanter attention_mask: {attention_mask}")
+        # print(f"Levanter attention_mask.shape: {attention_mask.shape}")
         
         # Attention mask from mask to actual numbers 0 -> -inf
         attention_mask = (attention_mask == 0) * jnp.finfo(jnp.bfloat16).min
+        # attention_mask = (attention_mask == 0) * -1e12
+        attention_mask = attention_mask.rename({"position": "key_position"})
 
-        # print(f"attention_mask_real: {attention_mask}")
+        # print(f"Levanter attention_mask_real: {attention_mask}")
+        # print(f"Levanter attention_mask_real.shape: {attention_mask.shape}")
         
         embedding_output = self.embeddings.embed(input_ids, token_type_ids, position_ids, input_embeds, key=k_emb)
 
@@ -856,13 +866,13 @@ class RobertaForMaskedLM(eqx.Module, StateDictSerializationMixin):
 
         target_y = hax.nn.one_hot(targets, self.Vocab, dtype=logits.dtype)
         
-        # loss = cross_entropy_loss(
-        #     logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
-        # )
-
         loss = cross_entropy_loss(
-            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis
+            logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis, where=example.loss_mask
         )
+
+        # loss = cross_entropy_loss(
+        #     logits, self.Vocab, target_y, reduction, reduction_axis=reduction_axis
+        # )
 
         return loss
     
