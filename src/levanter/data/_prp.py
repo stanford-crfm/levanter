@@ -135,6 +135,9 @@ class LcgPermutation(Permutation):
         return out
 
 
+_MAX_FEISTEL_ROUNDS = 1000
+
+
 class FeistelPermutation(Permutation):
     """A pseudo-random permutation for an arbitrary domain using a Feistel network and cycle-walking.
 
@@ -214,6 +217,8 @@ class FeistelPermutation(Permutation):
         mask = out >= self.length
         cycles = 0
         while np.any(mask):
+            if cycles >= _MAX_FEISTEL_ROUNDS:
+                raise RuntimeError(f"Feistel cycle-walking exceeded {cycles} iterations. This should not happen.")
             n = self._feistel(out[mask])
             out[mask] = n
             mask = out >= self.length
