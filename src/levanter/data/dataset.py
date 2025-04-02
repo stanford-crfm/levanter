@@ -8,6 +8,7 @@ import jax.random
 import numpy as np
 from jaxtyping import PRNGKeyArray
 
+from levanter.data._prp import PermType
 from levanter.utils import thread_utils
 
 
@@ -134,15 +135,15 @@ class AsyncDataset(DatasetBase[T_co]):
         """
         return self.slice_dataset(end_index=n)
 
-    def shuffle(self, key: PRNGKeyArray):
+    def shuffle(self, key: PRNGKeyArray, *, perm_type: PermType = "feistel"):
         import levanter.data.permutation as permutation
 
-        return permutation.PermutationDataset(self, key)
+        return permutation.PermutationDataset(self, key, perm_type=perm_type)
 
-    def era_shuffle(self, era_length: int, key: PRNGKeyArray):
+    def era_shuffle(self, era_length: int, key: PRNGKeyArray, *, perm_type: PermType = "feistel"):
         import levanter.data.permutation as permutation
 
-        return permutation.EraShufflingDataset(self, era_length, key=key)
+        return permutation.EraShufflingDataset(self, era_length, key=key, perm_type=perm_type)
 
 
 async def naive_busy_wait_until_len_at_least(dataset: AsyncDataset[T_co], length: int) -> int:
