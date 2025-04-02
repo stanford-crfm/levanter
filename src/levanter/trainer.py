@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeVar, Union
 
 import equinox as eqx
+import fsspec
 import jax
 import jmp
 import numpy as np
@@ -188,6 +189,7 @@ class Trainer:
             self._add_default_hooks()
 
         self._cmanagers = []
+        self._logged_jaxprs: set[str] = set()
 
     @cached_property
     def loss_fn(self):
@@ -381,10 +383,14 @@ class Trainer:
 
         with capture_time() as step_time:
             if hooks_this_time:
-                loss, new_state, cb_states = self._jit_train_step_fn(state, batch, batch_kwargs)
+                loss, new_state, cb_states = self._maybe_save_jaxpr(
+                    "train_step", self._jit_train_step_fn, state, batch, batch_kwargs
+                )
                 # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             else:
-                loss, new_state = self._jit_train_step_fn_no_hook(state, batch, batch_kwargs)
+                loss, new_state = self._maybe_save_jaxpr(
+                    "train_step_hooks", self._jit_train_step_fn_no_hook, state, batch, batch_kwargs
+                )
             loss = loss.item()  # type: ignore
 
             info = StepInfo(new_state, loss, step_time())
@@ -575,6 +581,40 @@ class Trainer:
         with hax.axis_mapping(self.compute_axis_mapping):
             return grad_fn(model, *batch, **batch_kwargs)
 
+    def write_artifact(self, name: str, artifact: Any, type: Optional[str] = None):
+        """Saves an artifact to disk (in the run dir) and logs it to the tracker."""
+        dir = self.config.log_dir / self.run_id / "artifacts"
+        if not os.path.exists(dir):
+            os.makedirs(dir, exist_ok=True)
+        artifact_path = dir / name
+
+        if isinstance(artifact, str):
+            with fsspec.open(str(artifact_path), "w", compression="infer") as f:
+                f.write(artifact)
+        else:
+            with fsspec.open(str(artifact_path), "wb", compression="infer") as f:
+                f.write(artifact)
+
+        self.tracker.log_artifact(artifact_path, name=name, type=type)
+
+    def _maybe_save_jaxpr(self, name: str, fn, *args, **kwargs):
+        logged = False
+        if self.config.log_jaxprs and name not in self._logged_jaxprs:
+            jaxpr = jax.make_jaxpr(fn)(*args, **kwargs)
+            pretty = jaxpr.pretty_print(name_stack=True, use_color=False)
+            self.write_artifact(f"{name}.jaxpr.txt.gz", pretty, type="jaxpr")
+            logged = True
+
+        if self.config.log_xla_hlo and name not in self._logged_jaxprs:
+            hlo = fn.lower(*args, **kwargs).as_text("stablehlo")
+            self.write_artifact(f"{name}.hlo.txt", hlo, type="hlo")
+            logged = True
+
+        if logged:
+            self._logged_jaxprs.add(name)
+
+        return fn(*args, **kwargs)
+
 
 def _initialize_global_tracker(config, run_id):
     if isinstance(config, Sequence):
@@ -604,6 +644,11 @@ class TrainerConfig:
     profiler_start_step: int = 5
     profiler_num_steps: int = 100
     profiler_perfetto_link: bool = False
+
+    log_jaxprs: bool = True
+    """Whether to log the jaxpr of the training step. This is useful for debugging and understanding the model."""
+    log_xla_hlo: bool = True
+    """Whether to log the XLA HLO of the training step. This is useful for debugging and understanding the model."""
 
     # config related to partitioning
 
