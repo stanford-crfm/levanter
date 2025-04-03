@@ -658,6 +658,7 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
     embeddings: RobertaEmbedding
     pooler : Optional[RobertaPooler]
     output_hidden_states: bool
+    KeyPos: Axis
 
     @staticmethod
     def init(Vocab: Axis, config: RobertaConfig, add_pooling_layer: bool = True, output_hidden_states: bool = False, *, key) -> "RobertaModel":
@@ -666,7 +667,7 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         embeddings = RobertaEmbedding.init(Vocab, config, key=k_emb)
 
         pooler = RobertaPooler.init(config, key=k_p) if add_pooling_layer else None
-        return RobertaModel(encoder, embeddings, pooler, output_hidden_states)
+        return RobertaModel(encoder, embeddings, pooler, output_hidden_states, config.KeyPos)
 
     @property
     def config(self):
@@ -721,7 +722,7 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if attention_mask is None:
-            attention_mask = hax.ones(input_axes)
+            attention_mask = hax.ones(self.KeyPos)
         
         # print(f"Levanter attention_mask: {attention_mask}")
         # print(f"Levanter attention_mask.shape: {attention_mask.shape}")
@@ -729,7 +730,7 @@ class RobertaModel(eqx.Module, StateDictSerializationMixin):
         # Attention mask from mask to actual numbers 0 -> -inf
         attention_mask = (attention_mask == 0) * jnp.finfo(jnp.bfloat16).min
         # attention_mask = (attention_mask == 0) * -1e12
-        attention_mask = attention_mask.rename({"position": "key_position"})
+        # attention_mask = attention_mask.rename({"position": "key_position"})
 
         # print(f"Levanter attention_mask_real: {attention_mask}")
         # print(f"Levanter attention_mask_real.shape: {attention_mask.shape}")

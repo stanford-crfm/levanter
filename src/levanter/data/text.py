@@ -115,12 +115,14 @@ class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
 
                     attn_mask_shape = (tokens_array.shape[0], tokens_array.shape[0])
                     attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.QPos, self.KPos))
+                    # attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.KPos))
 
                     example = MaskedLmExample.masked_lm(tokens=masked_tokens_named, targets=targets_named, mask_token_id=self.mask_token_id, attn_mask=attn_mask)
                 else:
                     targets_named = hax.named(targets, self.QPos)
                     attn_mask_shape = (tokens_array.shape[0], tokens_array.shape[0])
                     attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.QPos, self.KPos))
+                    # attn_mask = hax.named(jnp.ones(attn_mask_shape, dtype=jnp.bool_), (self.KPos))
 
                     example = MaskedLmExample.masked_lm(tokens=tokens, targets=targets_named, mask_token_id=self.mask_token_id, attn_mask=attn_mask)
 
