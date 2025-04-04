@@ -146,56 +146,11 @@ def _make_async_read_fn(reader: _AsyncFsspecReader, meta):
     return read
 
 
-def _make_async_write_fn(writer: _AsyncFsspecReader, meta):
-    dtype = SAFETENSORS_DTYPE_MAP[meta["dtype"]]
-    shape = meta["shape"]
-    base_offset = meta["offset"][0]
-    itemsize = dtype.numpy_dtype.itemsize
-
-    async def write(domain: ts.IndexDomain, array: np.ndarray, _params):
-        slices = domain.index_exp
-        requested_shape = tuple(s.stop - s.start for s in slices)
-
-        # Compute the flat byte offset for each element
-        byte_writes = []
-
-        for idx in np.ndindex(requested_shape):
-            global_idx = tuple(s.start + i for s, i in zip(slices, idx))
-            flat_index = np.ravel_multi_index(global_idx, shape)
-            byte_offset = base_offset + flat_index * itemsize
-            byte_data = array[idx].tobytes()
-            byte_writes.append((byte_offset, byte_data))
-
-        # Coalesce adjacent writes
-        byte_writes.sort()
-        coalesced = []
-        cur_start, cur_buf = byte_writes[0][0], byte_writes[0][1]
-        for off, data in byte_writes[1:]:
-            if off == cur_start + len(cur_buf):
-                cur_buf += data
-            else:
-                coalesced.append((cur_start, cur_buf))
-                cur_start, cur_buf = off, data
-        coalesced.append((cur_start, cur_buf))
-
-        await asyncio.gather(*[writer.fs._pipe_file(writer.gcs_path, data, start=start) for start, data in coalesced])
-
-    return write
-
-
 async def load_tensor_dict(gcs_path: str, cache_size=128) -> dict[str, ts.TensorStore]:
     """
 
     Loads a safetensors file from GCS (or other fsspec file system) into a dictionary of TensorStore objects.
     This allows for efficient sharded reads.
-
-    Writes are technically supported, but are not very efficient.
-
-    Args:
-        gcs_path:
-        cache_size:
-
-    Returns:
 
     """
     reader = _AsyncFsspecReader(gcs_path, cache_size=cache_size)
@@ -204,10 +159,8 @@ async def load_tensor_dict(gcs_path: str, cache_size=128) -> dict[str, ts.Tensor
     tensor_map = {}
     for key, meta in metadata.items():
         read_fn = _make_async_read_fn(reader, meta)
-        write_fn = _make_async_write_fn(reader, meta)
         ts_arr = ts.virtual_chunked(
             read_function=read_fn,
-            write_function=write_fn,
             dtype=SAFETENSORS_DTYPE_MAP[meta["dtype"]],
             shape=meta["shape"],
             loop=asyncio.get_event_loop(),
