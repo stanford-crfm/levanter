@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import jax.random as jrandom
 import numpy
+import numpy as np
 import pytest
 
 from levanter.data._prp import FeistelPermutation, LcgPermutation
@@ -74,7 +75,7 @@ def test_permutation_is_deterministic(PermutationClass):
     length = 4
     prng_key = jrandom.PRNGKey(0)
     permutation = PermutationClass(length, prng_key)
-    indices = jnp.arange(length)
+    indices = np.arange(length, dtype=np.uint64)
     results = permutation(indices)
     prng_key = jrandom.PRNGKey(0)
     permutation = PermutationClass(length, prng_key)
@@ -104,3 +105,18 @@ def test_permutation_handles_large_length_no_overflow(PermutationClass):
     result = permutation(index)
     assert isinstance(result, int)
     assert 0 <= result < large_length
+
+
+@pytest.mark.parametrize("PermutationClass", [LcgPermutation, FeistelPermutation])
+@pytest.mark.parametrize("dtype", [np.uint16, np.uint32, np.uint64])
+def test_handles_reasonable_dtypes(PermutationClass, dtype):
+    length = 31000
+    prng_key = jrandom.PRNGKey(0)
+    permutation = PermutationClass(length, prng_key)
+    index = np.arange(length, dtype=dtype)
+    result = permutation(index)
+    assert isinstance(result, np.ndarray)
+    assert len(result) == length
+    # check it's a permutation
+    sorted = np.sort(result)
+    assert np.all(sorted == np.arange(length, dtype=dtype))
