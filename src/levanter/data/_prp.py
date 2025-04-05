@@ -129,7 +129,8 @@ class LcgPermutation(Permutation):
             indices = np.array(indices)
             was_int = True
 
-        out = (a * indices + b) % length  # Compute permutation on-the-fly
+        out = (a * indices.astype(np.uint64) + b) % length  # Compute permutation on-the-fly
+        out = out.astype(indices.dtype)
 
         if was_int:
             return int(out)
@@ -158,7 +159,7 @@ class FeistelPermutation(Permutation):
         # Split the bits into two halves.
         self.left_bits = self.bits // 2
         self.right_bits = self.bits - self.left_bits
-        self.R_mask = (1 << self.right_bits) - 1
+        self.R_mask = np.uint64((1 << self.right_bits) - 1)
 
         # Convert JAX PRNG to numpy RNG and generate round keys in range [0, 2^(right_bits))
         self.rng = np.random.Generator(np.random.PCG64(jrandom.randint(prng_key, (), 0, 2**30).item()))
@@ -176,13 +177,13 @@ class FeistelPermutation(Permutation):
         """Apply the Feistel network to x, where x is assumed to be in [0, m)."""
         # Split x into left and right parts.
         right = x & self.R_mask
-        left = x >> self.right_bits
+        left = x >> np.uint64(self.right_bits)
         for key in self.keys:
             new_left = right
             new_right = left ^ self._F(right, key)
             left, right = new_left, new_right
 
-        out = (left << self.right_bits) | right
+        out = (left << np.uint64(self.right_bits)) | right
         # np will convert 0-dim arrays to scalars, so we need to ensure the output is an array.
         if not isinstance(out, np.ndarray):
             out = np.array(out)
