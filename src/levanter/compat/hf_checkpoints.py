@@ -1,4 +1,5 @@
 import abc
+import asyncio
 import contextlib
 import dataclasses
 import json
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
 
+from jax.experimental.array_serialization.serialization import create_async_array_from_callback
+
 import draccus
 import equinox as eqx
 import fsspec
@@ -21,6 +24,7 @@ import jax.numpy as jnp
 import mergedeep
 import safetensors
 import safetensors.numpy
+import tensorstore as ts
 import transformers.utils.hub
 from fsspec import AbstractFileSystem
 from huggingface_hub import HfApi, hf_hub_download, repo_exists, snapshot_download
@@ -29,7 +33,7 @@ from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidati
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array, PRNGKeyArray
-from tqdm import tqdm
+from tqdm_loggable.auto import tqdm
 
 import haliax
 from haliax import Axis
@@ -205,6 +209,44 @@ def _load_safe_tensors(path, dtype):
             d[key] = _maybe_shard_best_effort(tensor_slice, dtype)
 
     return d
+
+
+async def _sharded_load_tensorstore_async(path, dtype):
+    """
+    Uses fsspec_safetensor to load a safetensors file from GCS (or other fsspec file system)
+    into a dictionary of TensorStore objects.
+    This allows for efficient sharded reads.
+    """
+
+    from levanter.compat.fsspec_safetensor import load_tensor_dict
+
+    ts_dict = await load_tensor_dict(path)
+
+    # we want jax arrays, we use best effort sharding
+    if jax.devices() == 1:
+        # just read everything
+        with ts.Batch():
+            d = {}
+            for k, v in ts_dict.items():
+                d[k] = v.read()
+
+        # now wait on all the futures
+        d = {k: (await v) for k, v in d.items()}
+
+        return d
+    else:
+        d = {}
+        with ts.Batch():
+            for k, v in ts_dict.items():
+                if len(jax.devices()) == 1:
+                    d[k] = v.read()
+                    continue
+                else:
+                    sharding = best_effort_sharding(v.shape)
+                    d[k] = create_async_array_from_callback(v.shape, sharding, lambda index, _: v[index].astype(dtype))
+
+        d = {k: (await v) for k, v in d.items()}
+        return d
 
 
 @dataclass_with_default_init(frozen=True)
@@ -444,15 +486,14 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if ref is None:
             raise ValueError("Must provide a checkpoint to load from")
 
-        # Handle GCS paths directly
-        if isinstance(ref, RepoRef) and ref.model_name_or_path.startswith("gs://"):
-            logger.info("\n\n loading hf from GCS! \n\n")
-            return self._load_from_gcs(ref.model_name_or_path, dtype)
-        elif isinstance(ref, str) and ref.startswith("gs://"):
-            logger.info("\n\n loading hf from GCS! \n\n")
-            return self._load_from_gcs(ref, dtype)
-
         id, rev = self._get_ref(ref)
+
+        # Handle GCS paths directly
+        if id.startswith("gs://"):
+            if rev is not None:
+                raise ValueError("Revisions not supported for GCS paths")
+            return self._load_from_gcs(id, dtype)
+
 
         for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
             try:
@@ -539,6 +580,16 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     with tempfile.NamedTemporaryFile() as tmp:
                         fs.get(shard_path, tmp.name)
                         shard_state_dict = loader(tmp.name, dtype)
+
+                        # compare the new _sharded_load_tensorstore_async
+                        comparison = asyncio.run(_sharded_load_tensorstore_async(tmp.name, dtype))
+                        # compare the two dicts (in jit)
+                        @jax.jit
+                        def tree_equal(a, b):
+                            return jax.tree_util.tree_map(jnp.array_equal, a, b)
+
+                        assert jax.tree_util.tree_all(tree_equal(comparison, shard_state_dict))
+
                         final_state_dict.update(shard_state_dict)
 
                 return final_state_dict
@@ -1094,6 +1145,8 @@ def _maybe_shard_best_effort(array_or_slice, dtype) -> jax.Array:
             if hasattr(array_or_slice, "get_shape"):
                 # this is a PySafeSlice
                 return jnp.array(array_or_slice[:], dtype=dtype)
+            elif isinstance(array_or_slice, ts.TensorStore):
+                return jnp.array(array_or_slice.read(), dtype=dtype)
             else:
                 return jnp.array(array_or_slice, dtype=dtype)
 
@@ -1106,14 +1159,22 @@ def _shard_best_effort(array_or_slice, dtype) -> jax.Array:
 
     sharding = best_effort_sharding(shape)
 
-    def get_slice(indices):
-        arr = array_or_slice[indices]
-        if dtype is not None:
-            arr = arr.astype(dtype)
+    if isinstance(array_or_slice, ts.TensorStore):
+        def get_slice(indices):
+            arr = array_or_slice[indices].read()
+            if dtype is not None:
+                arr = arr.astype(dtype)
 
-        return arr
+            return arr
+    else:
+        def get_slice(indices):
+            arr = array_or_slice[indices]
+            if dtype is not None:
+                arr = arr.astype(dtype)
 
-    return jax.make_array_from_callback(tuple(shape), sharding, get_slice)
+            return arr
+
+    return jax.make_array_from_callback(tuple(shape), sharding, get_slice, dtype=dtype)
 
 
 def _should_use_cpu_for_checkpoint_loading():
