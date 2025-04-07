@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Proto
 import equinox as eqx
 import fsspec
 import jax
+import jax.numpy as jnp
 import jmp
 import numpy as np
 from draccus import field
@@ -393,6 +394,12 @@ class Trainer:
                 )
             loss = loss.item()  # type: ignore
 
+            if self.config.crash_on_nan and jnp.isnan(loss):
+                raise RuntimeError("Loss is NaN")
+
+            if self.config.crash_on_inf and jnp.isinf(loss):
+                raise RuntimeError("Loss is Inf")
+
             info = StepInfo(new_state, loss, step_time())
 
             with capture_time() as hook_time:
@@ -649,6 +656,10 @@ class TrainerConfig:
     """Whether to log the jaxpr of the training step. This is useful for debugging and understanding the model."""
     log_xla_hlo: bool = True
     """Whether to log the XLA HLO of the training step. This is useful for debugging and understanding the model."""
+
+    # helpful checks
+    crash_on_nan: bool = True
+    crash_on_inf: bool = True
 
     # config related to partitioning
 
