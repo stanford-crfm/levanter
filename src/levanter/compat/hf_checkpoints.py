@@ -494,7 +494,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 raise ValueError("Revisions not supported for GCS paths")
             return self._load_from_gcs(id, dtype)
 
-
         for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
             try:
                 return self._load_shards(id, index_file, rev, dtype)
@@ -1160,13 +1159,16 @@ def _shard_best_effort(array_or_slice, dtype) -> jax.Array:
     sharding = best_effort_sharding(shape)
 
     if isinstance(array_or_slice, ts.TensorStore):
+
         def get_slice(indices):
             arr = array_or_slice[indices].read()
             if dtype is not None:
                 arr = arr.astype(dtype)
 
             return arr
+
     else:
+
         def get_slice(indices):
             arr = array_or_slice[indices]
             if dtype is not None:
@@ -1174,7 +1176,7 @@ def _shard_best_effort(array_or_slice, dtype) -> jax.Array:
 
             return arr
 
-    return jax.make_array_from_callback(tuple(shape), sharding, get_slice, dtype=dtype)
+    return jax.make_array_from_callback(tuple(shape), sharding, get_slice)
 
 
 def _should_use_cpu_for_checkpoint_loading():

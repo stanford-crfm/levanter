@@ -68,6 +68,8 @@ async def _load_safetensors_metadata(reader: _AsyncFsspecReader):
 
     tensors = {}
     for k, v in metadata.items():
+        if k == "__metadata__":
+            continue
         rel_start, rel_end = v["data_offsets"]
         tensors[k] = {
             "dtype": v["dtype"],
