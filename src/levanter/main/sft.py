@@ -8,6 +8,7 @@ from typing import Iterator, List, Optional, Union
 
 import jax.random as jrandom
 import transformers
+from lenses import lens
 
 import haliax as hax
 from haliax import Axis
@@ -32,6 +33,7 @@ from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_l
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.background_iterable import BackgroundIterator
+from levanter.utils.hf_utils import HfTokenizer
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,8 @@ class SFTConfig:
 
     # if provided, will initialize from this checkpoint, used for llama style data mixture
     epoch: int = 0
+
+    reinit_tokens: list[str] | bool = False
 
 
 def train(config: SFTConfig):
@@ -189,6 +193,7 @@ def train(config: SFTConfig):
         # tokens: gpt-2 has 50257, for example. So we round up.
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), parameter_axis_mapping)
+
         if config.initialize_from_hf:
             logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
             model: LmHeadModel = converter.load_pretrained(
@@ -227,7 +232,27 @@ def train(config: SFTConfig):
                     # Recreate iterator and continue skipping
                     prompt_completion_iterator = create_prompt_completion_iterator(train_dataset, Pos)
         else:
-            logger.info("Starting SFT from scratch")
+            logger.info("Starting SFT.")
+            if config.reinit_tokens:
+                training_key, reinit_key = jrandom.split(training_key, 2)
+
+                if config.reinit_tokens is True:
+                    # this is hardcoded to llama3 but eh
+                    tokens_to_reinit = [
+                        "<|finetune_right_pad_id|>",
+                        "<|start_header_id|>",
+                        "<|end_header_id|>",
+                        "<|eom_id|>",
+                        "<|eot_id|>",
+                    ]
+                else:
+                    tokens_to_reinit = config.reinit_tokens
+
+                logger.info(f"Reinitializing tokens: {tokens_to_reinit}")
+
+                new_model = reinitialize_some_tokens(state.model, tokenizer, tokens_to_reinit, reinit_key, donate=True)
+                state = state.replace(model=new_model)
+                del new_model
 
         logger.info("Packing prompt completions")
         packed_iterator = pack_prompt_completions(
@@ -256,6 +281,42 @@ def train(config: SFTConfig):
             )
 
         trainer.train(state, packed_loader)
+
+
+def reinitialize_some_tokens(model, tokenizer: HfTokenizer, tokens_to_reinit: list[str], key, donate=False):
+    """
+    So we (Will, specifically) realized that we were in this situation where we never saw SFT tokens during pretraining,
+    which meant they had much lower norm than tokens that had been seen.
+
+    https://github.com/stanford-crfm/marin/issues/954
+    """
+    ids_to_reinit = [tokenizer.convert_tokens_to_ids(token) for token in tokens_to_reinit]
+    if len(ids_to_reinit) == 0:
+        raise ValueError("No tokens to reinitialize")
+    # obnoxiously, convert_tokens_to_ids does not always return None, if an unk token is set it returns that
+    # but for gpt2, the unk token is eos token so we can't just check eos token
+    elif any(
+        token is None or tokenizer.convert_ids_to_tokens(id) != token
+        for id, token in zip(ids_to_reinit, tokens_to_reinit)
+    ):
+        raise ValueError("One or more tokens are not in the tokenizer vocabulary")
+
+    @hax.named_jit(donate_args=(donate,))
+    def _reinit_tokens(model):
+        embeddings_matrix = model.embeddings.token_embeddings.weight
+        new_Vocab = model.Vocab.resize(len(ids_to_reinit))
+
+        # reinit with same mean and std as the embeddings. Technically this should be the non-reinit tokens
+        # but whatever
+        mu = hax.mean(embeddings_matrix, axis="vocab")
+        std = hax.std(embeddings_matrix, axis="vocab")
+        reinited = hax.random.truncated_normal(key, (new_Vocab, model.embeddings.Embed), -3, 3) * std + mu
+
+        new_weight = embeddings_matrix.at["vocab", ids_to_reinit].set(reinited)
+
+        return lens.embeddings.token_embeddings.weight.set(new_weight)(model)
+
+    return _reinit_tokens(model)
 
 
 def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axis) -> Iterator[PromptCompletion]:
