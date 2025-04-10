@@ -83,6 +83,10 @@ class SFTConfig:
     epoch: int = 0
 
     reinit_tokens: list[str] | bool = False
+    """
+    if set, will reinitialize the embeddings for the given tokens. If True, will reinitialize the default tokens
+    for llama3's tokenizer
+    """
 
 
 def train(config: SFTConfig):
