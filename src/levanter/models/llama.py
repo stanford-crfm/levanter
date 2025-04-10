@@ -348,12 +348,19 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
     - Llama doesn't use dropout.
     """
 
-    Vocab: Axis = eqx.field(static=True)
     token_embeddings: hnn.Embedding
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        return LlamaEmbedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key))
+        return LlamaEmbedding(hnn.Embedding.init(Vocab, config.Embed, key=key))
+
+    @property
+    def Vocab(self) -> Axis:
+        return self.token_embeddings.Vocab
+
+    @property
+    def Embed(self) -> Axis:
+        return self.token_embeddings.Embed
 
     @named_call
     def embed(self, input_ids, *args):
