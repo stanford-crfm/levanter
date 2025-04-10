@@ -54,6 +54,7 @@ class DatasetType(str, Enum):
 
 @dataclass
 class SFTConfig:
+
     # inherit most of the config from TrainLmConfig
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=LlamaConfig)
@@ -87,6 +88,10 @@ class SFTConfig:
     if set, will reinitialize the embeddings for the given tokens. If True, will reinitialize the default tokens
     for llama3's tokenizer
     """
+    reinit_lm_head: bool = True
+    """If reinit_tokens is set, will reinitialize the lm_head for those tokens"""
+    reinit_embeddings: bool = True
+    """If reinit_tokens is set, will reinitialize the embeddings for those tokens"""
 
 
 def train(config: SFTConfig):
@@ -254,7 +259,15 @@ def train(config: SFTConfig):
 
                 logger.info(f"Reinitializing tokens: {tokens_to_reinit}")
 
-                new_model = reinitialize_some_tokens(state.model, tokenizer, tokens_to_reinit, reinit_key, donate=True)
+                new_model = reinitialize_some_tokens(
+                    state.model,
+                    tokenizer,
+                    tokens_to_reinit,
+                    reinit_key,
+                    donate=True,
+                    reinit_lm_head=config.reinit_lm_head,
+                    reinit_embeddings=config.reinit_embeddings,
+                )
                 state = state.replace(model=new_model)
                 del new_model
 
@@ -287,7 +300,15 @@ def train(config: SFTConfig):
         trainer.train(state, packed_loader)
 
 
-def reinitialize_some_tokens(model, tokenizer: HfTokenizer, tokens_to_reinit: list[str], key, donate=False):
+def reinitialize_some_tokens(
+    model,
+    tokenizer: HfTokenizer,
+    tokens_to_reinit: list[str],
+    key,
+    donate=False,
+    reinit_lm_head=True,
+    reinit_embeddings=True,
+):
     """
     So we (Will, specifically) realized that we were in this situation where we never saw SFT tokens during pretraining,
     which meant they had much lower norm than tokens that had been seen.
@@ -307,20 +328,34 @@ def reinitialize_some_tokens(model, tokenizer: HfTokenizer, tokens_to_reinit: li
 
     @hax.named_jit(donate_args=(donate,))
     def _reinit_tokens(model):
-        embeddings_matrix = model.embeddings.token_embeddings.weight
+        Embed = model.embeddings.Embed
         new_Vocab = model.Vocab.resize(len(ids_to_reinit))
 
-        # reinit with same mean and std as the embeddings. Technically this should be the non-reinit tokens
-        # but whatever
-        mu = hax.mean(embeddings_matrix, axis="vocab")
-        std = hax.std(embeddings_matrix, axis="vocab")
-        reinited = hax.random.truncated_normal(key, (new_Vocab, model.embeddings.Embed), -3, 3) * std + mu
+        emb_key, lm_key = jrandom.split(key, 2)
 
-        new_weight = embeddings_matrix.at["vocab", ids_to_reinit].set(reinited)
+        embeddings_matrix = model.embeddings.token_embeddings.weight
 
-        return lens.embeddings.token_embeddings.weight.set(new_weight)(model)
+        if reinit_embeddings:
+            new_embeddings = _reinit_embed_vectors(Embed, new_Vocab, embeddings_matrix, ids_to_reinit, emb_key)
+            model = lens.embeddings.token_embeddings.weight.set(new_embeddings)(model)
+
+        if reinit_lm_head:
+            new_lm_head = _reinit_embed_vectors(Embed, new_Vocab, model.lm_head.weight, ids_to_reinit, lm_key)
+            model = lens.lm_head.weight.set(new_lm_head)(model)
+
+        return model
 
     return _reinit_tokens(model)
+
+
+def _reinit_embed_vectors(Embed, new_Vocab, embeddings_matrix, ids_to_reinit, key):
+    # reinit with same mean and std as the embeddings. Technically this should be the non-reinit tokens
+    # but whatever
+    mu = hax.mean(embeddings_matrix, axis="vocab")
+    std = hax.std(embeddings_matrix, axis="vocab")
+    reinited = hax.random.truncated_normal(key, (new_Vocab, Embed), -3, 3) * std + mu
+    new_weight = embeddings_matrix.at["vocab", ids_to_reinit].set(reinited)
+    return new_weight
 
 
 def create_prompt_completion_iterator(cached_dataset: AsyncDataset, Pos: hax.Axis) -> Iterator[PromptCompletion]:

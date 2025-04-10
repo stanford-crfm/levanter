@@ -13,6 +13,7 @@ from levanter.models.llama import LlamaEmbedding
 class TestModel(equinox.Module):
     Vocab: hax.Axis
     embeddings: LlamaEmbedding
+    lm_head: hax.nn.Linear
 
 
 def test_reinitialize_some_tokens():
@@ -31,13 +32,15 @@ def test_reinitialize_some_tokens():
 
     # Create a simple model with random embeddings
     key = jax.random.PRNGKey(0)
-    key1, key2 = jax.random.split(key)
+    key1, key2, key3 = jax.random.split(key, 3)
     embeddings = hax.random.normal(key1, (Vocab, Embed))
+    lm_head = hax.nn.Linear.init(In=Embed, Out=Vocab, key=key3)
 
     # Create a mock model with LlamaEmbedding
     model = TestModel(
         Vocab=Vocab,
         embeddings=LlamaEmbedding(token_embeddings=hax.nn.Embedding(weight=embeddings, Vocab=Vocab, Embed=Embed)),
+        lm_head=lm_head,
     )
 
     # Get token IDs
@@ -56,6 +59,11 @@ def test_reinitialize_some_tokens():
         assert not jnp.allclose(
             old_embed, new_embed
         ), f"Embedding for token {token_id} was not updated: {old_embed} == {new_embed}"
+
+        # check that the lm head got updated
+        assert not jnp.allclose(
+            lm_head.weight.array[:, token_id], new_model.lm_head.weight.array[:, token_id]
+        ), f"LM head for token {token_id} was not updated"
 
     # Check that other embeddings remain unchanged
     for i in range(vocab_size):
