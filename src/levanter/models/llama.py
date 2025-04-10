@@ -352,7 +352,7 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        return LlamaEmbedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key))
+        return LlamaEmbedding(hnn.Embedding.init(Vocab, config.Embed, key=key))
 
     @property
     def Vocab(self) -> Axis:
