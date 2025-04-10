@@ -28,11 +28,11 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter
 #     unstack_state_dict,
 # )
 from levanter.models.attention import AttentionBackend, AttentionMask
-from levanter.models.gpt2 import ACT2FN
-from levanter.models.llama import LlamaAttention, LlamaEmbedding, LlamaRMSNorm
+from levanter.models.llama import LlamaAttention, LlamaEmbedding
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.mistral import MistralConfig
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.types import BlockFoldable
@@ -70,7 +70,7 @@ class MixtralConfig(MistralConfig):
     num_layers: int = 32
     num_heads: int = 32
     num_kv_heads: int = 8
-    activation_function: str = "silu"
+    activation_function: ActivationFunctionEnum = ActivationFunctionEnum.silu
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-6
     tie_word_embeddings: bool = False
@@ -86,7 +86,6 @@ class MixtralConfig(MistralConfig):
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
-    gradient_checkpointing_block_size: int = 5
     scan_layers: bool = True
 
     use_bias: bool = False
@@ -136,7 +135,7 @@ class MixtralConfig(MistralConfig):
             num_layers=hf_config.num_hidden_layers,
             num_heads=hf_config.num_attention_heads,
             num_kv_heads=hf_config.num_key_value_heads,
-            activation_function=hf_config.hidden_act,
+            activation_function=ActivationFunctionEnum[hf_config.hidden_act],
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
@@ -168,7 +167,7 @@ class MixtralConfig(MistralConfig):
             num_hidden_layers=self.num_layers,
             num_attention_heads=self.num_heads,
             num_key_value_heads=self.num_kv_heads,
-            hidden_act=self.activation_function,
+            hidden_act=self.activation_function.name,
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
             tie_word_embeddings=self.tie_word_embeddings,
@@ -185,8 +184,8 @@ class MixtralConfig(MistralConfig):
     def model_type(cls) -> Type["MixtralLMHeadModel"]:
         return MixtralLMHeadModel
 
-    def mk_LayerNorm(self, axis: Axis) -> "LlamaRMSNorm":
-        return LlamaRMSNorm.init(
+    def mk_LayerNorm(self, axis: Axis) -> hnn.RmsNorm:
+        return hnn.RmsNorm.init(
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
         )
 
@@ -201,6 +200,8 @@ class MixtralConfig(MistralConfig):
             seq_len=self.seq_len,
             vocab_size=vocab_size,
             glu=True,
+            num_local_experts=self.num_local_experts,
+            num_experts_per_tok=self.num_experts_per_tok,
         )
 
 
@@ -210,20 +211,27 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
     w1: hnn.MoELinear  # (gate_proj) projection from Embed to Mlp
     w2: hnn.MoELinear  # (down_proj) projection from Mlp to Embed
     w3: hnn.MoELinear  # (up_proj) projection from Embed to Mlp
-    act: Callable = eqx.static_field()
+    Embed: hax.Axis = eqx.field(static=True)
+    Mlp: hax.Axis = eqx.field(static=True)
+    act: Callable = eqx.field(static=True)
 
     @staticmethod
     def init(
-        Experts: Axis, Embed: Axis, Mlp: Axis, activation_fn: Union[str, Callable], *, key, use_bias: bool = False
+        Experts: Axis,
+        Embed: Axis,
+        Mlp: Axis,
+        activation_fn: Union[ActivationFunctionEnum, Callable],
+        *,
+        key,
+        use_bias: bool = False,
     ) -> "MixtralMoEMlp":
         k1, k2, k3 = jrandom.split(key, 3)
         w1 = hnn.MoELinear.init(Experts=Experts, Out=Mlp, In=Embed, key=k1, use_bias=use_bias)
         w2 = hnn.MoELinear.init(Experts=Experts, Out=Embed, In=Mlp, key=k2, use_bias=use_bias)
         w3 = hnn.MoELinear.init(Experts=Experts, Out=Mlp, In=Embed, key=k3, use_bias=use_bias)
-        if isinstance(activation_fn, str):
-            activation_fn = ACT2FN[activation_fn]
-        act = activation_fn  # type: ignore
-        return MixtralMoEMlp(w1, w2, w3, act)
+        if isinstance(activation_fn, ActivationFunctionEnum):
+            activation_fn = activation_fn.to_fn()
+        return MixtralMoEMlp(w1, w2, w3, Embed, Mlp, activation_fn)
 
     @named_call
     def __call__(self, x: NamedArray, group_sizes: NamedArray, *, key=None) -> NamedArray:
@@ -243,6 +251,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
             for j in range(3):
                 key = f"{prefix}.{i}.w{j+1}.weight"
                 val = w[j]["experts", i].array
+                # out[key] = val
                 out[key] = jnp.swapaxes(val, -1, -2)
 
         return out
@@ -254,6 +263,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
             for j in range(3):
                 key = f"{prefix}.{i}.w{j+1}.weight"
                 val = jnp.swapaxes(state_dict[key], -1, -2)[..., None, :, :]
+                # val = state_dict[key][..., None, :, :]
                 w[j].append(val)
 
         for j in range(3):
@@ -265,7 +275,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
 class MixtralSparseMoeBlock(eqx.Module):
     """Mixture-of-Experts"""
 
-    config: MistralConfig = eqx.static_field()
+    config: MistralConfig = eqx.field(static=True)
     gate: hnn.Linear  # projection from Embed to Experts
     experts: MixtralMoEMlp
 
@@ -287,14 +297,13 @@ class MixtralSparseMoeBlock(eqx.Module):
 
     def _route_tokens_to_experts(self, x: NamedArray, Experts: Axis, TopExperts: Axis, key=None):
         router_logits = self.gate(x, key=key)  # [Token, Embed] -> [Token, Experts]
-        routing_weights = hnn.softmax(router_logits, axis=Experts)  # [Token, Experts] distribution
         selected_weights, selected_experts = hax.top_k(
-            routing_weights,
+            router_logits,
             axis=Experts,
             k=self.config.num_experts_per_tok,
             new_axis=TopExperts,
         )  # [Token, Experts] -> [Token, TopExperts]
-        selected_weights /= selected_weights.sum(axis=TopExperts)  # [Token, TopExperts] distribution
+        selected_weights = hnn.softmax(selected_weights, axis=TopExperts)  # [Token, TopExperts] distribution
         return selected_weights, selected_experts
 
     def _permute(self, x_flat: NamedArray, topk_idx_flat: NamedArray):
@@ -321,11 +330,7 @@ class MixtralSparseMoeBlock(eqx.Module):
             # sort_idx = hax.argsort(topk_idx_flat, axis=TokenRepeat)  # [TokenRepeat,]
             # inv_sort_idx = hax.argsort(sort_idx, axis=TokenRepeat)  # [TokenRepeat,]
             # x_repeat_sort = hax.NamedArray(
-            #     jnp.take_along_axis(
-            #         x_flat.array,
-            #         sort_idx.array[:, None] // TopExperts.size,
-            #         axis=0,
-            #     ),
+            #     jnp.take(x_flat.array, sort_idx.array // TopExperts.size, axis=0,),
             #     axes=(TokenRepeat, self.config.Embed)
             # )   # [TokenRepeat, Embed]
 
@@ -337,12 +342,7 @@ class MixtralSparseMoeBlock(eqx.Module):
             sort_idx_ = jnp.argsort(topk_idx_flat_, axis=-1)
             inv_sort_idx_ = jnp.argsort(sort_idx_, axis=-1)
 
-            x_repeat_sort_ = jnp.take_along_axis(
-                x_flat_,
-                sort_idx_[:, None] // TopExperts.size,
-                axis=0,
-            )
-
+            x_repeat_sort_ = jnp.take(x_flat_, sort_idx_ // TopExperts.size, axis=0)
             group_sizes_ = jnp.bincount(topk_idx_flat_, length=Experts.size)
 
             return x_repeat_sort_, group_sizes_, inv_sort_idx_
@@ -425,11 +425,11 @@ class MixtralSparseMoeBlock(eqx.Module):
 
 
 class MixtralDecoderLayer(eqx.Module):
-    config: MixtralConfig = eqx.static_field()
+    config: MixtralConfig = eqx.field(static=True)
     self_attn: LlamaAttention
     block_sparse_moe: MixtralSparseMoeBlock
-    input_layernorm: LlamaRMSNorm
-    post_attention_layernorm: LlamaRMSNorm
+    input_layernorm: hnn.RmsNorm
+    post_attention_layernorm: hnn.RmsNorm
 
     @staticmethod
     def init(config: MistralConfig, *, key) -> "MixtralDecoderLayer":
@@ -460,9 +460,9 @@ class MixtralDecoderLayer(eqx.Module):
 
 
 class MixtralTransformer(eqx.Module):
-    config: MistralConfig = eqx.static_field()
+    config: MistralConfig = eqx.field(static=True)
     layers: BlockFoldable[MixtralDecoderLayer]
-    norm: LlamaRMSNorm
+    norm: hnn.RmsNorm
 
     @staticmethod
     def init(config: MistralConfig, *, key) -> "MixtralTransformer":
