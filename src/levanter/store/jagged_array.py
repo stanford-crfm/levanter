@@ -190,6 +190,10 @@ class JaggedArrayStore:
         """
         return self._data[0 : self.data_size]
 
+    def row_length(self, row: int) -> int:
+        first, last, _ = self._bounds_for_rows(row, row + 1)
+        return last - first
+
     async def append_async(self, data: np.ndarray):
         await self.extend_async([data])
 

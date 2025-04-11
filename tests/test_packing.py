@@ -277,7 +277,7 @@ async def test_simple_pack(simple_dataset):
     batch = tester.as_sync_dataset()[1]
     data, segment_ids = batch
     expected_data = np.arange(300, 600)
-    expected_segment_ids = np.concatenate([np.full(150, 2), np.full(150, 3)])  # global doc indices 2 and 3
+    expected_segment_ids = np.concatenate([np.full(150, 2), np.full(150, 3)])
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
@@ -611,7 +611,9 @@ def test_too_long_to_pack(multi_leaf_dataset):
     dataset, _, _ = multi_leaf_dataset
     max_length = {"store1": 10, "store2": 5000}
 
-    with pytest.raises(ValueError, match="exceeds allowed capacity"):
+    with pytest.raises(
+        ValueError, match="Document 0 in leaf 'store1' has length 100 which exceeds maximum allowed length 10"
+    ):
         GreedyPrepackedDataset(dataset, max_length)
 
     tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=False)
@@ -636,7 +638,9 @@ def test_too_long_to_pack_padded(multi_leaf_dataset):
     dataset, _, _ = multi_leaf_dataset
     max_length = {"store1": 10, "store2": 5000}
 
-    with pytest.raises(ValueError, match="exceeds allowed capacity"):
+    with pytest.raises(
+        ValueError, match="Document 0 in leaf 'store1' has length 100 which exceeds maximum allowed length 10"
+    ):
         GreedyPrepackedDataset(dataset, max_length)
 
     tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=True)
@@ -659,6 +663,67 @@ def test_too_long_to_pack_padded(multi_leaf_dataset):
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
     assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+
+def test_invalid_max_length():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+        store.append(np.arange(100))
+
+        # Test non-dict max_length
+        with pytest.raises(ValueError, match="max_length must be a dict"):
+            GreedyPrepackedDataset({"store": store}, max_length=300)
+
+        # Test non-positive max_length
+        with pytest.raises(ValueError, match="max_length values must be positive integers"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 0})
+
+        # Test non-integer max_length
+        with pytest.raises(ValueError, match="max_length values must be positive integers"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": "300"})
+
+
+def test_invalid_max_segments():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+        store.append(np.arange(100))
+
+        # Test non-positive max_segments
+        with pytest.raises(ValueError, match="max_segments_per_example must be a positive integer"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, max_segments_per_example=0)
+
+        # Test non-integer max_segments
+        with pytest.raises(ValueError, match="max_segments_per_example must be a positive integer"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, max_segments_per_example="1")
+
+
+def test_mismatched_document_counts():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store1 = JaggedArrayStore.open(tmpdir + "/store1", item_rank=1, dtype=jnp.int64)
+        store2 = JaggedArrayStore.open(tmpdir + "/store2", item_rank=1, dtype=jnp.int64)
+
+        # Add different numbers of documents to each store
+        store1.append(np.arange(100))
+        store1.append(np.arange(100))
+        store2.append(np.arange(100))
+
+        with pytest.raises(ValueError, match="All leaves must have the same number of documents"):
+            GreedyPrepackedDataset({"store1": store1, "store2": store2}, max_length={"store1": 300, "store2": 300})
+
+
+def test_too_long_document_error():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+        store.append(np.arange(1000))  # Document longer than max_length
+
+        with pytest.raises(
+            ValueError, match="Document 0 in leaf 'store' has length 1000 which exceeds maximum allowed length 300"
+        ):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_too_long_examples=False)
+
+        # Should not raise when slice_too_long_examples is True
+        tester = GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_too_long_examples=True)
+        assert len(tester._pack_indices) == 1
 
 
 if __name__ == "__main__":
