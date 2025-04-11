@@ -37,7 +37,7 @@ def heuristic_is_leaf_batched(x):
 
 class TreeStore(Generic[T]):
     """
-    A TreeStoreBuilder stores batched data as a tree of ragged arrays.
+    A TreeStorestores batched data as a tree of ragged arrays.
     """
 
     path: str

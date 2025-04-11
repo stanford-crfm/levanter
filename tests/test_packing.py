@@ -1,3 +1,6 @@
+import tempfile
+from typing import Generator
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -5,6 +8,7 @@ import pytest
 import haliax as hax
 
 from levanter.data.packing import (
+    GreedyPrepackedDataset,
     PromptCompletion,
     SequencePacker,
     pack_prompt_completions,
@@ -13,6 +17,7 @@ from levanter.data.packing import (
 )
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
+from levanter.store.jagged_array import JaggedArrayStore
 
 
 def test_per_segment_loss():
@@ -217,6 +222,508 @@ def test_segment_correct():
 
     assert list(unique_ids.array) == [0, 1, 2, -1]
     assert list(segment_correct.array) == [True, False, True, True]
+
+
+####################################
+# tests for GreedyPrepackedDataset #
+####################################
+
+
+# TEST 1: Single-leaf dataset.
+@pytest.fixture
+def simple_dataset() -> Generator[tuple[dict[str, JaggedArrayStore], dict[str, int], np.ndarray], None, None]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a single JaggedArrayStore with four documents.
+        # Let document lengths be: 100, 200, 150, 150 tokens.
+        offsets = np.array([0, 100, 300, 450, 600])
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+
+        # Fill the store with data
+        for i in range(len(offsets) - 1):
+            start = offsets[i]
+            end = offsets[i + 1]
+            data = np.arange(start, end)
+            store.append(data)
+
+        # Build dataset as a PyTree; here a dict with one key.
+        dataset = {"store": store}
+        # Set allowed max tokens (per leaf) as 300.
+        max_length = {"store": 300}
+        yield dataset, max_length, offsets
+
+
+@pytest.mark.asyncio
+async def test_simple_pack(simple_dataset):
+    dataset, max_length, offsets = simple_dataset
+    tester = GreedyPrepackedDataset(dataset, max_length)
+    packs = tester._pack_indices
+    # We expect, given document lengths [100,200,150,150] and budget 300,
+    # that the first pack covers docs 0 and 1: token range = [offsets[0], offsets[2]) = [0,300),
+    # and the second pack covers docs 2 and 3: [offsets[2], offsets[4]) = [300,600).
+    assert len(packs) == 2
+    pack0 = packs[0]  # Expect {"store": range(0,2)}
+    pack1 = packs[1]  # Expect {"store": range(2,4)}
+    assert list(pack0["store"]) == list(range(0, 2))
+    assert list(pack1["store"]) == list(range(2, 4))
+
+    # now check that we can get the data out
+    batch = tester.as_sync_dataset()[0]
+    data, segment_ids = batch
+    expected_data = np.arange(0, 300)
+    expected_segment_ids = np.concatenate([np.full(100, 0), np.full(200, 1)])  # global doc indices 0 and 1
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[1]
+    data, segment_ids = batch
+    expected_data = np.arange(300, 600)
+    expected_segment_ids = np.concatenate([np.full(150, 2), np.full(150, 3)])
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+
+def test_simple_pack_max_examples(simple_dataset):
+    dataset, max_length, offsets = simple_dataset
+    tester = GreedyPrepackedDataset(dataset, max_length, max_segments_per_example=1, pad_with_zeros=False)
+    packs = tester._pack_indices
+    # We expect, given document lengths [100,200,150,150] and budget 300,
+    # that each pack covers exactly one document
+    assert len(packs) == 4
+    assert list(packs[0]["store"]) == [0]
+    assert list(packs[1]["store"]) == [1]
+    assert list(packs[2]["store"]) == [2]
+    assert list(packs[3]["store"]) == [3]
+
+    # now check that we can get the data out
+    batch = tester.as_sync_dataset()[0]
+    data, segment_ids = batch
+    expected_data = np.arange(0, 100)  # first document
+    expected_segment_ids = np.full(100, 0)  # global doc index 0
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[1]
+    data, segment_ids = batch
+    expected_data = np.arange(100, 300)  # second document
+    expected_segment_ids = np.full(200, 1)  # global doc index 1
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[2]
+    data, segment_ids = batch
+    expected_data = np.arange(300, 450)  # third document
+    expected_segment_ids = np.full(150, 2)  # global doc index 2
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[3]
+    data, segment_ids = batch
+    expected_data = np.arange(450, 600)  # fourth document
+    expected_segment_ids = np.full(150, 3)  # global doc index 3
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+
+def test_simple_pack_max_examples_padded(simple_dataset):
+    dataset, max_length, offsets = simple_dataset
+    tester = GreedyPrepackedDataset(dataset, max_length, max_segments_per_example=1, pad_with_zeros=True)
+    packs = tester._pack_indices
+    # We expect, given document lengths [100,200,150,150] and budget 300,
+    # that each pack covers exactly one document
+    assert len(packs) == 4
+    assert list(packs[0]["store"]) == [0]
+    assert list(packs[1]["store"]) == [1]
+    assert list(packs[2]["store"]) == [2]
+    assert list(packs[3]["store"]) == [3]
+
+    # now check that we can get the data out, with padding
+    batch = tester.as_sync_dataset()[0]
+    data, segment_ids = batch
+    expected_data = np.pad(np.arange(0, 100), (0, max_length["store"] - 100))  # first document padded to max_length
+    expected_segment_ids = np.pad(np.full(100, 0), (0, max_length["store"] - 100), constant_values=-1)
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[1]
+    data, segment_ids = batch
+    expected_data = np.pad(np.arange(100, 300), (0, max_length["store"] - 200))  # second document padded to max_length
+    expected_segment_ids = np.pad(np.full(200, 1), (0, max_length["store"] - 200), constant_values=-1)
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[2]
+    data, segment_ids = batch
+    expected_data = np.pad(np.arange(300, 450), (0, max_length["store"] - 150))  # third document padded to max_length
+    expected_segment_ids = np.pad(np.full(150, 2), (0, max_length["store"] - 150), constant_values=-1)
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[3]
+    data, segment_ids = batch
+    expected_data = np.pad(np.arange(450, 600), (0, max_length["store"] - 150))  # fourth document padded to max_length
+    expected_segment_ids = np.pad(np.full(150, 3), (0, max_length["store"] - 150), constant_values=-1)
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+
+# TEST 2: Multi-leaf dataset.
+@pytest.fixture
+def multi_leaf_dataset():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create two leaves.
+        # Leaf1: document lengths: [100,200,150,150] => offsets: [0,100,300,450,600]
+        # Leaf2: document lengths: [90,190,150,150]  => offsets: [0,90,280,430,580]
+        offsets1 = np.array([0, 100, 300, 450, 600])
+        offsets2 = np.array([0, 90, 280, 430, 580])
+
+        store1 = JaggedArrayStore.open(tmpdir + "/store1", item_rank=1, dtype=jnp.int64)
+        store2 = JaggedArrayStore.open(tmpdir + "/store2", item_rank=1, dtype=jnp.int64)
+
+        # Fill the stores with data
+        for i in range(len(offsets1) - 1):
+            start = offsets1[i]
+            end = offsets1[i + 1]
+            data = np.arange(start, end)
+            store1.append(data)
+
+        for i in range(len(offsets2) - 1):
+            start = offsets2[i]
+            end = offsets2[i + 1]
+            data = np.arange(start, end)
+            store2.append(data)
+
+        dataset = {"store1": store1, "store2": store2}
+        # Allowed max per leaf: for store1: 300 tokens, for store2: 250 tokens.
+        max_length = {"store1": 300, "store2": 250}
+        yield dataset, max_length, (offsets1, offsets2)
+
+
+def test_multi_leaf_pack(multi_leaf_dataset):
+    dataset, max_length, _ = multi_leaf_dataset
+    tester = GreedyPrepackedDataset(dataset, max_length, pad_with_zeros=False)
+    packs = tester._pack_indices
+    # Here the effective allowed max is computed per leaf:
+    # For store1: budget = 300, for store2: budget = 250. Thus the pack must satisfy both.
+    # Document lengths for store1: [100,200,150,150]; for store2: [90,190,150,150].
+    # For pack 1: starting at doc0, adding doc0 yields (100 and 90) which are within allowed.
+    # Trying to add doc1: store1 becomes 100+200=300 (okay) but store2 becomes 90+190=280 (>250);
+    # so pack 1 covers doc0 only.
+    # Similarly, pack 2 covers doc1 only; pack 3 covers doc2 only; pack 4 covers doc3 only.
+    assert len(packs) == 4
+    expected_docs = [[0], [1], [2], [3]]
+    for pack, expected in zip(packs, expected_docs):
+        assert list(pack["store1"]) == expected
+        assert list(pack["store2"]) == expected
+
+    # now check that we can get the data out
+    batch = tester.as_sync_dataset()[0]
+    data, segment_ids = batch
+    expected_data1 = np.arange(0, 100)  # first document in store1
+    expected_data2 = np.arange(0, 90)  # first document in store2
+    expected_segment_ids1 = np.full(100, 0)  # global doc index 0
+    expected_segment_ids2 = np.full(90, 0)  # global doc index 0
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+    batch = tester.as_sync_dataset()[1]
+    data, segment_ids = batch
+    expected_data1 = np.arange(100, 300)  # second document in store1
+    expected_data2 = np.arange(90, 280)  # second document in store2
+    expected_segment_ids1 = np.full(200, 1)  # global doc index 1
+    expected_segment_ids2 = np.full(190, 1)  # global doc index 1
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+    batch = tester.as_sync_dataset()[2]
+    data, segment_ids = batch
+    expected_data1 = np.arange(300, 450)  # third document in store1
+    expected_data2 = np.arange(280, 430)  # third document in store2
+    expected_segment_ids1 = np.full(150, 2)  # global doc index 2
+    expected_segment_ids2 = np.full(150, 2)  # global doc index 2
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+    batch = tester.as_sync_dataset()[3]
+    data, segment_ids = batch
+    expected_data1 = np.arange(450, 600)  # fourth document in store1
+    expected_data2 = np.arange(430, 580)  # fourth document in store2
+    expected_segment_ids1 = np.full(150, 3)  # global doc index 3
+    expected_segment_ids2 = np.full(150, 3)  # global doc index 3
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+
+def test_multi_leaf_pack_padded(multi_leaf_dataset):
+    dataset, max_length, _ = multi_leaf_dataset
+    tester = GreedyPrepackedDataset(dataset, max_length, pad_with_zeros=True)
+    packs = tester._pack_indices
+    # Here the effective allowed max is computed per leaf:
+    # For store1: budget = 300, for store2: budget = 250. Thus the pack must satisfy both.
+    # Document lengths for store1: [100,200,150,150]; for store2: [90,190,150,150].
+    # For pack 1: starting at doc0, adding doc0 yields (100 and 90) which are within allowed.
+    # Trying to add doc1: store1 becomes 100+200=300 (okay) but store2 becomes 90+190=280 (>250);
+    # so pack 1 covers doc0 only.
+    # Similarly, pack 2 covers doc1 only; pack 3 covers doc2 only; pack 4 covers doc3 only.
+    assert len(packs) == 4
+    expected_docs = [[0], [1], [2], [3]]
+    for pack, expected in zip(packs, expected_docs):
+        assert list(pack["store1"]) == expected
+        assert list(pack["store2"]) == expected
+
+    # now check that we can get the data out, with padding
+    batch = tester.as_sync_dataset()[0]
+    data, segment_ids = batch
+    expected_data1 = np.pad(
+        np.arange(0, 100), (0, max_length["store1"] - 100)
+    )  # first document in store1 padded to max_length
+    expected_data2 = np.pad(
+        np.arange(0, 90), (0, max_length["store2"] - 90)
+    )  # first document in store2 padded to max_length
+    expected_segment_ids1 = np.pad(np.full(100, 0), (0, max_length["store1"] - 100), constant_values=-1)
+    expected_segment_ids2 = np.pad(np.full(90, 0), (0, max_length["store2"] - 90), constant_values=-1)
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+    batch = tester.as_sync_dataset()[1]
+    data, segment_ids = batch
+    expected_data1 = np.pad(
+        np.arange(100, 300), (0, max_length["store1"] - 200)
+    )  # second document in store1 padded to max_length
+    expected_data2 = np.pad(
+        np.arange(90, 280), (0, max_length["store2"] - 190)
+    )  # second document in store2 padded to max_length
+    expected_segment_ids1 = np.pad(np.full(200, 1), (0, max_length["store1"] - 200), constant_values=-1)
+    expected_segment_ids2 = np.pad(np.full(190, 1), (0, max_length["store2"] - 190), constant_values=-1)
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+    batch = tester.as_sync_dataset()[2]
+    data, segment_ids = batch
+    expected_data1 = np.pad(
+        np.arange(300, 450), (0, max_length["store1"] - 150)
+    )  # third document in store1 padded to max_length
+    expected_data2 = np.pad(
+        np.arange(280, 430), (0, max_length["store2"] - 150)
+    )  # third document in store2 padded to max_length
+    expected_segment_ids1 = np.pad(np.full(150, 2), (0, max_length["store1"] - 150), constant_values=-1)
+    expected_segment_ids2 = np.pad(np.full(150, 2), (0, max_length["store2"] - 150), constant_values=-1)
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+    batch = tester.as_sync_dataset()[3]
+    data, segment_ids = batch
+    expected_data1 = np.pad(
+        np.arange(450, 600), (0, max_length["store1"] - 150)
+    )  # fourth document in store1 padded to max_length
+    expected_data2 = np.pad(
+        np.arange(430, 580), (0, max_length["store2"] - 150)
+    )  # fourth document in store2 padded to max_length
+    expected_segment_ids1 = np.pad(np.full(150, 3), (0, max_length["store1"] - 150), constant_values=-1)
+    expected_segment_ids2 = np.pad(np.full(150, 3), (0, max_length["store2"] - 150), constant_values=-1)
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+
+# TEST 3: max_segments_per_example constraint.
+@pytest.fixture
+def dataset_with_segments():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a single-leaf dataset of 4 documents (as in test 1) with offsets [0,100,300,450,600].
+        offsets = np.array([0, 100, 300, 450, 600])
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+
+        # Fill the store with data
+        for i in range(len(offsets) - 1):
+            start = offsets[i]
+            end = offsets[i + 1]
+            data = np.arange(start, end)
+            store.append(data)
+
+        dataset = {"store": store}
+        max_length = {"store": 1000}  # large enough so that token count doesn't force a break.
+        yield dataset, max_length, offsets
+
+
+def test_max_segments_constraint(dataset_with_segments):
+    dataset, max_length, offsets = dataset_with_segments
+    # With max_segments_per_example set to 1, each pack must cover exactly one document.
+    tester = GreedyPrepackedDataset(dataset, max_length, max_segments_per_example=1, pad_with_zeros=False)
+    packs = tester._pack_indices
+    # There are 4 documents so expect 4 packs.
+    assert len(packs) == 4
+    # For each document, the returned range should be exactly one document index
+    for i, pack in enumerate(packs):
+        assert list(pack["store"]) == [i]
+
+    # now check that we can get the data out
+    for i in range(4):
+        batch = tester.as_sync_dataset()[i]
+        data, segment_ids = batch
+        start = offsets[i]
+        end = offsets[i + 1]
+        expected_data = np.arange(start, end)
+        expected_segment_ids = np.full(end - start, i)
+        assert np.array_equal(data["store"], expected_data)
+        assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+
+def test_max_segments_constraint_padded(dataset_with_segments):
+    dataset, max_length, offsets = dataset_with_segments
+    # With max_segments_per_example set to 1, each pack must cover exactly one document.
+    tester = GreedyPrepackedDataset(dataset, max_length, max_segments_per_example=1, pad_with_zeros=True)
+    packs = tester._pack_indices
+    # There are 4 documents so expect 4 packs.
+    assert len(packs) == 4
+    # For each document, the returned range should be exactly one document index
+    for i, pack in enumerate(packs):
+        assert list(pack["store"]) == [i]
+
+    # now check that we can get the data out, with padding
+    for i in range(4):
+        batch = tester.as_sync_dataset()[i]
+        data, segment_ids = batch
+        start = offsets[i]
+        end = offsets[i + 1]
+        length = end - start
+        expected_data = np.pad(np.arange(start, end), (0, max_length["store"] - length))
+        expected_segment_ids = np.pad(np.full(length, i), (0, max_length["store"] - length), constant_values=-1)
+        assert np.array_equal(data["store"], expected_data)
+        assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+
+def test_too_long_to_pack(multi_leaf_dataset):
+    dataset, _, _ = multi_leaf_dataset
+    max_length = {"store1": 10, "store2": 5000}
+
+    with pytest.raises(
+        ValueError, match="Document 0 in leaf 'store1' has length 100 which exceeds maximum allowed length 10"
+    ):
+        GreedyPrepackedDataset(dataset, max_length)
+
+    tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=False)
+    pack2 = tester._pack_indices[2]
+    assert list(pack2["store1"]) == [2]
+    assert list(pack2["store2"]) == [2]
+
+    # now check that we can get the data out
+    batch = tester.as_sync_dataset()[2]
+    data, segment_ids = batch
+    expected_data1 = np.arange(450 - 10, 450)  # third document in store1, sliced to last 10 tokens
+    expected_data2 = np.arange(280, 430)  # third document in store2
+    expected_segment_ids1 = np.full(10, 2)  # global doc index 2 for the sliced portion
+    expected_segment_ids2 = np.full(150, 2)  # global doc index 2 for the full document
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+
+def test_too_long_to_pack_padded(multi_leaf_dataset):
+    dataset, _, _ = multi_leaf_dataset
+    max_length = {"store1": 10, "store2": 5000}
+
+    with pytest.raises(
+        ValueError, match="Document 0 in leaf 'store1' has length 100 which exceeds maximum allowed length 10"
+    ):
+        GreedyPrepackedDataset(dataset, max_length)
+
+    tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=True)
+    pack2 = tester._pack_indices[2]
+    assert list(pack2["store1"]) == [2]
+    assert list(pack2["store2"]) == [2]
+
+    # now check that we can get the data out, with padding
+    batch = tester.as_sync_dataset()[2]
+    data, segment_ids = batch
+    expected_data1 = np.arange(450 - 10, 450)  # third document in store1, sliced to last 10 tokens
+    expected_data2 = np.pad(
+        np.arange(280, 430), (0, max_length["store2"] - (430 - 280))
+    )  # third document in store2 padded
+    expected_segment_ids1 = np.full(10, 2)  # global doc index 2 for the sliced portion
+    expected_segment_ids2 = np.pad(
+        np.full(150, 2), (0, max_length["store2"] - 150), constant_values=-1
+    )  # segment IDs for the full document with padding
+    assert np.array_equal(data["store1"], expected_data1)
+    assert np.array_equal(data["store2"], expected_data2)
+    assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
+    assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+
+def test_invalid_max_length():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+        store.append(np.arange(100))
+
+        # Test non-dict max_length
+        with pytest.raises(ValueError, match="max_length must be a dict"):
+            GreedyPrepackedDataset({"store": store}, max_length=300)
+
+        # Test non-positive max_length
+        with pytest.raises(ValueError, match="max_length values must be positive integers"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 0})
+
+        # Test non-integer max_length
+        with pytest.raises(ValueError, match="max_length values must be positive integers"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": "300"})
+
+
+def test_invalid_max_segments():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+        store.append(np.arange(100))
+
+        # Test non-positive max_segments
+        with pytest.raises(ValueError, match="max_segments_per_example must be a positive integer"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, max_segments_per_example=0)
+
+        # Test non-integer max_segments
+        with pytest.raises(ValueError, match="max_segments_per_example must be a positive integer"):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, max_segments_per_example="1")
+
+
+def test_mismatched_document_counts():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store1 = JaggedArrayStore.open(tmpdir + "/store1", item_rank=1, dtype=jnp.int64)
+        store2 = JaggedArrayStore.open(tmpdir + "/store2", item_rank=1, dtype=jnp.int64)
+
+        # Add different numbers of documents to each store
+        store1.append(np.arange(100))
+        store1.append(np.arange(100))
+        store2.append(np.arange(100))
+
+        with pytest.raises(ValueError, match="All leaves must have the same number of documents"):
+            GreedyPrepackedDataset({"store1": store1, "store2": store2}, max_length={"store1": 300, "store2": 300})
+
+
+def test_too_long_document_error():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+        store.append(np.arange(1000))  # Document longer than max_length
+
+        with pytest.raises(
+            ValueError, match="Document 0 in leaf 'store' has length 1000 which exceeds maximum allowed length 300"
+        ):
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_too_long_examples=False)
+
+        # Should not raise when slice_too_long_examples is True
+        tester = GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_too_long_examples=True)
+        assert len(tester._pack_indices) == 1
 
 
 if __name__ == "__main__":

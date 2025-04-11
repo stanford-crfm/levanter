@@ -1185,7 +1185,7 @@ def _expose_available_rows(permanent_cache, num_available_rows):
     Updates the permanent cache to expose the available rows. This is done by updating the offsets[0] of the
     permanent cache to the total number of rows in the cache.
     """
-    futures = jax.tree.leaves(jax.tree.map(lambda x: x.offsets[0].write(num_available_rows), permanent_cache.tree))
+    futures = jax.tree.leaves(jax.tree.map(lambda x: x._offsets[0].write(num_available_rows), permanent_cache.tree))
     for future in futures:
         future.result()
 
@@ -1268,11 +1268,11 @@ async def _extend_cache_with_other_cache(
             """Copies **just the data array** from one shard to the permanent cache at a given offset."""
             # TODO: it'd be good if we just didn't expose the full data array (but only the used part)
             data_size = source_array.data_size
-            data = source_array.data[0:data_size]
+            data = source_array.data
 
             # To prevent OOM, copy in smaller batches
             MAX_ELEMS = 1024 * 1024 * 1024
-            await _copy_in_batches(dest_array.data, data_offset, data, data_size, MAX_ELEMS)
+            await _copy_in_batches(dest_array._data, data_offset, data, data_size, MAX_ELEMS)
 
         futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
 
@@ -1323,7 +1323,7 @@ async def _extend_cache_metadata_with_other(
             """Copies **just the data array** from one shard to the permanent cache at a given offset."""
 
             if source_array.shapes is not None:
-                source_shapes = source_array.shapes[0:source_num_rows]
+                source_shapes = source_array.shapes
                 async with ts.Transaction() as txn:
                     dest_shapes = dest_array.shapes
                     assert dest_shapes is not None
@@ -1331,14 +1331,14 @@ async def _extend_cache_metadata_with_other(
                     shape_future = dest_shapes.with_transaction(txn)[row_offset:out_end].write(source_shapes)
 
             # the 0th offset is the number of rows so we don't want to copy it into the destination
-            source_offsets = source_array.offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
+            source_offsets = source_array._offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
             source_offsets = _virtual_offset(source_offsets, data_offset)
 
             delay = 4
             while True:
                 try:
                     async with ts.Transaction() as txn:
-                        dest_offsets = dest_array.offsets
+                        dest_offsets = dest_array._offsets
                         out_end = 1 + row_offset + source_num_rows
                         offset_future = dest_offsets.with_transaction(txn)[row_offset + 1 : out_end].write(
                             source_offsets
@@ -1354,7 +1354,7 @@ async def _extend_cache_metadata_with_other(
                             raise
 
             await offset_future
-            if source_array.shapes is not None:
+            if source_array._shapes is not None:
                 await shape_future
 
         futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
