@@ -340,11 +340,13 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
                         doc_start = offsets[dr.start + doc_idx] if dr.start + doc_idx > 0 else 0
                         doc_end = offsets[dr.start + doc_idx + 1]
                         doc_length = doc_end - doc_start
+                        # Use the global document index as the segment ID
+                        global_doc_idx = dr.start + doc_idx
                         # If this is a sliced document, adjust the segment IDs to match the sliced portion
                         if doc_length > allowed and self.slice_too_long_examples:
-                            segment_ids.extend([doc_idx] * allowed)
+                            segment_ids.extend([global_doc_idx] * allowed)
                         else:
-                            segment_ids.extend([doc_idx] * doc_length)
+                            segment_ids.extend([global_doc_idx] * doc_length)
                     out_segment_ids.append(np.array(segment_ids))
 
             # Await all reads concurrently.

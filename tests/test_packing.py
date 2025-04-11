@@ -270,7 +270,14 @@ async def test_simple_pack(simple_dataset):
     batch = tester.as_sync_dataset()[0]
     data, segment_ids = batch
     expected_data = np.arange(0, 300)
-    expected_segment_ids = np.concatenate([np.full(100, 0), np.full(200, 1)])
+    expected_segment_ids = np.concatenate([np.full(100, 0), np.full(200, 1)])  # global doc indices 0 and 1
+    assert np.array_equal(data["store"], expected_data)
+    assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+    batch = tester.as_sync_dataset()[1]
+    data, segment_ids = batch
+    expected_data = np.arange(300, 600)
+    expected_segment_ids = np.concatenate([np.full(150, 2), np.full(150, 3)])  # global doc indices 2 and 3
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
@@ -291,28 +298,28 @@ def test_simple_pack_max_examples(simple_dataset):
     batch = tester.as_sync_dataset()[0]
     data, segment_ids = batch
     expected_data = np.arange(0, 100)  # first document
-    expected_segment_ids = np.full(100, 0)
+    expected_segment_ids = np.full(100, 0)  # global doc index 0
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
     batch = tester.as_sync_dataset()[1]
     data, segment_ids = batch
     expected_data = np.arange(100, 300)  # second document
-    expected_segment_ids = np.full(200, 0)
+    expected_segment_ids = np.full(200, 1)  # global doc index 1
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
     batch = tester.as_sync_dataset()[2]
     data, segment_ids = batch
     expected_data = np.arange(300, 450)  # third document
-    expected_segment_ids = np.full(150, 0)
+    expected_segment_ids = np.full(150, 2)  # global doc index 2
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
     batch = tester.as_sync_dataset()[3]
     data, segment_ids = batch
     expected_data = np.arange(450, 600)  # fourth document
-    expected_segment_ids = np.full(150, 0)
+    expected_segment_ids = np.full(150, 3)  # global doc index 3
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
@@ -340,21 +347,21 @@ def test_simple_pack_max_examples_padded(simple_dataset):
     batch = tester.as_sync_dataset()[1]
     data, segment_ids = batch
     expected_data = np.pad(np.arange(100, 300), (0, max_length["store"] - 200))  # second document padded to max_length
-    expected_segment_ids = np.pad(np.full(200, 0), (0, max_length["store"] - 200), constant_values=-1)
+    expected_segment_ids = np.pad(np.full(200, 1), (0, max_length["store"] - 200), constant_values=-1)
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
     batch = tester.as_sync_dataset()[2]
     data, segment_ids = batch
     expected_data = np.pad(np.arange(300, 450), (0, max_length["store"] - 150))  # third document padded to max_length
-    expected_segment_ids = np.pad(np.full(150, 0), (0, max_length["store"] - 150), constant_values=-1)
+    expected_segment_ids = np.pad(np.full(150, 2), (0, max_length["store"] - 150), constant_values=-1)
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
     batch = tester.as_sync_dataset()[3]
     data, segment_ids = batch
     expected_data = np.pad(np.arange(450, 600), (0, max_length["store"] - 150))  # fourth document padded to max_length
-    expected_segment_ids = np.pad(np.full(150, 0), (0, max_length["store"] - 150), constant_values=-1)
+    expected_segment_ids = np.pad(np.full(150, 3), (0, max_length["store"] - 150), constant_values=-1)
     assert np.array_equal(data["store"], expected_data)
     assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
@@ -413,8 +420,8 @@ def test_multi_leaf_pack(multi_leaf_dataset):
     data, segment_ids = batch
     expected_data1 = np.arange(0, 100)  # first document in store1
     expected_data2 = np.arange(0, 90)  # first document in store2
-    expected_segment_ids1 = np.full(100, 0)
-    expected_segment_ids2 = np.full(90, 0)
+    expected_segment_ids1 = np.full(100, 0)  # global doc index 0
+    expected_segment_ids2 = np.full(90, 0)  # global doc index 0
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -424,8 +431,8 @@ def test_multi_leaf_pack(multi_leaf_dataset):
     data, segment_ids = batch
     expected_data1 = np.arange(100, 300)  # second document in store1
     expected_data2 = np.arange(90, 280)  # second document in store2
-    expected_segment_ids1 = np.full(200, 0)
-    expected_segment_ids2 = np.full(190, 0)
+    expected_segment_ids1 = np.full(200, 1)  # global doc index 1
+    expected_segment_ids2 = np.full(190, 1)  # global doc index 1
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -435,8 +442,8 @@ def test_multi_leaf_pack(multi_leaf_dataset):
     data, segment_ids = batch
     expected_data1 = np.arange(300, 450)  # third document in store1
     expected_data2 = np.arange(280, 430)  # third document in store2
-    expected_segment_ids1 = np.full(150, 0)
-    expected_segment_ids2 = np.full(150, 0)
+    expected_segment_ids1 = np.full(150, 2)  # global doc index 2
+    expected_segment_ids2 = np.full(150, 2)  # global doc index 2
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -446,8 +453,8 @@ def test_multi_leaf_pack(multi_leaf_dataset):
     data, segment_ids = batch
     expected_data1 = np.arange(450, 600)  # fourth document in store1
     expected_data2 = np.arange(430, 580)  # fourth document in store2
-    expected_segment_ids1 = np.full(150, 0)
-    expected_segment_ids2 = np.full(150, 0)
+    expected_segment_ids1 = np.full(150, 3)  # global doc index 3
+    expected_segment_ids2 = np.full(150, 3)  # global doc index 3
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -495,8 +502,8 @@ def test_multi_leaf_pack_padded(multi_leaf_dataset):
     expected_data2 = np.pad(
         np.arange(90, 280), (0, max_length["store2"] - 190)
     )  # second document in store2 padded to max_length
-    expected_segment_ids1 = np.pad(np.full(200, 0), (0, max_length["store1"] - 200), constant_values=-1)
-    expected_segment_ids2 = np.pad(np.full(190, 0), (0, max_length["store2"] - 190), constant_values=-1)
+    expected_segment_ids1 = np.pad(np.full(200, 1), (0, max_length["store1"] - 200), constant_values=-1)
+    expected_segment_ids2 = np.pad(np.full(190, 1), (0, max_length["store2"] - 190), constant_values=-1)
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -510,8 +517,8 @@ def test_multi_leaf_pack_padded(multi_leaf_dataset):
     expected_data2 = np.pad(
         np.arange(280, 430), (0, max_length["store2"] - 150)
     )  # third document in store2 padded to max_length
-    expected_segment_ids1 = np.pad(np.full(150, 0), (0, max_length["store1"] - 150), constant_values=-1)
-    expected_segment_ids2 = np.pad(np.full(150, 0), (0, max_length["store2"] - 150), constant_values=-1)
+    expected_segment_ids1 = np.pad(np.full(150, 2), (0, max_length["store1"] - 150), constant_values=-1)
+    expected_segment_ids2 = np.pad(np.full(150, 2), (0, max_length["store2"] - 150), constant_values=-1)
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -525,8 +532,8 @@ def test_multi_leaf_pack_padded(multi_leaf_dataset):
     expected_data2 = np.pad(
         np.arange(430, 580), (0, max_length["store2"] - 150)
     )  # fourth document in store2 padded to max_length
-    expected_segment_ids1 = np.pad(np.full(150, 0), (0, max_length["store1"] - 150), constant_values=-1)
-    expected_segment_ids2 = np.pad(np.full(150, 0), (0, max_length["store2"] - 150), constant_values=-1)
+    expected_segment_ids1 = np.pad(np.full(150, 3), (0, max_length["store1"] - 150), constant_values=-1)
+    expected_segment_ids2 = np.pad(np.full(150, 3), (0, max_length["store2"] - 150), constant_values=-1)
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -571,7 +578,7 @@ def test_max_segments_constraint(dataset_with_segments):
         start = offsets[i]
         end = offsets[i + 1]
         expected_data = np.arange(start, end)
-        expected_segment_ids = np.full(end - start, 0)
+        expected_segment_ids = np.full(end - start, i)
         assert np.array_equal(data["store"], expected_data)
         assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
@@ -595,7 +602,7 @@ def test_max_segments_constraint_padded(dataset_with_segments):
         end = offsets[i + 1]
         length = end - start
         expected_data = np.pad(np.arange(start, end), (0, max_length["store"] - length))
-        expected_segment_ids = np.pad(np.full(length, 0), (0, max_length["store"] - length), constant_values=-1)
+        expected_segment_ids = np.pad(np.full(length, i), (0, max_length["store"] - length), constant_values=-1)
         assert np.array_equal(data["store"], expected_data)
         assert np.array_equal(segment_ids["store"], expected_segment_ids)
 
@@ -617,8 +624,8 @@ def test_too_long_to_pack(multi_leaf_dataset):
     data, segment_ids = batch
     expected_data1 = np.arange(450 - 10, 450)  # third document in store1, sliced to last 10 tokens
     expected_data2 = np.arange(280, 430)  # third document in store2
-    expected_segment_ids1 = np.full(10, 0)  # segment IDs for the sliced portion
-    expected_segment_ids2 = np.full(150, 0)  # segment IDs for the full document
+    expected_segment_ids1 = np.full(10, 2)  # global doc index 2 for the sliced portion
+    expected_segment_ids2 = np.full(150, 2)  # global doc index 2 for the full document
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
@@ -644,9 +651,9 @@ def test_too_long_to_pack_padded(multi_leaf_dataset):
     expected_data2 = np.pad(
         np.arange(280, 430), (0, max_length["store2"] - (430 - 280))
     )  # third document in store2 padded
-    expected_segment_ids1 = np.full(10, 0)  # segment IDs for the sliced portion
+    expected_segment_ids1 = np.full(10, 2)  # global doc index 2 for the sliced portion
     expected_segment_ids2 = np.pad(
-        np.full(150, 0), (0, max_length["store2"] - 150), constant_values=-1
+        np.full(150, 2), (0, max_length["store2"] - 150), constant_values=-1
     )  # segment IDs for the full document with padding
     assert np.array_equal(data["store1"], expected_data1)
     assert np.array_equal(data["store2"], expected_data2)
