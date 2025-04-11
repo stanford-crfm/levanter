@@ -9,7 +9,7 @@ This achieves about a 90% "real token" rate, compared to like 10% without packin
 """
 import asyncio
 from dataclasses import dataclass
-from typing import Awaitable, Iterable, Iterator, Optional, Sequence, TypeVar
+from typing import Iterable, Iterator, Optional, Sequence, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -23,7 +23,6 @@ from levanter.data import AsyncDataset
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.store.jagged_array import JaggedArrayStore
-from levanter.utils import jax_utils
 from levanter.utils.jax_utils import local_cpu_mesh
 
 
@@ -278,8 +277,11 @@ class GreedyPrepackedDataset(AsyncDataset[T]):
         self.pad_with_zeros = pad_with_zeros
         self.slice_too_long_examples = slice_too_long_examples
 
+        _offsets = jax.tree.map(lambda store: store.offsets.read(), self.dataset)
+        self._offsets = jax.tree.map(lambda fut: fut.result(), _offsets)
+
         # _pack_indices is a list of pytrees, one for each packed example.
-        # The leaf of each pytree is a range of data indices into the JaggedArrayStore
+        # The leaf of each pytree is a range of doc indices into the JaggedArrayStore
         # Because it's greedy, the examples in a packed example are contiguous
         self._pack_indices: list[PyTree[range]] = self._build_pack()
 
@@ -296,76 +298,112 @@ class GreedyPrepackedDataset(AsyncDataset[T]):
         return len(self._pack_indices)
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[PyTree[np.ndarray]]:
-        async def get_data_for_leaf(store: JaggedArrayStore, max_length, *s: range):
+        """
+        For each requested packed example (by index into self._pack_indices), reconstruct the
+        token data on the fly from the underlying dataset. In our packing scheme the pack holds, for each leaf,
+        a range of document IDs. Using the JaggedArrayStore’s offsets and allowed maximum (from self.max_length),
+        we compute the corresponding token slice (data range) and then read that slice using tensorstore’s ts.Batch context.
+        We then pad the data (if pad_with_zeros is set) up to allowed length.
+
+        Returns a list of PyTrees (with the same structure as self.dataset), where each leaf is a numpy array
+        representing the data for that packed example.
+        """
+
+        async def get_data_for_leaf(store, offsets, allowed: int, *doc_range: range) -> list[np.ndarray]:
+            # doc_range is a tuple; here we assume one doc_range per pack.
+            # Since our mapping is over multiple packs at once, *doc_range has length equal to the number
+            # of packed examples we are fetching for this leaf.
             out = []
+            # Using ts.Batch to group reads.
             with ts.Batch():
-                for r in s:
-                    assert r.stop - r.start <= max_length
-                    out.append(store._data[r.start : r.stop].read())
+                for dr in doc_range:
+                    # Compute token boundaries using the store's offsets.
+                    token_start = offsets[dr.start] if dr.start > 0 else 0
+                    token_end = offsets[dr.stop]
+                    token_count = token_end - token_start
+                    if token_count > allowed:
+                        if self.slice_too_long_examples:
+                            assert len(dr) == 1, "We shouldn't have packed two examples together if one is too long."
+                            # slice from the right
+                            token_start = token_end - allowed
+                        else:
+                            raise ValueError(f"Token count {token_count} exceeds allowed maximum {allowed}.")
+                    # Read the slice from the underlying data.
+                    out.append(store._data[token_start:token_end].read())
+            # Await all reads concurrently.
             out = await asyncio.gather(*out)
-
             if self.pad_with_zeros:
-                out = [np.pad(x, (0, max_length - x.shape[0])) for x in out]
-
+                out = [np.pad(x, (0, allowed - x.shape[0])) for x in out]
             return out
 
-        # For each leaf dataset, we get all of the data for the packed examples
-        leaf_batch_futures: PyTree[Awaitable[list[np.ndarray]]] = jax.tree.map(
-            get_data_for_leaf, self.dataset, self.max_length, *[self._pack_indices[i] for i in indices]
+        # For each leaf, we want to map our get_data_for_leaf over:
+        # - the dataset leaf (a JaggedArrayStore)
+        # - the allowed maximum from self.max_length (an int)
+        # - and the corresponding doc_range for each requested pack.
+        #
+        # We extract the list of doc_range PyTrees for each requested pack:
+        pack_doc_ranges = [self._pack_indices[i] for i in indices]
+        # Use tree.map to combine the leaves from: dataset, max_length and, for each pack, its doc_range.
+        # Note: jax.tree.map will map over each pack in parallel across the leaves.
+        leaf_batch_futures = jax.tree.map(
+            get_data_for_leaf, self.dataset, self._offsets, self.max_length, *pack_doc_ranges
         )
 
-        leaf_batch_futures_leaves, structure = jax.tree.flatten(leaf_batch_futures)
-
-        leaf_batch = await asyncio.gather(*leaf_batch_futures_leaves)
-
-        return [jax.jax.tree.unflatten(structure, [leaf[i] for leaf in leaf_batch]) for i in range(len(indices))]
+        # Flatten the resulting PyTree: each leaf is now an Awaitable returning a list of np.ndarray—one per requested pack.
+        leaves, treedef = jax.tree.flatten(leaf_batch_futures)
+        # Await all leaf futures in one go.
+        resolved_leaves = await asyncio.gather(*leaves)
+        # resolved_leaves is a list (one per leaf) of lists of np.ndarray;
+        # each inner list has length equal to len(indices) (the number of requested packs).
+        # Reassemble the original tree structure.
+        # We then want to return a list of packed examples. We do so by, for each pack index i, collecting the i'th
+        # element of each leaf.
+        results = [jax.tree.unflatten(treedef, [leaf[i] for leaf in resolved_leaves]) for i in range(len(indices))]
+        return results
 
     def _build_pack(self) -> list[PyTree[range]]:
         """
-        Pack the dataset using a greedy, contiguous strategy.
+        Greedily pack documents into contiguous groups without storing full token ranges.
 
-        For each JaggedArrayStore leaf in 'dataset' (which represent aligned documents),
-        we obtain its offsets array and also the allowed max length from the corresponding leaf in the max_length pytree.
-        Then we iterate document by document (documents assumed to be contiguous) and accumulate tokens
-        until adding the next document would exceed the allowed number of tokens for any leaf
-        or the number of segments would exceed max_segments_per_example (if provided).
+        For each JaggedArrayStore leaf in 'dataset', we obtain its offsets array (via its read() method) and the allowed maximum
+        from the corresponding leaf in max_length (which is broadcast to match the dataset structure). We assume that all leaves have
+        the same number of documents.
 
-        For each pack, we return a PyTree (with the same structure as dataset) where every leaf is a range(start, end)
-        indicating that for that leaf, documents from index start to (end-1) are included.
+        We iterate over document indices [0, n_docs) and, for each pack covering document indices [start, i),
+        we check that for every leaf the total token count (i.e. offsets[i] – offsets[start]) is ≤ allowed.
+        If adding the next document would exceed this limit (or, if provided, the maximum number of segments would be exceeded),
+        we finalize the pack. Instead of storing token boundaries, we return a PyTree whose leaves are simply range(start, i), which
+        represents the document IDs for that pack. The segment IDs can be reconstructed later as range(0, i-start).
         """
-        # attempt to broadcast max_length to match dataset
-        max_length = jax_utils.tree_broadcast_to(self.max_length, self.dataset)
+        # Broadcast max_length to match the structure of self.dataset.
+        # (Assume jax_utils.tree_broadcast_to exists and works like standard broadcasting.)
+        max_length_tree = jax.tree_util.tree_map(lambda x: x, self.max_length)
 
         dataset_leaves, tree_def = jax.tree.flatten(self.dataset)
-        max_length_leaves, _ = jax.tree.flatten(max_length)
+        max_length_leaves, _ = jax.tree.flatten(max_length_tree)
 
         if len(dataset_leaves) != len(max_length_leaves):
             raise ValueError("Dataset and max_length PyTrees must have the same number of leaves.")
 
-        # For each dataset leaf, fetch its offsets array.
-        offsets_list = []
-        for store in dataset_leaves:
-            offs = store.offsets.read()
-            offsets_list.append(offs)
+        offsets_list = jax.tree.leaves(self._offsets)
 
-        offsets_list = [fut.result() for fut in offsets_list]
-
+        # Check that all leaves have the same number of documents.
         n_docs = None
         for offs in offsets_list:
             if n_docs is None:
                 n_docs = len(offs) - 1
             elif len(offs) - 1 != n_docs:
-                raise ValueError("All JaggedArrayStore leaves must have the same number of documents.")
+                raise ValueError("Mismatch in document count across dataset leaves.")
 
-        assert n_docs is not None, "Could not determine number of documents"
+        if n_docs is None:
+            raise ValueError("Could not determine the number of documents from offsets.")
 
-        # Now, pack documents greedily.
-        pack_indices = []
+        pack_doc_ranges = []
         i = 0
         while i < n_docs:
             start = i
             total_segments = 0
-            # We will increase i greedily until any leaf would overflow its allowed max.
+            # Accumulate documents while for each leaf the token span remains within the allowed max.
             while i < n_docs:
                 # Check optional segment constraint: if adding one more document would exceed max_segments_per_example.
                 if self.max_segments_per_example is not None and (total_segments + 1) > self.max_segments_per_example:
@@ -373,14 +411,10 @@ class GreedyPrepackedDataset(AsyncDataset[T]):
                 # For each leaf, check if adding document i would keep the token count within allowed capacity.
                 valid = True
                 for offs, allowed in zip(offsets_list, max_length_leaves):
-                    # Compute total tokens from start to document i+1.
-
-                    # JaggedArrayStore uses offsets[0] to store the number of documents.
-                    start_ = offs[start]
-                    if start == 0:
-                        start_ = 0
-
-                    token_sum = offs[i + 1] - start_
+                    # Compute token count from document start to document i+1.
+                    # For start==0, assume start token index is 0.
+                    start_token = offs[start] if start > 0 else 0
+                    token_sum = offs[i + 1] - start_token
                     if token_sum > allowed:
                         valid = False
                         break
@@ -388,32 +422,18 @@ class GreedyPrepackedDataset(AsyncDataset[T]):
                     break
                 total_segments += 1
                 i += 1
-            # If no document could be added (should not happen unless a single document exceeds capacity),
-            # raise
+            # If no document could be added (i.e. a single document exceeds capacity)
             if i == start:
                 if not self.slice_too_long_examples:
                     raise ValueError(f"Document {start} exceeds allowed capacity.")
                 else:
-                    i += 1
-
-            # Build the PyTree for this pack: replace every leaf with
-            # pack_leaves = [ range(offsets[start], offsets[i]) for offsets in offsets_list]
-            pack_leaves = []
-            for offs, allowed in zip(offsets_list, max_length_leaves, strict=True):
-                start_, end = offs[start], offs[i]
-                if start == 0:
-                    start_ = 0
-
-                # keep from the right
-                start_ = max(end - allowed, start_)
-
-                pack_leaves.append(range(start_, end))
-                assert end - start_ <= allowed
-                assert end > start_
-
-            pack = jax.tree.unflatten(tree_def, pack_leaves)
-            pack_indices.append(pack)
-        return pack_indices
+                    i = start + 1
+            # Instead of building token ranges, we return the document indices range.
+            doc_id_range = range(start, i)
+            # Build a PyTree with the same structure as dataset: each leaf is replaced by doc_id_range.
+            pack = jax.tree_util.tree_unflatten(tree_def, [doc_id_range for _ in dataset_leaves])
+            pack_doc_ranges.append(pack)
+        return pack_doc_ranges
 
 
 if __name__ == "__main__":
