@@ -22,6 +22,7 @@ from haliax.partitioning import ResourceAxis, ResourceMapping
 
 X = TypeVar("X")
 T = TypeVar("T", bound=PyTree)
+L = TypeVar("L")
 
 
 def jnp_to_python(a: jnp.ndarray):
@@ -429,3 +430,17 @@ def broadcast_shard(x: T, out_axis_specs: Any, source: int = 0) -> T:
     out = eqx.filter_jit(jax.tree.map)(in_jit, x, out_axis_specs, is_leaf=is_named_array)
 
     return out
+
+
+def tree_broadcast_to(prefix: PyTree[L], t: T, *, is_leaf: Optional[Callable[[Any], bool]] = None) -> T:
+    """
+    Broadcasts a prefix tree to match the structure of a full tree. This is useful when you need to
+    tree_map over t and prefix (using t as the leaves) but prefix is a tree prefix of t.
+    """
+    return jax.tree.map(
+        # note the swap
+        lambda pref, xtree: jax.tree.map(lambda x: pref, xtree, is_leaf=is_leaf),
+        prefix,
+        t,
+        is_leaf=is_leaf,
+    )
