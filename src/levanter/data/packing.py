@@ -245,7 +245,7 @@ def per_segment_correct(
     return unique_segment_ids, segment_correct
 
 
-class GreedyPrepackedDataset(AsyncDataset[T]):
+class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
     """
     Prepacks a dataset into a new dataset where examples are packed into a single example.
 
@@ -297,23 +297,26 @@ class GreedyPrepackedDataset(AsyncDataset[T]):
     async def current_len(self) -> Optional[int]:
         return len(self._pack_indices)
 
-    async def get_batch(self, indices: Sequence[int]) -> Sequence[PyTree[np.ndarray]]:
+    async def get_batch(self, indices: Sequence[int]) -> Sequence[tuple[PyTree[np.ndarray], PyTree[np.ndarray]]]:
         """
         For each requested packed example (by index into self._pack_indices), reconstruct the
         token data on the fly from the underlying dataset. In our packing scheme the pack holds, for each leaf,
-        a range of document IDs. Using the JaggedArrayStore’s offsets and allowed maximum (from self.max_length),
-        we compute the corresponding token slice (data range) and then read that slice using tensorstore’s ts.Batch context.
+        a range of document IDs. Using the JaggedArrayStore's offsets and allowed maximum (from self.max_length),
+        we compute the corresponding token slice (data range) and then read that slice using tensorstore's ts.Batch context.
         We then pad the data (if pad_with_zeros is set) up to allowed length.
 
-        Returns a list of PyTrees (with the same structure as self.dataset), where each leaf is a numpy array
-        representing the data for that packed example.
+        Returns a list of tuples (data, segment_ids), where each is a PyTree (with the same structure as self.dataset),
+        and each leaf is a numpy array representing the data or segment IDs for that packed example.
         """
 
-        async def get_data_for_leaf(store, offsets, allowed: int, *doc_range: range) -> list[np.ndarray]:
+        async def get_data_for_leaf(
+            store, offsets, allowed: int, *doc_range: range
+        ) -> tuple[list[np.ndarray], list[np.ndarray]]:
             # doc_range is a tuple; here we assume one doc_range per pack.
             # Since our mapping is over multiple packs at once, *doc_range has length equal to the number
             # of packed examples we are fetching for this leaf.
-            out = []
+            out_data = []
+            out_segment_ids = []
             # Using ts.Batch to group reads.
             with ts.Batch():
                 for dr in doc_range:
@@ -329,12 +332,29 @@ class GreedyPrepackedDataset(AsyncDataset[T]):
                         else:
                             raise ValueError(f"Token count {token_count} exceeds allowed maximum {allowed}.")
                     # Read the slice from the underlying data.
-                    out.append(store._data[token_start:token_end].read())
+                    out_data.append(store._data[token_start:token_end].read())
+
+                    # Create segment IDs for this pack
+                    segment_ids = []
+                    for doc_idx in range(len(dr)):
+                        doc_start = offsets[dr.start + doc_idx] if dr.start + doc_idx > 0 else 0
+                        doc_end = offsets[dr.start + doc_idx + 1]
+                        doc_length = doc_end - doc_start
+                        # If this is a sliced document, adjust the segment IDs to match the sliced portion
+                        if doc_length > allowed and self.slice_too_long_examples:
+                            segment_ids.extend([doc_idx] * allowed)
+                        else:
+                            segment_ids.extend([doc_idx] * doc_length)
+                    out_segment_ids.append(np.array(segment_ids))
+
             # Await all reads concurrently.
-            out = await asyncio.gather(*out)
+            out_data = await asyncio.gather(*out_data)
+
             if self.pad_with_zeros:
-                out = [np.pad(x, (0, allowed - x.shape[0])) for x in out]
-            return out
+                out_data = [np.pad(x, (0, allowed - x.shape[0])) for x in out_data]
+                out_segment_ids = [np.pad(x, (0, allowed - x.shape[0]), constant_values=-1) for x in out_segment_ids]
+
+            return out_data, out_segment_ids
 
         # For each leaf, we want to map our get_data_for_leaf over:
         # - the dataset leaf (a JaggedArrayStore)
@@ -349,16 +369,20 @@ class GreedyPrepackedDataset(AsyncDataset[T]):
             get_data_for_leaf, self.dataset, self._offsets, self.max_length, *pack_doc_ranges
         )
 
-        # Flatten the resulting PyTree: each leaf is now an Awaitable returning a list of np.ndarray—one per requested pack.
+        # Flatten the resulting PyTree: each leaf is now an Awaitable returning a tuple of lists of np.ndarray—one per requested pack.
         leaves, treedef = jax.tree.flatten(leaf_batch_futures)
         # Await all leaf futures in one go.
         resolved_leaves = await asyncio.gather(*leaves)
-        # resolved_leaves is a list (one per leaf) of lists of np.ndarray;
+        # resolved_leaves is a list (one per leaf) of tuples of lists of np.ndarray;
         # each inner list has length equal to len(indices) (the number of requested packs).
         # Reassemble the original tree structure.
         # We then want to return a list of packed examples. We do so by, for each pack index i, collecting the i'th
         # element of each leaf.
-        results = [jax.tree.unflatten(treedef, [leaf[i] for leaf in resolved_leaves]) for i in range(len(indices))]
+        results = []
+        for i in range(len(indices)):
+            data = jax.tree.unflatten(treedef, [leaf[0][i] for leaf in resolved_leaves])
+            segment_ids = jax.tree.unflatten(treedef, [leaf[1][i] for leaf in resolved_leaves])
+            results.append((data, segment_ids))
         return results
 
     def _build_pack(self) -> list[PyTree[range]]:
@@ -460,7 +484,7 @@ if __name__ == "__main__":
         example_batch = packed_sync.get_batch(range(i * 100, (i + 1) * 100))
 
         for example in example_batch:
-            padding_count += np.sum(example == 0)
-            total_tokens += example.size
+            padding_count += np.sum(example[0] == 0)
+            total_tokens += example[0].size
 
     print(f"Padding rate: {padding_count / total_tokens:.2f}")
