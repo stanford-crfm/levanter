@@ -246,7 +246,7 @@ def per_segment_correct(
 
 
 def pack_documents(
-    offsets: PyTree[np.ndarray],
+    lengths: PyTree[np.ndarray],
     max_length: PyTree[int],
     max_segments_per_example: int | None = None,
     slice_too_long_examples: bool = False,
@@ -255,15 +255,15 @@ def pack_documents(
     Greedily pack documents into contiguous groups without storing full token ranges.
 
     Args:
-        offsets: A PyTree of numpy arrays, each containing the offsets for a leaf.
-            Each array should be of length n_docs + 1, where n_docs is the number of documents.
-            The i-th document's tokens are at positions [offsets[i], offsets[i+1]).
+        lengths: A PyTree of numpy arrays, each containing the lengths of documents for a leaf.
+            Each array should be of length n_docs, where n_docs is the number of documents.
+            The i-th document has length lengths[i].
         max_length: A PyTree of integers, each specifying the maximum number of tokens allowed per pack for that leaf
         max_segments_per_example: Optional maximum number of documents per pack
         slice_too_long_examples: If True, slice documents that exceed max_length instead of raising an error
 
     Returns:
-        A list of PyTrees, where each PyTree has the same structure as offsets but with ranges of document indices
+        A list of PyTrees, where each PyTree has the same structure as lengths but with ranges of document indices
     """
     # Input validation
     if max_segments_per_example is not None and (
@@ -271,34 +271,33 @@ def pack_documents(
     ):
         raise ValueError(f"max_segments_per_example must be a positive integer, got {max_segments_per_example}")
 
-    # Broadcast max_length to match the structure of offsets
+    # Broadcast max_length to match the structure of lengths
     max_length_tree = jax.tree.map(lambda x: x, max_length)
 
-    offsets_leaves, tree_def = jax.tree.flatten(offsets)
+    lengths_leaves, tree_def = jax.tree.flatten(lengths)
     max_length_leaves, _ = jax.tree.flatten(max_length_tree)
-    leaf_names = leaf_key_paths(offsets)
+    leaf_names = leaf_key_paths(lengths)
 
-    if len(offsets_leaves) != len(max_length_leaves):
-        raise ValueError("Offsets and max_length PyTrees must have the same number of leaves.")
+    if len(lengths_leaves) != len(max_length_leaves):
+        raise ValueError("Lengths and max_length PyTrees must have the same number of leaves.")
 
     # Check that all leaves have the same number of documents.
     n_docs = None
-    for offs in offsets_leaves:
+    for lens in lengths_leaves:
         if n_docs is None:
-            n_docs = len(offs) - 1
-        elif len(offs) - 1 != n_docs:
+            n_docs = len(lens)
+        elif len(lens) != n_docs:
             raise ValueError("All leaves must have the same number of documents.")
 
     if n_docs is None:
-        raise ValueError("Could not determine the number of documents from offsets.")
+        raise ValueError("Could not determine the number of documents from lengths.")
 
     # Validate document lengths
-    for offs, allowed, leaf_name in zip(offsets_leaves, max_length_leaves, leaf_names):
+    for lens, allowed, leaf_name in zip(lengths_leaves, max_length_leaves, leaf_names):
         for i in range(n_docs):
-            doc_len = offs[i + 1] - (offs[i] if i > 0 else 0)
-            if doc_len > allowed and not slice_too_long_examples:
+            if lens[i] > allowed and not slice_too_long_examples:
                 raise ValueError(
-                    f"Document {i} in leaf '{leaf_name}' has length {doc_len} which exceeds "
+                    f"Document {i} in leaf '{leaf_name}' has length {lens[i]} which exceeds "
                     f"maximum allowed length {allowed}. Consider setting slice_too_long_examples=True "
                     "or increasing max_length."
                 )
@@ -315,20 +314,15 @@ def pack_documents(
                 break
             # For each leaf, check if adding document i would keep the token count within allowed capacity.
             valid = True
-            for offs, allowed, leaf_name in zip(offsets_leaves, max_length_leaves, leaf_names):
+            for lens, allowed, leaf_name in zip(lengths_leaves, max_length_leaves, leaf_names):
                 # Compute token count from document start to document i+1.
-                # For start==0, assume start token index is 0.
-                start_token = offs[start] if start > 0 else 0
-                token_sum = offs[i + 1] - start_token
+                token_sum = sum(lens[start : i + 1])
                 if token_sum > allowed:
                     valid = False
                     if not slice_too_long_examples and i == start:
                         # If this is the first document in a new pack and it's too long, raise an error
-                        doc_start = offs[i] if i > 0 else 0
-                        doc_end = offs[i + 1]
-                        doc_length = doc_end - doc_start
                         raise ValueError(
-                            f"Document {i} in leaf '{leaf_name}' has length {doc_length} which exceeds "
+                            f"Document {i} in leaf '{leaf_name}' has length {lens[i]} which exceeds "
                             f"maximum allowed length {allowed}. Consider setting slice_too_long_examples=True "
                             "or increasing max_length."
                         )
@@ -345,8 +339,8 @@ def pack_documents(
                 i = start + 1
         # Instead of building token ranges, we return the document indices range.
         doc_id_range = range(start, i)
-        # Build a PyTree with the same structure as offsets: each leaf is replaced by doc_id_range.
-        pack = jax.tree.unflatten(tree_def, [doc_id_range for _ in offsets_leaves])
+        # Build a PyTree with the same structure as lengths: each leaf is replaced by doc_id_range.
+        pack = jax.tree.unflatten(tree_def, [doc_id_range for _ in lengths_leaves])
         pack_doc_ranges.append(pack)
     return pack_doc_ranges
 
@@ -392,9 +386,18 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         _offsets = jax.tree.map(lambda store: store.offsets.read(), self.dataset)
         self._offsets = jax.tree.map(lambda fut: fut.result(), _offsets)
 
+        def diff_offsets(offsets: np.ndarray):
+            # fine to mutate since we have a copy
+            # the array store has the number of rows in the 0th offset
+            offsets[0] = 0
+            return offsets[1:] - offsets[:-1]
+
+        # Convert offsets to lengths
+        self._lengths = jax.tree.map(diff_offsets, self._offsets)
+
         # Build pack indices
         self._pack_indices = pack_documents(
-            self._offsets, max_length, max_segments_per_example, slice_too_long_examples
+            self._lengths, max_length, max_segments_per_example, slice_too_long_examples
         )
 
     def is_finite(self) -> bool:
