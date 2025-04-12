@@ -37,7 +37,12 @@ from haliax import NamedArray
 
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, load_tokenizer
-from levanter.data.packing import PromptCompletion, pack_prompt_completions, per_segment_correct, per_segment_loss
+from levanter.data.packing import (
+    PromptCompletion,
+    greedy_pack_prompt_completions,
+    per_segment_correct,
+    per_segment_loss,
+)
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.loss import next_token_loss
 from levanter.utils.background_iterable import BackgroundIterator
@@ -254,17 +259,19 @@ class LevanterHarnessLM(LM):
             logger.warning("No pad token set. Setting to eos token.")
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        packed_iterator = _pack_requests(requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments)
-        packed_iterator = stack_batches(packed_iterator, self.EvalPos, self.EvalBatch)
+        packed = _pack_requests(requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments)
+        packed_iterator = stack_batches(iter(packed), self.EvalPos, self.EvalBatch)
         packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
         result_probs = np.zeros(len(requests))
         result_greedy = np.zeros(len(requests))
         covered_points = np.zeros(len(requests), dtype=bool)
 
+        total_tokens_expected = len(packed) * self.EvalPos.size
+
         total_padding = 0
-        total_tokens = 0
-        pbar = tqdm(total=len(requests), desc="Loglikelihood", unit="req")
+        total_tokens_seen = 0
+        pbar = tqdm(total=total_tokens_expected, desc="loglikelihood", unit="tok")
         for q, batch in enumerate(packed_iterator):
             segments_this_batch = _get_segments_this_batch(
                 batch, self.leader.max_packed_segments * self.EvalBatch.size
@@ -292,13 +299,13 @@ class LevanterHarnessLM(LM):
             covered_points[out_ids[valid_indices]] = True
 
             total_padding += padding_count
-            total_tokens += batch_tokens
+            total_tokens_seen += batch_tokens
 
             pbar.set_postfix(
-                padding=f"{total_padding}/{total_tokens} = {(total_padding) / (total_tokens):.2f}",
+                padding=f"{total_padding}/{total_tokens_seen} = {(total_padding) / (total_tokens_seen):.2f}",
                 this_padding=f"{padding_count}/{batch_tokens}= {padding_count / batch_tokens:.2f}",
             )
-            pbar.update(len(segments_this_batch))
+            pbar.update(batch_tokens)
 
         missing_points = np.where(~covered_points)[0]
         assert len(missing_points) == 0, f"Missing points: {missing_points}"
@@ -832,15 +839,14 @@ def _iterate_tokenized_requests(
 
 def _pack_requests(
     requests: list[Instance], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
-) -> Iterator[LmExample]:
+) -> list[LmExample]:
     packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size, batch_size=128)
     # TODO: use a better packing algorithm?
-    yield from pack_prompt_completions(
+    return greedy_pack_prompt_completions(
         Pos,
         packed_iterator,
         max_segments_per_example=max_pack_size,
         pad_token=tokenizer.pad_token_id,
-        max_buffered_examples=16,
     )
 
 
