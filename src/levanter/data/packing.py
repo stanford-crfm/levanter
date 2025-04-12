@@ -23,7 +23,7 @@ from levanter.data import AsyncDataset
 from levanter.models.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.store.jagged_array import JaggedArrayStore
-from levanter.utils.jax_utils import leaf_key_paths, local_cpu_mesh
+from levanter.utils.jax_utils import leaf_key_paths, local_cpu_mesh, tree_broadcast_to
 
 
 # cf https://github.com/tensorflow/tensor2tensor/blob/bafdc1b67730430d38d6ab802cbd51f9d053ba2e/tensor2tensor/data_generators/generator_utils.py#L623
@@ -245,6 +245,96 @@ def per_segment_correct(
     return unique_segment_ids, segment_correct
 
 
+def greedy_pack_prompt_completions(
+    Pos: hax.Axis,
+    sequences: Iterable[PromptCompletion],
+    pad_token: int,
+    max_segments_per_example: int = 64,
+) -> Iterator[LmExample]:
+    """
+    Greedy packing of prompt completions into LmExamples using [pack_documents][]
+    """
+
+    def make_loss_mask(id, prompt_length):
+        loss_mask = np.arange(len(id)) >= prompt_length - 1
+        loss_mask[-1] = 0
+        return loss_mask
+
+    # Convert sequences to lists for easier access
+    sequences = list(sequences)
+    ids = [sequence.ids for sequence in sequences]
+    prompt_lengths = [sequence.prompt_length for sequence in sequences]
+
+    # First, identify sequences that are too long to be packed with others
+    too_long_indices = [i for i, id in enumerate(ids) if len(id) > Pos.size]
+
+    # Yield individual examples for too-long sequences first (to maintain order)
+    for idx in too_long_indices:
+        seq = sequences[idx]
+        # Slice from the right
+        sliced_ids = seq.ids[-Pos.size :]
+        # Adjust prompt length for slicing
+        adjusted_prompt_length = max(0, seq.prompt_length - (len(seq.ids) - Pos.size))
+        loss_mask = make_loss_mask(sliced_ids, adjusted_prompt_length)
+        segment_ids = [0] * len(sliced_ids)
+
+        # Create the LmExample
+        tokens = hax.named(np.array(sliced_ids), Pos)
+        loss_mask = hax.named(np.array(loss_mask), Pos)
+        segment_ids = hax.named(np.array(segment_ids), Pos)
+        attn_mask = AttentionMask.causal().with_segment_ids(segment_ids)
+
+        yield LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+    # Pack documents based on their lengths, excluding too-long sequences
+    if len(too_long_indices) < len(sequences):
+        normal_indices = [i for i in range(len(sequences)) if i not in too_long_indices]
+        normal_packs = pack_documents(
+            lengths=np.array([len(ids[i]) for i in normal_indices]),
+            max_length=Pos.size,
+            max_segments_per_example=max_segments_per_example,
+            slice_too_long_examples=True,
+        )
+
+        # Yield packed examples for normal sequences
+        for docs_in_pack in normal_packs:
+            # Get the documents in this pack
+            pack_sequences = [sequences[normal_indices[i]] for i in docs_in_pack]
+            pack_prompt_lengths = [prompt_lengths[normal_indices[i]] for i in docs_in_pack]
+
+            # Concatenate the IDs and create loss masks
+            concat_ids = []
+            concat_loss_mask = []
+            segment_ids = []
+
+            for i, (seq, prompt_len) in enumerate(zip(pack_sequences, pack_prompt_lengths)):
+                concat_ids.extend(seq.ids)
+                concat_loss_mask.extend(make_loss_mask(seq.ids, prompt_len))
+                segment_ids.extend([i] * len(seq.ids))
+
+            # Pad to max length
+            pad_length = Pos.size - len(concat_ids)
+            if pad_length > 0:
+                concat_ids.extend([pad_token] * pad_length)
+                concat_loss_mask.extend([0] * pad_length)
+                segment_ids.extend([-1] * pad_length)
+
+            # Create the LmExample
+            tokens = hax.named(np.array(concat_ids), Pos)
+            loss_mask = hax.named(np.array(concat_loss_mask), Pos)
+            segment_ids = hax.named(np.array(segment_ids), Pos)
+            attn_mask = AttentionMask.causal().with_segment_ids(segment_ids)
+
+            yield LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+
+
+def _segment_ids_from_lengths(doc_ids: list[int], lengths: list[int]) -> list[int]:
+    segment_ids = []
+    for doc_id, length in zip(doc_ids, lengths):
+        segment_ids.extend([doc_id] * length)
+    return segment_ids
+
+
 def pack_documents(
     lengths: PyTree[np.ndarray],
     max_length: PyTree[int],
@@ -272,7 +362,7 @@ def pack_documents(
         raise ValueError(f"max_segments_per_example must be a positive integer, got {max_segments_per_example}")
 
     # Broadcast max_length to match the structure of lengths
-    max_length_tree = jax.tree.map(lambda x: x, max_length)
+    max_length_tree = tree_broadcast_to(max_length, lengths)
 
     lengths_leaves, tree_def = jax.tree.flatten(lengths)
     max_length_leaves, _ = jax.tree.flatten(max_length_tree)
