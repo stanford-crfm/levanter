@@ -245,6 +245,94 @@ def per_segment_correct(
     return unique_segment_ids, segment_correct
 
 
+def pack_documents(
+    offsets: PyTree[np.ndarray],
+    max_length: PyTree[int],
+    max_segments_per_example: int | None = None,
+    slice_too_long_examples: bool = False,
+) -> list[PyTree[range]]:
+    """
+    Greedily pack documents into contiguous groups without storing full token ranges.
+
+    Args:
+        offsets: A PyTree of numpy arrays, each containing the offsets for a leaf.
+            Each array should be of length n_docs + 1, where n_docs is the number of documents.
+            The i-th document's tokens are at positions [offsets[i], offsets[i+1]).
+        max_length: A PyTree of integers, each specifying the maximum number of tokens allowed per pack for that leaf
+        max_segments_per_example: Optional maximum number of documents per pack
+        slice_too_long_examples: If True, slice documents that exceed max_length instead of raising an error
+
+    Returns:
+        A list of PyTrees, where each PyTree has the same structure as offsets but with ranges of document indices
+    """
+    # Broadcast max_length to match the structure of offsets
+    max_length_tree = jax.tree.map(lambda x: x, max_length)
+
+    offsets_leaves, tree_def = jax.tree.flatten(offsets)
+    max_length_leaves, _ = jax.tree.flatten(max_length_tree)
+
+    if len(offsets_leaves) != len(max_length_leaves):
+        raise ValueError("Offsets and max_length PyTrees must have the same number of leaves.")
+
+    # Check that all leaves have the same number of documents.
+    n_docs = None
+    for offs in offsets_leaves:
+        if n_docs is None:
+            n_docs = len(offs) - 1
+        elif len(offs) - 1 != n_docs:
+            raise ValueError("Mismatch in document count across offsets leaves.")
+
+    if n_docs is None:
+        raise ValueError("Could not determine the number of documents from offsets.")
+
+    pack_doc_ranges = []
+    i = 0
+    while i < n_docs:
+        start = i
+        total_segments = 0
+        # Accumulate documents while for each leaf the token span remains within the allowed max.
+        while i < n_docs:
+            # Check optional segment constraint: if adding one more document would exceed max_segments_per_example.
+            if max_segments_per_example is not None and (total_segments + 1) > max_segments_per_example:
+                break
+            # For each leaf, check if adding document i would keep the token count within allowed capacity.
+            valid = True
+            for offs, allowed in zip(offsets_leaves, max_length_leaves):
+                # Compute token count from document start to document i+1.
+                # For start==0, assume start token index is 0.
+                start_token = offs[start] if start > 0 else 0
+                token_sum = offs[i + 1] - start_token
+                if token_sum > allowed:
+                    valid = False
+                    if not slice_too_long_examples and i == start:
+                        # If this is the first document in a new pack and it's too long, raise an error
+                        doc_start = offs[i] if i > 0 else 0
+                        doc_end = offs[i + 1]
+                        doc_length = doc_end - doc_start
+                        raise ValueError(
+                            f"Document {i} has length {doc_length} which exceeds "
+                            f"maximum allowed length {allowed}. Consider setting slice_too_long_examples=True "
+                            "or increasing max_length."
+                        )
+                    break
+            if not valid:
+                break
+            total_segments += 1
+            i += 1
+        # If no document could be added (i.e. a single document exceeds capacity)
+        if i == start:
+            if not slice_too_long_examples:
+                raise ValueError(f"Document {start} exceeds allowed capacity.")
+            else:
+                i = start + 1
+        # Instead of building token ranges, we return the document indices range.
+        doc_id_range = range(start, i)
+        # Build a PyTree with the same structure as offsets: each leaf is replaced by doc_id_range.
+        pack = jax.tree.unflatten(tree_def, [doc_id_range for _ in offsets_leaves])
+        pack_doc_ranges.append(pack)
+    return pack_doc_ranges
+
+
 class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
     """
     Prepacks a dataset into a new dataset where examples are packed into a single example.
@@ -299,7 +387,9 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         self._validate_inputs(dataset, max_length, slice_too_long_examples)
 
         # Build pack indices
-        self._pack_indices = self._pack()
+        self._pack_indices = pack_documents(
+            self._offsets, max_length, max_segments_per_example, slice_too_long_examples
+        )
 
     def _validate_inputs(self, dataset, max_length, slice_too_long_examples):
         # Validate that all leaves have the same number of documents
@@ -422,80 +512,6 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
             segment_ids = jax.tree.unflatten(treedef, [leaf[1][i] for leaf in resolved_leaves])
             results.append((data, segment_ids))
         return results
-
-    def _pack(self) -> list[PyTree[range]]:
-        """
-        Greedily pack documents into contiguous groups without storing full token ranges.
-
-        For each JaggedArrayStore leaf in 'dataset', we obtain its offsets array (via its read() method) and the allowed maximum
-        from the corresponding leaf in max_length (which is broadcast to match the dataset structure). We assume that all leaves have
-        the same number of documents.
-
-        We iterate over document indices [0, n_docs) and, for each pack covering document indices [start, i),
-        we check that for every leaf the total token count (i.e. offsets[i] – offsets[start]) is ≤ allowed.
-        If adding the next document would exceed this limit (or, if provided, the maximum number of segments would be exceeded),
-        we finalize the pack. Instead of storing token boundaries, we return a PyTree whose leaves are simply range(start, i), which
-        represents the document IDs for that pack. The segment IDs can be reconstructed later as range(0, i-start).
-        """
-        # Broadcast max_length to match the structure of self.dataset.
-        # (Assume jax_utils.tree_broadcast_to exists and works like standard broadcasting.)
-        max_length_tree = jax.tree.map(lambda x: x, self.max_length)
-
-        dataset_leaves, tree_def = jax.tree.flatten(self.dataset)
-        max_length_leaves, _ = jax.tree.flatten(max_length_tree)
-
-        if len(dataset_leaves) != len(max_length_leaves):
-            raise ValueError("Dataset and max_length PyTrees must have the same number of leaves.")
-
-        offsets_list = jax.tree.leaves(self._offsets)
-
-        # Check that all leaves have the same number of documents.
-        n_docs = None
-        for offs in offsets_list:
-            if n_docs is None:
-                n_docs = len(offs) - 1
-            elif len(offs) - 1 != n_docs:
-                raise ValueError("Mismatch in document count across dataset leaves.")
-
-        if n_docs is None:
-            raise ValueError("Could not determine the number of documents from offsets.")
-
-        pack_doc_ranges = []
-        i = 0
-        while i < n_docs:
-            start = i
-            total_segments = 0
-            # Accumulate documents while for each leaf the token span remains within the allowed max.
-            while i < n_docs:
-                # Check optional segment constraint: if adding one more document would exceed max_segments_per_example.
-                if self.max_segments_per_example is not None and (total_segments + 1) > self.max_segments_per_example:
-                    break
-                # For each leaf, check if adding document i would keep the token count within allowed capacity.
-                valid = True
-                for offs, allowed in zip(offsets_list, max_length_leaves):
-                    # Compute token count from document start to document i+1.
-                    # For start==0, assume start token index is 0.
-                    start_token = offs[start] if start > 0 else 0
-                    token_sum = offs[i + 1] - start_token
-                    if token_sum > allowed:
-                        valid = False
-                        break
-                if not valid:
-                    break
-                total_segments += 1
-                i += 1
-            # If no document could be added (i.e. a single document exceeds capacity)
-            if i == start:
-                if not self.slice_too_long_examples:
-                    raise ValueError(f"Document {start} exceeds allowed capacity.")
-                else:
-                    i = start + 1
-            # Instead of building token ranges, we return the document indices range.
-            doc_id_range = range(start, i)
-            # Build a PyTree with the same structure as dataset: each leaf is replaced by doc_id_range.
-            pack = jax.tree.unflatten(tree_def, [doc_id_range for _ in dataset_leaves])
-            pack_doc_ranges.append(pack)
-        return pack_doc_ranges
 
 
 if __name__ == "__main__":
