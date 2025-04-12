@@ -4,6 +4,7 @@ from functools import partial
 from typing import Callable, Dict, List, Optional, Type, Union
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 from jax import Array
@@ -295,21 +296,33 @@ class MixtralSparseMoeBlock(eqx.Module):
 
         return MixtralSparseMoeBlock(config, gate, experts)
 
-    def _route_tokens_to_experts(self, x: NamedArray, Experts: Axis, TopExperts: Axis, key=None):
-        router_logits = self.gate(x, key=key)  # [Token, Embed] -> [Token, Experts]
-        selected_weights, selected_experts = hax.top_k(
-            router_logits,
-            axis=Experts,
-            k=self.config.num_experts_per_tok,
-            new_axis=TopExperts,
-        )  # [Token, Experts] -> [Token, TopExperts]
-        selected_weights = hnn.softmax(selected_weights, axis=TopExperts)  # [Token, TopExperts] distribution
+    def _route(self, router_logits: NamedArray, Token: Axis, TopExperts: Axis):
+        @partial(
+            shard_map,
+            mesh=hax.partitioning._get_mesh(),
+            in_specs=hax.partitioning.pspec_for_axis(router_logits.axes),
+            out_specs=(
+                hax.partitioning.pspec_for_axis((Token, TopExperts)),
+                hax.partitioning.pspec_for_axis((Token, TopExperts)),
+            ),
+            check_rep=False,
+        )
+        def sharded_route(router_logits_):
+            selected_weights_, selected_experts_ = jax.lax.top_k(router_logits_, TopExperts.size)
+            selected_weights_ = jax.nn.softmax(selected_weights_, axis=-1)
+
+            return selected_weights_, selected_experts_
+
+        with jax.named_scope("route"):
+            selected_weights_, selected_experts_ = sharded_route(router_logits.array)
+
+            selected_weights = NamedArray(selected_weights_, axes=(Token, TopExperts))
+            selected_experts = NamedArray(selected_experts_, axes=(Token, TopExperts))
+
         return selected_weights, selected_experts
 
-    def _permute(self, x_flat: NamedArray, topk_idx_flat: NamedArray):
+    def _permute(self, x_flat: NamedArray, topk_idx_flat: NamedArray, TokenRepeat: Axis):
         Experts = self.config.Experts
-        TopExperts = self.config.TopExperts
-        TokenRepeat = topk_idx_flat.resolve_axis("token_repeat")
 
         @partial(
             shard_map,
@@ -326,64 +339,63 @@ class MixtralSparseMoeBlock(eqx.Module):
             check_rep=False,
         )
         def permute_sharded(x_flat_: Array, topk_idx_flat_: Array):
-            """shard_map version of these haliax code. This is to prevent jax to auto insert comm."""
-            # sort_idx = hax.argsort(topk_idx_flat, axis=TokenRepeat)  # [TokenRepeat,]
-            # inv_sort_idx = hax.argsort(sort_idx, axis=TokenRepeat)  # [TokenRepeat,]
-            # x_repeat_sort = hax.NamedArray(
-            #     jnp.take(x_flat.array, sort_idx.array // TopExperts.size, axis=0,),
-            #     axes=(TokenRepeat, self.config.Embed)
-            # )   # [TokenRepeat, Embed]
-
-            # group_sizes = hax.NamedArray(
-            #     jnp.bincount(topk_idx_flat.array, length=Experts.size),
-            #     axes=(Experts,)
-            # )   # [Experts,]
-
             sort_idx_ = jnp.argsort(topk_idx_flat_, axis=-1)
-            inv_sort_idx_ = jnp.argsort(sort_idx_, axis=-1)
+            x_repeat_sort_ = jnp.take(x_flat_, sort_idx_ // self.config.num_experts_per_tok, axis=0)
+            group_sizes_ = jnp.bincount(topk_idx_flat_, length=self.config.num_local_experts)
 
-            x_repeat_sort_ = jnp.take(x_flat_, sort_idx_ // TopExperts.size, axis=0)
-            group_sizes_ = jnp.bincount(topk_idx_flat_, length=Experts.size)
+            return x_repeat_sort_, group_sizes_, sort_idx_
 
-            return x_repeat_sort_, group_sizes_, inv_sort_idx_
+        with jax.named_scope("permute"):
+            x_repeat_sort_, group_sizes_, sort_idx_ = permute_sharded(x_flat.array, topk_idx_flat.array)
+            x_repeat_sort = NamedArray(x_repeat_sort_, axes=(TokenRepeat, self.config.Embed))
+            group_sizes = NamedArray(group_sizes_, axes=(Experts,))
+            sort_idx = NamedArray(sort_idx_, axes=(TokenRepeat,))
 
-        x_repeat_sort_, group_sizes_, inv_sort_idx_ = permute_sharded(x_flat.array, topk_idx_flat.array)
-        x_repeat_sort = NamedArray(x_repeat_sort_, axes=(TokenRepeat, self.config.Embed))
-        group_sizes = NamedArray(group_sizes_, axes=(Experts,))
-        inv_sort_idx = NamedArray(inv_sort_idx_, axes=(TokenRepeat,))
+        return x_repeat_sort, group_sizes, sort_idx
 
-        return x_repeat_sort, group_sizes, inv_sort_idx
-
-    def _unpermute(self, out_repeat_sort: NamedArray, inv_sort_idx: NamedArray):
-        TokenRepeat = out_repeat_sort.resolve_axis("token_repeat")
-
+    def _unpermute(
+        self,
+        out_repeat_sort: NamedArray,
+        sort_idx: NamedArray,
+        topk_weights: NamedArray,
+        Token: Axis,
+        TokenRepeat: Axis,
+        TopExperts: Axis,
+    ):
         @partial(
             shard_map,
             mesh=hax.partitioning._get_mesh(),
             in_specs=(
                 hax.partitioning.pspec_for_axis(out_repeat_sort.axes),
-                hax.partitioning.pspec_for_axis(inv_sort_idx.axes),
+                hax.partitioning.pspec_for_axis(sort_idx.axes),
             ),
             out_specs=hax.partitioning.pspec_for_axis((TokenRepeat, self.config.Embed)),
             check_rep=False,
         )
-        def unpermute_sharded(out_repeat_sort_: Array, inv_sort_idx_: Array):
-            """shard_map version of these haliax code. This is to prevent jax to auto insert comm."""
-            # out_repeat = hax.NamedArray(
-            #     jnp.take_along_axis(
-            #         out_repeat_sort.array, inv_sort_idx.array[:, None], axis=0
-            #     ).reshape(Token.size, TopExperts.size, -1),
-            #     axes=(Token, TopExperts, self.config.Embed)
-            # )   # [Token, TopExperts, Embed]
+        def unpermute_sharded(out_repeat_sort_: Array, sort_idx_: Array):
+            inv_sort_idx_ = jnp.argsort(sort_idx_)
+            out_repeat_ = jnp.take(out_repeat_sort_, inv_sort_idx_, axis=0)
 
-            out_repeat_ = jnp.take_along_axis(out_repeat_sort_, inv_sort_idx_[:, None], axis=0)
+            # TODO: This code compiled differently than `.unflatten() and then .dot(topk_weights)`.
+            # out_ = jnp.reshape(out_repeat_, (topk_weights_.shape[0], self.config.num_experts_per_tok, -1))
+            # out_ = jnp.einsum(
+            #     "BKE,BK -> BE",
+            #     out_, topk_weights_
+            # )
 
             return out_repeat_
 
-        out_repeat_ = unpermute_sharded(out_repeat_sort.array, inv_sort_idx.array)
-        out_repeat = NamedArray(out_repeat_, axes=(TokenRepeat, self.config.Embed))
+        with jax.named_scope("unpermute"):
+            out_repeat_ = unpermute_sharded(out_repeat_sort.array, sort_idx.array)
+            out_repeat = NamedArray(out_repeat_, axes=(TokenRepeat, self.config.Embed))
 
-        return out_repeat
+        out_repeat_unflat = hax.unflatten_axis(
+            out_repeat, axis=TokenRepeat, new_axes=[Token, TopExperts]
+        )  # [Token, TopExperts, Embed]
+
+        out = out_repeat_unflat.dot(topk_weights, axis=TopExperts)  # [Token, Embed]
+
+        return out
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
@@ -391,7 +403,6 @@ class MixtralSparseMoeBlock(eqx.Module):
             squash_axes = [x.resolve_axis("batch"), x.resolve_axis(self.config.Pos.name)]
         else:
             squash_axes = [x.resolve_axis(self.config.Pos.name)]
-        Experts = self.config.Experts
         TopExperts = self.config.TopExperts
 
         k_gate, k_experts, key = maybe_rng_split(key, 3)
@@ -399,27 +410,18 @@ class MixtralSparseMoeBlock(eqx.Module):
         x_flat = hax.flatten_axes(x, old_axes=squash_axes, new_axis="token")  # [Batch, Pos, Embed] -> [Token, Embed]
         Token = x_flat.resolve_axis("token")
 
-        # route
-        topk_weights, topk_idx = self._route_tokens_to_experts(
-            x_flat, Experts, TopExperts, key=k_gate
-        )  # [Token, TopExperts]
+        router_logits = self.gate(x_flat, key=k_gate)
+        topk_weights, topk_idx = self._route(router_logits, Token, TopExperts)
+
         topk_idx_flat = hax.flatten_axes(topk_idx, old_axes=[Token, TopExperts], new_axis="token_repeat")
         TokenRepeat = topk_idx_flat.resolve_axis("token_repeat")
+        x_repeat_sort, group_sizes, sort_idx = self._permute(x_flat, topk_idx_flat, TokenRepeat)
 
-        # permute
-        x_repeat_sort, group_sizes, inv_sort_idx = self._permute(x_flat, topk_idx_flat)
+        out_repeat_sort = self.experts(x_repeat_sort, group_sizes, key=k_experts)
 
-        # gmm
-        out_repeat_sort = self.experts(x_repeat_sort, group_sizes, key=k_experts)  # [TokenRepeat, Embed]
-
-        # unpermute
-        out_repeat = self._unpermute(out_repeat_sort, inv_sort_idx)
-        out_repeat_flat = hax.unflatten_axis(
-            out_repeat, axis=TokenRepeat, new_axes=[Token, TopExperts]
-        )  # [Token, TopExperts, Embed]
-
-        # expert weighting
-        out = out_repeat_flat.dot(topk_weights, axis=TopExperts)  # [Token, Embed]
+        out = self._unpermute(
+            out_repeat_sort, sort_idx, topk_weights, Token, TokenRepeat, TopExperts
+        )  # [TokenRepeat, Embed]
 
         return hax.unflatten_axis(out, axis=Token, new_axes=squash_axes)  # [Batch, Pos, Embed]
 
