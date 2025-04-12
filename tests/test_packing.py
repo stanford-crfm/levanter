@@ -11,6 +11,7 @@ from levanter.data.packing import (
     GreedyPrepackedDataset,
     PromptCompletion,
     SequencePacker,
+    greedy_pack_prompt_completions,
     pack_prompt_completions,
     per_segment_correct,
     per_segment_loss,
@@ -706,6 +707,141 @@ def test_too_long_document_error():
         # Should not raise when slice_too_long_examples is True
         tester = GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_too_long_examples=True)
         assert len(tester._pack_indices) == 1
+
+
+def test_greedy_pack_prompt_completions_simple():
+    Pos = hax.Axis("pos", size=10)
+    pad_token = 0
+    max_segments_per_example = 2
+
+    sequences = [
+        PromptCompletion(ids=[1, 2, 3], prompt_length=2),
+        PromptCompletion(ids=[4, 5], prompt_length=1),
+        PromptCompletion(ids=[6, 7, 8], prompt_length=1),
+    ]
+
+    results = list(greedy_pack_prompt_completions(Pos, sequences, pad_token, max_segments_per_example))
+
+    assert len(results) == 2  # Expect two packed LmExamples
+
+    # Check the first packed example
+    packed_1 = results[0]
+    expected_tokens_1 = [1, 2, 3, 4, 5, 0, 0, 0, 0, 0]
+    expected_segment_ids_1 = [0, 0, 0, 1, 1, -1, -1, -1, -1, -1]
+    expected_loss_mask_1 = [0, 1, 0, 1, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_1.tokens.array, expected_tokens_1)
+    np.testing.assert_array_equal(packed_1.attn_mask.segment_ids.array, expected_segment_ids_1)
+    np.testing.assert_array_equal(packed_1.loss_mask.array, expected_loss_mask_1)
+
+    # Check the second packed example
+    packed_2 = results[1]
+    expected_tokens_2 = [6, 7, 8, 0, 0, 0, 0, 0, 0, 0]
+    expected_segment_ids_2 = [0, 0, 0, -1, -1, -1, -1, -1, -1, -1]
+    expected_loss_mask_2 = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)
+    np.testing.assert_array_equal(packed_2.attn_mask.segment_ids.array, expected_segment_ids_2)
+    np.testing.assert_array_equal(packed_2.loss_mask.array, expected_loss_mask_2)
+
+
+def test_greedy_pack_prompt_completions_max_segments():
+    Pos = hax.Axis("pos", size=10)
+    pad_token = 0
+    max_segments_per_example = 1
+
+    sequences = [
+        PromptCompletion(ids=[1, 2, 3], prompt_length=2),
+        PromptCompletion(ids=[4, 5], prompt_length=1),
+        PromptCompletion(ids=[6, 7, 8], prompt_length=1),
+    ]
+
+    results = list(greedy_pack_prompt_completions(Pos, sequences, pad_token, max_segments_per_example))
+
+    assert len(results) == 3  # Each sequence should be in its own pack
+
+    # Check the first packed example
+    packed_1 = results[0]
+    expected_tokens_1 = [1, 2, 3, 0, 0, 0, 0, 0, 0, 0]
+    expected_segment_ids_1 = [0, 0, 0, -1, -1, -1, -1, -1, -1, -1]
+    expected_loss_mask_1 = [0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_1.tokens.array, expected_tokens_1)
+    np.testing.assert_array_equal(packed_1.attn_mask.segment_ids.array, expected_segment_ids_1)
+    np.testing.assert_array_equal(packed_1.loss_mask.array, expected_loss_mask_1)
+
+    # Check the second packed example
+    packed_2 = results[1]
+    expected_tokens_2 = [4, 5, 0, 0, 0, 0, 0, 0, 0, 0]
+    expected_segment_ids_2 = [0, 0, -1, -1, -1, -1, -1, -1, -1, -1]
+    expected_loss_mask_2 = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)
+    np.testing.assert_array_equal(packed_2.attn_mask.segment_ids.array, expected_segment_ids_2)
+    np.testing.assert_array_equal(packed_2.loss_mask.array, expected_loss_mask_2)
+
+    # Check the third packed example
+    packed_3 = results[2]
+    expected_tokens_3 = [6, 7, 8, 0, 0, 0, 0, 0, 0, 0]
+    expected_segment_ids_3 = [0, 0, 0, -1, -1, -1, -1, -1, -1, -1]
+    expected_loss_mask_3 = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_3.tokens.array, expected_tokens_3)
+    np.testing.assert_array_equal(packed_3.attn_mask.segment_ids.array, expected_segment_ids_3)
+    np.testing.assert_array_equal(packed_3.loss_mask.array, expected_loss_mask_3)
+
+
+def test_greedy_pack_prompt_completions_too_long():
+    Pos = hax.Axis("pos", size=5)  # Small position size to force slicing
+    pad_token = 0
+    max_segments_per_example = 2
+
+    sequences = [
+        PromptCompletion(ids=[1, 2, 3, 4, 5, 6], prompt_length=2),  # Too long, will be sliced
+        PromptCompletion(ids=[7, 8], prompt_length=1),
+    ]
+
+    results = list(greedy_pack_prompt_completions(Pos, sequences, pad_token, max_segments_per_example))
+
+    assert len(results) == 2  # Each sequence should be in its own pack due to length
+
+    # Check the first packed example (sliced)
+    packed_1 = results[0]
+    expected_tokens_1 = [2, 3, 4, 5, 6]  # Sliced to last 5 tokens
+    expected_segment_ids_1 = [0, 0, 0, 0, 0]
+    expected_loss_mask_1 = [1, 1, 1, 1, 0]  # Only the last token is not in loss mask
+
+    np.testing.assert_array_equal(packed_1.tokens.array, expected_tokens_1)
+    np.testing.assert_array_equal(packed_1.attn_mask.segment_ids.array, expected_segment_ids_1)
+    np.testing.assert_array_equal(packed_1.loss_mask.array, expected_loss_mask_1)
+
+    # Check the second packed example
+    packed_2 = results[1]
+    expected_tokens_2 = [7, 8, 0, 0, 0]
+    expected_segment_ids_2 = [0, 0, -1, -1, -1]
+    expected_loss_mask_2 = [1, 0, 0, 0, 0]
+
+    np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)
+    np.testing.assert_array_equal(packed_2.attn_mask.segment_ids.array, expected_segment_ids_2)
+    np.testing.assert_array_equal(packed_2.loss_mask.array, expected_loss_mask_2)
+
+
+def test_greedy_pack_prompt_completions_empty():
+    Pos = hax.Axis("pos", size=10)
+    pad_token = 0
+    max_segments_per_example = 2
+
+    # Empty sequence list
+    results = list(greedy_pack_prompt_completions(Pos, [], pad_token, max_segments_per_example))
+    assert len(results) == 0
+
+    # Single empty sequence (should raise error due to PromptCompletion validation)
+    with pytest.raises(ValueError, match="PromptCompletion must have at least one token"):
+        list(
+            greedy_pack_prompt_completions(
+                Pos, [PromptCompletion(ids=[], prompt_length=0)], pad_token, max_segments_per_example
+            )
+        )
 
 
 if __name__ == "__main__":
