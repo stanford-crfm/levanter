@@ -265,11 +265,18 @@ def pack_documents(
     Returns:
         A list of PyTrees, where each PyTree has the same structure as offsets but with ranges of document indices
     """
+    # Input validation
+    if max_segments_per_example is not None and (
+        not isinstance(max_segments_per_example, int) or max_segments_per_example <= 0
+    ):
+        raise ValueError(f"max_segments_per_example must be a positive integer, got {max_segments_per_example}")
+
     # Broadcast max_length to match the structure of offsets
     max_length_tree = jax.tree.map(lambda x: x, max_length)
 
     offsets_leaves, tree_def = jax.tree.flatten(offsets)
     max_length_leaves, _ = jax.tree.flatten(max_length_tree)
+    leaf_names = leaf_key_paths(offsets)
 
     if len(offsets_leaves) != len(max_length_leaves):
         raise ValueError("Offsets and max_length PyTrees must have the same number of leaves.")
@@ -280,10 +287,21 @@ def pack_documents(
         if n_docs is None:
             n_docs = len(offs) - 1
         elif len(offs) - 1 != n_docs:
-            raise ValueError("Mismatch in document count across offsets leaves.")
+            raise ValueError("All leaves must have the same number of documents.")
 
     if n_docs is None:
         raise ValueError("Could not determine the number of documents from offsets.")
+
+    # Validate document lengths
+    for offs, allowed, leaf_name in zip(offsets_leaves, max_length_leaves, leaf_names):
+        for i in range(n_docs):
+            doc_len = offs[i + 1] - (offs[i] if i > 0 else 0)
+            if doc_len > allowed and not slice_too_long_examples:
+                raise ValueError(
+                    f"Document {i} in leaf '{leaf_name}' has length {doc_len} which exceeds "
+                    f"maximum allowed length {allowed}. Consider setting slice_too_long_examples=True "
+                    "or increasing max_length."
+                )
 
     pack_doc_ranges = []
     i = 0
@@ -297,7 +315,7 @@ def pack_documents(
                 break
             # For each leaf, check if adding document i would keep the token count within allowed capacity.
             valid = True
-            for offs, allowed in zip(offsets_leaves, max_length_leaves):
+            for offs, allowed, leaf_name in zip(offsets_leaves, max_length_leaves, leaf_names):
                 # Compute token count from document start to document i+1.
                 # For start==0, assume start token index is 0.
                 start_token = offs[start] if start > 0 else 0
@@ -310,7 +328,7 @@ def pack_documents(
                         doc_end = offs[i + 1]
                         doc_length = doc_end - doc_start
                         raise ValueError(
-                            f"Document {i} has length {doc_length} which exceeds "
+                            f"Document {i} in leaf '{leaf_name}' has length {doc_length} which exceeds "
                             f"maximum allowed length {allowed}. Consider setting slice_too_long_examples=True "
                             "or increasing max_length."
                         )
@@ -365,16 +383,6 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
             slice_too_long_examples: If True, slice examples that exceed max_length to the last max_length tokens.
                 If False, raise an error when an example exceeds max_length.
         """
-        # Input validation
-        if not isinstance(max_length, dict):
-            raise ValueError(f"max_length must be a dict, got {type(max_length)}")
-        if not all(isinstance(v, int) and v > 0 for v in max_length.values()):
-            raise ValueError(f"max_length values must be positive integers, got {max_length}")
-        if max_segments_per_example is not None and (
-            not isinstance(max_segments_per_example, int) or max_segments_per_example <= 0
-        ):
-            raise ValueError(f"max_segments_per_example must be a positive integer, got {max_segments_per_example}")
-
         self.dataset = dataset
         self.max_length = max_length
         self.max_segments_per_example = max_segments_per_example
@@ -384,32 +392,10 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         _offsets = jax.tree.map(lambda store: store.offsets.read(), self.dataset)
         self._offsets = jax.tree.map(lambda fut: fut.result(), _offsets)
 
-        self._validate_inputs(dataset, max_length, slice_too_long_examples)
-
         # Build pack indices
         self._pack_indices = pack_documents(
             self._offsets, max_length, max_segments_per_example, slice_too_long_examples
         )
-
-    def _validate_inputs(self, dataset, max_length, slice_too_long_examples):
-        # Validate that all leaves have the same number of documents
-        leaf_paths = jax.tree.leaves(leaf_key_paths(dataset))
-        leaves = jax.tree.leaves(dataset)
-        doc_counts = {leaf_name: len(store) for leaf_name, store in zip(leaf_paths, leaves)}
-        if len(set(doc_counts.values())) > 1:
-            raise ValueError(f"All leaves must have the same number of documents. Got document counts: {doc_counts}")
-        # Validate document lengths using offsets
-        for leaf_name, store in dataset.items():
-            max_len = max_length[leaf_name]
-            offsets = self._offsets[leaf_name]
-            for i in range(len(store)):
-                doc_len = offsets[i + 1] - (offsets[i] if i > 0 else 0)
-                if doc_len > max_len and not slice_too_long_examples:
-                    raise ValueError(
-                        f"Document {i} in leaf '{leaf_name}' has length {doc_len} which exceeds "
-                        f"maximum allowed length {max_len}. Consider setting slice_too_long_examples=True "
-                        "or increasing max_length."
-                    )
 
     def is_finite(self) -> bool:
         return True
