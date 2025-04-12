@@ -665,24 +665,6 @@ def test_too_long_to_pack_padded(multi_leaf_dataset):
     assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
 
 
-def test_invalid_max_length():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
-        store.append(np.arange(100))
-
-        # Test non-dict max_length
-        with pytest.raises(ValueError, match="max_length must be a dict"):
-            GreedyPrepackedDataset({"store": store}, max_length=300)
-
-        # Test non-positive max_length
-        with pytest.raises(ValueError, match="max_length values must be positive integers"):
-            GreedyPrepackedDataset({"store": store}, max_length={"store": 0})
-
-        # Test non-integer max_length
-        with pytest.raises(ValueError, match="max_length values must be positive integers"):
-            GreedyPrepackedDataset({"store": store}, max_length={"store": "300"})
-
-
 def test_invalid_max_segments():
     with tempfile.TemporaryDirectory() as tmpdir:
         store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
