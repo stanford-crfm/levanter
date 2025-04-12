@@ -264,8 +264,8 @@ async def test_simple_pack(simple_dataset):
     assert len(packs) == 2
     pack0 = packs[0]  # Expect {"store": range(0,2)}
     pack1 = packs[1]  # Expect {"store": range(2,4)}
-    assert list(pack0["store"]) == list(range(0, 2))
-    assert list(pack1["store"]) == list(range(2, 4))
+    assert pack0 == range(0, 2)
+    assert pack1 == range(2, 4)
 
     # now check that we can get the data out
     batch = tester.as_sync_dataset()[0]
@@ -290,10 +290,10 @@ def test_simple_pack_max_examples(simple_dataset):
     # We expect, given document lengths [100,200,150,150] and budget 300,
     # that each pack covers exactly one document
     assert len(packs) == 4
-    assert list(packs[0]["store"]) == [0]
-    assert list(packs[1]["store"]) == [1]
-    assert list(packs[2]["store"]) == [2]
-    assert list(packs[3]["store"]) == [3]
+    assert list(packs[0]) == [0]
+    assert list(packs[1]) == [1]
+    assert list(packs[2]) == [2]
+    assert list(packs[3]) == [3]
 
     # now check that we can get the data out
     batch = tester.as_sync_dataset()[0]
@@ -332,10 +332,10 @@ def test_simple_pack_max_examples_padded(simple_dataset):
     # We expect, given document lengths [100,200,150,150] and budget 300,
     # that each pack covers exactly one document
     assert len(packs) == 4
-    assert list(packs[0]["store"]) == [0]
-    assert list(packs[1]["store"]) == [1]
-    assert list(packs[2]["store"]) == [2]
-    assert list(packs[3]["store"]) == [3]
+    assert list(packs[0]) == [0]
+    assert list(packs[1]) == [1]
+    assert list(packs[2]) == [2]
+    assert list(packs[3]) == [3]
 
     # now check that we can get the data out, with padding
     batch = tester.as_sync_dataset()[0]
@@ -413,8 +413,7 @@ def test_multi_leaf_pack(multi_leaf_dataset):
     assert len(packs) == 4
     expected_docs = [[0], [1], [2], [3]]
     for pack, expected in zip(packs, expected_docs):
-        assert list(pack["store1"]) == expected
-        assert list(pack["store2"]) == expected
+        assert list(pack) == expected
 
     # now check that we can get the data out
     batch = tester.as_sync_dataset()[0]
@@ -476,8 +475,7 @@ def test_multi_leaf_pack_padded(multi_leaf_dataset):
     assert len(packs) == 4
     expected_docs = [[0], [1], [2], [3]]
     for pack, expected in zip(packs, expected_docs):
-        assert list(pack["store1"]) == expected
-        assert list(pack["store2"]) == expected
+        assert list(pack) == expected
 
     # now check that we can get the data out, with padding
     batch = tester.as_sync_dataset()[0]
@@ -570,7 +568,7 @@ def test_max_segments_constraint(dataset_with_segments):
     assert len(packs) == 4
     # For each document, the returned range should be exactly one document index
     for i, pack in enumerate(packs):
-        assert list(pack["store"]) == [i]
+        assert list(pack) == [i]
 
     # now check that we can get the data out
     for i in range(4):
@@ -593,7 +591,7 @@ def test_max_segments_constraint_padded(dataset_with_segments):
     assert len(packs) == 4
     # For each document, the returned range should be exactly one document index
     for i, pack in enumerate(packs):
-        assert list(pack["store"]) == [i]
+        assert list(pack) == [i]
 
     # now check that we can get the data out, with padding
     for i in range(4):
@@ -619,8 +617,7 @@ def test_too_long_to_pack(multi_leaf_dataset):
 
     tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=False)
     pack2 = tester._pack_indices[2]
-    assert list(pack2["store1"]) == [2]
-    assert list(pack2["store2"]) == [2]
+    assert list(pack2) == [2]
 
     # now check that we can get the data out
     batch = tester.as_sync_dataset()[2]
@@ -646,8 +643,7 @@ def test_too_long_to_pack_padded(multi_leaf_dataset):
 
     tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=True)
     pack2 = tester._pack_indices[2]
-    assert list(pack2["store1"]) == [2]
-    assert list(pack2["store2"]) == [2]
+    assert list(pack2) == [2]
 
     # now check that we can get the data out, with padding
     batch = tester.as_sync_dataset()[2]
@@ -737,7 +733,7 @@ def test_greedy_pack_prompt_completions_simple():
     # Check the second packed example
     packed_2 = results[1]
     expected_tokens_2 = [6, 7, 8, 0, 0, 0, 0, 0, 0, 0]
-    expected_segment_ids_2 = [0, 0, 0, -1, -1, -1, -1, -1, -1, -1]
+    expected_segment_ids_2 = [2, 2, 2, -1, -1, -1, -1, -1, -1, -1]
     expected_loss_mask_2 = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
 
     np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)
@@ -773,7 +769,7 @@ def test_greedy_pack_prompt_completions_max_segments():
     # Check the second packed example
     packed_2 = results[1]
     expected_tokens_2 = [4, 5, 0, 0, 0, 0, 0, 0, 0, 0]
-    expected_segment_ids_2 = [0, 0, -1, -1, -1, -1, -1, -1, -1, -1]
+    expected_segment_ids_2 = [1, 1, -1, -1, -1, -1, -1, -1, -1, -1]
     expected_loss_mask_2 = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
     np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)
@@ -783,7 +779,7 @@ def test_greedy_pack_prompt_completions_max_segments():
     # Check the third packed example
     packed_3 = results[2]
     expected_tokens_3 = [6, 7, 8, 0, 0, 0, 0, 0, 0, 0]
-    expected_segment_ids_3 = [0, 0, 0, -1, -1, -1, -1, -1, -1, -1]
+    expected_segment_ids_3 = [2, 2, 2, -1, -1, -1, -1, -1, -1, -1]
     expected_loss_mask_3 = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
 
     np.testing.assert_array_equal(packed_3.tokens.array, expected_tokens_3)
@@ -801,7 +797,7 @@ def test_greedy_pack_prompt_completions_too_long():
         PromptCompletion(ids=[7, 8], prompt_length=1),
     ]
 
-    results = list(greedy_pack_prompt_completions(Pos, sequences, pad_token, max_segments_per_example))
+    results = greedy_pack_prompt_completions(Pos, sequences, pad_token, max_segments_per_example)
 
     assert len(results) == 2  # Each sequence should be in its own pack due to length
 
@@ -818,7 +814,7 @@ def test_greedy_pack_prompt_completions_too_long():
     # Check the second packed example
     packed_2 = results[1]
     expected_tokens_2 = [7, 8, 0, 0, 0]
-    expected_segment_ids_2 = [0, 0, -1, -1, -1]
+    expected_segment_ids_2 = [1, 1, -1, -1, -1]
     expected_loss_mask_2 = [1, 0, 0, 0, 0]
 
     np.testing.assert_array_equal(packed_2.tokens.array, expected_tokens_2)

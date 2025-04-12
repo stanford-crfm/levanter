@@ -250,7 +250,7 @@ def greedy_pack_prompt_completions(
     sequences: Iterable[PromptCompletion],
     pad_token: int,
     max_segments_per_example: int = 64,
-) -> Iterator[LmExample]:
+) -> list[LmExample]:
     """
     Greedy packing of prompt completions into LmExamples using [pack_documents][]
     """
@@ -263,69 +263,57 @@ def greedy_pack_prompt_completions(
     # Convert sequences to lists for easier access
     sequences = list(sequences)
     ids = [sequence.ids for sequence in sequences]
-    prompt_lengths = [sequence.prompt_length for sequence in sequences]
 
-    # First, identify sequences that are too long to be packed with others
-    too_long_indices = [i for i, id in enumerate(ids) if len(id) > Pos.size]
+    # Pack documents based on their lengths
+    packs = pack_documents(
+        lengths=np.array([len(token_ids) for token_ids in ids]),
+        max_length=Pos.size,
+        max_segments_per_example=max_segments_per_example,
+        slice_too_long_examples=True,
+    )
 
-    # Yield individual examples for too-long sequences first (to maintain order)
-    for idx in too_long_indices:
-        seq = sequences[idx]
-        # Slice from the right
-        sliced_ids = seq.ids[-Pos.size :]
-        # Adjust prompt length for slicing
-        adjusted_prompt_length = max(0, seq.prompt_length - (len(seq.ids) - Pos.size))
-        loss_mask = make_loss_mask(sliced_ids, adjusted_prompt_length)
-        segment_ids = [0] * len(sliced_ids)
+    out = []
+
+    # Yield packed examples for normal sequences
+    for docs_in_pack in packs:
+        # Get the documents in this pack
+        pack_sequences = [sequences[i] for i in docs_in_pack]
+        pack_prompt_lengths = [sequence.prompt_length for sequence in pack_sequences]
+
+        # Concatenate the IDs and create loss masks
+        concat_ids = []
+        concat_loss_mask = []
+        segment_ids = []
+
+        for doc_id, seq, prompt_len in zip(docs_in_pack, pack_sequences, pack_prompt_lengths):
+            concat_ids.extend(seq.ids)
+            concat_loss_mask.extend(make_loss_mask(seq.ids, prompt_len))
+            segment_ids.extend([doc_id] * len(seq.ids))
+
+        # Pad to max length
+        pad_length = Pos.size - len(concat_ids)
+
+        if pad_length > 0:
+            concat_ids.extend([pad_token] * pad_length)
+            concat_loss_mask.extend([0] * pad_length)
+            segment_ids.extend([-1] * pad_length)
+        elif pad_length < 0:
+            # too long, this should only happen if there's 1 document in the pack
+            if len(pack_sequences) != 1:
+                raise ValueError("Too many tokens in a pack with more than one document")
+            concat_ids = concat_ids[-Pos.size :]
+            concat_loss_mask = concat_loss_mask[-Pos.size :]
+            segment_ids = segment_ids[-Pos.size :]
 
         # Create the LmExample
-        tokens = hax.named(np.array(sliced_ids), Pos)
-        loss_mask = hax.named(np.array(loss_mask), Pos)
+        tokens = hax.named(np.array(concat_ids), Pos)
+        loss_mask = hax.named(np.array(concat_loss_mask), Pos)
         segment_ids = hax.named(np.array(segment_ids), Pos)
         attn_mask = AttentionMask.causal().with_segment_ids(segment_ids)
 
-        yield LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+        out.append(LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask))
 
-    # Pack documents based on their lengths, excluding too-long sequences
-    if len(too_long_indices) < len(sequences):
-        normal_indices = [i for i in range(len(sequences)) if i not in too_long_indices]
-        normal_packs = pack_documents(
-            lengths=np.array([len(ids[i]) for i in normal_indices]),
-            max_length=Pos.size,
-            max_segments_per_example=max_segments_per_example,
-            slice_too_long_examples=True,
-        )
-
-        # Yield packed examples for normal sequences
-        for docs_in_pack in normal_packs:
-            # Get the documents in this pack
-            pack_sequences = [sequences[normal_indices[i]] for i in docs_in_pack]
-            pack_prompt_lengths = [prompt_lengths[normal_indices[i]] for i in docs_in_pack]
-
-            # Concatenate the IDs and create loss masks
-            concat_ids = []
-            concat_loss_mask = []
-            segment_ids = []
-
-            for i, (seq, prompt_len) in enumerate(zip(pack_sequences, pack_prompt_lengths)):
-                concat_ids.extend(seq.ids)
-                concat_loss_mask.extend(make_loss_mask(seq.ids, prompt_len))
-                segment_ids.extend([i] * len(seq.ids))
-
-            # Pad to max length
-            pad_length = Pos.size - len(concat_ids)
-            if pad_length > 0:
-                concat_ids.extend([pad_token] * pad_length)
-                concat_loss_mask.extend([0] * pad_length)
-                segment_ids.extend([-1] * pad_length)
-
-            # Create the LmExample
-            tokens = hax.named(np.array(concat_ids), Pos)
-            loss_mask = hax.named(np.array(concat_loss_mask), Pos)
-            segment_ids = hax.named(np.array(segment_ids), Pos)
-            attn_mask = AttentionMask.causal().with_segment_ids(segment_ids)
-
-            yield LmExample(tokens=tokens, loss_mask=loss_mask, attn_mask=attn_mask)
+    return out
 
 
 def _segment_ids_from_lengths(doc_ids: list[int], lengths: list[int]) -> list[int]:
@@ -340,7 +328,7 @@ def pack_documents(
     max_length: PyTree[int],
     max_segments_per_example: int | None = None,
     slice_too_long_examples: bool = False,
-) -> list[PyTree[range]]:
+) -> list[range]:
     """
     Greedily pack documents into contiguous groups without storing full token ranges.
 
@@ -353,7 +341,7 @@ def pack_documents(
         slice_too_long_examples: If True, slice documents that exceed max_length instead of raising an error
 
     Returns:
-        A list of PyTrees, where each PyTree has the same structure as lengths but with ranges of document indices
+        A list of ranges, where each range represents the document indices in a pack
     """
     # Input validation
     if max_segments_per_example is not None and (
@@ -364,9 +352,9 @@ def pack_documents(
     # Broadcast max_length to match the structure of lengths
     max_length_tree = tree_broadcast_to(max_length, lengths)
 
-    lengths_leaves, tree_def = jax.tree.flatten(lengths)
-    max_length_leaves, _ = jax.tree.flatten(max_length_tree)
-    leaf_names = leaf_key_paths(lengths)
+    lengths_leaves = jax.tree.leaves(lengths)
+    max_length_leaves = jax.tree.leaves(max_length_tree)
+    leaf_names = jax.tree.leaves(leaf_key_paths(lengths))
 
     if len(lengths_leaves) != len(max_length_leaves):
         raise ValueError("Lengths and max_length PyTrees must have the same number of leaves.")
@@ -404,7 +392,7 @@ def pack_documents(
                 break
             # For each leaf, check if adding document i would keep the token count within allowed capacity.
             valid = True
-            for lens, allowed, leaf_name in zip(lengths_leaves, max_length_leaves, leaf_names):
+            for lens, allowed, leaf_name in zip(lengths_leaves, max_length_leaves, leaf_names, strict=True):
                 # Compute token count from document start to document i+1.
                 token_sum = sum(lens[start : i + 1])
                 if token_sum > allowed:
@@ -427,11 +415,8 @@ def pack_documents(
                 raise ValueError(f"Document {start} exceeds allowed capacity.")
             else:
                 i = start + 1
-        # Instead of building token ranges, we return the document indices range.
-        doc_id_range = range(start, i)
-        # Build a PyTree with the same structure as lengths: each leaf is replaced by doc_id_range.
-        pack = jax.tree.unflatten(tree_def, [doc_id_range for _ in lengths_leaves])
-        pack_doc_ranges.append(pack)
+
+        pack_doc_ranges.append(range(start, i))
     return pack_doc_ranges
 
 
@@ -514,14 +499,14 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         and each leaf is a numpy array representing the data or segment IDs for that packed example.
         """
 
-        async def get_data_for_leaf(
-            store, offsets, allowed: int, *doc_range: range
-        ) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        pack_doc_ranges = [self._pack_indices[i] for i in indices]
+
+        async def get_data_for_leaf(store, offsets, allowed: int) -> tuple[list[np.ndarray], list[np.ndarray]]:
             out_data = []
             out_segment_ids = []
             # Using ts.Batch to group reads.
             with ts.Batch():
-                for dr in doc_range:
+                for dr in pack_doc_ranges:
                     # Compute token boundaries using the store's offsets.
                     token_start = offsets[dr.start] if dr.start > 0 else 0
                     token_end = offsets[dr.stop]
@@ -569,12 +554,9 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         # - and the corresponding doc_range for each requested pack.
         #
         # We extract the list of doc_range PyTrees for each requested pack:
-        pack_doc_ranges = [self._pack_indices[i] for i in indices]
         # Use tree.map to combine the leaves from: dataset, max_length and, for each pack, its doc_range.
         # Note: jax.tree.map will map over each pack in parallel across the leaves.
-        leaf_batch_futures = jax.tree.map(
-            get_data_for_leaf, self.dataset, self._offsets, self.max_length, *pack_doc_ranges
-        )
+        leaf_batch_futures = jax.tree.map(get_data_for_leaf, self.dataset, self._offsets, self.max_length)
 
         # Flatten the resulting PyTree: each leaf is now an Awaitable returning a tuple of lists of np.ndarray—one per requested pack.
         leaves, treedef = jax.tree.flatten(leaf_batch_futures)
