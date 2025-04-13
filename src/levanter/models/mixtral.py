@@ -369,33 +369,23 @@ class MixtralSparseMoeBlock(eqx.Module):
                 hax.partitioning.pspec_for_axis(out_repeat_sort.axes),
                 hax.partitioning.pspec_for_axis(sort_idx.axes),
             ),
-            out_specs=hax.partitioning.pspec_for_axis((TokenRepeat, self.config.Embed)),
+            out_specs=hax.partitioning.pspec_for_axis((Token, TopExperts, self.config.Embed)),
             check_rep=False,
         )
         def unpermute_sharded(out_repeat_sort_: Array, sort_idx_: Array):
             inv_sort_idx_ = jnp.argsort(sort_idx_)
             out_repeat_ = jnp.take(out_repeat_sort_, inv_sort_idx_, axis=0)
+            out_repeat_unflat_ = jnp.reshape(
+                out_repeat_, (-1, self.config.num_experts_per_tok, self.config.hidden_dim)
+            )
 
-            # TODO: This code compiled differently than `.unflatten() and then .dot(topk_weights)`.
-            # out_ = jnp.reshape(out_repeat_, (topk_weights_.shape[0], self.config.num_experts_per_tok, -1))
-            # out_ = jnp.einsum(
-            #     "BKE,BK -> BE",
-            #     out_, topk_weights_
-            # )
-
-            return out_repeat_
+            return out_repeat_unflat_
 
         with jax.named_scope("unpermute"):
-            out_repeat_ = unpermute_sharded(out_repeat_sort.array, sort_idx.array)
-            out_repeat = NamedArray(out_repeat_, axes=(TokenRepeat, self.config.Embed))
+            out_repeat_unflat_ = unpermute_sharded(out_repeat_sort.array, sort_idx.array)
+            out_repeat_unflat = NamedArray(out_repeat_unflat_, axes=(Token, TopExperts, self.config.Embed))
 
-        out_repeat_unflat = hax.unflatten_axis(
-            out_repeat, axis=TokenRepeat, new_axes=[Token, TopExperts]
-        )  # [Token, TopExperts, Embed]
-
-        out = out_repeat_unflat.dot(topk_weights, axis=TopExperts)  # [Token, Embed]
-
-        return out
+        return out_repeat_unflat
 
     @named_call
     def __call__(self, x: NamedArray, *, key=None) -> NamedArray:
@@ -419,9 +409,11 @@ class MixtralSparseMoeBlock(eqx.Module):
 
         out_repeat_sort = self.experts(x_repeat_sort, group_sizes, key=k_experts)
 
-        out = self._unpermute(
+        out_repeat_unflat = self._unpermute(
             out_repeat_sort, sort_idx, topk_weights, Token, TokenRepeat, TopExperts
         )  # [TokenRepeat, Embed]
+
+        out = out_repeat_unflat.dot(topk_weights, axis=TopExperts)  # [Token, Embed]
 
         return hax.unflatten_axis(out, axis=Token, new_axes=squash_axes)  # [Batch, Pos, Embed]
 
