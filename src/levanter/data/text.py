@@ -1,6 +1,5 @@
 import abc
 import asyncio
-import copy
 import dataclasses
 import functools
 import json
@@ -471,20 +470,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         if self.override_resources is not None:
             return self.override_resources.get("num_gpus", 0)
         return 0
-
-
-# -100 is pytorch's label mask
-def _mask_overlap(labels, target_len, stride, sentinel=-100):
-    """Masks out overlapping tokens in a sequence when we're using a stride."""
-    labels = copy.deepcopy(labels)
-    if isinstance(labels, list):
-        for i in range(target_len - stride):
-            if i < len(labels):
-                labels[i] = sentinel
-    else:
-        labels[0 : target_len - stride] = sentinel
-
-    return labels
 
 
 def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
