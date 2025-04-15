@@ -9,7 +9,7 @@ This achieves about a 90% "real token" rate, compared to like 10% without packin
 """
 import asyncio
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Optional, Sequence, TypeVar
+from typing import Iterable, Iterator, Literal, Optional, Sequence, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -431,8 +431,10 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         max_length: A PyTree of integers, each representing the maximum number of tokens allowed per leaf.
         max_segments_per_example: Maximum number of documents that can be packed into a single example.
         pad_with_zeros: If True, pad examples to max_length with zeros. If False, return examples as-is.
-        slice_too_long_examples: If True, slice examples that exceed max_length to the last max_length tokens.
-            If False, raise an error when an example exceeds max_length.
+        slice_strategy: One of "left", "right", or "raise". Determines how to handle examples that exceed max_length:
+            - "left": Slice from the beginning of the example
+            - "right": Slice from the end of the example
+            - "raise": Raise an error when an example exceeds max_length
     """
 
     def __init__(
@@ -441,7 +443,7 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         max_length: int | T,  # PyTree[int],
         max_segments_per_example: int | None = None,
         pad_with_zeros: bool = False,
-        slice_too_long_examples: bool = False,
+        slice_strategy: Literal["left", "right", "raise"] = "raise",
     ):
         """
         Args:
@@ -449,14 +451,16 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
             max_length: A PyTree of integers, each representing the maximum number of tokens allowed per leaf.
             max_segments_per_example: Maximum number of documents that can be packed into a single example.
             pad_with_zeros: If True, pad examples to max_length with zeros. If False, return examples as-is.
-            slice_too_long_examples: If True, slice examples that exceed max_length to the last max_length tokens.
-                If False, raise an error when an example exceeds max_length.
+            slice_strategy: One of "left", "right", or "raise". Determines how to handle examples that exceed max_length.
         """
+        if slice_strategy not in ["left", "right", "raise"]:
+            raise ValueError(f"slice_strategy must be one of 'left', 'right', or 'raise', got {slice_strategy}")
+
         self.dataset = dataset
         self.max_length = max_length
         self.max_segments_per_example = max_segments_per_example
         self.pad_with_zeros = pad_with_zeros
-        self.slice_too_long_examples = slice_too_long_examples
+        self.slice_strategy = slice_strategy
 
         _offsets = jax.tree.map(lambda store: store.offsets.read(), self.dataset)
         self._offsets = jax.tree.map(lambda fut: fut.result(), _offsets)
@@ -472,7 +476,7 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
 
         # Build pack indices
         self._pack_indices = pack_documents(
-            self._lengths, max_length, max_segments_per_example, slice_too_long_examples
+            self._lengths, max_length, max_segments_per_example, slice_strategy != "raise"
         )
 
     def is_finite(self) -> bool:
@@ -512,14 +516,18 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
                     token_end = offsets[dr.stop]
                     token_count = token_end - token_start
                     if token_count > allowed:
-                        if self.slice_too_long_examples:
+                        if self.slice_strategy != "raise":
                             assert len(dr) == 1, "We shouldn't have packed two examples together if one is too long."
-                            # slice from the right
-                            token_start = token_end - allowed
+                            if self.slice_strategy == "right":
+                                # slice from the right
+                                token_start = token_end - allowed
+                            else:  # left
+                                # slice from the left
+                                token_end = token_start + allowed
                         else:
                             raise ValueError(
                                 f"Token count {token_count} exceeds allowed maximum {allowed} for documents "
-                                f"{list(dr)}. Consider setting slice_too_long_examples=True or increasing max_length."
+                                f"{list(dr)}. Consider using a different slice_strategy or increasing max_length."
                             )
                     # Read the slice from the underlying data.
                     out_data.append(store._data[token_start:token_end].read())
@@ -533,7 +541,7 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
                         # Use the global document index as the segment ID
                         global_doc_idx = dr.start + doc_idx
                         # If this is a sliced document, adjust the segment IDs to match the sliced portion
-                        if doc_length > allowed and self.slice_too_long_examples:
+                        if doc_length > allowed and self.slice_strategy != "raise":
                             segment_ids.extend([global_doc_idx] * allowed)
                         else:
                             segment_ids.extend([global_doc_idx] * doc_length)
@@ -586,7 +594,7 @@ if __name__ == "__main__":
     store = JaggedArrayStore.open(path, mode="r", dtype=np.uint32, cache_metadata=True)
 
     time_in = time.time()
-    packed = GreedyPrepackedDataset(store, max_length=4096, pad_with_zeros=True, slice_too_long_examples=True)
+    packed = GreedyPrepackedDataset(store, max_length=4096, pad_with_zeros=True, slice_strategy="right")
     time_out = time.time()
     print(f"Took {time_out - time_in:.2f}s to build pack")
 
