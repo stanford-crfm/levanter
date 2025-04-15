@@ -6,6 +6,7 @@ import functools
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
@@ -1431,5 +1432,62 @@ class ChatJsonlDataSource(JsonlDataSource):
                     input_msg = next(m["content"] for m in messages if m["role"] == self.input_role)
                     output_msg = next(m["content"] for m in messages if m["role"] == self.output_role)
 
-                    yield {"input": input_msg, "output": output_msg}
-                i += 1
+            yield {"input": input_msg, "output": output_msg}
+
+
+class ChatProcessor(BatchProcessor[dict, dict]):
+    """
+    A batch processor that converts chat data into the expected inputs of a model using a chat template.
+    """
+
+    def __init__(self, tokenizer: HfTokenizer, chat_template: str | None = None):
+        if chat_template is None and tokenizer.chat_template is None:
+            raise ValueError("No chat template provided and tokenizer has no default chat template")
+        self.tokenizer = tokenizer
+        self.chat_template = chat_template or tokenizer.chat_template
+
+        if self.chat_template is None:
+            raise ValueError("No chat template provided and tokenizer has no default chat template")
+
+        # check for {%generation%} in the template
+        # cribbed from https://github.com/huggingface/transformers/blob/main/src/transformers/tokenization_utils_base.py#L1687
+        if not re.search(r"\{\%-?\s*generation\s*-?\%\}", self.chat_template):
+            raise ValueError(
+                "Chat template must contain {%generation%} to indicate the position of"
+                " the assistant message: ```{chat_template}```"
+            )
+
+    def __call__(self, batch: Sequence[dict]) -> dict:
+        tokenized = self.tokenizer.apply_chat_template(
+            list(batch), tokenize=True, chat_template=self.chat_template, return_assistant_tokens_mask=True
+        )
+        mask = tokenized["assistant_tokens_mask"]
+        for seq, mask_for_seq in zip(batch, mask):
+            if not np.any(mask_for_seq):
+                raise ValueError(f"Chat template did not contain an assistant message for sequence {seq}")
+        # mask is 1 on the position of the assistant tokens
+        # loss_mask by convention is 1 on the positions where we compute loss, i.e. shifted back 1
+        # mask = np.roll(mask, -1, axis=-1)
+        return {
+            "input_ids": tokenized["input_ids"],
+            "assistant_tokens_mask": mask,
+        }
+
+    @property
+    def output_exemplar(self):
+        return {
+            "input_ids": np.zeros((0,), dtype=np.int32),
+            "assistant_tokens_mask": np.zeros((0,), dtype=np.int32),
+        }
+
+    @property
+    def num_cpus(self) -> int:
+        return num_cpus_used_by_tokenizer(self.tokenizer)
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "tokenizer": self.tokenizer.name_or_path,
+            "vocab_size": len(self.tokenizer),
+            "chat_template": self.chat_template,
+        }
