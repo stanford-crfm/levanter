@@ -20,7 +20,7 @@ def mkdirs(path):
 def expand_glob(url):
     expanded_urls = braceexpand.braceexpand(url)
     for expanded_url in expanded_urls:
-        if "*" in expanded_url:
+        if any(c in expanded_url for c in "*?[]"):
             fs = fsspec.core.url_to_fs(expanded_url)[0]
             globbed = fs.glob(expanded_url)
             # have to append the fs prefix back on
