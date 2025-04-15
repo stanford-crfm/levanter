@@ -5,7 +5,7 @@ from transformers import AutoTokenizer
 
 import haliax as hax
 
-from levanter.data.text import BatchTokenizer, LMDatasetConfig
+from levanter.data.text import BatchTokenizer, UrlSingleDatasetLMConfig
 from levanter.models.lm_model import LmExample
 from levanter.models.loss import maybe_fused_next_token_loss
 from tests.test_utils import skip_if_hf_model_not_accessible
@@ -13,7 +13,7 @@ from tests.test_utils import skip_if_hf_model_not_accessible
 
 def test_dont_blow_up_without_validation_set():
     with tempfile.TemporaryDirectory() as tmpdir:
-        config = LMDatasetConfig(
+        config = UrlSingleDatasetLMConfig(
             train_urls=["kaa"],
             validation_urls=[],
             cache_dir=tmpdir,

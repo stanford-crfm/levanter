@@ -6,7 +6,6 @@ import functools
 import json
 import logging
 import os
-import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
@@ -33,7 +32,7 @@ import jax
 import numpy as np
 import regex
 import tensorstore as ts
-from draccus import field
+from draccus import ChoiceRegistry, field
 from jaxtyping import PRNGKeyArray
 from tokenizers import normalizers
 
@@ -546,22 +545,37 @@ def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
 
 
 @dataclass
-class LMDatasetSourceConfig:
+class LMDatasetSourceConfigBase(abc.ABC, ChoiceRegistry):
     """This class represents a dataset source with URLs or hf name/id."""
 
     tags: Optional[List[str]] = None
     """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
+    cache_dir: str | None = None  # Optionally override the cache dir for this component
 
-    id: Optional[str] = None  # id (or path) for hf dataset
+    @abc.abstractmethod
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def doc_iterator(self, split: str):
+        raise NotImplementedError
+
+    @classmethod
+    def default_choice_name(cls) -> Optional[str]:
+        return "url"
+
+
+@LMDatasetSourceConfigBase.register_subclass("hf")
+@dataclass
+class HfTextDatasetSourceConfig(LMDatasetSourceConfigBase):
+    """
+    This class represents a dataset source with hf id and optional name.
+    """
+
+    id: str = dataclasses.field(kw_only=True)
     name: Optional[str] = None  # name for hf dataset
-
-    plaintext: bool = False
     stream: bool = True  # whether to use streaming when doing hf
     text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
-
-    train_urls: List[str] = ()  # type: ignore
-    validation_urls: List[str] = ()  # type:ignore
-    cache_dir: Optional[str] = None  # Optionally override the cache dir for this component
 
     def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
         if self.id is not None:
@@ -579,22 +593,38 @@ class LMDatasetSourceConfig:
                 return None
 
             return ds.map(lambda x: x[self.text_key])
-        else:
-            split_urls = self.urls_for_split(split)
-            if len(split_urls) == 0:
-                return None
-            return TextUrlDataSource(split_urls, self.text_key)
 
     def doc_iterator(self, split: str):
-        if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
-            data = dataset[split]
-            for doc in data:
-                yield doc[self.text_key]
-        else:
-            urls = self.urls_for_split(split)
+        dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
+        data = dataset[split]
+        for doc in data:
+            yield doc[self.text_key]
 
-            yield from TextUrlDataSource(urls, self.text_key)
+
+@LMDatasetSourceConfigBase.register_subclass("url")
+@dataclass
+class UrlTextDatasetSourceConfig(LMDatasetSourceConfigBase):
+    train_urls: list[str] = ()  # type: ignore
+    validation_urls: list[str] = ()  # type:ignore
+    text_key: str = "text"  # key for the text field in the jsonl file
+
+    def __post_init__(self):
+        if not self.train_urls and not self.validation_urls:
+            raise ValueError("At least one of train_urls or validation_urls must be provided")
+
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
+        split_urls = self.urls_for_split(split)
+        if len(split_urls) == 0:
+            return None
+        return TextUrlDataSource(split_urls, self.text_key)
+
+    def doc_iterator(self, split: str):
+        source = self.get_shard_source(split)
+        if source is None:
+            return
+        for shard in source.shard_names:
+            for doc in source.open_shard_at_row(shard, 0):
+                yield doc
 
     def urls_for_split(self, split):
         if split == "train":
@@ -669,7 +699,7 @@ class LMTaskConfig(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfigBase]:
         pass
 
     def tagged_eval_sets(
@@ -693,43 +723,6 @@ class SupervisedSourceConfigBase(Protocol):
     output_field: str
     tags: Optional[List[str]]
     cache_dir: str
-
-
-@dataclass
-class LMSupervisedDatasetConfig(SupervisedSourceConfigBase):
-    """Config for supervised fine-tuning datasets"""
-
-    cache_dir: str = "cache/"
-
-    # HF dataset config
-    hf_dataset_name: Optional[str] = None  # e.g. "tatsu-lab/alpaca" or "OpenAssistant/oasst1"
-    hf_dataset_split: str = "train"  # which split to use
-
-    # Local files config
-    validation_urls: List[str] = field(default_factory=list)  # paths to jsonl/json files
-
-    # Field names in the data
-    input_field: str = CANONICAL_INPUT_FIELD  # name of the input field
-    output_field: str = CANONICAL_OUTPUT_FIELD  # name of output field
-
-    # Optional metadata
-    tags: Optional[List[str]] = None
-
-    def __post_init__(self):
-        warnings.warn(
-            "LMSupervisedDatasetConfig is deprecated. Use SupervisedHfSourceConfig or "
-            "SupervisedUrlSourceConfig instead.",
-            DeprecationWarning,
-        )
-
-    def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
-        if self.hf_dataset_name is not None:
-            return WrappedHFDataSource(self.hf_dataset_name, split=self.hf_dataset_split)
-        elif split != "validation":
-            raise ValueError("Only validation split is supported for local files")
-        else:
-            urls = [globbed for url in self.validation_urls for globbed in expand_glob(url)]
-            return JsonlDataSource(urls)
 
 
 @dataclass(frozen=True)
@@ -834,59 +827,6 @@ def _mk_sup_example_jit(Pos, input_ids: hax.NamedArray, sources_len, pad_token_i
     loss_mask = loss_mask & (targets != pad_token_id)
     loss_mask = loss_mask & (1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.bool_))
     return LmExample.causal(input_ids, loss_mask=loss_mask, eos_id=eos_id)
-
-
-def mk_supervised_datasets(
-    sources: Mapping[str, SupervisedSourceConfigBase] | SupervisedSourceConfigBase,
-    split: str,
-    tokenizer: PreTrainedTokenizerBase,
-    Pos: hax.Axis,
-) -> dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]]:
-    """
-    Create supervised datasets from a set of sources.
-
-    Returns:
-        A dictionary of dataset names to tuples of the dataset and the tags associated with the dataset.
-    """
-    out: dict[str, tuple[AsyncDataset[LmExample], Sequence[str]]] = {}
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    if isinstance(sources, Mapping):
-        for name, config in sources.items():
-            source = config.get_shard_source(split)
-            if source is None:
-                continue
-
-            ds = _cache_supervised_set(
-                source, config.cache_dir, tokenizer, Pos, config.input_field, config.output_field
-            )
-
-            if config.tags is None:
-                tags = [name]
-            else:
-                tags = config.tags + [name]
-
-            out[name] = (ds, tags)
-    else:
-        source = sources.get_shard_source(split)  # type: ignore
-        if source is not None:
-            ds = _cache_supervised_set(
-                source, sources.cache_dir, tokenizer, Pos, sources.input_field, sources.output_field
-            )
-            tags = sources.tags or []
-            if isinstance(sources, SupervisedHfSourceConfig):
-                name = sources.id
-                if sources.name is not None:
-                    name = f"{name}/{sources.name}"
-
-                tags = [name] + tags
-            else:
-                name = "default"
-            out[name] = (ds, tags)
-
-    return out
 
 
 def mk_supervised_dataset(
@@ -1050,7 +990,7 @@ def mk_chat_sft_dataset(
 
 
 @dataclass
-class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
+class SingleDatasetLMConfigBase(LMDatasetSourceConfigBase, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
     cache_dir: Optional[str] = "cache/"
@@ -1131,7 +1071,7 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             return {}
 
     @property
-    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfigBase]:
         return {"": self}
 
     @cached_property
@@ -1198,6 +1138,20 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
             options=self.cache_options,
             split=split,
         )
+
+
+@dataclass
+class UrlSingleDatasetLMConfig(SingleDatasetLMConfigBase, UrlTextDatasetSourceConfig):
+    pass
+
+
+@dataclass
+class HfSingleDatasetLMConfig(SingleDatasetLMConfigBase, HfTextDatasetSourceConfig):
+    pass
+
+
+SingleDatasetLMConfig: TypeAlias = UrlSingleDatasetLMConfig | HfSingleDatasetLMConfig
+LMDatasetSourceConfig: TypeAlias = UrlTextDatasetSourceConfig | HfTextDatasetSourceConfig
 
 
 class PassthroughTokenizer(PreTrainedTokenizer):
@@ -1306,7 +1260,17 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         key: PRNGKeyArray,
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("train", monitors=monitors)
-        token_datasets = self._token_seq_datasets(Pos, doc_caches)
+
+        causal_datasets: dict[str, AsyncDataset[LmExample]] = {
+            name: CausalLmDataset(
+                TokenSeqDataset(cache, Pos.size),
+                Pos,
+                ignore_index=self.ignore_token_id,
+                eos_id=self.the_tokenizer.eos_token_id,
+            )
+            for name, cache in doc_caches.items()
+        }
+
         if epochs:
             raise ValueError("Epochs are not supported for mixture datasets")
 
@@ -1331,11 +1295,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             return ds
 
         if self.shuffle:
-            out_token_datasets = {}
             key_iter = key_iterator(key)
-            for name, ds in token_datasets.items():
-                out_token_datasets[name] = shuffle_ds(ds, next(key_iter))
-            token_datasets = out_token_datasets
+            causal_datasets = {name: shuffle_ds(ds, next(key_iter)) for name, ds in causal_datasets.items()}
+
         if (
             self.experiment_budget is not None and self.target_budget is not None
         ) and self.experiment_budget > self.target_budget:
@@ -1345,41 +1307,28 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
         if self.experiment_budget is not None and self.target_budget is not None:
             simulated_data_ratio = self.experiment_budget / self.target_budget
-            sliced_token_datasets: Dict[str, TokenSeqDataset] = {}
-            for name, ds in token_datasets.items():
+            sliced_datasets: Dict[str, AsyncDataset[LmExample]] = {}
+            for name, ds in causal_datasets.items():
                 # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
                 true_length_of_dataset = len(ds.as_sync_dataset())
                 simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
-                sliced_token_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
-            token_datasets = sliced_token_datasets
-        causal_datasets = {
-            name: CausalLmDataset(
-                ds,
-                Pos,
-                ignore_index=self.ignore_token_id,
-                eos_id=self.the_tokenizer.eos_token_id,
-            )
-            for name, ds in token_datasets.items()
-        }
-        return causal_datasets
+                sliced_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
+            causal_datasets = sliced_datasets
 
-    def _token_seq_datasets(self, Pos, doc_caches):
-        token_datasets = {name: TokenSeqDataset(cache, Pos.size) for name, cache in doc_caches.items()}
-        return token_datasets
+        return causal_datasets
 
     def validation_sets(
         self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = self._token_seq_datasets(Pos, doc_caches)
         return {
             name: CausalLmDataset(
-                ds,
+                TokenSeqDataset(cache, Pos.size),
                 Pos,
                 ignore_index=self.ignore_token_id,
                 eos_id=self.the_tokenizer.eos_token_id,
             )
-            for name, ds in token_datasets.items()
+            for name, cache in doc_caches.items()
         }
 
     def build_caches(
@@ -1414,7 +1363,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 cache_dir = os.path.join(self.cache_dir, name)
                 source_config_dict["cache_dir"] = cache_dir
 
-            dataset = LMDatasetConfig(
+            dataset = SingleDatasetLMConfigBase(
                 **source_config_dict,
                 **task_config_dict,
             )
@@ -1436,7 +1385,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         return caches
 
     @property
-    def sources(self) -> Mapping[str, LMDatasetSourceConfig]:
+    def sources(self) -> Mapping[str, LMDatasetSourceConfigBase]:
         return self.configs
 
 
