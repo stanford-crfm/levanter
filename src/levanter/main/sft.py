@@ -18,12 +18,11 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data import PermutationDataset, batched
-from levanter.data.dataset import AsyncDataset
+from levanter.data.dataset import AsyncDataset, EpochDataset
 from levanter.data.loader import stack_batches
 from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
-    EpochDataset,
     SupervisedSourceConfig,
     mk_cached_sft_dataset,
     mk_supervised_dataset,
