@@ -66,7 +66,6 @@ from levanter.data.sharded_datasource import (  # noqa
     TextUrlDataSource,
     UrlDataSource,
     WrappedHFDataSource,
-    gcs_glob,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.store.cache import build_or_load_cache  # noqa
@@ -1404,12 +1403,7 @@ def datasource_from_chat_jsonl(
         ShardedDataSource configured for chat data
     """
     # Expand any glob patterns in the URLs
-    expanded_urls = []
-    for url in urls:
-        if any(c in url for c in "*?[]"):
-            expanded_urls.extend(gcs_glob(url))
-        else:
-            expanded_urls.append(url)
+    expanded_urls = [globbed for url in urls for globbed in expand_glob(url)]
 
     return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
 
