@@ -409,6 +409,7 @@ def pack_documents(
                 break
             total_segments += 1
             i += 1
+
         # If no document could be added (i.e. a single document exceeds capacity)
         if i == start:
             if not slice_too_long_examples:
@@ -442,7 +443,7 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         dataset: T,  # PyTree[JaggedArrayStore],
         max_length: int | T,  # PyTree[int],
         max_segments_per_example: int | None = None,
-        pad_with_zeros: bool = False,
+        pad_with_zeros: bool = True,
         slice_strategy: Literal["left", "right", "raise"] = "raise",
     ):
         """
@@ -564,7 +565,8 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         # We extract the list of doc_range PyTrees for each requested pack:
         # Use tree.map to combine the leaves from: dataset, max_length and, for each pack, its doc_range.
         # Note: jax.tree.map will map over each pack in parallel across the leaves.
-        leaf_batch_futures = jax.tree.map(get_data_for_leaf, self.dataset, self._offsets, self.max_length)
+        max_length_tree = tree_broadcast_to(self.max_length, self._offsets)
+        leaf_batch_futures = jax.tree.map(get_data_for_leaf, self.dataset, self._offsets, max_length_tree)
 
         # Flatten the resulting PyTree: each leaf is now an Awaitable returning a tuple of lists of np.ndarray—one per requested pack.
         leaves, treedef = jax.tree.flatten(leaf_batch_futures)

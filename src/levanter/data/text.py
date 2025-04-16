@@ -1242,7 +1242,7 @@ ProcessedChatDict = TypedDict(
     "ProcessedChatDict",
     {
         "input_ids": np.ndarray,
-        "assistant_tokens_mask": np.ndarray,
+        "assistant_masks": np.ndarray,
     },
 )
 
@@ -1274,9 +1274,13 @@ class ChatProcessor(BatchProcessor[dict, ProcessedChatDict]):
         # Extract messages from the specified field
         messages = [example[self.messages_field] for example in batch]
         tokenized = self.tokenizer.apply_chat_template(
-            messages, tokenize=True, chat_template=self.chat_template, return_assistant_tokens_mask=True
+            messages,
+            tokenize=True,
+            chat_template=self.chat_template,
+            return_assistant_tokens_mask=True,
+            return_dict=True,
         )
-        masks = tokenized["assistant_tokens_mask"]
+        masks = tokenized["assistant_masks"]
         for seq, mask_for_seq in zip(batch, masks):
             if not np.any(mask_for_seq):
                 raise ValueError(f"Chat did not contain an assistant message for sequence {seq}")
@@ -1286,7 +1290,7 @@ class ChatProcessor(BatchProcessor[dict, ProcessedChatDict]):
             out.append(
                 {
                     "input_ids": np.array(ids, dtype=np.int32),
-                    "assistant_tokens_mask": np.array(mask, dtype=np.int32),
+                    "assistant_masks": np.array(mask, dtype=np.int32),
                 }
             )
 
@@ -1296,7 +1300,7 @@ class ChatProcessor(BatchProcessor[dict, ProcessedChatDict]):
     def output_exemplar(self):
         return {
             "input_ids": np.zeros((0,), dtype=np.int32),
-            "assistant_tokens_mask": np.zeros((0,), dtype=np.int32),
+            "assistant_masks": np.zeros((0,), dtype=np.int32),
         }
 
     @property
@@ -1350,7 +1354,7 @@ class MultiturnChatDataset(MappedAsyncDataset[tuple[ProcessedChatDict, Processed
             tokens = hax.named(example["input_ids"], self.Pos)
 
             # mask is 1 on the position of the assistant tokens
-            mask = example["assistant_tokens_mask"]
+            mask = example["assistant_masks"]
             # loss_mask by convention is 1 on the positions where we compute loss, i.e. shifted back 1
             mask = jnp.roll(mask, -1, axis=-1)
             loss_mask = hax.named(mask, self.Pos)
@@ -1429,7 +1433,7 @@ class SupervisedProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
 
 class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
     """
-    A dataset that yields supervised examples from a cache of processed supervised data.
+    A dataset that yields packed supervised examples from a cache of processed supervised data.
     """
 
     def __init__(
@@ -1441,7 +1445,12 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
         slice_strategy: Literal["left", "right", "raise"] = "right",
     ):
         self.mask_inputs = mask_inputs
-        self.packed = GreedyPrepackedDataset(cache, Pos.size, max_segments_per_example=max_segments_per_example)
+        self.packed = GreedyPrepackedDataset(
+            cache.store.tree,
+            Pos.size,
+            max_segments_per_example=max_segments_per_example,
+            slice_strategy=slice_strategy,
+        )
 
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
 
@@ -1451,6 +1460,8 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
             tokens = hax.named(ex["input_ids"], "position")
 
             if self.mask_inputs:
+                # ok this is actually vaguely annoying
+                # we need to make anything in the range [0, sources_len) be 0 for each example
                 loss_mask = hax.arange(Pos) >= ex["sources_len"]
             else:
                 loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
@@ -1460,6 +1471,39 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
             return LmExample.causal(tokens, loss_mask=loss_mask, segment_ids=segment_ids)
 
         super().__init__(cache, _create_lm_example)
+
+    @staticmethod
+    def _make_sequence_mask(segment_ids: np.ndarray, segment_source_len: np.ndarray) -> np.ndarray:
+        """
+        Constructs a mask hiding input tokens for a packed supervised example.
+
+        Args:
+          segment_ids: shape [N], arbitrary integer IDs for each token.
+          segment_source_len: dict mapping each segment_id to the number of input tokens for that segment.
+
+        Returns:
+          mask of shape [N] (dtype=int8). 1 => token is output, 0 => token is input.
+        """
+        N = len(segment_ids)
+        positions = np.empty(N, dtype=int)  # positions[i] = position of token i within its segment
+
+        # We'll store a running counter for each segment in a dict
+        segment_counters: dict[int, int] = {}
+
+        # Single pass: assign positions
+        for i, seg_id in enumerate(segment_ids):
+            pos = segment_counters.get(seg_id, 0)  # how many tokens we've seen so far for seg_id
+            positions[i] = pos
+            segment_counters[seg_id] = pos + 1
+
+        # Build mask: tokens are "output" (mask=1) if positions[i] >= segment_source_len[ seg_id ]
+        mask = np.zeros(N, dtype=np.int32)
+        for i, seg_id in enumerate(segment_ids):
+            input_len = segment_source_len[seg_id]
+            if positions[i] >= input_len:
+                mask[i] = 1
+
+        return mask
 
 
 class SingleTurnChatProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):

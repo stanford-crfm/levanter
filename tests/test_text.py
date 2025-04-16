@@ -1,11 +1,24 @@
+import json
 import tempfile
+from pathlib import Path
 
 import jax.numpy as jnp
+import numpy as np
+import pytest
+from numpy.testing import assert_array_equal
 from transformers import AutoTokenizer
 
 import haliax as hax
 
-from levanter.data.text import BatchTokenizer, UrlSingleDatasetLMConfig
+from levanter.data.text import (
+    BatchTokenizer,
+    ChatLmDatasetFormat,
+    MultiturnChatDataset,
+    SupervisedDataset,
+    UrlSingleDatasetLMConfig,
+    build_lm_dataset_cache,
+    preprocessor_for_format,
+)
 from levanter.models.lm_model import LmExample
 from levanter.models.loss import maybe_fused_next_token_loss
 from tests.test_utils import skip_if_hf_model_not_accessible
@@ -75,3 +88,109 @@ def test_llama_tokenizer_needs_long_sequence_workaround():
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
     batch_tokenizer = BatchTokenizer(tokenizer)
     assert batch_tokenizer._needs_long_sequence_workaround
+
+
+def test_make_sequence_mask():
+    make_output_mask = SupervisedDataset._make_sequence_mask
+    # Case 1: basic case with 2 segments
+    segment_ids = np.array([0, 0, 1, 1, 1])
+    segment_source_len = np.array([1, 2])
+    expected = np.array([0, 1, 0, 0, 1], dtype=np.int32)
+    assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
+
+    # Case 2: all tokens are input
+    segment_ids = np.array([0, 0, 1, 1])
+    segment_source_len = np.array([2, 2])
+    expected = np.array([0, 0, 0, 0], dtype=np.int32)
+    assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
+
+    # Case 3: all tokens are output
+    segment_ids = np.array([0, 0, 1, 1])
+    segment_source_len = np.array([0, 0])
+    expected = np.array([1, 1, 1, 1], dtype=np.int32)
+    assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
+
+    # Case 4: alternating inputs and outputs
+    segment_ids = np.array([0, 0, 0, 1, 1, 1])
+    segment_source_len = np.array([2, 1])
+    expected = np.array([0, 0, 1, 0, 1, 1], dtype=np.int32)
+    assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
+
+    # Case 5: single segment, mixed input/output
+    segment_ids = np.array([0, 0, 0, 0])
+    segment_source_len = np.array([2])
+    expected = np.array([0, 0, 1, 1], dtype=np.int32)
+    assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
+
+
+@pytest.fixture
+def dummy_chat_data():
+    messages = [
+        {
+            "messages": [
+                {"role": "user", "content": "Hello!"},
+                {"role": "assistant", "content": "Hi there, how can I help?"},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "Tell me a joke."},
+                {"role": "assistant", "content": "Why did the chicken cross the road?"},
+                {"role": "user", "content": "To get to the other side."},
+                {"role": "assistant", "content": "No, the other side."},
+            ]
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "chat.jsonl"
+        with path.open("w") as f:
+            for msg in messages:
+                f.write(json.dumps(msg) + "\n")
+        yield str(path)
+
+
+def test_chat_dataset_build_and_pack(dummy_chat_data):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache_dir = tmpdir
+
+        tokenizer = AutoTokenizer.from_pretrained("stanford-crfm/marin-tokenizer")
+
+        config = UrlSingleDatasetLMConfig(
+            train_urls=[dummy_chat_data], format=ChatLmDatasetFormat(messages_field="messages")
+        )
+
+        processor = preprocessor_for_format(config.format, tokenizer)
+
+        # test the processor
+        source = config.get_shard_source("train")
+        for doc in source.open_shard(source.shard_names[0]):
+            processor([doc])
+
+        # test the caching
+        ds = build_lm_dataset_cache(cache_dir, source, config.format, tokenizer)
+        ds.await_finished()
+        ds_sync = ds.as_sync_dataset()
+        assert len(ds_sync) == 2
+        sample = next(iter(ds))
+
+        # these are ProcessedChatDicts
+        assert sample["assistant_masks"].shape == sample["input_ids"].shape
+        assert 8 < sample["assistant_masks"].sum() <= 10
+        # assert sample["input_ids"].shape[0] > 20
+        assert (
+            tokenizer.decode(sample["input_ids"], skip_special_tokens=False)
+            == "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\nHello!<|eot_id|>\n<|start_header_id|>assistant"
+            "<|end_header_id|>\nHi there, how can I help?<|eot_id|>\n"
+        )
+
+        # now test packing
+        Pos = hax.Axis("Pos", 100)
+        packed_ds = MultiturnChatDataset(ds, Pos, max_segments_per_example=2)
+        packed_ds = packed_ds.as_sync_dataset()
+
+        assert len(packed_ds) == 1
+
+        for ex in packed_ds:
+            assert ex.tokens.axes == (Pos,)
+            assert ex.loss_mask.axes == (Pos,)
+            assert ex.attn_mask.segment_ids.axes == (Pos,)
