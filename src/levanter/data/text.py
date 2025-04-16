@@ -42,6 +42,7 @@ from haliax import Axis
 from levanter.data import AsyncDataset
 from levanter.data.dataset import EpochDataset, MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy, rescale_mixture_schedule_for_batch_schedule
+from levanter.data.passthrough_tokenizer import PassthroughTokenizer
 from levanter.models.lm_model import LmExample
 from levanter.schedule import BatchSchedule
 from levanter.store.cache import CacheOptions, TreeCache
@@ -1012,33 +1013,6 @@ class HfSingleDatasetLMConfig(SingleDatasetLMConfigBase, HfTextDatasetSourceConf
 
 SingleDatasetLMConfig: TypeAlias = UrlSingleDatasetLMConfig | HfSingleDatasetLMConfig
 LMDatasetSourceConfig: TypeAlias = UrlTextDatasetSourceConfig | HfTextDatasetSourceConfig
-
-
-class PassthroughTokenizer(PreTrainedTokenizer):
-    def __init__(self, vocab_size, **kwargs):
-        self._vocab = {i: i for i in range(vocab_size)}
-        self._vocab_size = vocab_size
-        super().__init__(**kwargs)
-
-    @property
-    def vocab_size(self) -> int:
-        return self._vocab_size
-
-    def get_vocab(self):
-        return self._vocab
-
-    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
-        return ()
-
-    def _tokenize(self, text, **kwargs):
-        tokens = np.fromstring(text, dtype=int, sep=" ")
-        return tokens
-
-    def _convert_token_to_id(self, token: str) -> int:
-        return int(token)
-
-    def _convert_id_to_token(self, index: int) -> str:
-        return str(index)
 
 
 @dataclass
