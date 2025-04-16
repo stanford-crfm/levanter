@@ -4,7 +4,7 @@ from transformers import AutoTokenizer
 import haliax
 from haliax import Axis
 
-from levanter.data.text import _prepare_supervised_examples, _preprocess_supervised_example
+from levanter.data.text import SupervisedProcessor, _prepare_supervised_examples
 
 
 def test_supervised_eval():
@@ -19,7 +19,9 @@ def test_supervised_eval():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    output = _preprocess_supervised_example(examples, tokenizer, "input", "output")
+    # output = _preprocess_supervised_example(examples, tokenizer, "input", "output")
+    processor = SupervisedProcessor(tokenizer, "input", "output")
+    output = processor(examples)
     assert len(output["input_ids"][0]) == output["sources_len"][0] + 1
 
     ex = {

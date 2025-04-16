@@ -65,8 +65,8 @@ def construct_small_data_cache(
         caches[split] = writer.result()
 
     config = UrlSingleDatasetLMConfig(
-        train_urls=[f"file://{path}/train/docs.jsonl"],
-        validation_urls=[f"file://{path}/validation/docs.jsonl"],
+        train_urls=[],
+        validation_urls=[],
         cache_dir=f"{path}/cache",
         vocab_size=vocab_size,
         tokenizer="gpt2",

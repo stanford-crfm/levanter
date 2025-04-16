@@ -105,12 +105,11 @@ class CacheOptions:
 
 def build_or_load_cache(
     cache_dir: str,
-    input_shards: ShardedDataSource[T],
+    source: ShardedDataSource[T],
     processor: BatchProcessor[T, U],
     await_finished: bool = True,
     monitors: Optional[Sequence["MetricsMonitor"]] = None,
     options: CacheOptions = CacheOptions.default(),
-    split: str = "test",
 ) -> "TreeCache[U]":
     """
     Produces a sharded cache of the dataset using Ray for distributed processing. The cache can be any path
@@ -126,7 +125,7 @@ def build_or_load_cache(
 
     Args:
         cache_dir: The directory to write the cache to. This can be any path understood by fsspec.
-        input_shards: A ShardedDataset that will be used to read the input data. Conceptually, it's just a mapping
+        source: A ShardedDataset that will be used to read the input data. Conceptually, it's just a mapping
                     from shard names to iterators over the data in that shard.
         processor: A BatchProcessor that will be used to process batches of data. This is the main place where
                     you can customize the preprocessing pipeline.
@@ -144,10 +143,9 @@ def build_or_load_cache(
     # first see if we need to do anything
     cache = TreeCache.build_or_load(
         cache_dir=cache_dir,
-        shard_source=input_shards,
+        shard_source=source,
         processor=processor,
         options=options,
-        split=split,
     )
 
     if cache.is_finished:
@@ -316,7 +314,6 @@ class TreeCache(AsyncDataset[T_co]):
         shard_source: ShardedDataSource[T],
         processor: BatchProcessor[T, U],
         options: Optional["CacheOptions"] = None,
-        split: str = "test",
     ) -> "TreeCache[U]":
         if options is None:
             options = CacheOptions.default()

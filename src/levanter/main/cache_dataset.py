@@ -44,11 +44,10 @@ def main(args: RayCachedLMDatasetConfig):
 
         cache = build_or_load_cache(
             cache_dir=split_cache_dir,
-            input_shards=source,
+            source=source,
             processor=batch_tokenizer,
             await_finished=False,
             monitors=monitors,
-            split=split,
         )
 
         cache.await_finished()

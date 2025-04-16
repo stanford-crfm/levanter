@@ -24,7 +24,7 @@ from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
     SupervisedSourceConfig,
-    mk_cached_sft_dataset,
+    mk_single_turn_cached_sft_dataset,
     mk_supervised_dataset,
 )
 from levanter.models.llama import LlamaConfig
@@ -162,7 +162,7 @@ def train(config: SFTConfig):
             input_role=config.input_role,
             output_role=config.output_role,
         )
-        train_dataset = mk_cached_sft_dataset(chat_config, tokenizer, model_config.Pos)
+        train_dataset = mk_single_turn_cached_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
         if isinstance(config.supervised_data, dict):

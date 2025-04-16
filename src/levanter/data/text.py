@@ -21,14 +21,15 @@ from typing import (
     Sequence,
     Tuple,
     TypeAlias,
+    TypedDict,
     TypeVar,
     Union,
 )
 
-import datasets
 import equinox as eqx
 import fsspec
 import jax
+import jax.numpy as jnp
 import numpy as np
 import regex
 import tensorstore as ts
@@ -42,10 +43,11 @@ from haliax import Axis
 from levanter.data import AsyncDataset
 from levanter.data.dataset import EpochDataset, MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy, rescale_mixture_schedule_for_batch_schedule
+from levanter.data.packing import GreedyPrepackedDataset
 from levanter.data.passthrough_tokenizer import PassthroughTokenizer
 from levanter.models.lm_model import LmExample
 from levanter.schedule import BatchSchedule
-from levanter.store.cache import CacheOptions, TreeCache
+from levanter.store.cache import CacheMetadata, CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils.fsspec_utils import expand_glob
@@ -124,8 +126,8 @@ class TokenSeqDataset(AsyncDataset[np.ndarray]):
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
         token_arrays = await self._await_token_cache()
         # logger.info(f"Time to get token cache: {time.time() - time_in}")
-        len = await self.wait_until_len_at_least(max(indices) + 1)
-        if len is not None and len < max(indices) + 1:
+        ds_len = await self.wait_until_len_at_least(max(indices) + 1)
+        if ds_len is not None and ds_len < max(indices) + 1:
             raise ValueError("Requested indices beyond the end of the dataset")
         offsets = np.array(indices, dtype=np.int64) * self.seq_len
         with ts.Batch():
@@ -188,7 +190,7 @@ LONG_STRING_WORKAROUND = 10_000
 ws = regex.compile(r"\s")
 
 
-class BatchTokenizer(BatchProcessor[str, dict]):
+class BatchTokenizer(BatchProcessor[dict, dict]):
     """
     A batch processor that tokenizes a batch of strings using a tokenizer.
     By default, this will append eos to the end of the string, even if the tokenizer doesn't.
@@ -196,7 +198,8 @@ class BatchTokenizer(BatchProcessor[str, dict]):
 
     def __init__(
         self,
-        tokenizer: PreTrainedTokenizerBase,
+        tokenizer: HfTokenizer,
+        text_field="text",
         enforce_bos=True,
         enforce_eos=True,
         *,
@@ -208,6 +211,7 @@ class BatchTokenizer(BatchProcessor[str, dict]):
     ):
         _maybe_force_tokenizer_parallelism(tokenizer)
         self.tokenizer = tokenizer
+        self.text_field = text_field
         self.override_resources = override_resources
         self.return_attention_mask = return_attention_mask
         self.padding = padding
@@ -237,21 +241,23 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         self._need_to_add_bos = should_append_bos
         self._workaround_len = _workaround_len
 
-    def __call__(self, batch: Sequence[str]) -> list[dict]:
+    def __call__(self, batch: Sequence[dict]) -> list[dict]:
+        batch_text = [example[self.text_field] for example in batch]
+
         if self._need_to_add_bos:
-            batch = [self.tokenizer.bos_token + " " + d for d in batch]
+            batch_text = [self.tokenizer.bos_token + " " + d for d in batch_text]
 
         if self._need_to_add_eos:
-            batch = [d + " " + self.tokenizer.eos_token for d in batch]
+            batch_text = [d + " " + self.tokenizer.eos_token for d in batch_text]
 
         if self._needs_long_sequence_workaround:
-            batch, needs_merge = self._break_for_long_sequences(batch)
+            batch_text, needs_merge = self._break_for_long_sequences(batch_text)
         else:
             needs_merge = []
 
         if self.padding is not False:
             encoding = self.tokenizer(
-                batch,
+                batch_text,
                 return_attention_mask=self.return_attention_mask,
                 verbose=False,
                 padding=self.padding,
@@ -260,11 +266,11 @@ class BatchTokenizer(BatchProcessor[str, dict]):
             )  # type: ignore
         else:
             encoding = self.tokenizer(
-                batch, return_attention_mask=self.return_attention_mask, verbose=False
+                batch_text, return_attention_mask=self.return_attention_mask, verbose=False
             )  # type: ignore
 
         if needs_merge:
-            new_encoding = self._merge_split_encodings(batch, encoding, needs_merge)
+            new_encoding = self._merge_split_encodings(batch_text, encoding, needs_merge)
             encoding = BatchEncoding(new_encoding)
 
         # debatch the encoding
@@ -391,44 +397,53 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         return 0
 
 
-def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
-    """Stacks two batch encodings together, assuming that the keys are the same."""
+CANONICAL_INPUT_FIELD = "prompt"
+CANONICAL_OUTPUT_FIELD = "response"
 
-    def _ensure_batched(x):
-        if len(x) == 0:
-            return list(x)
-        elif isinstance(x[0], Sequence) or isinstance(x[0], np.ndarray):
-            return list(x)
-        else:
-            return [x]
 
-    return BatchEncoding({k: _ensure_batched(a[k]) + _ensure_batched(b[k]) for k in a.keys()})
+class LmDatasetFormatBase(abc.ABC, ChoiceRegistry):
+    @classmethod
+    def default_choice_name(cls) -> Optional[str]:
+        return "text"
+
+
+@LmDatasetFormatBase.register_subclass("text")
+@dataclass(frozen=True)
+class TextLmDatasetFormat(LmDatasetFormatBase):
+    text_key: str = "text"  # key for the text field in the jsonl file
+
+
+@LmDatasetFormatBase.register_subclass("chat")
+@dataclass(frozen=True)
+class ChatLmDatasetFormat(LmDatasetFormatBase):
+    messages_field: str = "messages"  # key for the messages field in the jsonl file
+    single_turn: bool = False
+
+
+@LmDatasetFormatBase.register_subclass("supervised")
+@dataclass(frozen=True)
+class SupervisedLmDatasetFormat(LmDatasetFormatBase):
+    input_field: str = CANONICAL_INPUT_FIELD  # key for the input field in the jsonl file
+    output_field: str = CANONICAL_OUTPUT_FIELD  # key for the output field in the jsonl file
 
 
 @dataclass
-class LMDatasetSourceConfigBase(abc.ABC, ChoiceRegistry):
+class LmDatasetSourceConfigBase(abc.ABC):
     """This class represents a dataset source with URLs or hf name/id."""
 
     tags: Optional[List[str]] = None
     """tags for the dataset. Typically the name of the dataset in the config will be added as a tag as well"""
     cache_dir: str | None = None  # Optionally override the cache dir for this component
+    format: LmDatasetFormatBase = field(default_factory=TextLmDatasetFormat)
+    """format of the dataset."""
 
     @abc.abstractmethod
-    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[dict]]:
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def doc_iterator(self, split: str):
-        raise NotImplementedError
 
-    @classmethod
-    def default_choice_name(cls) -> Optional[str]:
-        return "url"
-
-
-@LMDatasetSourceConfigBase.register_subclass("hf")
 @dataclass
-class HfTextDatasetSourceConfig(LMDatasetSourceConfigBase):
+class HfDatasetSourceConfig(LmDatasetSourceConfigBase):
     """
     This class represents a dataset source with hf id and optional name.
     """
@@ -436,9 +451,8 @@ class HfTextDatasetSourceConfig(LMDatasetSourceConfigBase):
     id: str = dataclasses.field(kw_only=True)
     name: Optional[str] = None  # name for hf dataset
     stream: bool = True  # whether to use streaming when doing hf
-    text_key: str = "text"  # key for the text field in the jsonl file or hf dataset
 
-    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[dict]]:
         if self.id is not None:
             try:
                 ds = WrappedHFDataSource(self.id, split=split, name=self.name, streaming=self.stream)
@@ -453,39 +467,19 @@ class HfTextDatasetSourceConfig(LMDatasetSourceConfigBase):
             if len(ds.shard_names) == 0:
                 return None
 
-            return ds.map(lambda x: x[self.text_key])
-
-    def doc_iterator(self, split: str):
-        dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream)
-        data = dataset[split]
-        for doc in data:
-            yield doc[self.text_key]
+            return ds
 
 
-@LMDatasetSourceConfigBase.register_subclass("url")
 @dataclass
-class UrlTextDatasetSourceConfig(LMDatasetSourceConfigBase):
+class UrlDatasetSourceConfig(LmDatasetSourceConfigBase):
     train_urls: list[str] = ()  # type: ignore
     validation_urls: list[str] = ()  # type:ignore
-    text_key: str = "text"  # key for the text field in the jsonl file
 
-    def __post_init__(self):
-        if not self.train_urls and not self.validation_urls:
-            raise ValueError("At least one of train_urls or validation_urls must be provided")
-
-    def get_shard_source(self, split) -> Optional[ShardedDataSource[str]]:
+    def get_shard_source(self, split) -> Optional[ShardedDataSource[dict]]:
         split_urls = self.urls_for_split(split)
         if len(split_urls) == 0:
             return None
-        return TextUrlDataSource(split_urls, self.text_key)
-
-    def doc_iterator(self, split: str):
-        source = self.get_shard_source(split)
-        if source is None:
-            return
-        for shard in source.shard_names:
-            for doc in source.open_shard_at_row(shard, 0):
-                yield doc
+        return UrlDataSource(split_urls)
 
     def urls_for_split(self, split):
         if split == "train":
@@ -509,7 +503,10 @@ class LMTaskConfig(abc.ABC):
     cache_options: CacheOptions = field(default_factory=CacheOptions)
     enforce_eos: bool = True  # whether to append eos even if the tokenizer doesn't
 
+    chat_template: str | None = None  # If set, use this template for chat datasets. Otherwise, use the tokenizer's.
+
     ignore_token_id: Optional[int] = DEFAULT_IGNORE_INDEX
+
     shuffle: bool | int = False
     """whether to shuffle the dataset. True means shuffle the whole dataset, False means don't shuffle.
     If you want to shuffle in eras, set this to the era length"""
@@ -560,7 +557,7 @@ class LMTaskConfig(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def sources(self) -> Mapping[str, LMDatasetSourceConfigBase]:
+    def sources(self) -> Mapping[str, LmDatasetSourceConfigBase]:
         pass
 
     def tagged_eval_sets(
@@ -572,8 +569,21 @@ class LMTaskConfig(abc.ABC):
         return [(eval_sets[name], tags[name]) for name in eval_sets]
 
 
-CANONICAL_INPUT_FIELD = "prompt"
-CANONICAL_OUTPUT_FIELD = "response"
+def preprocessor_for_format(
+    format: LmDatasetFormatBase, tokenizer: HfTokenizer, *, enforce_eos: bool = True, enforce_bos: bool = True
+) -> BatchProcessor[dict, dict]:
+    match format:
+        case TextLmDatasetFormat():
+            return BatchTokenizer(tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos)
+        case ChatLmDatasetFormat(messages_field=messages_field, single_turn=single_turn):
+            if single_turn:
+                return SingleTurnChatProcessor(tokenizer, messages_field=messages_field)  # type: ignore
+            else:
+                return ChatProcessor(tokenizer)  # type: ignore
+        case SupervisedLmDatasetFormat(input_field=input_field, output_field=output_field):
+            return SupervisedProcessor(tokenizer, input_field, output_field)  # type: ignore
+        case _:
+            raise ValueError(f"Unknown format {format}")
 
 
 class SupervisedSourceConfigBase(Protocol):
@@ -671,8 +681,8 @@ def _prepare_supervised_examples(ex: list[dict], tokenizer: PreTrainedTokenizerB
     truncated = [ids[-Pos.size :] for ids in input_ids]
 
     out = []
-    for ids, len in zip(truncated, lens):
-        causal = _mk_sup_example_jit(Pos, hax.named(ids, Pos), len, tokenizer.pad_token_id, tokenizer.eos_token_id)
+    for ids, length in zip(truncated, lens):
+        causal = _mk_sup_example_jit(Pos, hax.named(ids, Pos), length, tokenizer.pad_token_id, tokenizer.eos_token_id)
 
         out.append(causal)
 
@@ -696,37 +706,22 @@ def mk_supervised_dataset(
 
     source = config.get_shard_source(split)
 
-    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
+    if source is None:
+        raise ValueError("No training data source found")
 
-    dataset = source.map_batches(  # type: ignore
-        lambda ex: _preprocess_supervised_example(ex, tokenizer, config.input_field, config.output_field),
-        batch_size=128,
-        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
-        output_exemplar=output_exemplar,
+    processor = SupervisedProcessor(tokenizer, config.input_field, config.output_field)
+
+    cached_dataset = build_or_load_cache(
+        config.cache_dir,
+        source,
+        processor,
+        await_finished=True,
     )
-
-    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
-
-
-def _cache_supervised_set(source, cache_dir, tokenizer, Pos: hax.Axis, input_field, output_field):
-    """
-    Cache a supervised dataset into input_ids and sources_len.
-    """
-    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
-    dataset = source.map_batches(
-        lambda ex: _preprocess_supervised_example(ex, tokenizer, input_field, output_field),
-        batch_size=128,
-        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
-        output_exemplar=output_exemplar,
-    )
-    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(cache_dir, await_finished=True)
-    ds = cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
-    return ds
 
 
 @dataclass(frozen=True)
@@ -749,8 +744,8 @@ class ChatUrlDataSourceConfig:
         if not urls:
             return None
 
-        # Use the datasource_from_chat_jsonl function from sharded_datasource
-        return datasource_from_chat_jsonl(
+        # Use the datasource_from_chat_jsonl_single_turn function from sharded_datasource
+        return datasource_from_chat_jsonl_single_turn(
             urls, messages_field=self.messages_field, input_role=self.input_role, output_role=self.output_role
         )
 
@@ -789,8 +784,8 @@ def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_ap
     }
 
 
-def mk_cached_sft_dataset(
-    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
+def mk_single_turn_cached_sft_dataset(
+    config: ChatUrlDataSourceConfig, tokenizer: HfTokenizer, Pos: hax.Axis
 ) -> AsyncDataset[dict]:
     """Creates a dataset from JSONL files containing chat format data for SFT."""
     source = config.get_shard_source("train")
@@ -817,41 +812,52 @@ def mk_cached_sft_dataset(
     return cached_dataset
 
 
-def mk_chat_sft_dataset(
-    config: ChatUrlDataSourceConfig, tokenizer: PreTrainedTokenizerBase, Pos: hax.Axis
-) -> AsyncDataset[LmExample]:
-    """Creates a dataset from JSONL files containing chat format data for SFT."""
-    source = config.get_shard_source("train")
+def build_lm_dataset_cache(
+    cache_dir: str,
+    source: ShardedDataSource[dict],
+    format: LmDatasetFormatBase,
+    tokenizer: HfTokenizer,
+    options: CacheOptions = CacheOptions.default(),
+    enforce_eos=True,
+    monitors: Union[bool, List[MetricsMonitor]] = True,
+):
+    # name is the final two components of the path
+    name = os.path.join(*cache_dir.split("/")[-2:])
+
+    processor = preprocessor_for_format(format, tokenizer, enforce_bos=True, enforce_eos=enforce_eos)
+    try:
+        return TreeCache.load(
+            cache_dir,
+            exemplar=processor.output_exemplar,
+            options=CacheMetadata(preprocessor_metadata=processor.metadata),
+        )
+    except FileNotFoundError:
+        pass
+
     if source is None:
-        raise ValueError("No training data source found")
+        logger.info(f"No data for {name}")
+        return None
 
-    # Set up example structure matching supervised case
-    output_exemplar = {"input_ids": np.zeros((0,), dtype=np.int32), "sources_len": np.zeros((0,), dtype=np.int32)}
-
-    input_ids = tokenizer("hi there")["input_ids"]
-    should_append_eos = input_ids[-1] != tokenizer.eos_token_id
-    logger.info(f"Manual EOS Needed: {should_append_eos}")
-
-    # Process the dataset
-    dataset = source.map_batches(
-        lambda ex: preprocess_chat_example(ex, tokenizer, should_append_eos),
-        batch_size=128,
-        num_cpus=num_cpus_used_by_tokenizer(tokenizer),
-        output_exemplar=output_exemplar,
+    logger.info(f"Building cache for {name}...")
+    if monitors is True:
+        monitors = [
+            LoggingMetricsMonitor(prefix=f"preprocessing/{name}", commit=False),
+            LoggerMetricsMonitor(f"preprocessing.{name}"),
+        ]
+    elif monitors is False:
+        monitors = []
+    return build_or_load_cache(
+        cache_dir,
+        source,
+        processor,
+        monitors=monitors,
+        await_finished=False,
+        options=options,
     )
-
-    # Cache the processed data
-    cached_dataset: AsyncDataset[dict] = dataset.build_or_load_cache(config.cache_dir, await_finished=True)
-
-    # Ensure padding token is set (needed by _prepare_supervised_example)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    # Reuse the supervised prepare function directly
-    return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
 @dataclass
-class SingleDatasetLMConfigBase(LMDatasetSourceConfigBase, LMTaskConfig):
+class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
     cache_dir: Optional[str] = "cache/"
@@ -867,7 +873,12 @@ class SingleDatasetLMConfigBase(LMDatasetSourceConfigBase, LMTaskConfig):
     ) -> AsyncDataset[LmExample]:
         del batch_schedule  # unused
 
-        ds: AsyncDataset[np.ndarray] | None = self.token_seq_dataset("train", Pos.size, monitors)
+        cache = self.build_or_load_cache("train", monitors=monitors)
+        if cache is None:
+            result = None
+        else:
+            result = TokenSeqDataset(cache, Pos.size)
+        ds: AsyncDataset[np.ndarray] | None = result
 
         # add epoch flag here.
         if ds is None:
@@ -911,7 +922,12 @@ class SingleDatasetLMConfigBase(LMDatasetSourceConfigBase, LMTaskConfig):
         Pos: Axis,
         monitors: Union[bool, List[MetricsMonitor]] = True,
     ) -> AsyncDataset[LmExample] | None:
-        ds = self.token_seq_dataset("validation", Pos.size, monitors)
+        cache = self.build_or_load_cache("validation", monitors=monitors)
+        if cache is None:
+            result = None
+        else:
+            result = TokenSeqDataset(cache, Pos.size)
+        ds = result
         if ds is None:
             return None
 
@@ -932,87 +948,42 @@ class SingleDatasetLMConfigBase(LMDatasetSourceConfigBase, LMTaskConfig):
             return {}
 
     @property
-    def sources(self) -> Mapping[str, LMDatasetSourceConfigBase]:
+    def sources(self) -> Mapping[str, LmDatasetSourceConfigBase]:
         return {"": self}
 
-    @cached_property
-    def _has_validation_set(self):
-        if len(self.validation_urls) > 0:
-            return True
-
-        if self.id is not None:
-            dataset = datasets.load_dataset(self.id, name=self.name, streaming=self.stream, split="validation")
-            try:
-                next(iter(dataset))
-                return True
-            except StopIteration:
-                return False
-
-        return False
-
-    def token_seq_dataset(
-        self, split: str, seq_len: int, monitors: Union[bool, List[MetricsMonitor]] = True
-    ) -> Optional[TokenSeqDataset]:
-        cache = self.build_or_load_cache(split, monitors=monitors)
-        if cache is None:
-            return None
-        return TokenSeqDataset(cache, seq_len)
-
     def build_or_load_cache(
-        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True, logger_name: Optional[str] = None
-    ) -> Optional[TreeCache[BatchEncoding]]:
-        if self.cache_dir is None:
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Optional[TreeCache[dict]]:
+        tokenizer = self.the_tokenizer
+        cache_dir = self.cache_dir
+        source = self.get_shard_source(split)
+        format = self.format
+        enforce_eos = self.enforce_eos
+        options = self.cache_options
+
+        if cache_dir is None:
             raise ValueError("cache_dir cannot be None")
 
-        split_cache_dir = os.path.join(self.cache_dir, split)
-        name = logger_name or os.path.basename(self.cache_dir)
-
-        try:
-            # TODO: pass in options
-            return TreeCache.load(split_cache_dir, exemplar={"input_ids": np.zeros(0, dtype=np.int32)})
-        except FileNotFoundError:
-            pass
-
-        source = self.get_shard_source(split)
         if source is None:
-            logger.info(f"No data for {split}")
+            logger.warning(f"Skipping {split} because no source was provided")
             return None
 
-        logger.info(f"Building cache for {split}...")
-
-        if monitors is True:
-            monitors = [
-                LoggingMetricsMonitor(prefix=f"preprocessing/{name}/{split}", commit=False),
-                LoggerMetricsMonitor(f"preprocessing.{name}.{split}"),
-            ]
-        elif monitors is False:
-            monitors = []
-
-        bt = BatchTokenizer(self.the_tokenizer, enforce_bos=True, enforce_eos=self.enforce_eos)
-
-        return build_or_load_cache(
-            split_cache_dir,
-            source,
-            bt,
-            monitors=monitors,
-            await_finished=False,
-            options=self.cache_options,
-            split=split,
-        )
+        cache_dir = os.path.join(cache_dir, split)
+        return build_lm_dataset_cache(cache_dir, source, format, tokenizer, options, enforce_eos, monitors)
 
 
 @dataclass
-class UrlSingleDatasetLMConfig(SingleDatasetLMConfigBase, UrlTextDatasetSourceConfig):
+class UrlSingleDatasetLMConfig(SingleDatasetLMConfigBase, UrlDatasetSourceConfig):
     pass
 
 
 @dataclass
-class HfSingleDatasetLMConfig(SingleDatasetLMConfigBase, HfTextDatasetSourceConfig):
+class HfSingleDatasetLMConfig(SingleDatasetLMConfigBase, HfDatasetSourceConfig):
     pass
 
 
 SingleDatasetLMConfig: TypeAlias = UrlSingleDatasetLMConfig | HfSingleDatasetLMConfig
-LMDatasetSourceConfig: TypeAlias = UrlTextDatasetSourceConfig | HfTextDatasetSourceConfig
+LMDatasetSourceConfig: TypeAlias = UrlDatasetSourceConfig | HfDatasetSourceConfig
 
 
 @dataclass
@@ -1168,12 +1139,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Dict[str, TreeCache[dict]]:
-        # this is a bit gross, but we want to forward all "Task" config fields to the LMDatasetConfig for building.
-        # We do this by just grabbing all the fields from the LMDatasetConfig and forwarding them to the
-        # LMDatasetConfig.build_or_load_cache method. We exclude the cache_dir field.
-        task_config_fields = set(x.name for x in dataclasses.fields(LMTaskConfig))
-        task_config_dict = {k: v for k, v in self.__dict__.items() if k in task_config_fields and k != "cache_dir"}
-
         caches = {}
         for name, source_config in self.configs.items():
             # Skip datasets with zero weight in all stages
@@ -1181,11 +1146,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 has_nonzero_weight = self.train_weights.get(name, 0) > 0
             elif isinstance(self.train_weights, list):
                 has_nonzero_weight = any(weights.get(name, 0) > 0 for _, weights in self.train_weights)
+            else:
+                raise ValueError(f"Invalid train_weights type: {type(self.train_weights)}")
 
             if not has_nonzero_weight and split == "train":
                 continue
-
-            source_config_dict = dict(**source_config.__dict__)
 
             if source_config.cache_dir is None:
                 # replace with the main cache dir/{name}
@@ -1195,35 +1160,40 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                         f"{name}'s cache_dir is None."
                     )
                 cache_dir = os.path.join(self.cache_dir, name)
-                source_config_dict["cache_dir"] = cache_dir
+            else:
+                cache_dir = source_config.cache_dir
 
-            dataset = SingleDatasetLMConfigBase(
-                **source_config_dict,
-                **task_config_dict,
-            )
-            cache = dataset.build_or_load_cache(split, monitors)
+            source = source_config.get_shard_source(split)
+
             # drop the data source and corresponding weight if the cache is not built
-            if cache is None:
+            if source is None:
                 logger.warning(f"Skipping {name} for split {split} because no source was provided")
             else:
-                caches[name] = cache
+                caches[name] = build_lm_dataset_cache(
+                    os.path.join(cache_dir, split),
+                    source,
+                    source_config.format,
+                    self.the_tokenizer,
+                    self.cache_options,
+                    self.enforce_eos,
+                    monitors,
+                )
 
-        # in practice it works best if we block on validation caches
+        # In practice, it works best if we block on validation caches
         if split == "validation":
             for cache in caches.values():
                 cache.await_finished()
-
         else:
             logger.info(f"Not waiting for {split} caches to finish building")
 
         return caches
 
     @property
-    def sources(self) -> Mapping[str, LMDatasetSourceConfigBase]:
+    def sources(self) -> Mapping[str, LmDatasetSourceConfigBase]:
         return self.configs
 
 
-def datasource_from_chat_jsonl(
+def datasource_from_chat_jsonl_single_turn(
     urls: Sequence[str], messages_field: str = "messages", input_role: str = "user", output_role: str = "assistant"
 ) -> "ShardedDataSource[dict]":
     """Creates a ShardedDataSource from JSONL files containing chat messages.
@@ -1240,11 +1210,10 @@ def datasource_from_chat_jsonl(
     # Expand any glob patterns in the URLs
     expanded_urls = [globbed for url in urls for globbed in expand_glob(url)]
 
-    return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
+    return SingleTurnChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
 
 
-# TODO: switch to actual multi-turn
-class ChatJsonlDataSource(JsonlDataSource):
+class SingleTurnChatJsonlDataSource(JsonlDataSource):
     """DataSource that reads JSONL files containing OpenAI chat format messages."""
 
     def __init__(self, urls: Sequence[str], messages_field: str, input_role: str, output_role: str):
@@ -1266,46 +1235,62 @@ class ChatJsonlDataSource(JsonlDataSource):
                     input_msg = next(m["content"] for m in messages if m["role"] == self.input_role)
                     output_msg = next(m["content"] for m in messages if m["role"] == self.output_role)
 
-            yield {"input": input_msg, "output": output_msg}
+            yield {CANONICAL_INPUT_FIELD: input_msg, CANONICAL_OUTPUT_FIELD: output_msg}
 
 
-class ChatProcessor(BatchProcessor[dict, dict]):
+ProcessedChatDict = TypedDict(
+    "ProcessedChatDict",
+    {
+        "input_ids": np.ndarray,
+        "assistant_tokens_mask": np.ndarray,
+    },
+)
+
+
+class ChatProcessor(BatchProcessor[dict, ProcessedChatDict]):
     """
     A batch processor that converts chat data into the expected inputs of a model using a chat template.
     """
 
-    def __init__(self, tokenizer: HfTokenizer, chat_template: str | None = None):
+    def __init__(self, tokenizer: HfTokenizer, chat_template: str | None = None, messages_field: str = "messages"):
         if chat_template is None and tokenizer.chat_template is None:
             raise ValueError("No chat template provided and tokenizer has no default chat template")
         self.tokenizer = tokenizer
         self.chat_template = chat_template or tokenizer.chat_template
+        self.messages_field = messages_field
 
         if self.chat_template is None:
             raise ValueError("No chat template provided and tokenizer has no default chat template")
 
         # check for {%generation%} in the template
         # cribbed from https://github.com/huggingface/transformers/blob/main/src/transformers/tokenization_utils_base.py#L1687
-        if not re.search(r"\{\%-?\s*generation\s*-?\%\}", self.chat_template):
+        if not re.search(r"\{%-?\s*generation\s*-?%}", self.chat_template):
             raise ValueError(
                 "Chat template must contain {%generation%} to indicate the position of"
                 " the assistant message: ```{chat_template}```"
             )
 
-    def __call__(self, batch: Sequence[dict]) -> dict:
+    def __call__(self, batch: Sequence[dict]) -> Sequence[ProcessedChatDict]:
+        # Extract messages from the specified field
+        messages = [example[self.messages_field] for example in batch]
         tokenized = self.tokenizer.apply_chat_template(
-            list(batch), tokenize=True, chat_template=self.chat_template, return_assistant_tokens_mask=True
+            messages, tokenize=True, chat_template=self.chat_template, return_assistant_tokens_mask=True
         )
-        mask = tokenized["assistant_tokens_mask"]
-        for seq, mask_for_seq in zip(batch, mask):
+        masks = tokenized["assistant_tokens_mask"]
+        for seq, mask_for_seq in zip(batch, masks):
             if not np.any(mask_for_seq):
-                raise ValueError(f"Chat template did not contain an assistant message for sequence {seq}")
-        # mask is 1 on the position of the assistant tokens
-        # loss_mask by convention is 1 on the positions where we compute loss, i.e. shifted back 1
-        # mask = np.roll(mask, -1, axis=-1)
-        return {
-            "input_ids": tokenized["input_ids"],
-            "assistant_tokens_mask": mask,
-        }
+                raise ValueError(f"Chat did not contain an assistant message for sequence {seq}")
+
+        out: list[ProcessedChatDict] = []
+        for ids, mask in zip(tokenized["input_ids"], masks):
+            out.append(
+                {
+                    "input_ids": np.array(ids, dtype=np.int32),
+                    "assistant_tokens_mask": np.array(mask, dtype=np.int32),
+                }
+            )
+
+        return out
 
     @property
     def output_exemplar(self):
@@ -1324,4 +1309,193 @@ class ChatProcessor(BatchProcessor[dict, dict]):
             "tokenizer": self.tokenizer.name_or_path,
             "vocab_size": len(self.tokenizer),
             "chat_template": self.chat_template,
+            "messages_field": self.messages_field,
+        }
+
+
+class MultiturnChatDataset(MappedAsyncDataset[tuple[ProcessedChatDict, ProcessedChatDict], LmExample]):
+    """
+    A dataset that yields multiturn chat examples from a cache of processed chat data.
+
+
+    Args:
+        cache: The cache of processed chat data.
+        Pos: The position axis.
+        max_segments_per_example: The maximum number of segments to pack into a single example. Set to 1 to disable packing.
+        slice_strategy: The strategy to use when an example is too long.
+    """
+
+    def __init__(
+        self,
+        cache: TreeCache[ProcessedChatDict],
+        Pos: Axis,
+        max_segments_per_example: int = 64,
+        slice_strategy: Literal["left", "right", "raise"] = "left",
+    ):
+        # NB the GreedyPackedDataset returns a tuple, where the first has the packed leaves
+        # and the second has the segment ids
+        self.packed: GreedyPrepackedDataset[ProcessedChatDict] = GreedyPrepackedDataset(
+            cache.store.tree,
+            Pos.size,
+            max_segments_per_example=max_segments_per_example,
+            slice_strategy=slice_strategy,
+        )
+        self.Pos = Pos
+
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        @functools.partial(eqx.filter_jit, out_shardings=sharding)
+        def _create_lm_example(e: tuple[ProcessedChatDict, ProcessedChatDict]) -> LmExample:
+            example, seg_ids = e
+            tokens = hax.named(example["input_ids"], self.Pos)
+
+            # mask is 1 on the position of the assistant tokens
+            mask = example["assistant_tokens_mask"]
+            # loss_mask by convention is 1 on the positions where we compute loss, i.e. shifted back 1
+            mask = jnp.roll(mask, -1, axis=-1)
+            loss_mask = hax.named(mask, self.Pos)
+
+            seg_ids = hax.named(seg_ids["input_ids"], self.Pos)
+
+            return LmExample.causal(tokens=tokens, loss_mask=loss_mask, segment_ids=seg_ids)
+
+        super().__init__(self.packed, _create_lm_example)
+
+
+ProcessedSupervisedDict = TypedDict(
+    "ProcessedSupervisedDict",
+    {
+        "input_ids": np.ndarray,
+        "sources_len": np.ndarray,
+    },
+)
+
+
+class SupervisedProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
+    """
+    A batch processor that converts supervised data into the expected inputs of a model.
+    """
+
+    def __init__(
+        self, tokenizer: HfTokenizer, input_field: str, output_field: str, separate_with: str | int | None = None
+    ):
+        self.tokenizer = tokenizer
+        self.input_field = input_field
+        self.output_field = output_field
+
+        if isinstance(separate_with, str):
+            separate_with = tokenizer(separate_with)["input_ids"][0]
+        self.separate_with = separate_with
+
+    def __call__(self, batch: Sequence[dict]) -> ProcessedSupervisedDict:
+        sources = [example[self.input_field] for example in batch]
+        targets = [example[self.output_field] for example in batch]
+
+        # Add EOS if needed
+        if self.separate_with is not None:
+            targets = [t + self.separate_with for t in targets]
+
+        examples = [s + t for s, t in zip(sources, targets)]
+        sources_tokenized = self.tokenizer(sources, padding=False, truncation=True)
+        examples_tokenized = self.tokenizer(examples, padding=False, truncation=True)
+        source_lens = [len(s) for s in sources_tokenized["input_ids"]]
+
+        return {
+            "input_ids": [np.array(example, dtype=np.int32) for example in examples_tokenized["input_ids"]],  # type: ignore
+            "sources_len": np.array(source_lens, dtype=np.int32),
+        }
+
+    @property
+    def output_exemplar(self):
+        return {
+            "input_ids": np.zeros((0,), dtype=np.int32),
+            "sources_len": np.zeros((0,), dtype=np.int32),
+        }
+
+    @property
+    def num_cpus(self) -> int:
+        return num_cpus_used_by_tokenizer(self.tokenizer)
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "tokenizer": self.tokenizer.name_or_path,
+            "vocab_size": len(self.tokenizer),
+            "input_field": self.input_field,
+            "output_field": self.output_field,
+            "separate_with": self.separate_with,
+        }
+
+
+class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
+    """
+    A dataset that yields supervised examples from a cache of processed supervised data.
+    """
+
+    def __init__(
+        self,
+        cache: TreeCache[ProcessedSupervisedDict],
+        Pos: Axis,
+        max_segments_per_example: int | None = 64,
+        mask_inputs: bool = True,
+        slice_strategy: Literal["left", "right", "raise"] = "right",
+    ):
+        self.mask_inputs = mask_inputs
+        self.packed = GreedyPrepackedDataset(cache, Pos.size, max_segments_per_example=max_segments_per_example)
+
+        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+
+        @functools.partial(eqx.filter_jit, out_shardings=sharding)
+        def _create_lm_example(ex_pair: tuple[ProcessedSupervisedDict, ProcessedSupervisedDict]) -> LmExample:
+            ex, seg_ids = ex_pair
+            tokens = hax.named(ex["input_ids"], "position")
+
+            if self.mask_inputs:
+                loss_mask = hax.arange(Pos) >= ex["sources_len"]
+            else:
+                loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
+
+            segment_ids = hax.named(seg_ids["input_ids"], "position")
+
+            return LmExample.causal(tokens, loss_mask=loss_mask, segment_ids=segment_ids)
+
+        super().__init__(cache, _create_lm_example)
+
+
+class SingleTurnChatProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
+    """
+    A batch processor that converts chat data into single turn supervised examples.
+    This omits any turn after the first pair.
+    """
+
+    def __init__(self, tokenizer: HfTokenizer, messages_field: str = "messages"):
+        self.tokenizer = tokenizer
+        self.messages_field = messages_field
+        self.supervised_processor = SupervisedProcessor(tokenizer, CANONICAL_INPUT_FIELD, CANONICAL_OUTPUT_FIELD)
+
+    def __call__(self, batch: Sequence[dict]) -> ProcessedSupervisedDict:
+        batch = [example[self.messages_field] for example in batch]
+
+        # Extract input/output from messages
+        input_msg = [next(m["content"] for m in messages if m["role"] == "user") for messages in batch]
+        output_msg = [next(m["content"] for m in messages if m["role"] == "assistant") for messages in batch]
+        batch = [{CANONICAL_INPUT_FIELD: i, CANONICAL_OUTPUT_FIELD: o} for i, o in zip(input_msg, output_msg)]
+
+        return self.supervised_processor(batch)
+
+    @property
+    def output_exemplar(self):
+        return self.supervised_processor.output_exemplar
+
+    @property
+    def num_cpus(self) -> int:
+        return self.supervised_processor.num_cpus
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            **self.supervised_processor.metadata,
+            "tokenizer": self.tokenizer.name_or_path,
+            "vocab_size": len(self.tokenizer),
+            "messages_field": self.messages_field,
         }

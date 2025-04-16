@@ -9,6 +9,7 @@ T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 T_contra = TypeVar("T_contra", contravariant=True)
 U = TypeVar("U")
+U_co = TypeVar("U_co", covariant=True)
 
 
 BatchResult = Union[pa.RecordBatch, Sequence[Mapping[str, Any]], Mapping[str, Sequence]]
@@ -17,7 +18,7 @@ The result of a batched function. This can be a RecordBatch, a list of dicts, or
 """
 
 
-class BatchProcessor(Generic[T_contra, U], ABC):
+class BatchProcessor(Generic[T_contra, U_co], ABC):
     """
     A BatchProcessor is the main interface for preprocessing data. It takes a batch of data and returns a batch of
     processed data. It can be used to tokenize data, convert it to a RecordBatch, or do any other kind of preprocessing.
@@ -25,7 +26,9 @@ class BatchProcessor(Generic[T_contra, U], ABC):
     """
 
     @abstractmethod
-    def __call__(self, batch: Sequence[T_contra]) -> Sequence[U] | U:  # U can be batched "structure of arrays" form
+    def __call__(
+        self, batch: Sequence[T_contra]
+    ) -> Sequence[U_co] | U_co:  # U can be batched "structure of arrays" form
         """
         Process a batch of data. You should return a sequence of dicts (one per output
         example), or a dict of sequences (one per output field).
