@@ -1,7 +1,6 @@
 import io
 import json
 import os
-import re
 import warnings
 from typing import (
     TYPE_CHECKING,
@@ -17,13 +16,11 @@ from typing import (
     Tuple,
     TypeVar,
 )
-from urllib.parse import urlparse
 
 import datasets
 import fsspec
 import numpy as np
 import pyarrow.parquet as pq
-from google.cloud import storage
 
 from levanter.utils import fsspec_utils
 
@@ -145,43 +142,6 @@ class ShardedDataSource(Generic[T_co]):
         return _BatchMappedShardedDataSource(
             self, fn, batch_size, num_cpus=num_cpus, num_gpus=num_gpus, output_exemplar=output_exemplar, **resources
         )
-
-
-def gcs_glob(pattern: str) -> list[str]:
-    """Glob files in Google Cloud Storage.
-
-    Args:
-        pattern: GCS path pattern (gs://bucket/path/*)
-
-    Returns:
-        List of matching GCS URLs
-    """
-    if not pattern.startswith("gs://"):
-        # Handle local files
-        import glob
-
-        return glob.glob(pattern)
-
-    # Parse bucket and prefix from gs:// URL
-    parsed = urlparse(pattern)
-    bucket_name = parsed.netloc
-    prefix = parsed.path.lstrip("/")
-
-    # Convert glob pattern to regex
-    prefix_no_glob = prefix.split("*")[0]
-    pattern_as_regex = re.compile(re.escape(prefix).replace("\\*", ".*"))
-
-    # Initialize GCS client
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-
-    # List matching blobs
-    matching_urls = []
-    for blob in bucket.list_blobs(prefix=prefix_no_glob):
-        if pattern_as_regex.match(blob.name):
-            matching_urls.append(f"gs://{bucket_name}/{blob.name}")
-
-    return matching_urls
 
 
 def datasource_from_hf(id: str, *, split, **kwargs) -> ShardedDataSource[dict]:
