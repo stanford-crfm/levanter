@@ -586,6 +586,28 @@ def preprocessor_for_format(
             raise ValueError(f"Unknown format {format}")
 
 
+def dataset_for_format(
+    format: LmDatasetFormatBase,
+    Pos: Axis,
+    cache: TreeCache[dict],
+    *,
+    eos_id: int | None,
+    ignore_index: int | None,
+) -> AsyncDataset[LmExample]:
+    match format:
+        case TextLmDatasetFormat():
+            return CausalLmDataset(TokenSeqDataset(cache, Pos.size), Pos, eos_id=eos_id, ignore_index=ignore_index)
+        case ChatLmDatasetFormat(single_turn=single_turn):
+            if single_turn:
+                return SupervisedDataset(cache, Pos)  # type: ignore
+            else:
+                return MultiturnChatDataset(cache, Pos)  # type: ignore
+        case SupervisedLmDatasetFormat():
+            return SupervisedDataset(cache, Pos)  # type: ignore
+        case _:
+            raise ValueError(f"Unknown format {format}")
+
+
 class SupervisedSourceConfigBase(Protocol):
     def get_shard_source(self, split: str) -> Optional[ShardedDataSource[dict]]:
         raise NotImplementedError
@@ -875,20 +897,11 @@ class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
 
         cache = self.build_or_load_cache("train", monitors=monitors)
         if cache is None:
-            result = None
-        else:
-            result = TokenSeqDataset(cache, Pos.size)
-        ds: AsyncDataset[np.ndarray] | None = result
-
-        # add epoch flag here.
-        if ds is None:
             raise ValueError("No training set!")
-
-        assert ds is not None
-
-        if epochs:
-            logger.info("Wrapping dataset in epoch dataset")
-            ds = EpochDataset(ds, max_epochs=epochs)
+        else:
+            ds = dataset_for_format(
+                self.format, Pos, cache, eos_id=self.the_tokenizer.eos_token_id, ignore_index=self.ignore_token_id
+            )
 
         perm_type = self.permutation_type
         if perm_type is None:
@@ -902,7 +915,11 @@ class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
         elif isinstance(self.shuffle, int) and self.shuffle > 0:
             ds = ds.era_shuffle(self.shuffle, key=key, perm_type=perm_type)
 
-        return CausalLmDataset(ds, Pos, ignore_index=self.ignore_token_id, eos_id=self.the_tokenizer.eos_token_id)  # type: ignore
+        if epochs:
+            logger.info("Wrapping dataset in epoch dataset")
+            ds = EpochDataset(ds, max_epochs=epochs)
+
+        return ds
 
     def train_sets(
         self,
@@ -924,18 +941,10 @@ class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
     ) -> AsyncDataset[LmExample] | None:
         cache = self.build_or_load_cache("validation", monitors=monitors)
         if cache is None:
-            result = None
-        else:
-            result = TokenSeqDataset(cache, Pos.size)
-        ds = result
-        if ds is None:
             return None
 
-        return CausalLmDataset(
-            ds,
-            Pos,
-            ignore_index=self.ignore_token_id,
-            eos_id=self.the_tokenizer.eos_token_id,
+        return dataset_for_format(
+            self.format, Pos, cache, eos_id=self.the_tokenizer.eos_token_id, ignore_index=self.ignore_token_id
         )
 
     def validation_sets(
@@ -1066,12 +1075,13 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("train", monitors=monitors)
 
-        causal_datasets: dict[str, AsyncDataset[LmExample]] = {
-            name: CausalLmDataset(
-                TokenSeqDataset(cache, Pos.size),
+        datasets: dict[str, AsyncDataset[LmExample]] = {
+            name: dataset_for_format(
+                self.configs[name].format,
                 Pos,
-                ignore_index=self.ignore_token_id,
+                cache,
                 eos_id=self.the_tokenizer.eos_token_id,
+                ignore_index=self.ignore_token_id,
             )
             for name, cache in doc_caches.items()
         }
@@ -1101,7 +1111,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         if self.shuffle:
             key_iter = key_iterator(key)
-            causal_datasets = {name: shuffle_ds(ds, next(key_iter)) for name, ds in causal_datasets.items()}
+            datasets = {name: shuffle_ds(ds, next(key_iter)) for name, ds in datasets.items()}
 
         if (
             self.experiment_budget is not None and self.target_budget is not None
@@ -1113,25 +1123,26 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         if self.experiment_budget is not None and self.target_budget is not None:
             simulated_data_ratio = self.experiment_budget / self.target_budget
             sliced_datasets: Dict[str, AsyncDataset[LmExample]] = {}
-            for name, ds in causal_datasets.items():
+            for name, ds in datasets.items():
                 # Note(Will): This blocks on datasets being fully processed even for small simulated runs making simulating data size slightly latency inducing but I think that's ok
                 true_length_of_dataset = len(ds.as_sync_dataset())
                 simulated_length_of_dataset = int(true_length_of_dataset * simulated_data_ratio)
                 sliced_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
-            causal_datasets = sliced_datasets
+            datasets = sliced_datasets
 
-        return causal_datasets
+        return datasets
 
     def validation_sets(
         self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
         return {
-            name: CausalLmDataset(
-                TokenSeqDataset(cache, Pos.size),
+            name: dataset_for_format(
+                self.configs[name].format,
                 Pos,
-                ignore_index=self.ignore_token_id,
+                cache,
                 eos_id=self.the_tokenizer.eos_token_id,
+                ignore_index=self.ignore_token_id,
             )
             for name, cache in doc_caches.items()
         }
