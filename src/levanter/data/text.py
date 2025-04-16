@@ -599,6 +599,7 @@ def dataset_for_format(
             return CausalLmDataset(TokenSeqDataset(cache, Pos.size), Pos, eos_id=eos_id, ignore_index=ignore_index)
         case ChatLmDatasetFormat(single_turn=single_turn):
             if single_turn:
+                # We treat single turn like supervised
                 return SupervisedDataset(cache, Pos)  # type: ignore
             else:
                 return MultiturnChatDataset(cache, Pos)  # type: ignore
@@ -1503,6 +1504,7 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
 
         # Single pass: assign positions
         for i, seg_id in enumerate(segment_ids):
+            seg_id = int(seg_id)
             pos = segment_counters.get(seg_id, 0)  # how many tokens we've seen so far for seg_id
             positions[i] = pos
             segment_counters[seg_id] = pos + 1

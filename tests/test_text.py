@@ -149,6 +149,57 @@ def dummy_chat_data():
         yield str(path)
 
 
+def assert_loss_mask_matches_all_assistants(example, tokenizer):
+    """
+    Check that loss_mask==1 **iff** the token is part of an assistant span.
+
+    Assistant span is defined as the range from the newline *after*
+    '<|end_header_id|>' up to (but not including) the next '<|eot_id|>'.
+    """
+    # ok we want to be sure we're predicting the assistant tokens
+    # This is very fiddly, so we want to be careful.
+    # In Levanter, the loss_mask is 1 for positions we compute loss on, 0 for positions we don't
+    # that means we compute loss (have 1 loss mask) on the positions before each assistant token
+    # our current chat template inserts a newline after each role
+    # (consistent with Olmo's)
+    # Unfortunately, if we change the
+    # decoded = tokenizer.decode(ex.tokens.array, skip_special_tokens=False)
+    # print(decoded)
+    # Hello!<|eot_id|>
+    # <|start_header_id|>assistant<|end_header_id|>
+    # Hi there, how can I help?<|eot_id|>
+    # <|begin_of_text|><|start_header_id|>user<|end_header_id|>
+    # Tell me a joke.<|eot_id|>
+    # <|start_header_id|>assistant<|end_header_id|>
+    # Why did the chicken cross the road?<|eot_id|>
+    # <|start_header_id|>user<|end_header_id|>
+    # To get to the other side.<|eot_id|>
+    # <|start_header_id|>assistant<|end_header_id|>
+    # No, the other side.<|eot_id|>
+    tok_arr = example.tokens.array
+    loss_mask = example.loss_mask.array
+
+    end_hdr_id = tokenizer.convert_tokens_to_ids("<|end_header_id|>")
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    newline_id = tokenizer.encode("\n", add_special_tokens=False)[0]
+
+    # indices of newlines that immediately follow an <|end_header_id|>
+    newline_idx = np.where((tok_arr[:-1] == end_hdr_id) & (tok_arr[1:] == newline_id))[0] + 1
+
+    expected = np.zeros_like(loss_mask, dtype=loss_mask.dtype)
+
+    for start in newline_idx:
+        # first <|eot_id|> *after* the start
+        rel = np.where(tok_arr[start:] == eot_id)[0]
+        assert rel.size, "Every assistant span should be terminated by <|eot_id|>"
+        end = start + int(rel[0])
+
+        expected[start:end] = 1  # inclusive start, exclusive end
+
+    # Nothing outside assistant spans
+    assert np.array_equal(loss_mask, expected), "loss_mask does not match assistant spans"
+
+
 def test_chat_dataset_build_and_pack(dummy_chat_data):
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_dir = tmpdir
@@ -199,39 +250,20 @@ def test_chat_dataset_build_and_pack(dummy_chat_data):
         assert ex.tokens.axes == (Pos,)
         assert ex.loss_mask.axes == (Pos,)
         assert ex.attn_mask.segment_ids.axes == (Pos,)
-        # ok we want to be sure we're predicting the assistant tokens
-        # This is very fiddly, so we want to be careful.
-        # In Levanter, the loss_mask is 1 for positions we compute loss on, 0 for positions we don't
-        # that means we compute loss (have 1 loss mask) on the positions before each assistant token
-        # our current chat template inserts a newline after each role
-        # (consistent with Olmo's)
-        # Unfortunately, if we change the
-        # decoded = tokenizer.decode(ex.tokens.array, skip_special_tokens=False)
-        # print(decoded)
-        # Hello!<|eot_id|>
-        # <|start_header_id|>assistant<|end_header_id|>
-        # Hi there, how can I help?<|eot_id|>
-        # <|begin_of_text|><|start_header_id|>user<|end_header_id|>
-        # Tell me a joke.<|eot_id|>
-        # <|start_header_id|>assistant<|end_header_id|>
-        # Why did the chicken cross the road?<|eot_id|>
-        # <|start_header_id|>user<|end_header_id|>
-        # To get to the other side.<|eot_id|>
-        # <|start_header_id|>assistant<|end_header_id|>
-        # No, the other side.<|eot_id|>
-        newline_id = tokenizer.encode("\n", add_special_tokens=False)[0]
-        eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
-        third_newline = np.where(ex.tokens.array == newline_id)[0][2]
-        second_eot = np.where(ex.tokens.array == eot_id)[0][1]
-        seventh_newline = np.where(ex.tokens.array == newline_id)[0][6]
-        fourth_eot = np.where(ex.tokens.array == eot_id)[0][3]
-        eleventh_newline = np.where(ex.tokens.array == newline_id)[0][10]
-        last_eot = np.where(ex.tokens.array == eot_id)[0][-1]
 
-        assert not np.any(ex.loss_mask.array[0:third_newline])
-        assert np.all(ex.loss_mask.array[third_newline:second_eot])
-        assert not np.any(ex.loss_mask.array[second_eot:seventh_newline])
-        assert np.all(ex.loss_mask.array[seventh_newline:fourth_eot])
-        assert not np.any(ex.loss_mask.array[fourth_eot:eleventh_newline])
-        assert np.all(ex.loss_mask.array[eleventh_newline:last_eot])
-        assert not np.any(ex.loss_mask.array[last_eot:])
+        assert_loss_mask_matches_all_assistants(ex, tokenizer)
+
+        # test no packing
+        packed_ds = MultiturnChatDataset(ds, Pos, max_segments_per_example=1).as_sync_dataset()
+
+        # we supplied two conversations, so we should still have two examples
+        assert len(packed_ds) == 2
+
+        for ex in packed_ds:
+            # basic structural checks
+            assert ex.tokens.axes == (Pos,)
+            assert ex.loss_mask.axes == (Pos,)
+            assert ex.attn_mask.segment_ids.axes == (Pos,)
+
+            # loss_mask should coincide with assistant tokens only
+            assert_loss_mask_matches_all_assistants(ex, tokenizer)
