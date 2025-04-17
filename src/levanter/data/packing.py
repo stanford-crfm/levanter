@@ -465,7 +465,7 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         self.pad_with_zeros = pad_with_zeros
         self.slice_strategy = slice_strategy
 
-        _offsets = jax.tree.map(lambda store: store.offsets.read(), self.dataset)
+        _offsets = jax.tree.map(lambda store: store.offsets[0 : store.num_rows + 1].read(), self.dataset)
         self._offsets = jax.tree.map(lambda fut: fut.result(), _offsets)
 
         def diff_offsets(offsets: np.ndarray):
@@ -481,7 +481,6 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         self._pack_indices: list[range] = pack_documents(
             self._lengths, max_length, max_segments_per_example, slice_strategy != "raise"
         )
-
 
     def is_finite(self) -> bool:
         return True
@@ -534,7 +533,7 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
                                 f"{list(dr)}. Consider using a different slice_strategy or increasing max_length."
                             )
                     # Read the slice from the underlying data.
-                    out_data.append(store._data[token_start:token_end].read())
+                    out_data.append(store.data[token_start:token_end].read())
 
                     # Create segment IDs for this pack
                     segment_ids = []

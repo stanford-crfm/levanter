@@ -459,7 +459,7 @@ class TreeCache(AsyncDataset[T_co]):
                     else:
                         raise
                 try:
-                    self._attempt_to_load_store()
+                    self._attempt_to_load_store(cache_metadata=False)
                 except FileNotFoundError:
                     pass
             except Exception as e:

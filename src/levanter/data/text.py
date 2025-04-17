@@ -1354,6 +1354,8 @@ class MultiturnChatDataset(MappedAsyncDataset[tuple[ProcessedChatDict, Processed
     ):
         # NB the GreedyPackedDataset returns a tuple, where the first has the packed leaves
         # and the second has the segment ids
+        # TODO: do better with blocking
+        cache.await_finished()
         self.packed: GreedyPrepackedDataset[ProcessedChatDict] = GreedyPrepackedDataset(
             cache.store.tree,
             Pos.size,
@@ -1461,6 +1463,8 @@ class SupervisedDataset(MappedAsyncDataset[tuple[ProcessedSupervisedDict, Proces
         slice_strategy: Literal["left", "right", "raise"] = "right",
     ):
         self.mask_inputs = mask_inputs
+        # TODO: do better with blocking
+        cache.await_finished()
         self.packed = GreedyPrepackedDataset(
             cache.store.tree,
             Pos.size,
