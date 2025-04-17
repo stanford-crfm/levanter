@@ -274,7 +274,7 @@ class DataLoaderIterator(Iterator[Ex]):
             next_batch_numbers = list(range(batch_number, min(target_next_batch_number, max_achievable_batch_number)))
 
             if len(next_batch_numbers) == 0:
-                logger.info(f"Breaking because no more data available at batch number {batch_number}")
+                logger.debug(f"Breaking because no more data available at batch number {batch_number}")
                 break
 
             batches = [
@@ -297,7 +297,7 @@ class DataLoaderIterator(Iterator[Ex]):
 
             batch_number = next_batch_numbers[-1] + 1
 
-        logger.info(f"DataLoaderIterator finished at batch number {batch_number}")
+        logger.debug(f"DataLoaderIterator finished at batch number {batch_number}")
 
     async def _dataset_get_available_batch_number(self, target_max_batch_number: int) -> tuple[int, Optional[int]]:
         """
@@ -319,12 +319,12 @@ class DataLoaderIterator(Iterator[Ex]):
             if available_len < next_end:
                 target_max_batch_number = self.dl.scheduler.find_step_containing_offset(available_len)
                 next_end = self.dl.scheduler.global_data_offset_by_step(target_max_batch_number)
-                logger.info(f"Data store exhausted after {target_max_batch_number} batches.")
+                logger.debug(f"Data store exhausted after {target_max_batch_number} batches.")
 
             # if we are padding the final batch, we want to see if there is data past the end of the last batch
             if at_the_end and self.dl._pad_final_batch and available_len > next_end:
                 partial_batch_size = available_len - next_end
-                logger.info(f"Partial batch size: {partial_batch_size}")
+                logger.debug(f"Partial batch size: {partial_batch_size}")
                 return target_max_batch_number + 1, partial_batch_size
 
         return target_max_batch_number, None

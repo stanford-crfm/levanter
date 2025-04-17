@@ -6,6 +6,7 @@ import equinox as eqx
 import jax
 import jmp
 
+import haliax
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
@@ -35,16 +36,18 @@ class EvalLmConfig:
     data: SingleDatasetLMConfigBase | LMMixtureDatasetConfig = field(default_factory=SingleDatasetLMConfigBase)
     model: LmConfig = field(default_factory=Gpt2Config)
 
-    compare_torch: bool = False
     eval_on_train: bool = False
-    log_entropy: bool = True
+
+    log_entropy: bool = False
+    log_top2_gap: bool = False
+    log_param_stats: bool = False
 
 
 def main(config: EvalLmConfig):
     levanter.initialize(config)
     tokenizer = config.data.the_tokenizer
 
-    Batch = Axis("batch", config.trainer.eval_batch_size)
+    Batch = config.trainer.EvalBatch
     Pos = config.model.Pos
 
     if config.eval_on_train:
@@ -65,6 +68,11 @@ def main(config: EvalLmConfig):
 
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
+
+    if config.checkpoint_path is None and config.hf_checkpoint is None:
+        raise ValueError("Must specify either checkpoint_path or hf_checkpoint")
+    if config.checkpoint_path is not None and config.hf_checkpoint is not None:
+        raise ValueError("Must specify either checkpoint_path or hf_checkpoint, not both")
 
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
         evaluator = TaggedEvaluator(
@@ -105,19 +113,52 @@ def main(config: EvalLmConfig):
                 model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
-            log_dict = eval_model(evaluator, model, prefix="eval")
+        elif config.hf_checkpoint is not None:
+            # load the huggingface model
+            model_config = config.model
+            if not hasattr(model_config, "hf_checkpoint_converter"):
+                raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
+            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
+            converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
+            model = converter.load_pretrained(
+                model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
+            )
+        else:
+            assert False, "Should not get here"
 
-            levanter.tracker.log(log_dict, step=0)
+        log_dict = eval_model(evaluator, model, prefix="eval")
 
-            # loss = callbacks.eval_loss_loop(compute_loss, model, eval_loader, max_batches=total)
-            print("Levanter loss:", log_dict["eval/loss"])
+        levanter.tracker.log(log_dict, step=0)
 
-            if config.log_entropy:
-                for name, dataset in config.data.validation_sets(Pos).items():
-                    if config.trainer.max_eval_batches is not None:
-                        dataset = dataset.take(config.trainer.max_eval_batches * config.trainer.eval_batch_size)
+        print("Loss:", log_dict["eval/loss"])
+
+        if config.log_entropy:
+            logger.info("Computing entropy...")
+            for name, dataset in config.data.validation_sets(Pos).items():
+                if config.trainer.max_eval_batches is not None:
+                    dataset = dataset.take(config.trainer.max_eval_batches * config.trainer.eval_batch_size)
+                loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
+                entropy_hist = levanter.analysis.compute_entropy_histogram(
+                    model,
+                    Vocab,
+                    compute_logits,
+                    loader,
+                )
+
+                levanter.tracker.log(
+                    {
+                        f"analysis/{name}/entropy": entropy_hist,
+                    },
+                    step=0,
+                )
+
+        if config.log_top2_gap:
+            logger.info("Computing top2_gap...")
+            for name, dataset in config.data.validation_sets(Pos).items():
+                if config.trainer.max_eval_batches is not None:
+                    dataset = dataset.take(config.trainer.max_eval_batches * config.trainer.eval_batch_size)
                     loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
-                    entropy_hist = levanter.analysis.compute_entropy_histogram(
+                    top2_gap_hist = levanter.analysis.compute_top2_gap_histogram(
                         model,
                         Vocab,
                         compute_logits,
@@ -126,48 +167,18 @@ def main(config: EvalLmConfig):
 
                     levanter.tracker.log(
                         {
-                            f"analysis/{name}/entropy": entropy_hist,
+                            f"analysis/{name}/top2_gap": top2_gap_hist,
                         },
                         step=0,
                     )
-            del model
 
-        if config.hf_checkpoint is not None:
-            # load the huggingface model
-            model_config = config.model
-            if not hasattr(model_config, "hf_checkpoint_converter"):
-                raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
-            converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
-            converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
-            model_from_hf_checkpoint = converter.load_pretrained(
-                model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
+        if config.log_param_stats:
+            logger.info("Computing param stats...")
+            log_dict = haliax.named_jit(levanter.analysis.summary_statistics_for_tree)(
+                "params", model, split_scan_layers=True, include_histogram=True
             )
-            # loss = callbacks.eval_loss_loop(compute_loss, model_from_hf_checkpoint, eval_loader, max_batches=total)
 
-            prefix = "eval" if config.checkpoint_path is None else "eval/hf"
-            log_dict = eval_model(evaluator, model_from_hf_checkpoint, prefix=prefix)  # type: ignore
             levanter.tracker.log(log_dict, step=0)
-            print(f"Loss from HF model: {log_dict[f'{prefix}/loss']}")
-
-            if config.log_entropy:
-                prefix = "analysis" if config.checkpoint_path is None else "analysis/hf"
-                for name, dataset in config.data.validation_sets(Pos).items():
-                    loader = DataLoader(dataset, batch_size=config.trainer.eval_batch_size)
-                    entropy_hist = levanter.analysis.compute_entropy_histogram(
-                        model_from_hf_checkpoint,
-                        Vocab,
-                        compute_logits,  # type: ignore
-                        loader,
-                    )
-
-                    levanter.tracker.log(
-                        {
-                            f"{prefix}/{name}/entropy": entropy_hist,
-                        },
-                        step=0,
-                    )
-
-            del model_from_hf_checkpoint
 
     # ray tasks don't reliably wait for the subprocesses to finish, so we need to manually finish the tracker
     levanter.tracker.current_tracker().finish()
