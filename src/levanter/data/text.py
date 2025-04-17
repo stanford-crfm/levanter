@@ -1,6 +1,5 @@
 import abc
 import asyncio
-import copy
 import dataclasses
 import functools
 import json
@@ -41,8 +40,9 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.data import AsyncDataset
-from levanter.data.dataset import MappedAsyncDataset
+from levanter.data.dataset import EpochDataset, MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy, rescale_mixture_schedule_for_batch_schedule
+from levanter.data.passthrough_tokenizer import PassthroughTokenizer
 from levanter.models.lm_model import LmExample
 from levanter.schedule import BatchSchedule
 from levanter.store.cache import CacheOptions, TreeCache
@@ -67,7 +67,6 @@ from levanter.data.sharded_datasource import (  # noqa
     TextUrlDataSource,
     UrlDataSource,
     WrappedHFDataSource,
-    gcs_glob,
 )
 from levanter.shapes import NamedShapeSpec, ShapeSpec  # noqa
 from levanter.store.cache import build_or_load_cache  # noqa
@@ -85,87 +84,6 @@ logger = logging.getLogger("levanter.data.text")
 LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
-
-
-class EpochDataset(AsyncDataset[T_co]):
-    """
-    A dataset that wraps another dataset, providing infinite epochs by recycling indices.
-    If `max_epochs` is specified, it limits the number of cycles before raising StopIteration.
-
-    :param dataset: The dataset to wrap.
-    :param max_epochs: The maximum number of epochs to cycle through. If None, cycle indefinitely.
-    """
-
-    def __init__(self, dataset: AsyncDataset[T_co], max_epochs: Optional[int] = None):
-        super().__init__()
-        self.dataset = dataset
-        self.max_epochs = max_epochs
-
-    async def async_len(self) -> int:
-        if self.max_epochs is None:
-            raise ValueError("Cannot determine length of an infinite dataset without max_epochs.")
-        # Return the total number of samples: max_epochs * length of the dataset
-        return self.max_epochs * await self.dataset.async_len()
-
-    async def final_length_is_known(self) -> bool:
-        return await self.dataset.final_length_is_known()
-
-    def is_finite(self) -> bool:
-        # EpochDataset can be finite if max_epochs is set.
-        return self.max_epochs is not None
-
-    async def current_len(self) -> Optional[int]:
-        # If max_epochs is None, the dataset is effectively infinite.
-        if self.max_epochs is None:
-            return None
-
-        # If the final length of the dataset is not known, return the current length of the underlying dataset.
-        if not await self.dataset.final_length_is_known():
-            return await self.dataset.current_len()
-
-        # If the final length is known, return the max_epochs * async_len of the dataset.
-        return self.max_epochs * await self.dataset.async_len()
-
-    async def get_batch(self, indices: Sequence[int]) -> Sequence[T_co]:
-        # Use self.wait_until_len_at_least to ensure we have enough data for the batch.
-        max_index = max(indices)
-        ds_len = await self.dataset.wait_until_len_at_least(max_index + 1)
-
-        # Determine the epoch based on the largest index
-        epoch = max_index // ds_len
-
-        # If max_epochs is specified, raise an error if the epoch exceeds the allowed number of epochs
-        if self.max_epochs is not None and epoch >= self.max_epochs:
-            raise StopIteration(
-                f"Reached maximum number of epochs: epoch {epoch} exceeds the maximum allowed {self.max_epochs}"
-            )
-
-        # Wrap the indices within the bounds of the dataset length
-        wrapped_indices = [idx % ds_len for idx in indices]
-
-        # Delegate to the underlying dataset's get_batch
-        return await self.dataset.get_batch(wrapped_indices)
-
-    async def wait_until_len_at_least(self, length: int) -> int:
-        """
-        Returns the length of the dataset once it is at least `length` or if the dataset has a known (finished) length.
-        If the dataset's actual length is less than `length`, it returns the minimum of async_len and the current length.
-        """
-        # Wait until the underlying dataset's length is at least `length`
-        if not self.is_finite():
-            return length
-
-        if await self.dataset.final_length_is_known():
-            base_length = await self.dataset.async_len()
-        else:
-            base_length = await self.dataset.wait_until_len_at_least(length)
-
-        if base_length < length:
-            # hit epoch boundary
-            assert self.max_epochs is not None
-            return self.max_epochs * base_length
-
-        return base_length
 
 
 class TokenSeqDataset(AsyncDataset[np.ndarray]):
@@ -471,64 +389,6 @@ class BatchTokenizer(BatchProcessor[str, dict]):
         if self.override_resources is not None:
             return self.override_resources.get("num_gpus", 0)
         return 0
-
-
-def concatenate_and_group_texts(
-    encoding: BatchEncoding,
-    seq_len: int,
-    stride: Optional[int] = None,
-    drop_remainder: bool = True,
-    mask_stride_overlap=True,
-) -> Iterator[BatchEncoding]:
-    """Groups texts in a batch together. Typically, you'll want to use this with a fairly large
-    set of texts, e.g. 1000 docs.
-
-    You should set mask_stride_overlap to True and drop_remainder to False if you want to use this for test data
-
-    Args:
-        encoding: The batch of texts to concatenate and group.
-        seq_len: The max length of sequences to emit
-        stride: The stride to use when grouping texts. If None, then the stride is set to seq_len.
-        mask_stride_overlap: Whether to mask out overlapping tokens if we're using a stride.
-        drop_remainder: Whether to drop the last batch if it's not a multiple of the seq_len.
-
-    Returns:
-        An iterator of tokenized texts, one at a time.
-    """
-    concatenated = BatchEncoding(data={k: np.array(list(chain(*v))) for k, v in encoding.items()})
-    total_length = len(concatenated.input_ids)
-    stride = stride or seq_len
-
-    # Drop the "very last" bit of the dataset that doesn't fit into block size...
-    if drop_remainder and total_length % stride != 0:
-        total_length = ((total_length - seq_len + stride) // stride) * stride
-
-    # Split by Chunks of Maximum Length
-    # we want to take chunks up until we've covered all "total_length" tokens with a sliding window of size "stride"
-    for begin in range(0, total_length - seq_len + stride, stride):
-        data = {k: v[begin : begin + seq_len] for k, v in concatenated.items()}
-
-        if mask_stride_overlap and stride != seq_len:
-            labels = data.get("labels", data["input_ids"])
-            if begin != 0:
-                labels = _mask_overlap(labels, seq_len, stride)
-            data["labels"] = labels
-
-        yield BatchEncoding(data=data)
-
-
-# -100 is pytorch's label mask
-def _mask_overlap(labels, target_len, stride, sentinel=-100):
-    """Masks out overlapping tokens in a sequence when we're using a stride."""
-    labels = copy.deepcopy(labels)
-    if isinstance(labels, list):
-        for i in range(target_len - stride):
-            if i < len(labels):
-                labels[i] = sentinel
-    else:
-        labels[0 : target_len - stride] = sentinel
-
-    return labels
 
 
 def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
@@ -1200,33 +1060,6 @@ class LMDatasetConfig(LMDatasetSourceConfig, LMTaskConfig):
         )
 
 
-class PassthroughTokenizer(PreTrainedTokenizer):
-    def __init__(self, vocab_size, **kwargs):
-        self._vocab = {i: i for i in range(vocab_size)}
-        self._vocab_size = vocab_size
-        super().__init__(**kwargs)
-
-    @property
-    def vocab_size(self) -> int:
-        return self._vocab_size
-
-    def get_vocab(self):
-        return self._vocab
-
-    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:
-        return ()
-
-    def _tokenize(self, text, **kwargs):
-        tokens = np.fromstring(text, dtype=int, sep=" ")
-        return tokens
-
-    def _convert_token_to_id(self, token: str) -> int:
-        return int(token)
-
-    def _convert_id_to_token(self, index: int) -> str:
-        return str(index)
-
-
 @dataclass
 class LMMixtureDatasetConfig(LMTaskConfig):
     """A mixture of language model datasets that supports dynamic weight changes during training.
@@ -1455,12 +1288,7 @@ def datasource_from_chat_jsonl(
         ShardedDataSource configured for chat data
     """
     # Expand any glob patterns in the URLs
-    expanded_urls = []
-    for url in urls:
-        if any(c in url for c in "*?[]"):
-            expanded_urls.extend(gcs_glob(url))
-        else:
-            expanded_urls.append(url)
+    expanded_urls = [globbed for url in urls for globbed in expand_glob(url)]
 
     return ChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
 

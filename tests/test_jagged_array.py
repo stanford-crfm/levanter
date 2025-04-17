@@ -251,8 +251,7 @@ async def test_trim_to_size_async():
     assert new_size == 0
 
     # Verify the data integrity
-    # Have to use raw _data here because the data property is trimmed
-    trimmed_data = await builder._data[0:5000].read()
+    trimmed_data = await builder.data[0:5000].read()
     assert jnp.all(trimmed_data == 0)
 
 
@@ -314,7 +313,7 @@ def test_trim_to_size_sync(cache_metadata):
     assert new_size == 5
 
     # Verify the data integrity
-    trimmed_data = builder._data[0:5000].read().result()
+    trimmed_data = builder.data[0:5000].read().result()
     assert jnp.all(trimmed_data == jnp.concatenate(expected_data[:5]))
 
     # Trim to zero size
@@ -323,7 +322,7 @@ def test_trim_to_size_sync(cache_metadata):
     assert new_size == 0
 
     # Verify the data integrity
-    trimmed_data = builder._data[0:10000].read().result()
+    trimmed_data = builder.data[0:10000].read().result()
     assert jnp.all(trimmed_data == 0)
 
 
