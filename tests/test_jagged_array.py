@@ -251,7 +251,6 @@ async def test_trim_to_size_async():
     assert new_size == 0
 
     # Verify the data integrity
-    # Have to use raw _data here because the data property is trimmed
     trimmed_data = await builder.data[0:5000].read()
     assert jnp.all(trimmed_data == 0)
 
