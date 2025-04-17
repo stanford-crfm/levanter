@@ -1,3 +1,4 @@
+import glob
 import os
 
 import braceexpand
@@ -18,19 +19,23 @@ def mkdirs(path):
 
 
 def expand_glob(url):
-    expanded_urls = braceexpand.braceexpand(url)
-    for expanded_url in expanded_urls:
-        if "*" in expanded_url:
-            fs = fsspec.core.url_to_fs(expanded_url)[0]
-            globbed = fs.glob(expanded_url)
-            # have to append the fs prefix back on
-            protocol, _ = fsspec.core.split_protocol(expanded_url)
-            if protocol is None:
-                yield from globbed
-            else:
-                yield from [f"{protocol}://{path}" for path in globbed]
+    """
+    Yield every URL produced by brace and glob expansion.
+
+    Examples
+    --------
+    >>> list(expand_glob("s3://bucket/{2023,2024}/*.json"))
+    ['s3://bucket/2023/a.json', 's3://bucket/2024/b.json', ...]
+    """
+    for candidate in braceexpand.braceexpand(url):
+        fs, path = fsspec.core.url_to_fs(candidate)
+
+        if glob.has_magic(path):
+            proto = fs.protocol if isinstance(fs.protocol, str) else fs.protocol[0]
+            for p in fs.glob(path):
+                yield f"{proto}://{p}" if proto else p
         else:
-            yield expanded_url
+            yield candidate
 
 
 def remove(url, *, recursive=False, **kwargs):
