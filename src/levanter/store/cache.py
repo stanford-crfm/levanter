@@ -637,8 +637,9 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
         processor: BatchProcessor[T, U],
         options: CacheOptions,
     ):
-        pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
+        pylogging.basicConfig(format=LOG_FORMAT)
         self.logger = pylogging.getLogger(f"{__name__}.{name}")
+        self.logger.setLevel(DEFAULT_LOG_LEVEL)
         self._finished_promise: asyncio.Future[None] = asyncio.Future()
         try:
             self.source = source
@@ -850,7 +851,8 @@ def _core_writer_task(
     to the cache directory.
 
     """
-    pylogging.basicConfig(level=DEFAULT_LOG_LEVEL, format=LOG_FORMAT)
+    pylogging.basicConfig(format=LOG_FORMAT)
+    logger.setLevel(DEFAULT_LOG_LEVEL)
     logger.info("Starting writer task")
 
     name = str(os.path.join(*cache_dir.split("/")[-2:]))
@@ -1397,7 +1399,8 @@ def _tokenize_one_shard_group(
     import humanfriendly
 
     logger = pylogging.getLogger("tokenize")
-    pylogging.basicConfig(level=pylogging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    pylogging.basicConfig(format=LOG_FORMAT)
+    logger.setLevel(DEFAULT_LOG_LEVEL)
 
     # restrict shards to the ones we're supposed to process
     # this is a bit hacky but when there are a lot of shards (e.g. SlimPajama 122K),

@@ -15,6 +15,7 @@ from levanter.data.text import (
     ChatLmDatasetFormat,
     MultiturnChatDataset,
     SupervisedDataset,
+    SupervisedLmDatasetFormat,
     UrlSingleDatasetLMConfig,
     build_lm_dataset_cache,
     preprocessor_for_format,
@@ -32,13 +33,13 @@ def test_dont_blow_up_without_validation_set():
             cache_dir=tmpdir,
         )
 
-        Pos = hax.Axis("Pos", 10)
+        Pos = hax.Axis("position", 10)
         # mostly just making sure this doesn't blow up
         assert config.validation_set(Pos) is None
 
 
 def test_lm_example_handles_ignore_id():
-    Pos = hax.Axis("Pos", 10)
+    Pos = hax.Axis("position", 10)
     Vocab = hax.Axis("vocab", Pos.size + 1)
     Embed = hax.Axis("embed", 10)
     tokens = hax.arange(Pos, dtype=jnp.int32)
@@ -75,7 +76,7 @@ def test_merge_split_encodings():
     short_batch_tokenizer._needs_long_sequence_workaround = True
 
     batch_tokenizer = BatchTokenizer(tokenizer, _workaround_len=50000)
-    batch = [lorem]
+    batch = [{"text": lorem}]
 
     short_out = short_batch_tokenizer(batch)
     reg_out = batch_tokenizer(batch)
@@ -90,33 +91,40 @@ def test_llama_tokenizer_needs_long_sequence_workaround():
     assert batch_tokenizer._needs_long_sequence_workaround
 
 
-def test_make_sequence_mask():
+def test_make_sequence_mask_basic_two_segments():
     make_output_mask = SupervisedDataset._make_sequence_mask
-    # Case 1: basic case with 2 segments
     segment_ids = np.array([0, 0, 1, 1, 1])
     segment_source_len = np.array([1, 2])
     expected = np.array([0, 1, 0, 0, 1], dtype=np.int32)
     assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
 
-    # Case 2: all tokens are input
+
+def test_make_sequence_mask_all_input_tokens():
+    make_output_mask = SupervisedDataset._make_sequence_mask
     segment_ids = np.array([0, 0, 1, 1])
     segment_source_len = np.array([2, 2])
     expected = np.array([0, 0, 0, 0], dtype=np.int32)
     assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
 
-    # Case 3: all tokens are output
+
+def test_make_sequence_mask_all_output_tokens():
+    make_output_mask = SupervisedDataset._make_sequence_mask
     segment_ids = np.array([0, 0, 1, 1])
     segment_source_len = np.array([0, 0])
     expected = np.array([1, 1, 1, 1], dtype=np.int32)
     assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
 
-    # Case 4: alternating inputs and outputs
+
+def test_make_sequence_mask_alternating_inputs_outputs():
+    make_output_mask = SupervisedDataset._make_sequence_mask
     segment_ids = np.array([0, 0, 0, 1, 1, 1])
     segment_source_len = np.array([2, 1])
     expected = np.array([0, 0, 1, 0, 1, 1], dtype=np.int32)
     assert_array_equal(make_output_mask(segment_ids, segment_source_len), expected)
 
-    # Case 5: single segment, mixed input/output
+
+def test_make_sequence_mask_single_segment_mixed():
+    make_output_mask = SupervisedDataset._make_sequence_mask
     segment_ids = np.array([0, 0, 0, 0])
     segment_source_len = np.array([2])
     expected = np.array([0, 0, 1, 1], dtype=np.int32)
@@ -151,10 +159,11 @@ def dummy_chat_data():
 
 def assert_loss_mask_matches_all_assistants(example, tokenizer):
     """
-    Check that loss_mask==1 **iff** the token is part of an assistant span.
+    Assert that loss_mask == 1 exactly over assistant‑content spans.
 
-    Assistant span is defined as the range from the newline *after*
-    '<|end_header_id|>' up to (but not including) the next '<|eot_id|>'.
+    A span starts at the newline that follows
+    "<|start_header_id|>assistant<|end_header_id|>"
+    and ends just before the next "<|eot_id|>".
     """
     # ok we want to be sure we're predicting the assistant tokens
     # This is very fiddly, so we want to be careful.
@@ -179,27 +188,44 @@ def assert_loss_mask_matches_all_assistants(example, tokenizer):
     tok_arr = example.tokens.array
     loss_mask = example.loss_mask.array
 
+    start_hdr_id = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
     end_hdr_id = tokenizer.convert_tokens_to_ids("<|end_header_id|>")
     eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
     newline_id = tokenizer.encode("\n", add_special_tokens=False)[0]
-
-    # indices of newlines that immediately follow an <|end_header_id|>
-    newline_idx = np.where((tok_arr[:-1] == end_hdr_id) & (tok_arr[1:] == newline_id))[0] + 1
+    assistant_ids: List[int] = tokenizer.encode("assistant", add_special_tokens=False)
 
     expected = np.zeros_like(loss_mask, dtype=loss_mask.dtype)
 
-    for start in newline_idx:
-        # first <|eot_id|> *after* the start
-        rel = np.where(tok_arr[start:] == eot_id)[0]
-        assert rel.size, "Every assistant span should be terminated by <|eot_id|>"
-        end = start + int(rel[0])
+    # iterate over every position that holds <|start_header_id|>
+    for idx in np.where(tok_arr == start_hdr_id)[0]:
+        # pattern should be:
+        # idx                -> <|start_header_id|>
+        # idx+1 .. idx+k     -> "assistant" (one or more tokens)
+        # idx+k+1            -> <|end_header_id|>
+        # idx+k+2            -> newline
+        k = len(assistant_ids)
+        if idx + k + 2 >= len(tok_arr):
+            continue  # out of bounds (shouldn't happen in valid template)
 
-        expected[start:end] = 1  # inclusive start, exclusive end
+        if (
+            np.array_equal(tok_arr[idx + 1 : idx + 1 + k], assistant_ids)
+            and tok_arr[idx + 1 + k] == end_hdr_id
+            and tok_arr[idx + 2 + k] == newline_id
+        ):
+            span_start = idx + 2 + k  # newline position (inclusive)
 
-    # Nothing outside assistant spans
+            # find next <|eot_id|>
+            rel = np.where(tok_arr[span_start:] == eot_id)[0]
+            assert rel.size, "assistant span not terminated by <|eot_id|>"
+            span_end = span_start + int(rel[0])  # exclusive
+
+            expected[span_start:span_end] = 1
+
+    # Final check
     assert np.array_equal(loss_mask, expected), "loss_mask does not match assistant spans"
 
 
+@pytest.mark.ray
 def test_chat_dataset_build_and_pack(dummy_chat_data):
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_dir = tmpdir
@@ -240,7 +266,7 @@ def test_chat_dataset_build_and_pack(dummy_chat_data):
         )
 
         # now test packing
-        Pos = hax.Axis("Pos", 100)
+        Pos = hax.Axis("position", 100)
         packed_ds = MultiturnChatDataset(ds, Pos, max_segments_per_example=2)
         packed_ds = packed_ds.as_sync_dataset()
 
@@ -267,3 +293,120 @@ def test_chat_dataset_build_and_pack(dummy_chat_data):
 
             # loss_mask should coincide with assistant tokens only
             assert_loss_mask_matches_all_assistants(ex, tokenizer)
+
+
+@pytest.fixture(scope="module")
+def hf_tokenizer():
+    return AutoTokenizer.from_pretrained(
+        "stanford-crfm/marin-tokenizer",
+        revision="49a09e626c220e9daae74124ea41be1bf5cd331d",
+    )
+
+
+@pytest.fixture
+def dummy_supervised_file(tmp_path_factory) -> str:
+    """Write two tiny supervised examples to jsonl and return the path."""
+    data = [
+        {"prompt": "Translate to French: Hello", "answer": "Bonjour"},
+        {"prompt": "Translate to French: Yes", "answer": "Oui"},
+    ]
+    fp: Path = tmp_path_factory.mktemp("sup") / "sup.jsonl"
+    with fp.open("w") as f:
+        for ex in data:
+            f.write(json.dumps(ex) + "\n")
+    return str(fp)
+
+
+@pytest.mark.ray
+def test_supervised_processor_and_cache(dummy_supervised_file, hf_tokenizer):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = UrlSingleDatasetLMConfig(
+            train_urls=[dummy_supervised_file],
+            format=SupervisedLmDatasetFormat(
+                input_field="prompt",
+                output_field="answer",
+                separate_with="\n",
+            ),
+        )
+
+        source = cfg.get_shard_source("train")
+        ds_cache = build_lm_dataset_cache(tmpdir, source, cfg.format, hf_tokenizer)
+        ds_cache.await_finished()
+
+        # there are two separate items, one per line
+        sync_ds = ds_cache.as_sync_dataset()
+        assert len(sync_ds) == 2
+
+        for ex in sync_ds:
+            # shape / type checks
+            assert ex["input_ids"].ndim == 1
+            assert ex["sources_len"].size == 1
+            # specializing to the particular data: <begin_of_text>Translate to French: <single word>\n
+            assert int(ex["sources_len"]) == 7
+
+        # Now pack 2 conversations into one example
+        Pos = hax.Axis("position", 128)
+        packed_ds = SupervisedDataset(
+            ds_cache,
+            Pos,
+            max_segments_per_example=2,
+            mask_inputs=True,
+        ).as_sync_dataset()
+
+        # We had 2 examples, max_segments_per_example=2 → should pack into 1
+        assert len(packed_ds) == 1
+        ex: LmExample = packed_ds[0]
+
+        # Axis checks
+        assert ex.tokens.axes == (Pos,)
+        assert ex.loss_mask.axes == (Pos,)
+        assert ex.attn_mask.segment_ids.axes == (Pos,)
+
+        # -----------------------------------------------------------
+        #  Verify that for every segment:
+        #    * leading tokens (input) have loss_mask==0
+        #    * trailing tokens (answer) have loss_mask==1
+        # -----------------------------------------------------------
+        seg_ids: np.ndarray = ex.attn_mask.segment_ids.array
+        mask: np.ndarray = ex.loss_mask.array
+
+        for seg in np.unique(seg_ids):
+            if seg < 0:  # skip padding segment (-1)
+                continue
+
+            idx = np.where(seg_ids == seg)[0]
+            seg_mask = mask[idx]
+
+            # Must contain at least one prompt and one answer token
+            ones_idx = np.where(seg_mask == 1)[0]
+            assert len(ones_idx) > 0, "segment has no answer‑token losses"
+            first_one = ones_idx[0]
+
+            # All positions before first answer token must be masked 0
+            assert not seg_mask[:first_one].any(), "prompt tokens should have loss_mask == 0"
+            # All positions from first answer token onward must be masked 1
+            assert seg_mask[first_one:].all(), "answer tokens should have loss_mask == 1"
+
+        # now try no packing
+
+        packed_ds = SupervisedDataset(
+            ds_cache,
+            Pos,
+            max_segments_per_example=1,
+            mask_inputs=True,
+        ).as_sync_dataset()
+
+        # we supplied two conversations, so we should still have two examples
+        assert len(packed_ds) == 2
+
+        for idx, (raw_ex, ex) in enumerate(zip(sync_ds, packed_ds, strict=True)):
+            # basic structural checks
+            assert ex.tokens.axes == (Pos,)
+            assert ex.loss_mask.axes == (Pos,)
+            assert ex.attn_mask.segment_ids.axes == (Pos,)
+
+            assert set(int(i) for i in np.unique(ex.attn_mask.segment_ids.array)) == {idx, -1}
+
+            assert ex.loss_mask.array.sum() == len(ex.attn_mask.segment_ids.array) - raw_ex["sources_len"] - np.sum(
+                ex.attn_mask.segment_ids.array == -1
+            )

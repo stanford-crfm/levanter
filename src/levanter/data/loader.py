@@ -432,7 +432,9 @@ class DataLoaderIterator(Iterator[Ex]):
         indices_for_this_batch_of_batches: list[int] = [
             i for indices in global_indices_for_each_batch for i in indices
         ]
-        individual_datums = await self._fetch_with_logging(indices_for_this_batch_of_batches)
+        individual_datums = await self.run_and_report_slowness(
+            self.dl.data_store.get_batch(indices_for_this_batch_of_batches),
+            f"Waiting for {len(indices_for_this_batch_of_batches)} items.")
 
         # unflatten
         global_map: dict[int, Ex] = {}
@@ -458,9 +460,9 @@ class DataLoaderIterator(Iterator[Ex]):
         else:
             return hax.partitioning.pspec_for_axis(shape_spec.shape, self.dl.axis_resources)  # type: ignore
 
-    async def _fetch_with_logging(self, indices):
+    async def run_and_report_slowness(self, coro, description: str):
         threshold = 10.0
-        task = asyncio.create_task(self.dl.data_store.get_batch(indices))
+        task = asyncio.create_task(coro)
 
         async def watchdog():
             total = 0.0
@@ -470,7 +472,7 @@ class DataLoaderIterator(Iterator[Ex]):
                 total += threshold
                 if not task.done():
                     logging.warning(
-                        f"Data loading is taking a long time: {total:.1f} seconds.Looking for {len(indices)} items."
+                        f"Data loading is taking a long time: {total:.1f} seconds. {description}"
                     )
 
         watchdog_task = asyncio.create_task(watchdog())

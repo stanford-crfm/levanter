@@ -418,6 +418,7 @@ class TextLmDatasetFormat(LmDatasetFormatBase):
 class ChatLmDatasetFormat(LmDatasetFormatBase):
     messages_field: str = "messages"  # key for the messages field in the jsonl file
     single_turn: bool = False
+    chat_template: str | None = None
 
 
 @LmDatasetFormatBase.register_subclass("supervised")
@@ -425,6 +426,7 @@ class ChatLmDatasetFormat(LmDatasetFormatBase):
 class SupervisedLmDatasetFormat(LmDatasetFormatBase):
     input_field: str = CANONICAL_INPUT_FIELD  # key for the input field in the jsonl file
     output_field: str = CANONICAL_OUTPUT_FIELD  # key for the output field in the jsonl file
+    separate_with: str | int | None = None  # string to separate input and output with
 
 
 @dataclass
@@ -575,13 +577,15 @@ def preprocessor_for_format(
     match format:
         case TextLmDatasetFormat():
             return BatchTokenizer(tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos)
-        case ChatLmDatasetFormat(messages_field=messages_field, single_turn=single_turn):
+        case ChatLmDatasetFormat(messages_field=messages_field, single_turn=single_turn, chat_template=ct):
             if single_turn:
+                if ct is not None:
+                    raise ValueError("Dont' currently support this")
                 return SingleTurnChatProcessor(tokenizer, messages_field=messages_field)  # type: ignore
             else:
-                return ChatProcessor(tokenizer)  # type: ignore
-        case SupervisedLmDatasetFormat(input_field=input_field, output_field=output_field):
-            return SupervisedProcessor(tokenizer, input_field, output_field)  # type: ignore
+                return ChatProcessor(tokenizer, messages_field=messages_field, chat_template=ct)  # type: ignore
+        case SupervisedLmDatasetFormat(input_field=i, output_field=o, separate_with=s):
+            return SupervisedProcessor(tokenizer, input_field=i, output_field=o, separate_with=s)
         case _:
             raise ValueError(f"Unknown format {format}")
 
@@ -1399,17 +1403,17 @@ class SupervisedProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
         self.input_field = input_field
         self.output_field = output_field
 
-        if isinstance(separate_with, str):
-            separate_with = tokenizer(separate_with)["input_ids"][0]
+        if isinstance(separate_with, int):
+            separate_with = tokenizer.convert_ids_to_tokens(separate_with)
         self.separate_with = separate_with
 
     def __call__(self, batch: Sequence[dict]) -> ProcessedSupervisedDict:
         sources = [example[self.input_field] for example in batch]
         targets = [example[self.output_field] for example in batch]
 
-        # Add EOS if needed
+        # Add sep if needed
         if self.separate_with is not None:
-            targets = [t + self.separate_with for t in targets]
+            sources = [s + self.separate_with for s in sources]
 
         examples = [s + t for s, t in zip(sources, targets)]
         sources_tokenized = self.tokenizer(sources, padding=False, truncation=True)
@@ -1464,25 +1468,25 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
             slice_strategy=slice_strategy,
         )
 
-        sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
-
-        @functools.partial(eqx.filter_jit, out_shardings=sharding)
         def _create_lm_example(ex_pair: tuple[ProcessedSupervisedDict, ProcessedSupervisedDict]) -> LmExample:
             ex, seg_ids = ex_pair
-            tokens = hax.named(ex["input_ids"], "position")
+            tokens = hax.named(ex["input_ids"], Pos)
+            segment_ids = seg_ids["input_ids"]
 
-            if self.mask_inputs:
-                # ok this is actually vaguely annoying
-                # we need to make anything in the range [0, sources_len) be 0 for each example
-                loss_mask = hax.arange(Pos) >= ex["sources_len"]
-            else:
-                loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
+            sequence_mask = self._make_sequence_mask(segment_ids, ex["sources_len"])
 
-            segment_ids = hax.named(seg_ids["input_ids"], "position")
+            # if self.mask_inputs:
+            #     # ok this is actually vaguely annoying
+            #     # we need to make anything in the range [0, sources_len) be 0 for each example
+            #     loss_mask = hax.arange(Pos) >= ex["sources_len"]
+            # else:
+            #     loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
 
-            return LmExample.causal(tokens, loss_mask=loss_mask, segment_ids=segment_ids)
+            loss_mask = hax.named(sequence_mask, Pos)
 
-        super().__init__(cache, _create_lm_example)
+            return LmExample.causal(tokens, loss_mask=loss_mask, segment_ids=hax.named(segment_ids, Pos))
+
+        super().__init__(self.packed, _create_lm_example)
 
     @staticmethod
     def _make_sequence_mask(segment_ids: np.ndarray, segment_source_len: np.ndarray) -> np.ndarray:
@@ -1491,7 +1495,7 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
 
         Args:
           segment_ids: shape [N], arbitrary integer IDs for each token.
-          segment_source_len: dict mapping each segment_id to the number of input tokens for that segment.
+          segment_source_len: array mapping each segment_id to the number of input tokens for that segment.
 
         Returns:
           mask of shape [N] (dtype=int8). 1 => token is output, 0 => token is input.
@@ -1501,6 +1505,17 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
 
         # We'll store a running counter for each segment in a dict
         segment_counters: dict[int, int] = {}
+
+        # unique segment ids
+        unique_seg_ids, seg_idxes = np.unique(segment_ids, return_index=True)
+        unique_seg_ids = unique_seg_ids[np.argsort(seg_idxes)]
+
+        source_len_dict = {}
+        for seg_id, source_len in zip(unique_seg_ids, segment_source_len):
+            seg_id = int(seg_id)
+            source_len_dict[seg_id] = source_len
+            if seg_id == -1:
+                break
 
         # Single pass: assign positions
         for i, seg_id in enumerate(segment_ids):
@@ -1512,9 +1527,12 @@ class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
         # Build mask: tokens are "output" (mask=1) if positions[i] >= segment_source_len[ seg_id ]
         mask = np.zeros(N, dtype=np.int32)
         for i, seg_id in enumerate(segment_ids):
-            input_len = segment_source_len[seg_id]
+            input_len = source_len_dict[int(seg_id)]
             if positions[i] >= input_len:
                 mask[i] = 1
+
+        # also don't predict the padding, which is -1
+        mask[segment_ids == -1] = 0
 
         return mask
 

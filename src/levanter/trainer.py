@@ -762,7 +762,7 @@ class TrainerConfig:
         """Initializes jax, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
         # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.WARNING)
         self.distributed.initialize()
         self._validate_and_set_defaults()
 

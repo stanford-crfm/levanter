@@ -454,6 +454,8 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
             pad_with_zeros: If True, pad examples to max_length with zeros. If False, return examples as-is.
             slice_strategy: One of "left", "right", or "raise". Determines how to handle examples that exceed max_length.
         """
+        super().__init__()
+
         if slice_strategy not in ["left", "right", "raise"]:
             raise ValueError(f"slice_strategy must be one of 'left', 'right', or 'raise', got {slice_strategy}")
 
@@ -476,9 +478,10 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         self._lengths = jax.tree.map(diff_offsets, self._offsets)
 
         # Build pack indices
-        self._pack_indices = pack_documents(
+        self._pack_indices: list[range] = pack_documents(
             self._lengths, max_length, max_segments_per_example, slice_strategy != "raise"
         )
+
 
     def is_finite(self) -> bool:
         return True
