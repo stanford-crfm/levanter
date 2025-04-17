@@ -615,7 +615,7 @@ def test_too_long_to_pack(multi_leaf_dataset):
     ):
         GreedyPrepackedDataset(dataset, max_length)
 
-    tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=False)
+    tester = GreedyPrepackedDataset(dataset, max_length, slice_strategy="right", pad_with_zeros=False)
     pack2 = tester._pack_indices[2]
     assert list(pack2) == [2]
 
@@ -641,7 +641,7 @@ def test_too_long_to_pack_padded(multi_leaf_dataset):
     ):
         GreedyPrepackedDataset(dataset, max_length)
 
-    tester = GreedyPrepackedDataset(dataset, max_length, slice_too_long_examples=True, pad_with_zeros=True)
+    tester = GreedyPrepackedDataset(dataset, max_length, slice_strategy="right", pad_with_zeros=True)
     pack2 = tester._pack_indices[2]
     assert list(pack2) == [2]
 
@@ -660,6 +660,46 @@ def test_too_long_to_pack_padded(multi_leaf_dataset):
     assert np.array_equal(data["store2"], expected_data2)
     assert np.array_equal(segment_ids["store1"], expected_segment_ids1)
     assert np.array_equal(segment_ids["store2"], expected_segment_ids2)
+
+
+def test_slicing_strategies():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a dataset with a single document that's too long
+        store = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.int64)
+        doc_length = 100
+        store.append(np.arange(doc_length))
+        dataset = {"store": store}
+        max_length = {"store": 50}  # Document is twice as long as allowed
+
+        # Test right slicing (default behavior)
+        tester_right = GreedyPrepackedDataset(dataset, max_length, slice_strategy="right", pad_with_zeros=False)
+        batch = tester_right.as_sync_dataset()[0]
+        data, segment_ids = batch
+        # Should take last 50 tokens
+        expected_data = np.arange(doc_length - max_length["store"], doc_length)
+        expected_segment_ids = np.full(max_length["store"], 0)
+        assert np.array_equal(data["store"], expected_data)
+        assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+        # Test left slicing
+        tester_left = GreedyPrepackedDataset(dataset, max_length, slice_strategy="left", pad_with_zeros=False)
+        batch = tester_left.as_sync_dataset()[0]
+        data, segment_ids = batch
+        # Should take first 50 tokens
+        expected_data = np.arange(0, max_length["store"])
+        expected_segment_ids = np.full(max_length["store"], 0)
+        assert np.array_equal(data["store"], expected_data)
+        assert np.array_equal(segment_ids["store"], expected_segment_ids)
+
+        # Test raise strategy
+        with pytest.raises(
+            ValueError, match="Document 0 in leaf 'store' has length 100 which exceeds maximum allowed length 50"
+        ):
+            GreedyPrepackedDataset(dataset, max_length, slice_strategy="raise")
+
+        # Test invalid strategy
+        with pytest.raises(ValueError, match="slice_strategy must be one of 'left', 'right', or 'raise'"):
+            GreedyPrepackedDataset(dataset, max_length, slice_strategy="invalid")
 
 
 def test_invalid_max_segments():
@@ -698,10 +738,10 @@ def test_too_long_document_error():
         with pytest.raises(
             ValueError, match="Document 0 in leaf 'store' has length 1000 which exceeds maximum allowed length 300"
         ):
-            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_too_long_examples=False)
+            GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_strategy="raise")
 
-        # Should not raise when slice_too_long_examples is True
-        tester = GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_too_long_examples=True)
+        # Should not raise when slice_strategy is not "raise"
+        tester = GreedyPrepackedDataset({"store": store}, max_length={"store": 300}, slice_strategy="right")
         assert len(tester._pack_indices) == 1
 
 
