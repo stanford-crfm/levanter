@@ -585,7 +585,7 @@ def preprocessor_for_format(
             else:
                 return ChatProcessor(tokenizer, messages_field=messages_field, chat_template=ct)  # type: ignore
         case SupervisedLmDatasetFormat(input_field=i, output_field=o, separate_with=s):
-            return SupervisedProcessor(tokenizer, input_field=i, output_field=o, separate_with=s)
+            return SupervisedProcessor(tokenizer, input_field=i, output_field=o, separate_with=s)  # type: ignore
         case _:
             raise ValueError(f"Unknown format {format}")
 
@@ -1447,7 +1447,7 @@ class SupervisedProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
         }
 
 
-class SupervisedDataset(MappedAsyncDataset[ProcessedSupervisedDict, LmExample]):
+class SupervisedDataset(MappedAsyncDataset[tuple[ProcessedSupervisedDict, ProcessedSupervisedDict], LmExample]):
     """
     A dataset that yields packed supervised examples from a cache of processed supervised data.
     """
