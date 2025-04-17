@@ -202,7 +202,7 @@ class TreeCache(AsyncDataset[T_co]):
             self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
             self._monitor_thread.start()
         else:
-            self._attempt_to_load_store()
+            self._attempt_to_load_store(cache_metadata=True)
             assert self._store_future.done()
 
     @property
@@ -399,7 +399,7 @@ class TreeCache(AsyncDataset[T_co]):
         if self._builder is None:
             return
         x = ray.get(self.finished_sentinel(), timeout=timeout)
-        self._attempt_to_load_store()
+        self._attempt_to_load_store(cache_metadata=False)
         return x
 
     async def finished(self):
@@ -407,15 +407,15 @@ class TreeCache(AsyncDataset[T_co]):
             return
         x = await self.finished_sentinel()
         # TODO: make an async version of this
-        self._attempt_to_load_store()
+        self._attempt_to_load_store(cache_metadata=False)
         return x
 
-    def _attempt_to_load_store(self):
+    def _attempt_to_load_store(self, cache_metadata):
         if self._store_future.done():
             return
 
         try:
-            store = TreeStore.open(self._exemplar, self.cache_dir, mode="r")
+            store = TreeStore.open(self._exemplar, self.cache_dir, mode="r", cache_metadata=cache_metadata)
         except FileNotFoundError:
             assert self._builder is not None
             ledger = ray.get(self._builder.current_ledger.remote())
@@ -1185,7 +1185,7 @@ def _expose_available_rows(permanent_cache, num_available_rows):
     Updates the permanent cache to expose the available rows. This is done by updating the offsets[0] of the
     permanent cache to the total number of rows in the cache.
     """
-    futures = jax.tree.leaves(jax.tree.map(lambda x: x._offsets[0].write(num_available_rows), permanent_cache.tree))
+    futures = jax.tree.leaves(jax.tree.map(lambda x: x.offsets[0].write(num_available_rows), permanent_cache.tree))
     for future in futures:
         future.result()
 
@@ -1272,7 +1272,7 @@ async def _extend_cache_with_other_cache(
 
             # To prevent OOM, copy in smaller batches
             MAX_ELEMS = 1024 * 1024 * 1024
-            await _copy_in_batches(dest_array._data, data_offset, data, data_size, MAX_ELEMS)
+            await _copy_in_batches(dest_array.data, data_offset, data, data_size, MAX_ELEMS)
 
         futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
 
@@ -1331,14 +1331,14 @@ async def _extend_cache_metadata_with_other(
                     shape_future = dest_shapes.with_transaction(txn)[row_offset:out_end].write(source_shapes)
 
             # the 0th offset is the number of rows so we don't want to copy it into the destination
-            source_offsets = source_array._offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
+            source_offsets = source_array.offsets[1 : source_num_rows + 1][ts.d[:].translate_to[0]]
             source_offsets = _virtual_offset(source_offsets, data_offset)
 
             delay = 4
             while True:
                 try:
                     async with ts.Transaction() as txn:
-                        dest_offsets = dest_array._offsets
+                        dest_offsets = dest_array.offsets
                         out_end = 1 + row_offset + source_num_rows
                         offset_future = dest_offsets.with_transaction(txn)[row_offset + 1 : out_end].write(
                             source_offsets
@@ -1354,7 +1354,7 @@ async def _extend_cache_metadata_with_other(
                             raise
 
             await offset_future
-            if source_array._shapes is not None:
+            if source_array.shapes is not None:
                 await shape_future
 
         futures = jax.tree.map(_copy_one_array, dest.tree, source.tree, data_offset_tree)
