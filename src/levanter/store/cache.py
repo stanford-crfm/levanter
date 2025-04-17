@@ -200,7 +200,7 @@ class TreeCache(AsyncDataset[T_co]):
             self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
             self._monitor_thread.start()
         else:
-            self._attempt_to_load_store()
+            self._attempt_to_load_store(cache_metadata=True)
             assert self._store_future.done()
 
     @property
@@ -396,7 +396,7 @@ class TreeCache(AsyncDataset[T_co]):
         if self._builder is None:
             return
         x = ray.get(self.finished_sentinel(), timeout=timeout)
-        self._attempt_to_load_store()
+        self._attempt_to_load_store(cache_metadata=False)
         return x
 
     async def finished(self):
@@ -404,15 +404,15 @@ class TreeCache(AsyncDataset[T_co]):
             return
         x = await self.finished_sentinel()
         # TODO: make an async version of this
-        self._attempt_to_load_store()
+        self._attempt_to_load_store(cache_metadata=False)
         return x
 
-    def _attempt_to_load_store(self):
+    def _attempt_to_load_store(self, cache_metadata):
         if self._store_future.done():
             return
 
         try:
-            store = TreeStore.open(self._exemplar, self.cache_dir, mode="r")
+            store = TreeStore.open(self._exemplar, self.cache_dir, mode="r", cache_metadata=cache_metadata)
         except FileNotFoundError:
             assert self._builder is not None
             ledger = ray.get(self._builder.current_ledger.remote())
