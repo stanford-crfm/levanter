@@ -91,10 +91,11 @@ class JaggedArrayStore:
     High latency, but high throughput.
     """
 
-    # Note that offsets, data and shapes have very large length and you shouldn't read() them directly without slicing
-    offsets: ts.TensorStore  # offsets of the start of each array, except that index[0] is the number of arrays
-    data: ts.TensorStore
-    shapes: Optional[ts.TensorStore]  # (len(offsets), len(data.shape)-1)
+    # Note that _offsets, _data and _shapes have very very large length and you shouldn't read them directly.
+    # Use the properties offsets, data, and shapes to get the actual data and avoid footguns.
+    _offsets: ts.TensorStore  # offsets of the start of each array, except that index[0] is the number of arrays
+    _data: ts.TensorStore
+    _shapes: Optional[ts.TensorStore]  # (len(offsets), len(data.shape)-1)
     item_rank: int = 1
     _cache_metadata: bool = False
     _cached_num_rows: Optional[int] = None
@@ -140,7 +141,7 @@ class JaggedArrayStore:
     def num_rows(self):
         if self._cached_num_rows is not None:
             return self._cached_num_rows
-        result = int(self.offsets[0].read().result())
+        result = int(self._offsets[0].read().result())
         if self._cache_metadata:
             self._cached_num_rows = result
         return result
@@ -148,7 +149,7 @@ class JaggedArrayStore:
     async def num_rows_async(self):
         if self._cached_num_rows is not None:
             return self._cached_num_rows
-        result = int(await self.offsets[0].read())
+        result = int(await self._offsets[0].read())
         if self._cache_metadata:
             self._cached_num_rows = result
         return result
@@ -158,7 +159,7 @@ class JaggedArrayStore:
         # return int(self.offsets[self.num_rows].read().result())
         if self._cached_data_size is not None:
             return self._cached_data_size
-        result = int(self.offsets[self.num_rows].read().result())
+        result = int(self._offsets[self.num_rows].read().result())
         if self._cache_metadata:
             self._cached_data_size = result
         return result
@@ -166,10 +167,32 @@ class JaggedArrayStore:
     async def data_size_async(self):
         if self._cached_data_size is not None:
             return self._cached_data_size
-        result = int(await self.offsets[self.num_rows].read())
+        result = int(await self._offsets[self.num_rows].read())
         if self._cache_metadata:
             self._cached_data_size = result
         return result
+
+    @property
+    def offsets(self) -> ts.TensorStore:
+        """
+        Returns the offsets array. Note that the first element is the number of rows (it's implicitly 0).
+        """
+        return self._offsets[0 : self.num_rows + 1]
+
+    @property
+    def shapes(self) -> Optional[ts.TensorStore]:
+        return self._shapes[0 : self.num_rows] if self._shapes is not None else None
+
+    @property
+    def data(self) -> ts.TensorStore:
+        """
+        Returns the data array.
+        """
+        return self._data[0 : self.data_size]
+
+    def row_length(self, row: int) -> int:
+        first, last, _ = self._bounds_for_rows(row, row + 1)
+        return last - first
 
     async def append_async(self, data: np.ndarray):
         await self.extend_async([data])
@@ -187,24 +210,24 @@ class JaggedArrayStore:
         current_data_size = self.data_size
         current_num_rows = await self.num_rows_async()
 
-        offsets_fut = self.offsets[size + 1 : current_num_rows + 1].write(0)
+        offsets_fut = self._offsets[size + 1 : current_num_rows + 1].write(0)
 
         if size == 0:
             new_max = 0
         else:
-            new_max = int(await self.offsets[size].read())
+            new_max = int(await self._offsets[size].read())
 
-        f1 = self.offsets[0].write(size)
+        f1 = self._offsets[0].write(size)
 
         # Trim the shapes
-        if self.shapes is not None:
-            shape_fut = self.shapes[size:current_num_rows].write(
-                np.zeros(self.shapes.shape[1:], dtype=self.shapes.dtype.name)
+        if self._shapes is not None:
+            shape_fut = self._shapes[size:current_num_rows].write(
+                np.zeros(self._shapes.shape[1:], dtype=self._shapes.dtype.name)
             )
         else:
             shape_fut = None
 
-        data_fut = self.data[new_max:current_data_size].write(np.zeros((), dtype=self.data.dtype.name))
+        data_fut = self._data[new_max:current_data_size].write(np.zeros((), dtype=self._data.dtype.name))
         await f1
 
         await shape_fut if shape_fut is not None else None
@@ -222,21 +245,23 @@ class JaggedArrayStore:
         old_len = len(self)
         old_data_size = self.data_size
 
-        if self.shapes is not None:
-            shape_fut = self.shapes[size:old_len].write(np.zeros(self.shapes.shape[1:], dtype=self.shapes.dtype.name))
+        if self._shapes is not None:
+            shape_fut = self._shapes[size:old_len].write(
+                np.zeros(self._shapes.shape[1:], dtype=self._shapes.dtype.name)
+            )
         else:
             shape_fut = None
 
-        f1 = self.offsets[0].write(size)
+        f1 = self._offsets[0].write(size)
 
         if size == 0:
             new_max = 0
         else:
-            new_max = int(self.offsets[size].read().result())
-        data_fut = self.data[new_max:old_data_size].write(np.zeros((), dtype=self.data.dtype.name))
+            new_max = int(self._offsets[size].read().result())
+        data_fut = self._data[new_max:old_data_size].write(np.zeros((), dtype=self._data.dtype.name))
 
         f1.result()
-        offsets_fut = self.offsets[size + 1 : old_data_size + 1].write(0)
+        offsets_fut = self._offsets[size + 1 : old_data_size + 1].write(0)
 
         data_fut.result()
         offsets_fut.result()
@@ -265,15 +290,15 @@ class JaggedArrayStore:
 
         # Write to resized arrays concurrently, adjusting offsets explicitly
         write_tasks = [
-            self.data[current_data_size : current_data_size + len(data)].write(data),
-            self.offsets[num_rows + 1 : num_rows + num_added + 1].write(new_offsets),
+            self._data[current_data_size : current_data_size + len(data)].write(data),
+            self._offsets[num_rows + 1 : num_rows + num_added + 1].write(new_offsets),
         ]
-        if self.shapes is not None:
-            write_tasks.append(self.shapes[num_rows : num_rows + num_added].write(shapes))
+        if self._shapes is not None:
+            write_tasks.append(self._shapes[num_rows : num_rows + num_added].write(shapes))
         await asyncio.gather(*write_tasks)
 
         # Update num_rows
-        await self.offsets[0].write(num_rows + num_added)
+        await self._offsets[0].write(num_rows + num_added)
 
         if self._cache_metadata:
             self._cached_num_rows = num_rows + num_added
@@ -301,17 +326,17 @@ class JaggedArrayStore:
         new_offsets = new_offsets + current_data_size
 
         write_tasks = [
-            self.data[current_data_size : current_data_size + len(data)].write(data),
-            self.offsets[num_rows + 1 : num_rows + num_added + 1].write(new_offsets),
+            self._data[current_data_size : current_data_size + len(data)].write(data),
+            self._offsets[num_rows + 1 : num_rows + num_added + 1].write(new_offsets),
         ]
-        if self.shapes is not None:
-            write_tasks.append(self.shapes[num_rows : num_rows + num_added].write(shapes))
+        if self._shapes is not None:
+            write_tasks.append(self._shapes[num_rows : num_rows + num_added].write(shapes))
 
         # Update num_rows. We want to make sure this comes after the other data is committed to avoid a race
         for task in write_tasks:
             task.result()
 
-        self.offsets[0].write(num_rows + num_added).result()
+        self._offsets[0].write(num_rows + num_added).result()
 
         if self._cache_metadata:
             self._cached_num_rows = num_rows + num_added
@@ -323,18 +348,18 @@ class JaggedArrayStore:
 
         @return: new JaggedArrayStore with resolved tensorstores
         """
-        offsets = ts.open(_unshaped_spec(self.offsets))
-        data = ts.open(_unshaped_spec(self.data))
-        shapes = future_from_value(None) if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec()))
+        offsets = ts.open(_unshaped_spec(self._offsets))
+        data = ts.open(_unshaped_spec(self._data))
+        shapes = future_from_value(None) if self._shapes is None else ts.open(_unshaped_spec(self._shapes.spec()))
 
         offsets, data, shapes = await asyncio.gather(offsets, data, shapes)
 
         return JaggedArrayStore(offsets, data, shapes, self.item_rank)
 
     def reload(self) -> "JaggedArrayStore":
-        offsets = ts.open(_unshaped_spec(self.offsets))
-        data = ts.open(_unshaped_spec(self.data))
-        shapes = None if self.shapes is None else ts.open(_unshaped_spec(self.shapes.spec())).result()
+        offsets = ts.open(_unshaped_spec(self._offsets))
+        data = ts.open(_unshaped_spec(self._data))
+        shapes = None if self._shapes is None else ts.open(_unshaped_spec(self._shapes.spec())).result()
 
         offsets = offsets.result()
         data = data.result()
@@ -351,19 +376,19 @@ class JaggedArrayStore:
             start, stop, step = item.indices(len_self)
             if step != 1:
                 raise ValueError("JaggedArrayStore doesn't support slicing with step != 1")
-            shapes = None if self.shapes is None else self.shapes[start:stop]
+            shapes = None if self._shapes is None else self._shapes[start:stop]
             # NB: JaggedArray not JaggedArrayStore
             # TODO: use a transformed TS?
             data_start, data_stop, offsets = await self._bounds_for_rows_async(start, stop)
             new_offsets = offsets - offsets[0]
-            return JaggedArray(new_offsets, await self.data[data_start:data_stop].read(), shapes)
+            return JaggedArray(new_offsets, await self._data[data_start:data_stop].read(), shapes)
         else:
             try:
                 start, stop, _ = await self._bounds_for_rows_async(item, item + 1)
-                data = await self.data[start:stop].read()
+                data = await self._data[start:stop].read()
 
-                if self.shapes is not None:
-                    shapes = np.array(self.shapes[item])
+                if self._shapes is not None:
+                    shapes = np.array(self._shapes[item])
                     data = data.reshape(*shapes, -1)
                 return data
             except ValueError as e:
@@ -379,19 +404,19 @@ class JaggedArrayStore:
             all_indices_futs = [self._bounds_for_rows_async(indices[i], indices[i] + 1) for i in range(len(indices))]
 
         # shapes, if applicable
-        if self.shapes is not None:
+        if self._shapes is not None:
             with ts.Batch():
-                shapes_futs = [self.shapes[i].read() for i in indices]
+                shapes_futs = [self._shapes[i].read() for i in indices]
 
         all_indices = [(start, stop) for start, stop, _ in await asyncio.gather(*all_indices_futs)]
 
         # get data
         with ts.Batch():
-            data_futs = [self.data[start:stop].read() for start, stop in all_indices]
+            data_futs = [self._data[start:stop].read() for start, stop in all_indices]
 
         data = await asyncio.gather(*data_futs)
 
-        if self.shapes is not None:
+        if self._shapes is not None:
             shapes = await asyncio.gather(*shapes_futs)
 
             data = [d.reshape(*s, -1) for d, s in zip(data, shapes)]
@@ -403,14 +428,14 @@ class JaggedArrayStore:
 
         with ts.Batch():
             # shapes, if applicable
-            if self.shapes is not None:
-                shapes_futs = [self.shapes[i].read() for i in indices]
+            if self._shapes is not None:
+                shapes_futs = [self._shapes[i].read() for i in indices]
 
-            data_futs = [self.data[start:stop].read() for start, stop in all_indices]
+            data_futs = [self._data[start:stop].read() for start, stop in all_indices]
 
         data = [d.result() for d in data_futs]
 
-        if self.shapes is not None:
+        if self._shapes is not None:
             shapes = [s.result() for s in shapes_futs]  # noqa
             data = [d.reshape(*s, -1) for d, s in zip(data, shapes)]
 
@@ -436,10 +461,10 @@ class JaggedArrayStore:
         else:
             try:
                 start, stop, _ = self._bounds_for_rows(item, item + 1)
-                data = self.data[start:stop].read().result()
+                data = self._data[start:stop].read().result()
 
-                if self.shapes is not None:
-                    shapes = np.array(self.shapes[item])
+                if self._shapes is not None:
+                    shapes = np.array(self._shapes[item])
                     data = data.reshape(*shapes, -1)
                 return data
             except ValueError as e:
@@ -454,7 +479,7 @@ class JaggedArrayStore:
         if start >= num_rows or stop > num_rows:
             raise IndexError("Index out of bounds")
         start, stop, step = slice(start, stop).indices(num_rows)
-        offsets = self.offsets[start : stop + 1].read().result()
+        offsets = self._offsets[start : stop + 1].read().result()
         data_start, data_stop = offsets[0], offsets[-1]
         if start == 0:
             # The first offset is the number of rows
@@ -473,7 +498,7 @@ class JaggedArrayStore:
             for index in indices:
                 if index >= num_rows or index < 0:
                     raise IndexError("Index out of bounds")
-                offsets = self.offsets[index : index + 2].read()
+                offsets = self._offsets[index : index + 2].read()
                 offsets_futs.append(offsets)
 
                 if index == 0:
@@ -488,7 +513,7 @@ class JaggedArrayStore:
         return offsets
 
     async def _bounds_for_rows_async(self, start, stop):
-        offsets = await self.offsets[start : stop + 1].read()
+        offsets = await self._offsets[start : stop + 1].read()
         data_start, data_stop = offsets[0], offsets[-1]
         if start == 0:
             # The first offset is the number of rows
