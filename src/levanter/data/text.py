@@ -82,6 +82,80 @@ logger = logging.getLogger("levanter.data.text")
 # TODO: consider adding indexing a la Map-style datasets
 # TODO: support seeking/serialization/restore in the dataset
 
+
+def mk_dpo_dataset(
+    urls: Sequence[str],
+    tokenizer: PreTrainedTokenizerBase,
+    prompt_field: str = "prompt",
+    chosen_field: str = "chosen",
+    rejected_field: str = "rejected",
+    max_prompt_length: int = 512,
+    max_response_length: int = 1536,
+    max_seq_len: int = 2048,
+    batch_size: int = 8,
+) -> "AsyncDataset[dict]":
+    """
+    Loads a DPO/preference dataset from JSONL files. Each line should have prompt, chosen, and rejected fields.
+    Tokenizes each field and yields dicts with prompt_ids, chosen_ids, rejected_ids.
+    """
+    import numpy as np
+    import fsspec
+    from levanter.data.dataset import ListAsyncDataset
+
+    # Expand globs
+    expanded_urls = []
+    for url in urls:
+        if any(c in url for c in "*?[]"):
+            expanded_urls.extend(expand_glob(url))
+        else:
+            expanded_urls.append(url)
+
+    examples = []
+    for url in expanded_urls:
+        with fsspec.open(url, "r", compression="infer") as f:
+            for line in f:
+                data = json.loads(line)
+                prompt = data[prompt_field]
+                chosen = data[chosen_field]
+                rejected = data[rejected_field]
+
+                # Tokenize
+                prompt_ids = tokenizer(
+                    prompt,
+                    truncation=True,
+                    max_length=max_prompt_length,
+                    add_special_tokens=False,
+                )["input_ids"]
+                chosen_ids = tokenizer(
+                    chosen,
+                    truncation=True,
+                    max_length=max_response_length,
+                    add_special_tokens=False,
+                )["input_ids"]
+                rejected_ids = tokenizer(
+                    rejected,
+                    truncation=True,
+                    max_length=max_response_length,
+                    add_special_tokens=False,
+                )["input_ids"]
+
+                # Truncate to max_seq_len if needed
+                if len(prompt_ids) + len(chosen_ids) > max_seq_len:
+                    chosen_ids = chosen_ids[: max_seq_len - len(prompt_ids)]
+                if len(prompt_ids) + len(rejected_ids) > max_seq_len:
+                    rejected_ids = rejected_ids[: max_seq_len - len(prompt_ids)]
+
+                # Store as numpy arrays for batching
+                examples.append({
+                    "prompt_ids": np.array(prompt_ids, dtype=np.int32),
+                    "chosen_ids": np.array(chosen_ids, dtype=np.int32),
+                    "rejected_ids": np.array(rejected_ids, dtype=np.int32),
+                })
+
+    # Wrap in a ListAsyncDataset for async compatibility
+    dataset = ListAsyncDataset(examples)
+    return dataset
+
 LEDGER_FILE = "ledger.json"
 
 DEFAULT_IGNORE_INDEX = -100  # Mirrors pytorch's default ignore index
@@ -774,6 +848,44 @@ class SupervisedUrlSourceConfig(SupervisedSourceConfigBase):
 
 
 SupervisedSourceConfig: TypeAlias = Union[SupervisedHfSourceConfig, SupervisedUrlSourceConfig]
+
+
+@dataclass(frozen=True)
+class DpoSourceConfig:
+    """
+    Config for DPO/preference data loading, similar to SupervisedSourceConfig for SFT.
+    """
+    train_urls: list[str] = dataclasses.field(default_factory=list)
+    validation_urls: list[str] = dataclasses.field(default_factory=list)
+    prompt_field: str = "prompt"
+    chosen_field: str = "chosen"
+    rejected_field: str = "rejected"
+    cache_dir: str = "cache/"
+    tags: Optional[list[str]] = None
+    max_prompt_length: int = 512
+    max_response_length: int = 1536
+    max_seq_len: int = 2048
+
+    def get_urls(self, split: str) -> list[str]:
+        if split == "train":
+            return self.train_urls
+        elif split == "validation":
+            return self.validation_urls
+        else:
+            raise ValueError(f"Unknown split: {split}")
+
+    def mk_dataset(self, tokenizer, split: str = "train", batch_size: int = 8):
+        return mk_dpo_dataset(
+            urls=self.get_urls(split),
+            tokenizer=tokenizer,
+            prompt_field=self.prompt_field,
+            chosen_field=self.chosen_field,
+            rejected_field=self.rejected_field,
+            max_prompt_length=self.max_prompt_length,
+            max_response_length=self.max_response_length,
+            max_seq_len=self.max_seq_len,
+            batch_size=batch_size,
+        )
 
 
 def _preprocess_supervised_example(
