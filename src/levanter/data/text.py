@@ -40,6 +40,7 @@ from tokenizers import normalizers
 import haliax as hax
 from haliax import Axis
 
+import levanter
 from levanter.data import AsyncDataset
 from levanter.data.dataset import EpochDataset, MappedAsyncDataset
 from levanter.data.mixture import MixtureDataset, StopStrategy, rescale_mixture_schedule_for_batch_schedule
@@ -419,6 +420,8 @@ class ChatLmDatasetFormat(LmDatasetFormatBase):
     messages_field: str = "messages"  # key for the messages field in the jsonl file
     single_turn: bool = False
     chat_template: str | None = None
+    pack: bool = True
+    mask_user_turns: bool = True
 
 
 @LmDatasetFormatBase.register_subclass("supervised")
@@ -427,6 +430,8 @@ class SupervisedLmDatasetFormat(LmDatasetFormatBase):
     input_field: str = CANONICAL_INPUT_FIELD  # key for the input field in the jsonl file
     output_field: str = CANONICAL_OUTPUT_FIELD  # key for the output field in the jsonl file
     separate_with: str | int | None = None  # string to separate input and output with
+    pack: bool = True
+    mask_inputs: bool = True
 
 
 @dataclass
@@ -557,6 +562,12 @@ class LMTaskConfig(abc.ABC):
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         pass
 
+    @abc.abstractmethod
+    def build_caches(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, TreeCache[dict]]:
+        pass
+
     @property
     @abc.abstractmethod
     def sources(self) -> Mapping[str, LmDatasetSourceConfigBase]:
@@ -577,15 +588,15 @@ def preprocessor_for_format(
     match format:
         case TextLmDatasetFormat():
             return BatchTokenizer(tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos)
-        case ChatLmDatasetFormat(messages_field=messages_field, single_turn=single_turn, chat_template=ct):
-            if single_turn:
+        case ChatLmDatasetFormat(messages_field=m, single_turn=s_turn, chat_template=ct, mask_user_turns=mt):
+            if s_turn:
                 if ct is not None:
                     raise ValueError("Dont' currently support this")
-                return SingleTurnChatProcessor(tokenizer, messages_field=messages_field)  # type: ignore
+                return SingleTurnChatProcessor(tokenizer, messages_field=m)  # type: ignore
             else:
-                return ChatProcessor(tokenizer, messages_field=messages_field, chat_template=ct)  # type: ignore
-        case SupervisedLmDatasetFormat(input_field=i, output_field=o, separate_with=s):
-            return SupervisedProcessor(tokenizer, input_field=i, output_field=o, separate_with=s)  # type: ignore
+                return ChatProcessor(tokenizer, messages_field=m, chat_template=ct, mask_user_turns=mt)  # type: ignore
+        case SupervisedLmDatasetFormat(input_field=i, output_field=o, separate_with=s, mask_inputs=mi):
+            return SupervisedProcessor(tokenizer, input_field=i, output_field=o, separate_with=s, mask_inputs=mi)  # type: ignore
         case _:
             raise ValueError(f"Unknown format {format}")
 
@@ -601,14 +612,14 @@ def dataset_for_format(
     match format:
         case TextLmDatasetFormat():
             return CausalLmDataset(TokenSeqDataset(cache, Pos.size), Pos, eos_id=eos_id, ignore_index=ignore_index)
-        case ChatLmDatasetFormat(single_turn=single_turn):
+        case ChatLmDatasetFormat(single_turn=single_turn, pack=pack, mask_user_turns=mask_user_turns):
             if single_turn:
                 # We treat single turn like supervised
-                return SupervisedDataset(cache, Pos)  # type: ignore
+                return SupervisedDataset(cache, Pos, max_segments_per_example=64 if pack else 1, mask_inputs=mask_user_turns)  # type: ignore
             else:
-                return MultiturnChatDataset(cache, Pos)  # type: ignore
-        case SupervisedLmDatasetFormat():
-            return SupervisedDataset(cache, Pos)  # type: ignore
+                return MultiturnChatDataset(cache, Pos, max_segments_per_example=64 if pack else 1, mask_user_turns=mask_user_turns)  # type: ignore
+        case SupervisedLmDatasetFormat(pack=pack, mask_inputs=mask_inputs):
+            return SupervisedDataset(cache, Pos, max_segments_per_example=64 if pack else 1, mask_inputs=mask_inputs)  # type: ignore
         case _:
             raise ValueError(f"Unknown format {format}")
 
@@ -965,6 +976,15 @@ class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
     def sources(self) -> Mapping[str, LmDatasetSourceConfigBase]:
         return {"": self}
 
+    def build_caches(
+        self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> Mapping[str, TreeCache[dict]]:
+        out = {}
+        cache = self.build_or_load_cache(split, monitors)
+        if cache is not None:
+            out[""] = cache
+        return out
+
     def build_or_load_cache(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Optional[TreeCache[dict]]:
@@ -1268,7 +1288,13 @@ class ChatProcessor(BatchProcessor[dict, ProcessedChatDict]):
     A batch processor that converts chat data into the expected inputs of a model using a chat template.
     """
 
-    def __init__(self, tokenizer: HfTokenizer, chat_template: str | None = None, messages_field: str = "messages"):
+    def __init__(
+        self,
+        tokenizer: HfTokenizer,
+        chat_template: str | None = None,
+        messages_field: str = "messages",
+        mask_user_turns: bool = True,
+    ):
         if chat_template is None and tokenizer.chat_template is None:
             raise ValueError("No chat template provided and tokenizer has no default chat template")
         self.tokenizer = tokenizer
@@ -1280,10 +1306,13 @@ class ChatProcessor(BatchProcessor[dict, ProcessedChatDict]):
 
         # check for {%generation%} in the template
         # cribbed from https://github.com/huggingface/transformers/blob/main/src/transformers/tokenization_utils_base.py#L1687
-        if not re.search(r"\{%-?\s*generation\s*-?%}", self.chat_template):
+        if mask_user_turns and not re.search(r"\{%-?\s*generation\s*-?%}", self.chat_template):
             raise ValueError(
-                "Chat template must contain {%generation%} to indicate the position of"
-                " the assistant message: ```{chat_template}```"
+                "Chat template must contain {%generation%} to indicate the position of the assistant message "
+                "if mask_user_turns is True. However, the provided template does not contain this tag: "
+                " ```{chat_template}```. "
+                "See https://levanter.readthedocs.io/en/latest/reference/Data-Formats.html#chat-templates"
+                " for more details."
             )
 
     def __call__(self, batch: Sequence[dict]) -> Sequence[ProcessedChatDict]:
@@ -1351,6 +1380,7 @@ class MultiturnChatDataset(MappedAsyncDataset[tuple[ProcessedChatDict, Processed
         Pos: Axis,
         max_segments_per_example: int = 64,
         slice_strategy: Literal["left", "right", "raise"] = "left",
+        mask_user_turns: bool = True,
     ):
         # NB the GreedyPackedDataset returns a tuple, where the first has the packed leaves
         # and the second has the segment ids
@@ -1365,17 +1395,21 @@ class MultiturnChatDataset(MappedAsyncDataset[tuple[ProcessedChatDict, Processed
         self.Pos = Pos
 
         sharding = jax.sharding.SingleDeviceSharding(jax.local_devices(backend="cpu")[0])
+        self.mask_user_turns = mask_user_turns
 
         @functools.partial(eqx.filter_jit, out_shardings=sharding)
         def _create_lm_example(e: tuple[ProcessedChatDict, ProcessedChatDict]) -> LmExample:
             example, seg_ids = e
             tokens = hax.named(example["input_ids"], self.Pos)
 
-            # mask is 1 on the position of the assistant tokens
-            mask = example["assistant_masks"]
-            # loss_mask by convention is 1 on the positions where we compute loss, i.e. shifted back 1
-            mask = jnp.roll(mask, -1, axis=-1)
-            loss_mask = hax.named(mask, self.Pos)
+            if mask_user_turns:
+                # mask is 1 on the position of the assistant tokens
+                mask = example["assistant_masks"]
+                # loss_mask by convention is 1 on the positions where we compute loss, i.e. shifted back 1
+                mask = jnp.roll(mask, -1, axis=-1)
+                loss_mask = hax.named(mask, self.Pos)
+            else:
+                loss_mask = None
 
             seg_ids = hax.named(seg_ids["input_ids"], self.Pos)
 
@@ -1399,7 +1433,11 @@ class SupervisedProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
     """
 
     def __init__(
-        self, tokenizer: HfTokenizer, input_field: str, output_field: str, separate_with: str | int | None = None
+        self,
+        tokenizer: HfTokenizer,
+        input_field: str,
+        output_field: str,
+        separate_with: str | int | None = None,
     ):
         self.tokenizer = tokenizer
         self.input_field = input_field
@@ -1477,16 +1515,12 @@ class SupervisedDataset(MappedAsyncDataset[tuple[ProcessedSupervisedDict, Proces
             tokens = hax.named(ex["input_ids"], Pos)
             segment_ids = seg_ids["input_ids"]
 
-            sequence_mask = self._make_sequence_mask(segment_ids, ex["sources_len"])
-
-            # if self.mask_inputs:
-            #     # ok this is actually vaguely annoying
-            #     # we need to make anything in the range [0, sources_len) be 0 for each example
-            #     loss_mask = hax.arange(Pos) >= ex["sources_len"]
-            # else:
-            #     loss_mask = 1 - hax.nn.one_hot(-1, Pos, dtype=jax.numpy.float32)
-
-            loss_mask = hax.named(sequence_mask, Pos)
+            if self.mask_inputs:
+                sequence_mask = self._make_sequence_mask(segment_ids, ex["sources_len"])
+                loss_mask = hax.named(sequence_mask, Pos)
+            else:
+                # Use default loss mask
+                loss_mask = None
 
             return LmExample.causal(tokens, loss_mask=loss_mask, segment_ids=hax.named(segment_ids, Pos))
 
@@ -1578,3 +1612,103 @@ class SingleTurnChatProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
             "vocab_size": len(self.tokenizer),
             "messages_field": self.messages_field,
         }
+
+
+def count_corpus_sizes(config: LMMixtureDatasetConfig | SingleDatasetLMConfig, prefix: str = "data/stats/") -> dict:
+    """
+    Counts the number of tokens in each dataset in the config.
+
+    Args:
+        config: the config to count the sizes of
+        prefix: prefix to use for all metric keys. Defaults to "data/stats/"
+
+    Returns:
+        dict containing statistics about the datasets, with keys flattened using /
+    """
+    stats = {}
+
+    train_caches = config.build_caches("train")
+
+    sources: Mapping[str, LmDatasetSourceConfigBase]
+    if isinstance(config, SingleDatasetLMConfigBase):
+        sources = {"": config}
+    else:
+        sources = config.sources
+
+    seq_len = 4096
+    Pos = hax.Axis("position", seq_len)
+
+    weights: dict[str, float]
+    if isinstance(config, LMMixtureDatasetConfig):
+        if isinstance(config.train_weights, list):
+            logger.warning("Stats are computed using the first stage of the mixture schedule.")
+            # TODO: improve this
+            train_weights = config.train_weights[0][1]
+        else:
+            train_weights = config.train_weights
+        total_weight = sum(train_weights.values())
+
+        weights = {name: weight / total_weight for name, weight in train_weights.items()}
+    else:
+        weights = {name: 1.0 for name in train_caches}
+
+    for name, cache in train_caches.items():
+        source = sources[name]
+        cache.await_finished()
+        metric_prefix = f"{prefix}train/{name}/"
+
+        stats[f"{metric_prefix}total_tokens"] = cache.store.tree["input_ids"].data_size
+        stats[f"{metric_prefix}total_docs"] = cache.store.tree["input_ids"].num_rows
+
+        train_set = dataset_for_format(source.format, Pos, cache, eos_id=None, ignore_index=None)
+        train_seqs = len(train_set.as_sync_dataset())
+        stats[f"{metric_prefix}total_seqs"] = train_seqs
+
+        padding_fraction = 1 - (cache.store.tree["input_ids"].data_size / (train_seqs * seq_len))
+        if padding_fraction < 0:
+            stats[f"{metric_prefix}truncation_fraction"] = -padding_fraction
+        else:
+            stats[f"{metric_prefix}padding_fraction"] = padding_fraction
+
+        if isinstance(config, LMMixtureDatasetConfig):
+            weight = weights.get(name, 0.0)
+            stats[f"{metric_prefix}weight"] = weight
+            stats[f"{metric_prefix}normalized_weight"] = weights[name]
+            stats[f"{metric_prefix}approx_global_tokens_per_epoch"] = train_seqs * seq_len / weight
+
+    validation_caches = config.build_caches("validation")
+    for name, cache in validation_caches.items():
+        source = sources[name]
+        cache.await_finished()
+        metric_prefix = f"{prefix}validation/{name}/"
+
+        stats[f"{metric_prefix}total_tokens"] = cache.store.tree["input_ids"].data_size
+        stats[f"{metric_prefix}total_docs"] = cache.store.tree["input_ids"].num_rows
+
+        validation_set = dataset_for_format(source.format, Pos, cache, eos_id=None, ignore_index=None)
+        stats[f"{metric_prefix}total_seqs"] = len(validation_set.as_sync_dataset())
+
+    return stats
+
+
+if __name__ == "__main__":
+
+    @levanter.config.main()
+    def main(config: LMMixtureDatasetConfig):
+        stats = count_corpus_sizes(config)
+
+        print("TRAIN")
+        for key, value in stats.items():
+            if key.startswith("data/stats/train/"):
+                name = key.split("/")[3]
+                metric = key.split("/")[4]
+                print(f"{name} {metric}: {value}")
+
+        print("\nVALIDATION")
+        for key, value in stats.items():
+            if key.startswith("data/stats/validation/"):
+                name = key.split("/")[3]
+                metric = key.split("/")[4]
+                print(f"{name} {metric}: {value}")
+
+    main()

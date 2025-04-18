@@ -184,40 +184,9 @@ python -m levanter.main.cache_dataset \
 
 ### Direct Cache Construction
 
-As a final option, you can directly construct a cache of preprocessed data without using Ray. This is useful if you
-have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.store.SerialCacheWriter](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/store/cache.py)
-to write batches directly. Here's an example:
+We also support direct cache construction. This is useful if you want to use a custom cache format.
+See our guide on [Direct Cache Construction](./guides/Direct-Cache-Construction.md) for more details.
 
-```python
-import numpy as np
-
-from levanter.store import SerialCacheWriter
-
-exemplar = {
-    "input_ids": np.zeros((0), dtype=np.int32),
-    "attention_mask": np.zeros((0), dtype=np.int32),
-    "labels": np.zeros((0), dtype=np.int32),
-}
-
-with SerialCacheWriter(cache_dir, exemplar) as writer:
-    for batch in process_batches():
-        # batch should be a list of dicts, each with keys "input_ids", "attention_mask", and "labels"
-        writer.write_batch(batch)
-```
-
-In this case, `batch` should be a list of dicts, each with keys `"input_ids"`, `"attention_mask"`, and `"labels"`.
-To work with `train_lm`, it should have an `input_ids` key that is a list of `int`s.
-
-To use a cache like this, you can use the `passthrough` tokenizer:
-
-```yaml
-data:
-  cache_dir: "gs://path/to/cache"
-  tokenizer: "passthrough"
-  vocab_size: 5567
-```
-
-(Basically, you just need to tell Levanter what the vocab size is.)
 
 ## Configuration
 
@@ -286,7 +255,7 @@ Levanter supports starting from an HF pretrained model. To do so, you should set
 ```yaml
 model:
   type: mpt
-initialize_from_hf: "mosaicml/mpt-7b" # can also reference a version, e.g. "mosaicml/mpt-7b@deadbeef"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
 ```
 
