@@ -51,6 +51,7 @@ from levanter.schedule import BatchSchedule
 from levanter.store.cache import CacheMetadata, CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
+from levanter.utils import fsspec_utils
 from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
 
@@ -894,6 +895,22 @@ def build_lm_dataset_cache(
     )
 
 
+def load_lm_dataset_cache(
+    cache_dir: str,
+    format: LmDatasetFormatBase,
+    tokenizer: HfTokenizer,
+    enforce_eos=True,
+) -> TreeCache[dict]:
+    """Similar to build_lm_dataset_cache, but just loads the cache. Raises an error if the cache doesn't exist."""
+    processor = preprocessor_for_format(format, tokenizer, enforce_bos=True, enforce_eos=enforce_eos)
+    cache = TreeCache.load(
+        cache_dir,
+        exemplar=processor.output_exemplar,
+        options=CacheMetadata(preprocessor_metadata=processor.metadata),
+    )
+    return cache
+
+
 @dataclass
 class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
@@ -998,11 +1015,18 @@ class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
         if cache_dir is None:
             raise ValueError("cache_dir cannot be None")
 
+        cache_dir = os.path.join(cache_dir, split)
+
+        if fsspec_utils.exists(cache_dir):
+            try:
+                return load_lm_dataset_cache(cache_dir, format, tokenizer, enforce_eos)
+            except FileNotFoundError:
+                pass
+
         if source is None:
             logger.warning(f"Skipping {split} because no source was provided")
             return None
 
-        cache_dir = os.path.join(cache_dir, split)
         return build_lm_dataset_cache(cache_dir, source, format, tokenizer, options, enforce_eos, monitors)
 
 
