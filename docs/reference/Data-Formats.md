@@ -1,7 +1,7 @@
 # Dataset Format Reference
 
 This document outlines the supported dataset formats in Levanter and how each format transforms raw data into model-ready tokens. These formats determine how Levanter tokenizes, structures, and masks training data.
-For a more directed, tutorial-like guide, see the [Dataset Formats Guide](../guides/Training-Data-Guide).
+For a more directed, tutorial-like guide, see the [Training Data Guide](../guides/Training-Data-Guide.md).
 
 ## Overview
 
@@ -157,3 +157,30 @@ format:
 - Computes `sources_len` so that loss is masked on prompt tokens (assuming `mask_inputs: true`)
 
 ---
+
+
+# API
+
+
+## Overall Configs
+
+::: levanter.data.text.LMMixtureDatasetConfig
+::: levanter.data.text.SingleDatasetLMConfigBase
+
+::: levanter.data.text.HfSingleDatasetLMConfig
+::: levanter.data.text.UrlSingleDatasetLMConfig
+
+## Formats
+
+::: levanter.data.text.LmDatasetFormatBase
+
+::: levanter.data.text.ChatLmDatasetFormat
+::: levanter.data.text.SupervisedLmDatasetFormat
+::: levanter.data.text.TextLmDatasetFormat
+
+## Datasets
+
+
+::: levanter.data.text.CausalLmDataset
+::: levanter.data.text.MultiturnChatDataset
+::: levanter.data.text.SupervisedDataset

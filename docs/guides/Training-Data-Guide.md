@@ -124,4 +124,4 @@ The cache will build on-the-fly using Ray, and training will begin as soon as da
 - Each format must include a `format:` block unless you're using plain `text` with default settings.
 - Use `train_weights: { mydataset: 0.0 }` to include a dataset for evaluation only.
 
-For more details, see the [Dataset Formats Reference](../reference/Dataset%20Formats%20Reference).
+For more details, see the [Dataset Formats Reference](../reference/Data-Formats.md).

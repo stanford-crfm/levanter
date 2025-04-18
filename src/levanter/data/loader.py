@@ -322,7 +322,7 @@ class DataLoaderIterator(Iterator[Ex]):
                 logger.debug(f"Data store exhausted after {target_max_batch_number} batches.")
 
             # if we are padding the final batch, we want to see if there is data past the end of the last batch
-            if at_the_end and self.dl._pad_final_batch and available_len > next_end:
+            if at_the_end and self.dl._pad_final_batch:
                 partial_batch_size = available_len - next_end
                 logger.debug(f"Partial batch size: {partial_batch_size}")
                 return target_max_batch_number + 1, partial_batch_size
@@ -434,7 +434,8 @@ class DataLoaderIterator(Iterator[Ex]):
         ]
         individual_datums = await self.run_and_report_slowness(
             self.dl.data_store.get_batch(indices_for_this_batch_of_batches),
-            f"Waiting for {len(indices_for_this_batch_of_batches)} items.")
+            f"Waiting for {len(indices_for_this_batch_of_batches)} items.",
+        )
 
         # unflatten
         global_map: dict[int, Ex] = {}
@@ -471,9 +472,7 @@ class DataLoaderIterator(Iterator[Ex]):
                 await asyncio.sleep(threshold)
                 total += threshold
                 if not task.done():
-                    logging.warning(
-                        f"Data loading is taking a long time: {total:.1f} seconds. {description}"
-                    )
+                    logging.warning(f"Data loading is taking a long time: {total:.1f} seconds. {description}")
 
         watchdog_task = asyncio.create_task(watchdog())
 

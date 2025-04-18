@@ -1,6 +1,6 @@
 # Direct Cache Construction
 
-(See also [Training on Your Own Data](./Training-On-Your-Data.md) for more details on training on your own data.)
+(See also [Training on Your Own Data](../Training-On-Your-Data.md) for more details on training on your own data.)
 
 Levanter typically handles cache construction automatically, but if you have custom preprocessing logic or Ray isn't
 working for you for some reason, you can directly construct a cache of preprocessed data.
@@ -31,7 +31,7 @@ with SerialCacheWriter(cache_dir, exemplar) as writer:
 
 In this case, `batch` should be a list of dicts, each with keys `"input_ids"`, `"attention_mask"`, and `"labels"`.
 To work with `train_lm`'s `text` format, it should have an `input_ids` key that is a list of `int`s.
-See the [Data Formats Reference](../reference/Dataset-Formats.md) for more details of other formats.
+See the [Data Formats Reference](../reference/Data-Formats.md) for more details of other formats.
 
 ## Passthrough Tokenizers
 

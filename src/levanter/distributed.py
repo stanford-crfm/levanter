@@ -256,6 +256,7 @@ def auto_ray_cluster(
                             print("Hi", flush=True)
                             os.system("ray stop -g 10 --force &> /dev/null")
                             print("done", flush=True)
+
                         atexit.register(kill_ray)
                     elif start_workers:
                         logger.info(
