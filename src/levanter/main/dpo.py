@@ -1,7 +1,6 @@
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import jax.random as jrandom
 import transformers
@@ -11,10 +10,9 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 
-
 logger = logging.getLogger(__name__)
 
-# Define default special tokens
+# define default special tokens
 DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
@@ -29,7 +27,7 @@ class DPOConfig:
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 
     beta: float = 0.1  # temperature parameter for DPO loss
-    reference_free: bool = False  # whether to use reference-free DPO
+    reference_free: bool = True  # whether to use reference-free DPO
     max_prompt_length: int = 512
     max_response_length: int = 1536
     max_seq_len: int = 2048
@@ -47,11 +45,46 @@ class DPOConfig:
     dpo_data: DpoSourceConfig = field(default_factory=DpoSourceConfig)
 
 
-def compute_dpo_loss(model: LmHeadModel, batch, beta=0.1, reference_free=False):
-    """Compute DPO loss"""
-    
-    # TODO: implement
-    raise NotImplementedError
+def compute_dpo_loss(model: LmHeadModel, batch, beta=0.1, reference_free=True):
+    # TODO (Nikil): starting with reference_free=True, but should add a reference model to the loss
+    # computation
+    """
+        beta:
+    """
+    import haliax as hax
+    import jax.numpy as jnp
+
+    prompt_ids = batch["prompt_ids"]
+    chosen_ids = batch["chosen_ids"]
+    rejected_ids = batch["rejected_ids"]
+
+    assert prompt_ids.shape[0] == chosen_ids.shape[0] == rejected_ids.shape[0]
+
+    def logp(m, p, r):
+        x = jnp.concatenate([p, r], axis=-1)
+        logits = m(x)
+        resp_logits = logits[:, p.shape[-1]-1:-1, :]
+        lp = hax.nn.log_softmax(resp_logits, axis=-1)
+        logp_tokens = jnp.take_along_axis(lp, jnp.expand_dims(r, -1), axis=-1).squeeze(-1)
+        return jnp.sum(logp_tokens, axis=-1)
+
+    policy_logp_chosen = logp(model, prompt_ids, chosen_ids)
+    policy_logp_rejected = logp(model, prompt_ids, rejected_ids)
+
+    if reference_free:
+        ref_logp_chosen = ref_logp_rejected = jnp.zeros_like(policy_logp_chosen)
+    else:
+        reference_model = getattr(model, "reference_model", None)
+        assert reference_model is not None, "Reference model required unless reference_free"
+        ref_logp_chosen = logp(reference_model, prompt_ids, chosen_ids)
+        ref_logp_rejected = logp(reference_model, prompt_ids, rejected_ids)
+
+    policy_logratios = policy_logp_chosen - policy_logp_rejected
+    reference_logratios = ref_logp_chosen - ref_logp_rejected
+    logits = policy_logratios - reference_logratios
+    loss = -hax.nn.log_sigmoid(beta * logits)
+    return jnp.mean(loss)
+
 
 
 def train(config: DPOConfig):
@@ -108,7 +141,6 @@ def train(config: DPOConfig):
         )
 
     trainer.train(train_loader)
-
 
 
 def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
