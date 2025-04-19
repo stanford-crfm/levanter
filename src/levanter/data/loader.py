@@ -323,9 +323,13 @@ class DataLoaderIterator(Iterator[Ex]):
 
             # if we are padding the final batch, we want to see if there is data past the end of the last batch
             if at_the_end and self.dl._pad_final_batch:
-                partial_batch_size = available_len - next_end
-                logger.debug(f"Partial batch size: {partial_batch_size}")
-                return target_max_batch_number + 1, partial_batch_size
+                if available_len > next_end:
+                    partial_batch_size = available_len - next_end
+                    logger.debug(f"Partial batch size: {partial_batch_size}")
+                    return target_max_batch_number + 1, partial_batch_size
+                else:
+                    # exact match
+                    return target_max_batch_number, None
 
         return target_max_batch_number, None
 

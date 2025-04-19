@@ -596,8 +596,8 @@ def preprocessor_for_format(
                 return SingleTurnChatProcessor(tokenizer, messages_field=m)  # type: ignore
             else:
                 return ChatProcessor(tokenizer, messages_field=m, chat_template=ct, mask_user_turns=mt)  # type: ignore
-        case SupervisedLmDatasetFormat(input_field=i, output_field=o, separate_with=s, mask_inputs=mi):
-            return SupervisedProcessor(tokenizer, input_field=i, output_field=o, separate_with=s, mask_inputs=mi)  # type: ignore
+        case SupervisedLmDatasetFormat(input_field=i, output_field=o, separate_with=s):
+            return SupervisedProcessor(tokenizer, input_field=i, output_field=o, separate_with=s)  # type: ignore
         case _:
             raise ValueError(f"Unknown format {format}")
 
