@@ -12,17 +12,6 @@ data:
     wikitext: 0.4
   tokenizer: gpt2
   cache_dir: "gs://levanter-data/tokenized/data_mix"
-supervised_data:
-  mmlu:
-    validation_urls:
-      - "gs://marin-us-central2/evaluation/mmlu-eval-subject-2eb39e/cais/*-validation-evaluation.jsonl.gz"
-    cache_dir: "gs://levanter-data/tokenized-gpt2/mmlu/"
-    tags: [ "e"]
-  arc_easy:
-    validation_urls:
-      - "gs://marin-us-central2/evaluation/arc-easy-b39e70/allenai/ai2_arc-ARC-Easy-validation-evaluation.jsonl.gz"
-    cache_dir: "gs://levanter-data/tokenized-gpt2/arc_easy/"
-    tags: [ "arc", "e"]
 
 eval_harness:
   task_spec: ["piqa", "hellaswag"]

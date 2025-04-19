@@ -20,7 +20,7 @@ PreTrainedTokenizer and PreTrainedTokenizerFast. grumble grumble.
 """
 
 
-def num_cpus_used_by_tokenizer(tokenizer) -> int:
+def num_cpus_used_by_tokenizer(tokenizer: HfTokenizer) -> int:
     if getattr(tokenizer, "is_fast", False):
         if os.getenv("TOKENIZERS_PARALLELISM", "true").lower() in _HF_TOKENIZER_OFF_VALUES:
             return 1

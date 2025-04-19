@@ -93,12 +93,16 @@ nav:
       - "Training-On-Your-Data.md"
       - 'Configuration-Guide.md'
       - 'Performance-Guide.md'
+      - "guides/Training-Data-Guide.md"
+      - "guides/Direct-Cache-Construction.md"
   - 'Tutorials':
       - "Fine-Tuning.md"
       - "LoRA.md"
       - "tutorials/Fine-Tuning-Semantic-Parsing.md"
       - "Hardware-Agnostic-Training.md"
       - "tutorials/Training-On-Audio-Data.md"
+  - 'Reference':
+      - "reference/Data-Formats.md"
   - 'Developer Guide':
       - 'dev/Port-Models.md'
       - 'dev/Trackers.md'
