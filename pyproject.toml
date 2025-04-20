@@ -53,7 +53,8 @@ dependencies = [
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
     "deepdiff",
-    "lenses"
+    "lenses",
+    "jinja2"   # needed for apply_chat_template
     #    "lm-eval==0.4.2",
     #    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
