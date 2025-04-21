@@ -40,20 +40,21 @@ dependencies = [
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
     "fsspec[http]>=2024.2,<2026",
-    "tensorstore>=0.1.65,<0.1.70",
+    "tensorstore>=0.1.73",
     "pytimeparse>=1.1.8",
     "humanfriendly==10.0",
     "safetensors[numpy]>=0.4.2,<0.6.0",
     "matplotlib>=3.7.0",
     "tblib>=1.7.0,<4.0.0",
     "dataclasses-json~=0.6.4",
-    "ray[default]>=2.34.0",
+    "ray[default]>=2.34.0,<2.43",
     "pydantic<3",
     "filelock~=3.13",
     "async-lru~=2.0",
     "tqdm-loggable>=0.2",
     "deepdiff",
-    "lenses"
+    "lenses",
+    "jinja2"   # needed for apply_chat_template
     #    "lm-eval==0.4.2",
     #    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]

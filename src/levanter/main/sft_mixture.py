@@ -25,7 +25,7 @@ from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
     SupervisedSourceConfig,
-    mk_cached_sft_dataset,
+    mk_single_turn_cached_sft_dataset,
     mk_supervised_dataset,
 )
 from levanter.models.llama import LlamaConfig
@@ -152,7 +152,7 @@ def train(config: SFTMixtureConfig):
             # All configs in supervised_data should have train_urls attribute at runtime
             # The type checking error occurs because SupervisedHfSourceConfig doesn't have this attribute
             # but in practice, when loaded from YAML, all configs will have it
-            train_dataset = mk_cached_sft_dataset(
+            train_dataset = mk_single_turn_cached_sft_dataset(
                 ChatUrlDataSourceConfig(
                     cache_dir=source_config.cache_dir,
                     # Use getattr to silence type checking, as the attribute always exists at runtime

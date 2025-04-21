@@ -458,5 +458,3 @@ trainer:
 ::: levanter.models.gpt2.Gpt2Config
 
 ::: levanter.models.llama.LlamaConfig
-
-::: levanter.models.mpt.MptConfig
