@@ -678,6 +678,9 @@ class SupervisedUrlSourceConfig(SupervisedSourceConfigBase):
 
 SupervisedSourceConfig: TypeAlias = Union[SupervisedHfSourceConfig, SupervisedUrlSourceConfig]
 
+# for compatibility with old configs
+LMSupervisedDatasetConfig: TypeAlias = SupervisedUrlSourceConfig
+
 
 def _preprocess_supervised_example(
     batch, tokenizer: PreTrainedTokenizerBase, input_field: str, output_field: str
