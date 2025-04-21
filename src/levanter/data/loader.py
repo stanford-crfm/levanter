@@ -268,8 +268,6 @@ class DataLoaderIterator(Iterator[Ex]):
 
             if max_achievable_batch_number < target_next_batch_number:
                 done = True
-            else:
-                assert final_batch_size is None
 
             next_batch_numbers = list(range(batch_number, min(target_next_batch_number, max_achievable_batch_number)))
 
