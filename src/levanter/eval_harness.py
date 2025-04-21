@@ -375,7 +375,7 @@ class LmEvalHarnessConfig:
     max_examples: int | None = None
     max_eval_length: int | None = None
     log_samples: bool = False
-    bootstrap_iters: int = 0  # set to 0 see if this makes it not hang randomly
+    bootstrap_iters: int = 0
 
     def to_task_spec(self) -> list[str | dict]:
         return [task.to_dict() if isinstance(task, TaskConfig) else task for task in self.task_spec]
