@@ -789,7 +789,7 @@ class ChatUrlDataSourceConfig:
         )
 
 
-def preprocess_chat_example(batch, tokenizer: PreTrainedTokenizerBase, should_append_eos: bool) -> dict:
+def preprocess_legacy_chat_template(batch, tokenizer: PreTrainedTokenizerBase, should_append_eos: bool) -> dict:
     """
     Preprocess chat examples to match the format of preprocess_supervised_example.
     Returns a dict with input_ids and sources_len like the supervised case.
@@ -840,7 +840,7 @@ def mk_single_turn_cached_sft_dataset(
 
     # Process the dataset
     dataset = source.map_batches(
-        lambda ex: preprocess_chat_example(ex, tokenizer, should_append_eos),
+        lambda ex: preprocess_legacy_chat_template(ex, tokenizer, should_append_eos),
         batch_size=128,
         num_cpus=num_cpus_used_by_tokenizer(tokenizer),
         output_exemplar=output_exemplar,
@@ -928,7 +928,7 @@ def mk_chat_sft_dataset(
 
     # Process the dataset
     dataset = source.map_batches(
-        lambda ex: preprocess_chat_example(ex, tokenizer, should_append_eos),
+        lambda ex: preprocess_legacy_chat_template(ex, tokenizer, should_append_eos),
         batch_size=128,
         num_cpus=num_cpus_used_by_tokenizer(tokenizer),
         output_exemplar=output_exemplar,
