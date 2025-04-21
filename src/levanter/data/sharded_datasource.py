@@ -283,6 +283,8 @@ class UrlDataSource(ShardedDataSource[dict]):
                             obj = json.loads(line)
                             if self.columns:
                                 yield {col: obj[col] for col in self.columns}
+                            else:
+                                yield obj
                         i += 1
             case ".json":
                 with fsspec.open(url, "r", compression=compression) as f:

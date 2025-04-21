@@ -32,6 +32,7 @@ from levanter.data.text import BatchTokenizer
 # intercept the logging nonsense here
 from levanter.models.asr_model import AudioTextExample
 from levanter.store.cache import CacheOptions, TreeCache, build_or_load_cache
+from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import key_iterator
 from levanter.utils.logging import silence_transformer_nag
 
@@ -72,7 +73,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
     def __init__(
         self,
         processor: ProcessorMixin,
-        tokenizer: PreTrainedTokenizerBase,
+        tokenizer: HfTokenizer,
         enforce_bos=True,
         enforce_eos=True,
         *,
@@ -105,7 +106,7 @@ class BatchAudioProcessor(BatchProcessor[Tuple[np.ndarray, int, str], AudioTextD
         assert len(uniq_sampling_rates) == 1, "Sampling rates should be standardized"
         audio_features: BatchFeature = self.feature_extractor(audio_batch, sampling_rate=uniq_sampling_rates.pop())
         audio_features["input_features"] = np.array(audio_features["input_features"])
-        text_features: list[dict] = self.bt(text_batch)
+        text_features: list[dict] = self.bt([{"text": text} for text in text_batch])
         text_features = [
             {k: np.array(tf[k], dtype=np.int32) for k in ["input_ids", "attention_mask"]} for tf in text_features
         ]
@@ -318,7 +319,7 @@ class ProcessedAudioCache(AsyncDataset[AudioTextDict]):
         )
         monitors = monitors or []
         cache = build_or_load_cache(
-            cache_dir, source, bp, await_finished=await_finished, monitors=monitors, options=cache_options, split=split
+            cache_dir, source, bp, await_finished=await_finished, monitors=monitors, options=cache_options
         )
         if cache.is_finished:
             logger.info(f"Cache {cache_dir} is complete.")
