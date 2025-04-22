@@ -144,10 +144,8 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
-        seek_dataloader = True
         if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
             state = load_checkpoint(state, config.initialize_from_checkpoint_path)
-            seek_dataloader = False
 
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
@@ -246,11 +244,11 @@ def main(config: TrainLmConfig):
                 )
 
         train_loader = trainer.data_loader(train_dataset)
-        if seek_dataloader:
+        if state.step > 0:
+            logger.info(f"Resuming training from step {state.step}")
             train_loader = train_loader.iter_from_step(state.step)
         else:
-            logger.warn("Not seeking dataloader")
-            train_loader = iter(train_loader)
+            train_loader = train_loader.iter_from_step(0)
 
         ## OK, actually run training!
         last_info = trainer.train(state, train_loader)
