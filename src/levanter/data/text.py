@@ -587,12 +587,12 @@ def preprocessor_for_format(
     format: LmDatasetFormatBase, tokenizer: HfTokenizer, *, enforce_eos: bool = True, enforce_bos: bool = True
 ) -> BatchProcessor[dict, dict]:
     match format:
-        case TextLmDatasetFormat():
-            return BatchTokenizer(tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos)
+        case TextLmDatasetFormat(text_key=key):
+            return BatchTokenizer(tokenizer, enforce_bos=enforce_bos, enforce_eos=enforce_eos, text_field=key)
         case ChatLmDatasetFormat(messages_field=m, single_turn=s_turn, chat_template=ct, mask_user_turns=mt):
             if s_turn:
                 if ct is not None:
-                    raise ValueError("Dont' currently support this")
+                    raise NotImplementedError("Don't currently support chat templates for single turn chat")
                 return SingleTurnChatProcessor(tokenizer, messages_field=m)  # type: ignore
             else:
                 return ChatProcessor(tokenizer, messages_field=m, chat_template=ct, mask_user_turns=mt)  # type: ignore
