@@ -95,13 +95,17 @@ def log_performance_stats(
     device = jax.devices()[0]
 
     flops_per_device = flop_utils.device_hardware_flops(device)
+    levanter.tracker.log_summary(
+        {
+            wrap_key("device_kind"): device.device_kind,
+        }
+    )
 
     if flops_per_device is not None:
         theoretical_flops = flops_per_device * device_count
 
         levanter.tracker.log_summary(
             {
-                wrap_key("device_kind"): device.device_kind,
                 wrap_key("theoretical_flops_per_device"): flops_per_device,
                 wrap_key("theoretical_flops"): theoretical_flops,
             }
