@@ -149,7 +149,7 @@ class ShardedDataSource(Generic[T_co]):
 
 class UrlBackedShardedDataSource(ShardedDataSource[T_co], abc.ABC):
     """
-    A base cclass ShardedDataset that is backed by a list of URLs. This is useful for datasets that are stored in a cloud storage
+    A base class ShardedDataset that is backed by a list of URLs. This is useful for datasets that are stored in a cloud storage
     system, such as S3 or GCS.
     """
 
