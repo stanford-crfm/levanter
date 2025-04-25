@@ -52,7 +52,6 @@ from levanter.store.cache import CacheMetadata, CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils import fsspec_utils
-from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
 
 # intercept the logging nonsense here
@@ -485,8 +484,10 @@ class UrlDatasetSourceConfig(LmDatasetSourceConfigBase):
 
     def get_shard_source(self, split) -> Optional[ShardedDataSource[dict]]:
         split_urls = self.urls_for_split(split)
+
         if len(split_urls) == 0:
             return None
+
         return UrlDataSource(split_urls)
 
     def urls_for_split(self, split):
@@ -497,7 +498,12 @@ class UrlDatasetSourceConfig(LmDatasetSourceConfigBase):
         else:
             raise ValueError(f"Unknown split {split}")
 
-        urls = [globbed for url in urls for globbed in expand_glob(url)]
+        # it's ok for there to be no urls for a split, but if there are, they need to be findable
+        if len(urls) == 0:
+            return []
+
+        if len(urls) == 0:
+            raise ValueError(f"No urls found for split {split}")
         return urls
 
 
@@ -667,8 +673,6 @@ class SupervisedUrlSourceConfig(SupervisedSourceConfigBase):
         urls = self.train_urls if split == "train" else self.validation_urls
         if not urls:
             return None
-
-        urls = [globbed for url in urls for globbed in expand_glob(url)]
 
         source = UrlDataSource(urls, columns=[self.input_field, self.output_field])
         return source.map(
@@ -863,6 +867,21 @@ def build_lm_dataset_cache(
     enforce_eos=True,
     monitors: Union[bool, List[MetricsMonitor]] = True,
 ):
+    """
+    Creates a cache for a dataset. If the cache already exists, it will be loaded. Otherwise, it will be built.
+
+    Args:
+        cache_dir: the path to the cache e.g. gs://my-bucket/cache/train
+        source: the source of the data.
+        format: the format of the data
+        tokenizer: the tokenizer
+        options: the cache options to control how it's built
+        enforce_eos: whether to enforce EOS
+        monitors: the metrics monitors to use
+
+    Returns:
+
+    """
     # name is the final two components of the path
     name = os.path.join(*cache_dir.split("/")[-2:])
 
@@ -1303,10 +1322,7 @@ def datasource_from_chat_jsonl_single_turn(
     Returns:
         ShardedDataSource configured for chat data
     """
-    # Expand any glob patterns in the URLs
-    expanded_urls = [globbed for url in urls for globbed in expand_glob(url)]
-
-    return SingleTurnChatJsonlDataSource(expanded_urls, messages_field, input_role, output_role)
+    return SingleTurnChatJsonlDataSource(urls, messages_field, input_role, output_role)
 
 
 class SingleTurnChatJsonlDataSource(JsonlDataSource):
