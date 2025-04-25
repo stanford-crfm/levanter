@@ -160,7 +160,7 @@ def build_or_load_cache(
 
     while await_finished:
         try:
-            cache.await_finished(4.0)
+            cache.await_finished(None, await_cleanup=True)
             break
         except TimeoutError:
             pass
@@ -392,10 +392,12 @@ class TreeCache(AsyncDataset[T_co]):
         step = slice.step or 1
         return start, step, stop
 
-    def await_finished(self, timeout: Optional[float] = None):
+    def await_finished(self, timeout: Optional[float] = None, await_cleanup: bool = False):
         if self._builder is None:
             return
         x = ray.get(self.finished_sentinel(), timeout=timeout)
+        if await_cleanup:
+            ray.get(self._builder.await_cleanup.remote(), timeout=timeout)
         self._attempt_to_load_store(cache_metadata=False)
         return x
 
@@ -697,6 +699,10 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
     async def finished_sentinel(self):
         await self._finished_promise
 
+    async def await_cleanup(self):
+        if self._cache_writer is not None:
+            await self._cache_writer
+
     async def updated_ledger(self, timeout: float | None = None) -> CacheLedger | TimeoutError:
         """
         NB: we **return** a timeout error, we don't raise it. This is because we want to find real failures
@@ -758,9 +764,10 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
             if not self._finished_promise.done():
                 self._finished_promise.set_result(None)
 
-            self._cache_writer = None
-
         self._do_notify()
+
+    def _notify_cleanup_finished(self):
+        self._cache_writer = None
 
     def _do_notify(self):
         async def _do_notify_async():
@@ -971,6 +978,8 @@ def _core_writer_task(
         ray.get(parent._notify_updated_ledger.remote(ledger))
 
         _clean_up_temp_caches(temporary_cache_path)
+        # Fire and forget
+        parent._notify_cleanup_finished.remote()
 
 
 def _clean_up_temp_caches(path):
