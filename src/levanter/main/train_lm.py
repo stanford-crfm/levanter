@@ -140,6 +140,7 @@ def main(config: TrainLmConfig):
         )
 
         # Get the tagged evaluation datasets
+        # Evaluation datasets need to be constructed after the training dataset is constructed since they may take validation sequences from the training set
         tagged_eval_datasets = config.data.tagged_eval_sets(Pos)
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))

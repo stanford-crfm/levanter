@@ -1125,6 +1125,12 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """Block size for deterministic mixing. In each block, a given dataset will have exactly the same number
     of samples, equal to the expected number of samples in the mixture, rounding in the expected way."""
 
+    max_batches_dict: Optional[Dict[str, int]] = None
+    """ Maximum number of batches to use from each dataset for training (using the initial batch size)"""
+
+    num_validation_batches_dict: Optional[Dict[str, int]] = None
+    """ Number of validation batches to sample from the training set for each dataset (using the initial batch size)"""
+
     def __post_init__(self):
         if len(self.configs) == 0:
             raise ValueError("At least one dataset must be provided")
@@ -1143,6 +1149,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         else:
             raise ValueError(f"Invalid train_weights type: {type(self.train_weights)}")
 
+        if self.max_batches_dict is not None or self.num_validation_batches_dict is not None:
+            assert (
+                self.experiment_budget is None and self.target_budget is None
+            ), "max_batches_dict and num_validation_batches_dict and simulated data budget cannot all be set"
+
     def train_set(
         self,
         Pos: Axis,
@@ -1153,11 +1164,14 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         epochs: Optional[int] = None,
     ) -> AsyncDataset[LmExample]:
         mix_key, shuffle_key = jax.random.split(key)
-        causal_datasets = self.train_sets(Pos, monitors, key=shuffle_key, epochs=epochs)
 
         weights = self.train_weights
         if isinstance(weights, Sequence):
             weights = rescale_mixture_schedule_for_batch_schedule(weights, batch_schedule)
+
+        initial_batch_size = batch_schedule.batch_size_at_step(0)
+
+        causal_datasets = self.train_sets(Pos, monitors, key=shuffle_key, epochs=epochs, initial_batch_size=initial_batch_size)
 
         mixture = MixtureDataset(
             datasets=causal_datasets,
@@ -1174,6 +1188,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         Pos: Axis,
         monitors: Union[bool, List[MetricsMonitor]] = True,
         *,
+        initial_batch_size: Optional[int] = None,
         epochs: Optional[int] = None,
         key: PRNGKeyArray,
     ) -> Mapping[str, AsyncDataset[LmExample]]:
@@ -1234,13 +1249,39 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 sliced_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             datasets = sliced_datasets
 
+        self.validation_token_datasets = {}
+
+        if self.num_validation_batches_dict is not None:
+            assert initial_batch_size is not None, "initial_batch_size must be provided if num_validation_batches_dict is provided"
+
+            for name, ds in datasets.items():
+                if name in self.num_validation_batches_dict:
+                    num_sequences = self.num_validation_batches_dict[name] * initial_batch_size
+                    len_dataset = len(ds.as_sync_dataset())
+                    # Take the last N sequences for validation and use the rest for training
+                    self.validation_token_datasets[name] = ds.slice_dataset(start_index=len_dataset - num_sequences, end_index=len_dataset)
+                    datasets[name] = ds.slice_dataset(start_index=0, end_index=len_dataset - num_sequences)
+
+        if self.max_batches_dict is not None:
+            assert initial_batch_size is not None, "initial_batch_size must be provided if max_batches_dict is provided"
+
+            for name, ds in datasets.items():
+                if name in self.max_batches_dict:
+                    num_sequences = self.max_batches_dict[name] * initial_batch_size
+                    len_dataset = len(ds.as_sync_dataset())
+                    assert num_sequences <= len_dataset, f"Max sequences for {name} ({num_sequences}) is greater than the dataset size ({len_dataset})"
+                    logger.info(f"Slicing {name} to {num_sequences} sequences")
+                    datasets[name] = ds.slice_dataset(end_index=num_sequences)
+        
+        
+
         return datasets
 
     def validation_sets(
         self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        return {
+        token_datasets = {
             name: dataset_for_format(
                 self.configs[name].format,
                 Pos,
@@ -1250,6 +1291,14 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             )
             for name, cache in doc_caches.items()
         }
+
+        for name, ds in self.validation_token_datasets.items():
+            logger.info(f"Adding validation dataset {name} sequences from training set")
+            if name in token_datasets:
+                logger.warning(f"Validation dataset {name} already exists, overwriting")
+            token_datasets[name] = ds
+
+        return token_datasets
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
