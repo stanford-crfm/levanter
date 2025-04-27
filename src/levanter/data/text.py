@@ -1171,7 +1171,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
         initial_batch_size = batch_schedule.batch_size_at_step(0)
 
-        causal_datasets = self.train_sets(Pos, monitors, key=shuffle_key, epochs=epochs, initial_batch_size=initial_batch_size)
+        causal_datasets = self.train_sets(
+            Pos, monitors, key=shuffle_key, epochs=epochs, initial_batch_size=initial_batch_size
+        )
 
         mixture = MixtureDataset(
             datasets=causal_datasets,
@@ -1252,28 +1254,34 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         self.validation_token_datasets = {}
 
         if self.num_validation_batches_dict is not None:
-            assert initial_batch_size is not None, "initial_batch_size must be provided if num_validation_batches_dict is provided"
+            assert (
+                initial_batch_size is not None
+            ), "initial_batch_size must be provided if num_validation_batches_dict is provided"
 
             for name, ds in datasets.items():
                 if name in self.num_validation_batches_dict:
                     num_sequences = self.num_validation_batches_dict[name] * initial_batch_size
                     len_dataset = len(ds.as_sync_dataset())
                     # Take the last N sequences for validation and use the rest for training
-                    self.validation_token_datasets[name] = ds.slice_dataset(start_index=len_dataset - num_sequences, end_index=len_dataset)
+                    self.validation_token_datasets[name] = ds.slice_dataset(
+                        start_index=len_dataset - num_sequences, end_index=len_dataset
+                    )
                     datasets[name] = ds.slice_dataset(start_index=0, end_index=len_dataset - num_sequences)
 
         if self.max_batches_dict is not None:
-            assert initial_batch_size is not None, "initial_batch_size must be provided if max_batches_dict is provided"
+            assert (
+                initial_batch_size is not None
+            ), "initial_batch_size must be provided if max_batches_dict is provided"
 
             for name, ds in datasets.items():
                 if name in self.max_batches_dict:
                     num_sequences = self.max_batches_dict[name] * initial_batch_size
                     len_dataset = len(ds.as_sync_dataset())
-                    assert num_sequences <= len_dataset, f"Max sequences for {name} ({num_sequences}) is greater than the dataset size ({len_dataset})"
+                    assert (
+                        num_sequences <= len_dataset
+                    ), f"Max sequences for {name} ({num_sequences}) is greater than the dataset size ({len_dataset})"
                     logger.info(f"Slicing {name} to {num_sequences} sequences")
                     datasets[name] = ds.slice_dataset(end_index=num_sequences)
-        
-        
 
         return datasets
 
