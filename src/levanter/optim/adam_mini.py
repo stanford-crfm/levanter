@@ -132,55 +132,6 @@ def scale_with_mini(beta1, beta2, epsilon, mean_axis=(1,)):
         second_moment_buffer = otu.tree_zeros_like(params)  # Second moment
         count = jnp.zeros([], jnp.int32)
         
-        # Get sharding specs if using haliax partitioned arrays
-        # param_specs = None
-        # if any(isinstance(x, haliax.NamedArray) for x in jax.tree_util.tree_leaves(params)):
-        #     param_specs = infer_resource_partitions(params)
-        
-        # # Initialize the second moment buffer by taking the mean over the specified axes
-        # def init_second_moment(param, spec=None):
-        #     # Create a buffer with appropriate shape after taking mean over specified axes
-        #     reduced_shape = list(param.shape)
-        #     for axis in sorted(mean_axis):
-        #         if axis < len(reduced_shape):
-        #             reduced_shape[axis] = 1
-            
-        #     # Adjust the sharding spec for the reduced dimensions
-        #     adjusted_spec = None
-        #     # if spec is not None:
-        #     #     # Extract the PartitionSpec from spec
-        #     #     if hasattr(spec, 'spec'):
-        #     #         spec = spec.spec
-                
-        #     #     # Create a new spec with None for the reduced dimensions
-        #     #     if isinstance(spec, PartitionSpec):
-        #     #         spec_list = list(spec)
-        #     #         for axis in sorted(mean_axis):
-        #     #             if axis < len(spec_list):
-        #     #                 # Replace the sharding with None for reduced dimensions
-        #     #                 spec_list[axis] = None
-        #     #         adjusted_spec = PartitionSpec(*spec_list)
-            
-        #     return jnp.zeros(reduced_shape, dtype=param.dtype), adjusted_spec
-        
-        # if param_specs is not None:
-        #     # If we have sharding info, use it to create properly sharded buffers
-        #     outputs = jax.tree_util.tree_map(init_second_moment, params, param_specs)
-        #     second_moment_buffer = jax.tree_util.tree_map(lambda x: x[0], outputs)
-        #     second_moment_specs = jax.tree_util.tree_map(lambda x: x[1], outputs)
-            
-        #     # Apply the sharding to the second moment buffer
-        #     from haliax.partitioning import with_sharding_constraint
-        #     second_moment_buffer = jax.tree_util.tree_map(
-        #         lambda b, s: with_sharding_constraint(b, s) if s is not None else b,
-        #         second_moment_buffer, second_moment_specs
-        #     )
-        # else:
-        #     # If no sharding info, just initialize the buffers without sharding
-        #     second_moment_buffer = jax.tree_util.tree_map(
-        #         lambda p: init_second_moment(p)[0], params
-        #     )
-        
         return ScaleByMiniState(count=count, momentum_buffer=momentum_buffer, 
                                second_moment_buffer=second_moment_buffer)
 
