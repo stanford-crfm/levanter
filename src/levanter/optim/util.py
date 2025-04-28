@@ -1,13 +1,26 @@
 import equinox as eqx
 import jax
+from typing import Callable, TypeVar
+import dataclasses
+
+import equinox as eqx
+import jax
+from jaxtyping import PyTree
+
+import haliax
+import haliax as hax
+from haliax.tree_util import scan_aware_tree_map
 
 from levanter.utils.jax_utils import is_inexact_arrayish
 
+T = TypeVar("T")
 
 def hvp(f, x, v):
     """Compute the Hessian-vector product of a function."""
     return eqx.filter_jvp(eqx.filter_grad(f), (x,), (v,))[1]
-
+    # grad_f = eqx.filter_grad(f)
+    # _, vjp_fn = eqx.filter_vjp(grad_f, x)
+    # return vjp_fn(v)[0]
 
 def tree_gaussian_like(key, tree):
     """
@@ -21,3 +34,131 @@ def tree_gaussian_like(key, tree):
     g = jax.tree_util.tree_unflatten(structure, g)
 
     return g
+
+
+## utils for muon
+
+
+def flatten_linear_layers(tree: T) -> T:
+    """
+    In PyTorch, linear layers are stored as a 2d weight matrix and a 1d bias vector. In Haliax,
+    linear layers can have arbitrary dimensions, grouped into input and output axes. This function
+    flattens the linear layers in a tree to be compatible with PyTorch-style state dicts.
+
+    :param tree:
+    """
+    from haliax.nn import Linear
+
+    def _flatten_linear(layer):
+        if not isinstance(layer, Linear):
+            return layer
+
+        weight = layer.weight
+        bias = layer.bias
+
+        if weight.array is not None:
+            out_first = layer._out_first
+            weight = weight.flatten_axes(layer.Out, "__OUT__").flatten_axes(layer.In, "__IN__")
+
+            if out_first:
+                weight = weight.rearrange((..., "__OUT__", "__IN__"))
+            else:
+                weight = weight.rearrange((..., "__IN__", "__OUT__"))
+
+            if bias is not None:
+                bias = bias.flatten_axes(layer.Out, "__OUT__")
+
+            In = weight.resolve_axis("__IN__")
+            Out = weight.resolve_axis("__OUT__")
+
+            return dataclasses.replace(layer, weight=weight, bias=bias, In=In, Out=Out)  # type: ignore
+        else:
+            return layer
+
+    return jax.tree.map(_flatten_linear, tree, is_leaf=lambda x: isinstance(x, Linear))
+
+
+def unflatten_linear_layers(template: T, tree_with_flattened_linears: T) -> T:
+    """
+    Unflattens linear layers in a tree that was flattened with [haliax.state_dict.flatten_linear_layers][].
+    Template has the same structure as the tree that was flattened, but with the original (unflattened)
+    linear layers.
+
+    Returns:
+        The same tree as `tree_with_flattened_linears`, but with the linear layers unflattened to match
+        the structure of `template`.
+    """
+
+    from haliax.nn import Linear
+
+    def _unflatten_linear(template, flattened):
+        assert isinstance(template, Linear) == isinstance(flattened, Linear)
+
+        if not isinstance(template, Linear):
+            return flattened
+
+        weight = flattened.weight
+        bias = flattened.bias
+
+        if weight.array is not None:
+            weight = weight.unflatten_axis("__OUT__", template.Out).unflatten_axis("__IN__", template.In)
+            weight = weight.rearrange(template.weight.axes)
+
+        if bias is not None:
+            bias = bias.unflatten_axis("__OUT__", template.Out)
+            assert template.bias is not None, "Flattened bias but template has no bias"
+            bias = bias.rearrange(template.bias.axes)
+
+        return dataclasses.replace(template, weight=weight, bias=bias)  # type: ignore
+
+    return jax.tree.map(
+        _unflatten_linear, template, tree_with_flattened_linears, is_leaf=lambda x: isinstance(x, Linear)
+    )
+def map_flattened_linear_layers(
+    f: Callable[[hax.nn.Linear], hax.nn.Linear],
+    params: PyTree,
+    *,
+    or_else: Callable | None = None,
+    is_leaf: Callable | None = None,
+):
+    """
+    Apply a function to all Linear layers in a PyTree, flattening articulated input/output dims into single dims, then
+    unflattening them back into the original structure. This method also takes care of vmapping over scan layers.
+
+    The linear layers will be passed to the function `f` and the result will be used to replace the original linear layer.
+    The linear layers passed to `f` will be flattened into 2D (named) arrays, and the result will be unflattened back into the original shape.
+    The bias term, if any, will be passed as a 1D named arrays.
+    The weight array will not be None, but the bias array may be None.
+
+    Args:
+        f: The function to apply to each Linear layer
+        params: The PyTree of parameters
+        or_else: optional function to apply to non-Linear leaves
+        is_leaf: optional function to determine if a node is a leaf. Linears will always be considered leaves.
+
+    Returns:
+        The PyTree with the function applied to all Linear layers and the structure preserved otherwise.
+        returned linear layers will be unfattened back to their original shape.
+
+    """
+
+    if is_leaf is None:
+        is_leaf = lambda x: isinstance(x, hax.nn.Linear)
+    else:
+        _is_leaf = is_leaf
+        is_leaf = lambda x: isinstance(x, hax.nn.Linear) or _is_leaf(x)
+
+    def map_fn(p):
+        if isinstance(p, hax.nn.Linear):
+            if p.weight is None:
+                return p
+            return f(p)
+        elif or_else is not None:
+            return or_else(p)
+        else:
+            return p
+
+    flattened_linear = flatten_linear_layers(params)
+    flattened_linear = scan_aware_tree_map(map_fn, flattened_linear, is_leaf=is_leaf)
+
+    return unflatten_linear_layers(params, flattened_linear)
