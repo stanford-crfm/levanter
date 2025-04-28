@@ -1129,7 +1129,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """ Maximum number of batches to use from each dataset for training (using the initial batch size)"""
 
     num_validation_batches_dict: Optional[Dict[str, int]] = None
-    """ Number of validation batches to sample from the training set for each dataset (using the initial batch size)"""
+    """ Number of validation batches to sample from the training set for each dataset (using validation_batch_size)"""
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -1251,8 +1251,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 sliced_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             datasets = sliced_datasets
 
-        self.validation_token_datasets = {}
-
         if self.num_validation_batches_dict is not None:
             assert (
                 initial_batch_size is not None
@@ -1260,12 +1258,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
             for name, ds in datasets.items():
                 if name in self.num_validation_batches_dict:
-                    num_sequences = self.num_validation_batches_dict[name] * initial_batch_size
+                    num_sequences = self.num_validation_batches_dict[name] * self.validation_batch_size
                     len_dataset = len(ds.as_sync_dataset())
-                    # Take the last N sequences for validation and use the rest for training
-                    self.validation_token_datasets[name] = ds.slice_dataset(
-                        start_index=len_dataset - num_sequences, end_index=len_dataset
-                    )
+                    # Reserve the last N sequences for validation
                     datasets[name] = ds.slice_dataset(start_index=0, end_index=len_dataset - num_sequences)
 
         if self.max_batches_dict is not None:
@@ -1284,9 +1279,22 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                     datasets[name] = ds.slice_dataset(end_index=num_sequences)
 
         return datasets
+    
+    def tagged_eval_sets(
+        self, Pos: Axis, batch_schedule: BatchSchedule, monitors: Union[bool, List[MetricsMonitor]] = True
+    ) -> list[Tuple[AsyncDataset[LmExample], List[str]]]:
+        tags = {name: (config.tags or []) + [name] for name, config in self.sources.items()}
+        initial_batch_size = batch_schedule.batch_size_at_step(0)
+        eval_sets = self.validation_sets(Pos, monitors, initial_batch_size=initial_batch_size)
+
+        return [(eval_sets[name], tags[name]) for name in eval_sets]
 
     def validation_sets(
-        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
+        self,
+        Pos: Axis,
+        monitors: Union[bool, List[MetricsMonitor]] = True,
+        *,
+        initial_batch_size: Optional[int] = None,
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
         token_datasets = {
@@ -1300,11 +1308,17 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             for name, cache in doc_caches.items()
         }
 
-        for name, ds in self.validation_token_datasets.items():
-            logger.info(f"Adding validation dataset {name} sequences from training set")
-            if name in token_datasets:
-                logger.warning(f"Validation dataset {name} already exists, overwriting")
-            token_datasets[name] = ds
+        if self.num_validation_batches_dict is not None:
+            for name, ds in token_datasets.items():
+                if name in self.num_validation_batches_dict:
+                    num_sequences = self.num_validation_batches_dict[name] * initial_batch_size
+                    len_dataset = len(ds.as_sync_dataset())
+                    assert (
+                        num_sequences <= len_dataset
+                    ), f"Num validation sequences for {name} ({num_sequences}) is greater than the dataset size ({len_dataset})"
+                    logger.info(f"Selecting {num_sequences} validation sequences for {name}")
+                    # Take the last N sequences for validation
+                    token_datasets[name] = ds.slice_dataset(start_index=len_dataset - num_sequences, end_index=len_dataset)
 
         return token_datasets
 
