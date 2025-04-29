@@ -1256,9 +1256,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             for name, ds in datasets.items():
                 if name in self.num_validation_batches_dict:
                     num_sequences = self.num_validation_batches_dict[name] * self.validation_batch_size
-                    len_dataset = len(ds.as_sync_dataset())
-                    # Reserve the last N sequences for validation
-                    datasets[name] = ds.slice_dataset(start_index=0, end_index=len_dataset - num_sequences)
+                    # Reserve the first N sequences for validation
+                    datasets[name] = ds.slice_dataset(start_index=num_sequences)
 
         if self.max_batches_dict is not None:
             assert (
@@ -1298,16 +1297,9 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             for name, ds in token_datasets.items():
                 if name in self.num_validation_batches_dict:
                     num_sequences = self.num_validation_batches_dict[name] * self.validation_batch_size
-                    len_dataset = len(ds.as_sync_dataset())
-                    assert num_sequences <= len_dataset, (
-                        f"Num validation sequences for {name} ({num_sequences}) is greater than the dataset size"
-                        f" ({len_dataset})"
-                    )
                     logger.info(f"Selecting {num_sequences} validation sequences for {name}")
-                    # Take the last N sequences for validation
-                    token_datasets[name] = ds.slice_dataset(
-                        start_index=len_dataset - num_sequences, end_index=len_dataset
-                    )
+                    # Take the first N sequences for validation
+                    token_datasets[name] = ds.slice_dataset(end_index=num_sequences)
 
         return token_datasets
 
