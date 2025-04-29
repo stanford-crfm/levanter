@@ -1267,10 +1267,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             for name, ds in datasets.items():
                 if name in self.max_batches_dict:
                     num_sequences = self.max_batches_dict[name] * self.validation_batch_size
-                    len_dataset = len(ds.as_sync_dataset())
-                    assert (
-                        num_sequences <= len_dataset
-                    ), f"Max sequences for {name} ({num_sequences}) is greater than the dataset size ({len_dataset})"
                     logger.info(f"Slicing {name} to {num_sequences} sequences")
                     datasets[name] = ds.slice_dataset(end_index=num_sequences)
 
