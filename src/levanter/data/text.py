@@ -1128,7 +1128,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     max_batches_dict: Optional[Dict[str, int]] = None
     """ Maximum number of batches to use from each dataset for training (using the initial batch size)"""
 
-    validation_batch_size: Optional[int] = 1024
+    validation_batch_size: int = 1024
     num_validation_batches_dict: Optional[Dict[str, int]] = None
     """ Number of validation batches to sample from the training set for each dataset"""
 
@@ -1253,10 +1253,6 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             datasets = sliced_datasets
 
         if self.num_validation_batches_dict is not None:
-            assert (
-                initial_batch_size is not None
-            ), "initial_batch_size must be provided if num_validation_batches_dict is provided"
-
             for name, ds in datasets.items():
                 if name in self.num_validation_batches_dict:
                     num_sequences = self.num_validation_batches_dict[name] * self.validation_batch_size
@@ -1271,7 +1267,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
             for name, ds in datasets.items():
                 if name in self.max_batches_dict:
-                    num_sequences = self.max_batches_dict[name] * initial_batch_size
+                    num_sequences = self.max_batches_dict[name] * self.validation_batch_size
                     len_dataset = len(ds.as_sync_dataset())
                     assert (
                         num_sequences <= len_dataset
