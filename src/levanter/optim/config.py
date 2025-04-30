@@ -302,6 +302,7 @@ class AdamConfig(OptimizerConfig):
     beta2: float = 0.95
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
+    nesterov: bool = False
 
     def build(self, num_train_steps):
         """Creates the optimizer"""
@@ -325,7 +326,6 @@ class AdamConfig(OptimizerConfig):
             return optimizer
 
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
-
 
 @OptimizerConfig.register_subclass("lion")
 @dataclass
