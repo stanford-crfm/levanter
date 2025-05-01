@@ -91,6 +91,7 @@ class JaggedArrayStore:
     High latency, but high throughput.
     """
 
+    # Note that offsets, data and shapes have very large length and you shouldn't read() them directly without slicing
     offsets: ts.TensorStore  # offsets of the start of each array, except that index[0] is the number of arrays
     data: ts.TensorStore
     shapes: Optional[ts.TensorStore]  # (len(offsets), len(data.shape)-1)
@@ -431,7 +432,7 @@ class JaggedArrayStore:
             start, stop, step = item.indices(len(self))
             # for now, just read the data into a list
 
-            return [self[i] for i in range(start, stop, step)]
+            return self.get_batch_sync(list(range(start, stop, step)))
         else:
             try:
                 start, stop, _ = self._bounds_for_rows(item, item + 1)

@@ -109,7 +109,7 @@ class LlamaConfig(HFCompatConfig):
             num_layers=hf_config.num_hidden_layers,
             num_heads=hf_config.num_attention_heads,
             num_kv_heads=hf_config.num_key_value_heads,
-            activation_function=ActivationFunctionEnum[hf_config.hidden_act],
+            activation_function=ActivationFunctionEnum(hf_config.hidden_act),
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
@@ -197,6 +197,8 @@ class LlamaMlp(eqx.Module):
         down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias, out_first=True)
         if isinstance(activation_fn, ActivationFunctionEnum):
             activation_fn = activation_fn.to_fn()
+        elif isinstance(activation_fn, str):
+            activation_fn = ActivationFunctionEnum(activation_fn).to_fn()
         return LlamaMlp(gate_proj, up_proj, down_proj, activation_fn)
 
     @named_call
@@ -360,12 +362,19 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
     - Llama doesn't use dropout.
     """
 
-    Vocab: Axis = eqx.field(static=True)
     token_embeddings: hnn.Embedding
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        return LlamaEmbedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key))
+        return LlamaEmbedding(hnn.Embedding.init(Vocab, config.Embed, key=key))
+
+    @property
+    def Vocab(self) -> Axis:
+        return self.token_embeddings.Vocab
+
+    @property
+    def Embed(self) -> Axis:
+        return self.token_embeddings.Embed
 
     @named_call
     def embed(self, input_ids, *args):
@@ -381,7 +390,7 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
-        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
+        return dataclasses.replace(self, token_embeddings=new_weights)
 
 
 class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig]):

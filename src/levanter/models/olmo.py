@@ -110,7 +110,7 @@ class Olmo2Config(HFCompatConfig):
             num_layers=hf_config.num_hidden_layers,
             num_heads=hf_config.num_attention_heads,
             num_kv_heads=hf_config.num_key_value_heads,
-            activation_function=hf_config.hidden_act,
+            activation_function=ActivationFunctionEnum(hf_config.hidden_act),
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,

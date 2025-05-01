@@ -114,7 +114,7 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
             decoder_attention_heads=hf_config.decoder_attention_heads,
             decoder_ffn_dim=hf_config.decoder_ffn_dim,
             encoder_ffn_dim=hf_config.encoder_ffn_dim,
-            activation_function=hf_config.activation_function,
+            activation_function=ActivationFunctionEnum(hf_config.hidden_act),
             max_source_positions=hf_config.max_source_positions,
             d_model=hf_config.d_model,
         )

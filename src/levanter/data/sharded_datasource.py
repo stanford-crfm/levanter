@@ -1,8 +1,9 @@
+import abc
 import io
 import json
 import os
-import re
 import warnings
+from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -17,17 +18,16 @@ from typing import (
     Tuple,
     TypeVar,
 )
-from urllib.parse import urlparse
 
 import datasets
 import fsspec
 import numpy as np
 import pyarrow.parquet as pq
-from google.cloud import storage
 
 from levanter.utils import fsspec_utils
 
 from ..data import AsyncDataset
+from ..utils.fsspec_utils import expand_glob
 from ._preprocessor import (
     BatchResult,
     _BatchMapTransform,
@@ -147,41 +147,24 @@ class ShardedDataSource(Generic[T_co]):
         )
 
 
-def gcs_glob(pattern: str) -> list[str]:
-    """Glob files in Google Cloud Storage.
-
-    Args:
-        pattern: GCS path pattern (gs://bucket/path/*)
-
-    Returns:
-        List of matching GCS URLs
+class UrlBackedShardedDataSource(ShardedDataSource[T_co], abc.ABC):
     """
-    if not pattern.startswith("gs://"):
-        # Handle local files
-        import glob
+    A base class ShardedDataset that is backed by a list of URLs. This is useful for datasets that are stored in a cloud storage
+    system, such as S3 or GCS.
+    """
 
-        return glob.glob(pattern)
+    urls: Sequence[str]
 
-    # Parse bucket and prefix from gs:// URL
-    parsed = urlparse(pattern)
-    bucket_name = parsed.netloc
-    prefix = parsed.path.lstrip("/")
+    def __init__(self, urls):
+        self.urls = urls
 
-    # Convert glob pattern to regex
-    prefix_no_glob = prefix.split("*")[0]
-    pattern_as_regex = re.compile(re.escape(prefix).replace("\\*", ".*"))
+    @cached_property
+    def _shard_name_to_url_mapping(self):
+        return _mk_shard_name_mapping(self.urls)
 
-    # Initialize GCS client
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-
-    # List matching blobs
-    matching_urls = []
-    for blob in bucket.list_blobs(prefix=prefix_no_glob):
-        if pattern_as_regex.match(blob.name):
-            matching_urls.append(f"gs://{bucket_name}/{blob.name}")
-
-    return matching_urls
+    @property
+    def shard_names(self) -> Sequence[str]:
+        return list(self._shard_name_to_url_mapping.keys())
 
 
 def datasource_from_hf(id: str, *, split, **kwargs) -> ShardedDataSource[dict]:
@@ -262,7 +245,6 @@ class TextUrlDataSource(ShardedDataSource[str]):
     """
 
     def __init__(self, urls, text_key="text"):
-        self.urls = urls
         self.text_key = text_key
         self.base_ds = UrlDataSource(urls, columns=[text_key])
 
@@ -291,19 +273,14 @@ class TextUrlDataSource(ShardedDataSource[str]):
                 yield doc[self.text_key]
 
 
-class UrlDataSource(ShardedDataSource[dict]):
+class UrlDataSource(UrlBackedShardedDataSource[dict]):
     """
     Dataset for various dict-like formats.
     """
 
     def __init__(self, urls, columns=None):
-        self.urls = urls
-        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+        super().__init__(urls)
         self.columns = columns
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
@@ -323,6 +300,8 @@ class UrlDataSource(ShardedDataSource[dict]):
                             obj = json.loads(line)
                             if self.columns:
                                 yield {col: obj[col] for col in self.columns}
+                            else:
+                                yield obj
                         i += 1
             case ".json":
                 with fsspec.open(url, "r", compression=compression) as f:
@@ -333,11 +312,12 @@ class UrlDataSource(ShardedDataSource[dict]):
                         else:
                             yield doc
             case ".parquet":
+                # TODO: fix this duplication
                 with fsspec.open(url, "rb", compression=compression) as f:
                     parquet_file = pq.ParquetFile(f)
                     total_rows = parquet_file.metadata.num_rows
                     if row >= total_rows:
-                        return iter([])
+                        return
 
                     num_row_groups = parquet_file.metadata.num_row_groups
 
@@ -359,27 +339,21 @@ class UrlDataSource(ShardedDataSource[dict]):
                         table = parquet_file.read_row_group(rg_idx, columns=self.columns)
                         if rg_idx == row_group_index:
                             table = table.slice(start_row_in_group)
-                        for record in table.to_pylist():
-                            yield record
+                        yield from table.to_pylist()
             case _:
                 raise ValueError(f"Unknown format {format}")
 
 
-class AudioTextUrlDataSource(ShardedDataSource[Tuple[np.ndarray, int, str]]):
+class AudioTextUrlDataSource(UrlBackedShardedDataSource[Tuple[np.ndarray, int, str]]):
     """
     Dataset for various audio and text formats.
     """
 
     def __init__(self, urls, text_key="sentence", audio_key="audio", sampling_rate=16000):
-        self.urls = urls
-        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+        super().__init__(urls)
         self.text_key = text_key
         self.audio_key = audio_key
         self.sampling_rate = sampling_rate
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
 
     @staticmethod
     def resolve_audio_pointer(audio_pointer, sampling_rate) -> dict[str, Any]:
@@ -483,14 +457,9 @@ def _sniff_format_for_dataset(url):
     return format_from_url
 
 
-class JsonlDataSource(ShardedDataSource[dict]):
+class JsonlDataSource(UrlBackedShardedDataSource[dict]):
     def __init__(self, urls):
-        self.urls = urls
-        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
+        super().__init__(urls)
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
@@ -504,29 +473,9 @@ class JsonlDataSource(ShardedDataSource[dict]):
                 i += 1
 
 
-class TextDataSource(ShardedDataSource[dict]):
+class JsonDataSource(UrlBackedShardedDataSource[dict]):
     def __init__(self, urls):
-        self.urls = urls
-        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
-
-    def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
-        url = self._shard_name_to_url_mapping[shard_name]
-        i = 0
-        with fsspec.open(url, "r", compression="infer") as f:
-            for line in f:
-                if i >= row:
-                    yield line
-                i += 1
-
-
-class JsonDataSource(ShardedDataSource[dict]):
-    def __init__(self, urls):
-        self.urls = urls
-        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
+        super().__init__(urls)
 
     @property
     def shard_names(self) -> Sequence[str]:
@@ -540,14 +489,10 @@ class JsonDataSource(ShardedDataSource[dict]):
             return iter(data[row:])
 
 
-class ParquetDataSource(ShardedDataSource[dict]):
-    def __init__(self, urls):
-        self.urls = urls
-        self._shard_name_to_url_mapping = _mk_shard_name_mapping(urls)
-
-    @property
-    def shard_names(self) -> Sequence[str]:
-        return list(self._shard_name_to_url_mapping.keys())
+class ParquetDataSource(UrlBackedShardedDataSource[dict]):
+    def __init__(self, urls, columns=None):
+        super().__init__(urls)
+        self.columns = columns
 
     def open_shard_at_row(self, shard_name: str, row: int) -> Iterator[dict]:
         url = self._shard_name_to_url_mapping[shard_name]
@@ -555,7 +500,7 @@ class ParquetDataSource(ShardedDataSource[dict]):
             parquet_file = pq.ParquetFile(f)
             total_rows = parquet_file.metadata.num_rows
             if row >= total_rows:
-                return iter([])
+                return
 
             num_row_groups = parquet_file.metadata.num_row_groups
 
@@ -574,7 +519,7 @@ class ParquetDataSource(ShardedDataSource[dict]):
 
             # read from the starting row group onwards
             for rg_idx in range(row_group_index, parquet_file.num_row_groups):
-                table = parquet_file.read_row_group(rg_idx)
+                table = parquet_file.read_row_group(rg_idx, columns=self.columns)
 
                 # if we're in the row group we want, slice the table at/from the row we want
                 if rg_idx == row_group_index:
@@ -592,6 +537,12 @@ def _mk_shard_name_mapping(urls):
         common_prefix = os.path.commonprefix(urls)
 
     missing_urls: List[str] = []
+
+    old_urls = urls
+    urls = [globbed for url in urls for globbed in expand_glob(url)]
+
+    if old_urls and not urls:
+        raise ValueError(f"Could not expand any of the urls: {old_urls}")
 
     for url in urls:
         if not fsspec_utils.exists(url):

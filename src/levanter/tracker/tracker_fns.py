@@ -128,10 +128,13 @@ def log_configuration(hparams: Any, config_name: Optional[str] = None):
     if dataclasses.is_dataclass(hparams):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = os.path.join(tmpdir, "config.yaml")
-            with open(config_path, "w") as f:
-                draccus.dump(hparams, f, encoding="utf-8")
-                name = config_name or "config.yaml"
-                _global_tracker.log_artifact(config_path, name=name, type="config")
+            try:
+                with open(config_path, "w") as f:
+                    draccus.dump(hparams, f, encoding="utf-8")
+                    name = config_name or "config.yaml"
+                    _global_tracker.log_artifact(config_path, name=name, type="config")
+            except Exception:  # noqa
+                logger.warning("Failed to dump config to yaml. Skipping logging as artifact.")
 
 
 def set_global_tracker(tracker: Tracker):

@@ -87,7 +87,7 @@ class BackpackConfig(Gpt2Config):
             embed_pdrop=hf_config.embd_pdrop,
             resid_pdrop=hf_config.resid_pdrop,
             layer_norm_epsilon=hf_config.layer_norm_epsilon,
-            activation_function=hf_config.activation_function,
+            activation_function=ActivationFunctionEnum(hf_config.activation_function),
             scale_attn_by_inverse_layer_idx=hf_config.scale_attn_by_inverse_layer_idx,
             upcast_attn=hf_config.reorder_and_upcast_attn,
             num_senses=hf_config.num_senses,
