@@ -21,7 +21,7 @@ from haliax.state_dict import ModuleWithStateDictSerialization, StateDict
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.models.attention import AttentionBackend, AttentionMask
-from levanter.models.llama import LlamaAttention, LlamaEmbedding
+from levanter.models.llama import LlamaAttention, LlamaEmbedding, LlamaMlp
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.mistral import MistralConfig
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
@@ -71,6 +71,7 @@ class MixtralConfig(MistralConfig):
 
     num_experts_per_tok: int = 2
     n_routed_experts: int = 8
+    n_shared_experts: int = 0
 
     lbl_coef: Optional[float] = 0.01
     rzl_coef: Optional[float] = 0.001
@@ -100,6 +101,7 @@ class MixtralConfig(MistralConfig):
     KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Experts = property(lambda self: Axis(name="experts", size=self.n_routed_experts))
+    SharedExperts = property(lambda self: Axis(name="shared_experts", size=self.n_shared_experts))
     TopExperts = property(lambda self: Axis(name="top_experts", size=self.num_experts_per_tok))
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
@@ -195,6 +197,7 @@ class MixtralConfig(MistralConfig):
             vocab_size=vocab_size,
             glu=True,
             num_experts=self.n_routed_experts,
+            num_shared_experts=self.n_shared_experts,
             num_experts_per_tok=self.num_experts_per_tok,
         )
 
@@ -434,17 +437,28 @@ class MixtralDecoderLayer(eqx.Module):
     block_sparse_moe: MixtralSparseMoeBlock
     input_layernorm: hnn.RmsNorm
     post_attention_layernorm: hnn.RmsNorm
+    shared_mlp: Optional[LlamaMlp]
 
     @staticmethod
     def init(config: MistralConfig, *, key) -> "MixtralDecoderLayer":
-        k_attn, k_mlp = jrandom.split(key, 2)
+        k_attn, k_moe, k_mlp = jrandom.split(key, 3)
 
         attn = LlamaAttention.init(config, key=k_attn)
-        moe = MixtralSparseMoeBlock.init(config, key=k_mlp)
+        moe = MixtralSparseMoeBlock.init(config, key=k_moe)
         ln_1 = config.mk_LayerNorm(config.Embed)
         ln_2 = config.mk_LayerNorm(config.Embed)
 
-        return MixtralDecoderLayer(config, attn, moe, ln_1, ln_2)
+        shared_mlp = None
+        if config.n_shared_experts > 0:
+            shared_mlp = LlamaMlp.init(
+                config.Embed,
+                (config.SharedExperts, config.Mlp),
+                config.activation_function,
+                key=k_mlp,
+                use_bias=config.use_bias,
+            )
+
+        return MixtralDecoderLayer(config, attn, moe, ln_1, ln_2, shared_mlp)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
@@ -458,8 +472,9 @@ class MixtralDecoderLayer(eqx.Module):
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
+        mlp_output = self.shared_mlp(x, key=k_mlp) if self.shared_mlp is not None else 0
         moe_output, extras = self.block_sparse_moe(x, key=k_mlp)
-        output = residual + moe_output
+        output = residual + mlp_output + moe_output
         return output, extras
 
 

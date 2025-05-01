@@ -48,22 +48,27 @@ def test_mixtral_moe_block():
     import torch
     from transformers.models.mixtral.modeling_mixtral import MixtralSparseMoeBlock as HFMixtralSparseMoeBlock
 
-    mixtral_config = _get_mixtral_config(num_kv_heads=4)
-    key = random.PRNGKey(0)
-    mixtral_moe_layer = MixtralSparseMoeBlock.init(config=mixtral_config, key=key)
-
-    state = hax.state_dict.to_torch_compatible_state_dict(mixtral_moe_layer)
-    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_moe_layer = HFMixtralSparseMoeBlock(mixtral_config.to_hf_config(32000))
-    hf_moe_layer.load_state_dict(state, strict=True)
-
-    x, _ = _get_random_inputs(mixtral_config)
-    x_torch = torch.from_numpy(np.array(x.array))
-
     with Mesh(
         np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
     ):
-        out = mixtral_moe_layer(x)
+        mixtral_config = _get_mixtral_config(num_kv_heads=4)
+        key = random.PRNGKey(0)
+        with hax.axis_mapping({"embed": ResourceAxis.DATA}):
+            mixtral_moe_layer = MixtralSparseMoeBlock.init(config=mixtral_config, key=key)
+
+        state = hax.state_dict.to_torch_compatible_state_dict(mixtral_moe_layer)
+        state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+        hf_moe_layer = HFMixtralSparseMoeBlock(mixtral_config.to_hf_config(32000))
+        hf_moe_layer.load_state_dict(state, strict=True)
+
+        x, _ = _get_random_inputs(mixtral_config)
+        x_torch = torch.from_numpy(np.array(x.array))
+
+        with hax.axis_mapping(
+            {"batch": ResourceAxis.DATA, "token": ResourceAxis.DATA, "token_repeat": ResourceAxis.DATA}
+        ):
+            x = hax.auto_sharded(x)
+            out, _ = mixtral_moe_layer(x)
     hf_out = hf_moe_layer(x_torch)
 
     assert np.isclose(
@@ -89,7 +94,7 @@ def test_mixtral_moe_block_bwd():
     x_torch = torch.from_numpy(np.array(x.array))
 
     def jax_compute(layer, x):
-        out = layer(x)
+        out, _ = layer(x)
         return hax.sum(out).scalar()
 
     def torch_compute(layer, x):
@@ -130,7 +135,8 @@ def test_mixtral_decoder_layer(num_kv_heads):
 
     state = hax.state_dict.to_torch_compatible_state_dict(mixtral_decoder_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_decoder_layer = HFMixtralDecoderLayer(mixtral_config.to_hf_config(32000), layer_idx=0)
+    hf_config = mixtral_config.to_hf_config(32000)
+    hf_decoder_layer = HFMixtralDecoderLayer(hf_config, layer_idx=0)
     hf_decoder_layer.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(mixtral_config)
@@ -140,13 +146,19 @@ def test_mixtral_decoder_layer(num_kv_heads):
     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
     mask_torch = (mask_torch == 0).float() * -1e9
 
-    position_ids = torch.arange(mixtral_config.Pos.size).reshape(1, -1)
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
+
+    position_ids = torch.arange(mixtral_config.Pos.size).unsqueeze(0)  # [1, seq_len]
+    hf_rotary_emb = HFLlamaRotaryEmbedding(config=hf_config)
+    cos, sin = hf_rotary_emb(x_torch, position_ids)
 
     with Mesh(
         np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
     ):
-        out = mixtral_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+        out, _ = mixtral_decoder_layer(x, mask)
+    hf_out = hf_decoder_layer(
+        x_torch, position_ids=position_ids, position_embeddings=(cos, sin), attention_mask=mask_torch
+    )
 
     assert np.isclose(
         hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4

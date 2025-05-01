@@ -11,9 +11,10 @@ model:
 # initialize_from_hf: "mistralai/Mistral-7B-v0.1"
 # use_hf_model_config: true
 trainer:
-  wandb:
-    project: "levanter"
-    tags: ["openwebtext", "mixtral"]
+  tracker:
+    - type: wandb
+      project: "levanter"
+      tags: [ "openwebtext", "llama", "itest"]
 
   mp: p=f32,c=bfloat16
   train_batch_size: 256  # set for v4-64 TPU

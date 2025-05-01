@@ -9,7 +9,7 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import Axis, NamedArray
+from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import ScanCheckpointPolicy, Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
@@ -109,7 +109,7 @@ class LlamaConfig(HFCompatConfig):
             num_layers=hf_config.num_hidden_layers,
             num_heads=hf_config.num_attention_heads,
             num_kv_heads=hf_config.num_key_value_heads,
-            activation_function=hf_config.hidden_act,
+            activation_function=ActivationFunctionEnum[hf_config.hidden_act],
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
@@ -184,7 +184,12 @@ class LlamaMlp(eqx.Module):
 
     @staticmethod
     def init(
-        Embed: Axis, Mlp: Axis, activation_fn: Union[ActivationFunctionEnum, Callable], *, key, use_bias: bool = False
+        Embed: AxisSpec,
+        Mlp: AxisSpec,
+        activation_fn: Union[ActivationFunctionEnum, Callable],
+        *,
+        key,
+        use_bias: bool = False,
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
         gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
@@ -244,6 +249,11 @@ class LlamaAttention(eqx.Module):
         rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
         q, k = rot_embs(self.config.HeadSize, q, k)
 
+        # gradient checkpointing
+        q = hax.tree_checkpoint_name(q, "q")
+        k = hax.tree_checkpoint_name(k, "k")
+        v = hax.tree_checkpoint_name(v, "v")
+
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
@@ -266,6 +276,10 @@ class LlamaAttention(eqx.Module):
         attn_output = attn_output.astype(x.dtype)
 
         attn_output = self.o_proj(attn_output, key=key_o)
+
+        # gradient checkpointing
+        attn_output = hax.tree_checkpoint_name(attn_output, "attn_output")
+
         return attn_output
 
 
