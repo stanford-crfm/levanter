@@ -183,7 +183,7 @@ The default step-based checkpoint policy is to save a checkpoint every 10,000 st
 
 We mostly use [W&B](https://wandb.ai/site) for tracking values and other metadata about a run. However, we also support
 Tensorboard and a few other trackers. You can also use multiple trackers at once, or even write your own.
-See  [Trackers](dev/Trackers.md) for more information.
+See  [Trackers](../reference/Trackers.md) for more information.
 
 ### W&B
 
@@ -419,7 +419,7 @@ We won't go into detail here. You can see the auto-generated docs below.
 
 ### Trackers and Metrics
 
-See also [Trackers](dev/Trackers.md) for more information. Basic configuration is shown below.
+See also [Trackers](../reference/Trackers.md) for more information. Basic configuration is shown below.
 
 #### Single Tracker
 
@@ -431,11 +431,6 @@ trainer:
     entity: my-entity
 ```
 
-
-
-::: levanter.tracker.wandb.WandbConfig
-
-::: levanter.tracker.tensorboard.TensorboardConfig
 
 
 ### Distributed and Ray

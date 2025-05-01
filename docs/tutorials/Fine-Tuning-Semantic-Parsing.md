@@ -72,7 +72,7 @@ Let's begin by preparing the dataset.
 
 Since our dataset is already in a clean, tabular format, minimal preprocessing effort is required.
 Our main tasks are to rename the columns and convert the data into the JSONL format, which is compatible with Levanter.
-For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md#dataset-preparation).
+For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md#data-preparation).
 
 Below is a code snippet for dataset preparation:
 

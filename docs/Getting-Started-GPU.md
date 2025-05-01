@@ -94,7 +94,7 @@ wandb offline
 
 #### Using a Different Tracker
 
-You can also use TensorBoard for logging. See [Trackers and Metrics](./dev/Trackers.md) for more information.
+You can also use TensorBoard for logging. See [Trackers and Metrics](./reference/Trackers.md) for more information.
 
 ## Using a Docker Container
 
