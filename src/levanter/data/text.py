@@ -1253,11 +1253,20 @@ class LMMixtureDatasetConfig(LMTaskConfig):
             datasets = sliced_datasets
 
         if self.num_validation_batches_dict is not None:
+            assert (
+                initial_batch_size is not None
+            ), "initial_batch_size must be provided if num_validation_batches_dict is provided"
+
             for name, ds in datasets.items():
                 if name in self.num_validation_batches_dict:
                     num_sequences = self.num_validation_batches_dict[name] * self.validation_batch_size
-                    # Reserve the first N sequences for validation
-                    datasets[name] = ds.slice_dataset(start_index=num_sequences)
+                    len_dataset = len(ds.as_sync_dataset())
+                    # Reserve the last N sequences for validation and use the rest for training
+                    logger.info(
+                        f"Reserving {num_sequences} sequences from {name} training set of size {len_dataset} for"
+                        " validation"
+                    )
+                    datasets[name] = ds.slice_dataset(start_index=0, end_index=len_dataset - num_sequences)
 
         if self.max_batches_dict is not None:
             assert (
@@ -1266,16 +1275,18 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
             for name, ds in datasets.items():
                 if name in self.max_batches_dict:
-                    num_sequences = self.max_batches_dict[name] * self.validation_batch_size
-                    logger.info(f"Slicing {name} to {num_sequences} sequences")
+                    num_sequences = self.max_batches_dict[name] * initial_batch_size
+                    len_dataset = len(ds.as_sync_dataset())
+                    assert (
+                        num_sequences <= len_dataset
+                    ), f"Max sequences for {name} ({num_sequences}) is greater than the dataset size ({len_dataset})"
+                    logger.info(f"Selecting {num_sequences} sequences from {name} training set of size {len_dataset}")
                     datasets[name] = ds.slice_dataset(end_index=num_sequences)
 
         return datasets
 
     def validation_sets(
-        self,
-        Pos: Axis,
-        monitors: Union[bool, List[MetricsMonitor]] = True,
+        self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
         token_datasets = {
@@ -1290,12 +1301,34 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         }
 
         if self.num_validation_batches_dict is not None:
-            for name, ds in token_datasets.items():
-                if name in self.num_validation_batches_dict:
-                    num_sequences = self.num_validation_batches_dict[name] * self.validation_batch_size
-                    logger.info(f"Selecting {num_sequences} validation sequences for {name}")
-                    # Take the first N sequences for validation
-                    token_datasets[name] = ds.slice_dataset(end_index=num_sequences)
+            train_doc_caches = self.build_caches("train", monitors=monitors)
+
+            train_datasets: dict[str, AsyncDataset[LmExample]] = {
+                name: dataset_for_format(
+                    self.configs[name].format,
+                    Pos,
+                    cache,
+                    eos_id=self.the_tokenizer.eos_token_id,
+                    ignore_index=self.ignore_token_id,
+                )
+                for name, cache in train_doc_caches.items()
+            }
+
+            for name, num_batches in self.num_validation_batches_dict.items():
+                num_sequences = num_batches * self.validation_batch_size
+                len_dataset = len(train_datasets[name].as_sync_dataset())
+                logger.info(
+                    f"Selecting {num_sequences} sequences from {name} training set of size {len_dataset} for"
+                    " validation"
+                )
+                validation_dataset = train_datasets[name].slice_dataset(
+                    start_index=len_dataset - num_sequences, end_index=len_dataset
+                )
+
+                if name in token_datasets:
+                    logger.warning(f"Validation dataset {name} already exists, overwriting")
+
+                token_datasets[name] = validation_dataset
 
         return token_datasets
 
