@@ -18,8 +18,8 @@ class SOAPState(NamedTuple):
     count: jnp.ndarray  # type: ignore
     exp_avg: Updates
     exp_avg_sq: Updates
-    GG: Any
-    Q: Any
+    GG: Updates
+    Q: Updates
 
 @OptimizerConfig.register_subclass("soap")
 @dataclass
@@ -37,8 +37,8 @@ class SoapConfig(OptimizerConfig):
     merge_small_dims: bool = True
     one_diag: bool = False
     target_merged_dim_size: int = 2048
-    mu_dtype: Optional[Any] = None
-    precond_dtype: Optional[Any] = None
+    mu_dtype: Optional[Union[str, jnp.dtype]] = None
+    precond_dtype: Optional[Union[str, jnp.dtype]]= None
     partition_grads_into_blocks: bool = True
     block_size: int = 256
     def build(self, num_train_steps):
@@ -106,10 +106,10 @@ def scale_by_soap(
     precondition_frequency: int = 1,
     max_precond_dim: int = 10000,
     precision: jax.lax.PrecisionLike = jax.lax.Precision.HIGHEST,
-    mu_dtype: Optional[Any] = None,
-    precond_dtype: Optional[Any] = None,
-    partition_grads_into_blocks: Optional[Any] = True,
-    block_size: Optional[Any] = 256,
+    mu_dtype: Optional[Union[str, jnp.dtype]] = None,
+    precond_dtype: Optional[Union[str, jnp.dtype]] = None,
+    partition_grads_into_blocks: Optional[bool] = True,
+    block_size: Optional[int] = 256,
     lax_map_scanned_layers: Optional[bool] = True,
     lax_map_batch_size: Optional[int] = 4,
     merge_small_dims: bool = False,
@@ -920,8 +920,8 @@ def get_orthogonal_matrix_QR(
     GG: List[Union[Array, None]],
     Q: List[Union[Array, None]],
     exp_avg_sq: Array,
-    precond_dtype: Optional[Any],
-    mu_dtype: Optional[Any],
+    precond_dtype: Optional[Union[str, jnp.dtype]],
+    mu_dtype: Optional[Union[str, jnp.dtype]],
     precision: jax.lax.PrecisionLike = jax.lax.Precision.HIGHEST,
 ) -> tuple[List[Union[Array, None]], Array]:
     final_Q = []
@@ -983,7 +983,7 @@ def _get_preconditioner_types(
     return new_result
 
 
-def infer_conditioner_sharding(p_shape: Any, max_precond_dim: int, one_diag: bool):
+def infer_conditioner_sharding(p_shape, max_precond_dim: int, one_diag: bool):
     if len(p_shape) == 1:
         return [PartitionSpec()]
     
@@ -1014,7 +1014,7 @@ def infer_conditioner_sharding(p_shape: Any, max_precond_dim: int, one_diag: boo
     return sharding_out
 
 
-def init_conditioner(p_shape: Any, max_precond_dim: int, dtype: Optional[Any], one_diag: bool):
+def init_conditioner(p_shape, max_precond_dim: int, dtype: Optional[Union[str, jnp.dtype]], one_diag: bool):
     if len(p_shape) == 1:
         return ([jnp.zeros((p_shape[0], p_shape[0]), dtype = dtype)], [PartitionSpec()])
     

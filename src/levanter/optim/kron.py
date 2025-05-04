@@ -1,12 +1,25 @@
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, TypeVar, Callable, Tuple, List
+from collections import defaultdict
+import string
+import numpy as np
 
-import jax.numpy as jnp
-import optax
+import chex
+import jax
+from jax import numpy as jnp, vmap
 from jax.sharding import PartitionSpec
+from jax.lax import with_sharding_constraint
+from optax import tree_utils as otu
+from optax._src import base, transform
+from optax._src.numerics import safe_int32_increment
+from optax._src.utils import canonicalize_dtype
+from optax._src.combine import chain
 
 from levanter.optim.config import OptimizerConfig
 
+# Define type variables for the pytree structure
+T = TypeVar('T')
+PartitionSpecTree = TypeVar('PartitionSpecTree', bound=Union[PartitionSpec, List[PartitionSpec], Tuple[PartitionSpec, ...], dict, list, tuple])
 
 @OptimizerConfig.register_subclass("kron")
 @dataclass
@@ -70,8 +83,8 @@ class KronConfig(OptimizerConfig):
     memory_save_mode: Optional[str] = None
     preconditioner_lr: float = 0.1
     preconditioner_init_scale: float = 1.0
-    mu_dtype: Optional[Any] = None
-    precond_dtype: Optional[Any] = None
+    mu_dtype: Optional[Union[str, jnp.dtype]] = None
+    precond_dtype: Optional[Union[str, jnp.dtype]]= None
     precond_update_precision: Optional[str] = "tensorfloat32"
     precond_grads_precision: Optional[str] = None
     lax_map_scanned_layers: bool = False
@@ -80,7 +93,7 @@ class KronConfig(OptimizerConfig):
     target_merged_dim_size: int = 8192
     partition_grads_into_blocks: bool = True
     block_size: int = 256
-    params_sharding: Optional[Any] = None
+    params_sharding: Optional[PartitionSpecTree] = None
     preconditioner_sharding: Optional[tuple[str | None, str | None]] = None
 
     def build(self, num_train_steps):
@@ -211,7 +224,7 @@ def scale_by_kron(
     target_merged_dim_size: int = 2048,
     partition_grads_into_blocks: bool = False,
     block_size: int = 256,
-    params_sharding: Optional[Any] = None,
+    params_sharding: Optional[PartitionSpecTree] = None,
     preconditioner_sharding: Optional[PartitionSpec[str, str]] = None,
     **kwargs,
 ) -> base.GradientTransformation:
@@ -1020,7 +1033,7 @@ def kron(
     target_merged_dim_size: int = 2048,
     partition_grads_into_blocks: bool = False,
     block_size: int = 256,
-    params_sharding: Optional[Any] = None,
+    params_sharding: Optional[PartitionSpecTree] = None,
     preconditioner_sharding: Optional[PartitionSpec[str, str]] = None,
 ) -> base.GradientTransformation:
     """
