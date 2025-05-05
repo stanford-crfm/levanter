@@ -1155,6 +1155,20 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 self.experiment_budget is None and self.target_budget is None
             ), "max_batches_dict and num_validation_batches_dict and simulated data budget cannot all be set"
 
+    def build_token_datasets(self, caches: Mapping[str, TreeCache[dict]], Pos: Axis):
+        token_datasets = {
+            name: dataset_for_format(
+                self.configs[name].format,
+                Pos,
+                cache,
+                eos_id=self.the_tokenizer.eos_token_id,
+                ignore_index=self.ignore_token_id,
+            )
+            for name, cache in caches.items()
+        }
+
+        return token_datasets
+
     def train_set(
         self,
         Pos: Axis,
@@ -1196,17 +1210,7 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         key: PRNGKeyArray,
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("train", monitors=monitors)
-
-        datasets: dict[str, AsyncDataset[LmExample]] = {
-            name: dataset_for_format(
-                self.configs[name].format,
-                Pos,
-                cache,
-                eos_id=self.the_tokenizer.eos_token_id,
-                ignore_index=self.ignore_token_id,
-            )
-            for name, cache in doc_caches.items()
-        }
+        datasets = self.build_token_datasets(doc_caches, Pos)
 
         if epochs:
             raise ValueError("Epochs are not supported for mixture datasets")
@@ -1289,30 +1293,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         self, Pos: Axis, monitors: Union[bool, List[MetricsMonitor]] = True
     ) -> Mapping[str, AsyncDataset[LmExample]]:
         doc_caches = self.build_caches("validation", monitors=monitors)
-        token_datasets = {
-            name: dataset_for_format(
-                self.configs[name].format,
-                Pos,
-                cache,
-                eos_id=self.the_tokenizer.eos_token_id,
-                ignore_index=self.ignore_token_id,
-            )
-            for name, cache in doc_caches.items()
-        }
+        validation_datasets = self.build_token_datasets(doc_caches, Pos)
 
         if self.num_validation_batches_dict is not None:
             train_doc_caches = self.build_caches("train", monitors=monitors)
-
-            train_datasets: dict[str, AsyncDataset[LmExample]] = {
-                name: dataset_for_format(
-                    self.configs[name].format,
-                    Pos,
-                    cache,
-                    eos_id=self.the_tokenizer.eos_token_id,
-                    ignore_index=self.ignore_token_id,
-                )
-                for name, cache in train_doc_caches.items()
-            }
+            train_datasets = self.build_token_datasets(train_doc_caches, Pos)
 
             for name, num_batches in self.num_validation_batches_dict.items():
                 num_sequences = num_batches * self.validation_batch_size
@@ -1325,12 +1310,12 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                     start_index=len_dataset - num_sequences, end_index=len_dataset
                 )
 
-                if name in token_datasets:
+                if name in validation_datasets:
                     logger.warning(f"Validation dataset {name} already exists, overwriting")
 
-                token_datasets[name] = validation_dataset
+                validation_datasets[name] = validation_dataset
 
-        return token_datasets
+        return validation_datasets
 
     def build_caches(
         self, split: str, monitors: Union[bool, List[MetricsMonitor]] = True
