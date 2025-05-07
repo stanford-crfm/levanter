@@ -13,9 +13,14 @@ def lm_flops_per_token(
     seq_len: int,
     vocab_size: int,
     glu: bool,
+    num_experts: int = 1,
+    num_shared_experts: int = 0,
+    num_experts_per_tok: int = 1,
 ):
     head_dim = hidden_dim / num_heads
-    mlp = 2 * (3 if glu else 2) * hidden_dim * intermediate_dim
+    mlp = 2 * (3 if glu else 2) * hidden_dim * intermediate_dim * (num_experts_per_tok + num_shared_experts)
+    if num_experts > 1:
+        mlp += 2 * hidden_dim * num_experts  # router layer
     qkv_proj = 2 * hidden_dim * (num_heads * head_dim + 2 * num_kv_heads * head_dim)
     dense_proj = 2 * hidden_dim * hidden_dim
     # The following are across the whole sequence
