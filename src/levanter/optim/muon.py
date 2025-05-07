@@ -102,7 +102,7 @@ class ScaleByMuonState(NamedTuple):
 def scale_with_muon(momentum=0.95, nesterov=True, steps=5, muon_eps=1e-8):
     # Convert steps to concrete int at function definition time
     steps = int(steps)
-    
+
     def init_fn(params):
         momentum_buffer = otu.tree_zeros_like(params)
         return ScaleByMuonState(momentum_buffer=momentum_buffer)
@@ -150,7 +150,7 @@ def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
     """
     chex.assert_rank(X, 2)
     a, b, c = (3.4445, -4.7750, 2.0315)
-    X /= (jnp.linalg.norm(X) + eps)  # Ensure top singular value <= 1
+    X /= jnp.linalg.norm(X) + eps  # Ensure top singular value <= 1
     transpose = False
     if X.shape[0] > X.shape[1]:
         X = X.T
@@ -162,5 +162,5 @@ def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
     if transpose:
         X = X.T
     # https://x.com/leloykun/status/1874358290093924849
-    
+
     return X

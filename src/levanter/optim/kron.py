@@ -1,29 +1,38 @@
-from dataclasses import dataclass
-from typing import Any, Optional, Union, TypeVar, Callable, Tuple, List
 from collections import defaultdict
-import string
-import numpy as np
+from dataclasses import dataclass
+from functools import partial
+from typing import Any, Callable, Generic, List, Optional, Tuple, TypeVar, Union, cast
 
 import chex
 import jax
-from jax import numpy as jnp, vmap
-from jax.sharding import PartitionSpec
+import numpy as np
+import optax
+from jax import numpy as jnp
+from jax import vmap
 from jax.lax import with_sharding_constraint
+from jax.sharding import PartitionSpec
 from optax import tree_utils as otu
 from optax._src import base, transform
+from optax._src.combine import chain
 from optax._src.numerics import safe_int32_increment
 from optax._src.utils import canonicalize_dtype
-from optax._src.combine import chain
 
 from levanter.optim.config import OptimizerConfig
 
+
 # Define type variables for the pytree structure
-T = TypeVar('T')
-PartitionSpecTree = TypeVar('PartitionSpecTree', bound=Union[PartitionSpec, List[PartitionSpec], Tuple[PartitionSpec, ...], dict, list, tuple])
+T = TypeVar("T")
+PartitionSpecTree = TypeVar(
+    "PartitionSpecTree", bound=Union[PartitionSpec, List[PartitionSpec], Tuple[PartitionSpec, ...], dict, list, tuple]
+)
+
+# Type for the update probability schedule
+UpdateProbSchedule = Union[float, Callable[[int], float]]
+
 
 @OptimizerConfig.register_subclass("kron")
 @dataclass
-class KronConfig(OptimizerConfig):
+class KronConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     """Configuration for PSGD Kron optimizer.
 
     Attributes:
@@ -71,12 +80,13 @@ class KronConfig(OptimizerConfig):
             shard first dimension across fsdp-like mesh axis, or largest/most common axis in params.
             Example: PartitionSpec('fsdp') or PartitionSpec('fsdp', 'tp').
     """
+
     # some of these are changed from kron defaults to better suit levanter
     beta1: float = 0.9
     weight_decay: float = 0.1
     max_grad_norm: Optional[float] = 1.0
     normalize_grads: bool = False
-    preconditioner_update_probability: float = 0.05
+    preconditioner_update_probability: UpdateProbSchedule = 0.05
     update_prob_flat_start: int = 500
     max_size_triangular: int = 25000
     min_ndim_triangular: int = 2
@@ -84,7 +94,7 @@ class KronConfig(OptimizerConfig):
     preconditioner_lr: float = 0.1
     preconditioner_init_scale: float = 1.0
     mu_dtype: Optional[Union[str, jnp.dtype]] = None
-    precond_dtype: Optional[Union[str, jnp.dtype]]= None
+    precond_dtype: Optional[Union[str, jnp.dtype]] = None
     precond_update_precision: Optional[str] = "tensorfloat32"
     precond_grads_precision: Optional[str] = None
     lax_map_scanned_layers: bool = False
@@ -101,9 +111,7 @@ class KronConfig(OptimizerConfig):
 
         def _optimizer(learning_rate) -> optax.GradientTransformation:
             precond_partition_spec = (
-                PartitionSpec(*self.preconditioner_sharding)
-                if self.preconditioner_sharding is not None
-                else None
+                PartitionSpec(*self.preconditioner_sharding) if self.preconditioner_sharding is not None else None
             )
             components = []
             if self.max_grad_norm and not self.normalize_grads:
@@ -137,36 +145,15 @@ class KronConfig(OptimizerConfig):
             )
             components.append(optax.clip_by_block_rms(1.1))
             if self.weight_decay > 0:
-                components.append(
-                    optax.add_decayed_weights(
-                        self.weight_decay, self.build_weight_decay_mask()
-                    )
-                )
+                components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
             components.append(optax.scale_by_learning_rate(learning_rate))
             return optax.chain(*components)
 
-        return optax.inject_hyperparams(_optimizer)(
-            learning_rate=self.lr_scheduler(num_train_steps)
-        )
+        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
 
 """PSGD Kron"""
-from typing import Any, List, Optional, Union, Callable, Tuple
-from collections import defaultdict
-from functools import partial
-import string
-import numpy as np
 
-import chex
-import jax
-from jax import numpy as jnp, vmap
-from jax.sharding import PartitionSpec
-from jax.lax import with_sharding_constraint
-from optax import tree_utils as otu
-from optax._src import base, transform
-from optax._src.numerics import safe_int32_increment
-from optax._src.utils import canonicalize_dtype
-from optax._src.combine import chain
 
 try:
     import flax.linen as nn
@@ -182,9 +169,7 @@ except ImportError:
     have_hax = False
 
 
-def precond_update_prob_schedule(
-    max_prob=1.0, min_prob=0.03, decay=0.001, flat_start=500
-):
+def precond_update_prob_schedule(max_prob=1.0, min_prob=0.03, decay=0.001, flat_start=500):
     """Anneal preconditioner update probability during beginning of training.
 
     PSGD benefits from more preconditioner updates at the beginning of training,
@@ -206,9 +191,7 @@ def precond_update_prob_schedule(
 def scale_by_kron(
     b1: float = 0.9,
     normalize_grads: bool = False,
-    preconditioner_update_probability: Union[
-        float, Callable[[int], float]
-    ] = precond_update_prob_schedule(),
+    preconditioner_update_probability: UpdateProbSchedule = precond_update_prob_schedule(),
     max_size_triangular: int = 8192,
     min_ndim_triangular: int = 2,
     memory_save_mode: Optional[str] = None,
@@ -290,19 +273,13 @@ def scale_by_kron(
         if have_hax:
             if any(
                 isinstance(x, hax.NamedArray)
-                for x in jax.tree.leaves(
-                    params, is_leaf=lambda x: isinstance(x, hax.NamedArray)
-                )
+                for x in jax.tree.leaves(params, is_leaf=lambda x: isinstance(x, hax.NamedArray))
             ):
                 # if in haliax, we can grab scanned_layers and params_sharding from params
                 # this does not support nested stacks
                 if scanned_layers_ is None:
                     scanned_layers_ = jax.tree.map(
-                        lambda x: (
-                            jax.tree.map(lambda _: True, x)
-                            if isinstance(x, hax.nn.Stacked)
-                            else False
-                        ),
+                        lambda x: (jax.tree.map(lambda _: True, x) if isinstance(x, hax.nn.Stacked) else False),
                         params,
                         is_leaf=lambda x: isinstance(x, hax.nn.Stacked),
                     )
@@ -361,9 +338,7 @@ def scale_by_kron(
         # scanned layers
         if scanned_layers_ is None:
             scanned_layers_ = jax.tree.map(lambda _: False, params)
-        scanned_sizes = jax.tree.map(
-            lambda p, s: p.shape[0] if s else 0, params, scanned_layers_
-        )
+        scanned_sizes = jax.tree.map(lambda p, s: p.shape[0] if s else 0, params, scanned_layers_)
 
         # momentum
         mu = None
@@ -403,14 +378,10 @@ def scale_by_kron(
 
         # merge small dimensions
         nones = jax.tree.map(lambda _: None, params)
-        merged_shapes = jax.tree.map(
-            lambda p, s: p.shape[int(s) :], params, scanned_layers_
-        )
+        merged_shapes = jax.tree.map(lambda p, s: p.shape[int(s) :], params, scanned_layers_)
         if merge_small_dims:
             output = jax.tree.map(
-                lambda p, s, dd, sh: _merge_small_dims(
-                    p.shape[int(s) :], target_merged_dim_size, dd, sh
-                ),
+                lambda p, s, dd, sh: _merge_small_dims(p.shape[int(s) :], target_merged_dim_size, dd, sh),
                 params,
                 scanned_layers_,
                 dim_diag,
@@ -430,9 +401,7 @@ def scale_by_kron(
                 dim_diag,
             )
             # we can grab resulting shapes from partitioners
-            partitioned_shapes = jax.tree.map(
-                lambda _, p_cls: p_cls._padded_stacked_shape, params, partitioners
-            )
+            partitioned_shapes = jax.tree.map(lambda _, p_cls: p_cls._padded_stacked_shape, params, partitioners)
 
         # initialize preconditioners
         output = jax.tree.map(
@@ -453,9 +422,7 @@ def scale_by_kron(
             sharding_without_scan if have_params_sharding else nones,
         )
         if return_partition_specs_only:
-            exprs, Qs_sharding_no_leading_dims = [
-                jax.tree.map(lambda _, x: x[i], params, output) for i in range(2)
-            ]
+            exprs, Qs_sharding_no_leading_dims = [jax.tree.map(lambda _, x: x[i], params, output) for i in range(2)]
         else:
             Qs, exprs, Qs_sharding_no_leading_dims = [
                 jax.tree.map(lambda _, x: x[i], params, output) for i in range(3)
@@ -483,14 +450,10 @@ def scale_by_kron(
                 stack_n = ps[0]
                 if partition_grads_into_blocks:
                     # add leading dim for stacked partitions
-                    q = jax.tree.map(
-                        lambda x: jnp.repeat(jnp.expand_dims(x, 0), stack_n, axis=0), q
-                    )
+                    q = jax.tree.map(lambda x: jnp.repeat(jnp.expand_dims(x, 0), stack_n, axis=0), q)
                 if s > 0:
                     # add leading dim if we're scanning this layer
-                    q = jax.tree.map(
-                        lambda d: jnp.repeat(jnp.expand_dims(d, 0), s, axis=0), q
-                    )
+                    q = jax.tree.map(lambda d: jnp.repeat(jnp.expand_dims(d, 0), s, axis=0), q)
                 return q
 
             Qs = jax.tree.map(broadcast_qs, params, partitioned_shapes, Qs, scanned_sizes)
@@ -499,23 +462,14 @@ def scale_by_kron(
 
             # Calculate and print sizes for preconditioners and momentum
             Qs_n_elements = sum([q.size for q in jax.tree.leaves(Qs)])
-            Qs_size_MB = sum(
-                [q.size * q.dtype.itemsize / (2**20) for q in jax.tree.leaves(Qs)]
-            )
+            Qs_size_MB = sum([q.size * q.dtype.itemsize / (2**20) for q in jax.tree.leaves(Qs)])
             if jax.process_index() == 0:
-                print(
-                    f"PSGD Preconditioners size: {Qs_n_elements} elements, "
-                    f"{Qs_size_MB:.2f} MB"
-                )
+                print(f"PSGD Preconditioners size: {Qs_n_elements} elements, {Qs_size_MB:.2f} MB")
             if mu is not None:
                 mu_n_elements = sum([p.size for p in jax.tree.leaves(mu)])
-                mu_size_MB = sum(
-                    [p.size * p.dtype.itemsize / (2**20) for p in jax.tree.leaves(mu)]
-                )
+                mu_size_MB = sum([p.size * p.dtype.itemsize / (2**20) for p in jax.tree.leaves(mu)])
                 if jax.process_index() == 0:
-                    print(
-                        f"PSGD Momentum size: {mu_n_elements} elements, {mu_size_MB:.2f} MB"
-                    )
+                    print(f"PSGD Momentum size: {mu_n_elements} elements, {mu_size_MB:.2f} MB")
 
         if return_partition_specs_only:
             return dict(
@@ -548,20 +502,14 @@ def scale_by_kron(
         if have_hax:
             if any(
                 isinstance(x, hax.NamedArray)
-                for x in jax.tree.leaves(
-                    updates, is_leaf=lambda x: isinstance(x, hax.NamedArray)
-                )
+                for x in jax.tree.leaves(updates, is_leaf=lambda x: isinstance(x, hax.NamedArray))
             ):
                 hax_partitioned = True
                 # if in haliax, we can grab scanned_layers and params_sharding from params
                 # this does not support nested stacks
                 if scanned_layers_ is None:
                     scanned_layers_ = jax.tree.map(
-                        lambda x: (
-                            jax.tree.map(lambda _: True, x)
-                            if isinstance(x, hax.nn.Stacked)
-                            else False
-                        ),
+                        lambda x: (jax.tree.map(lambda _: True, x) if isinstance(x, hax.nn.Stacked) else False),
                         updates,
                         is_leaf=lambda x: isinstance(x, hax.nn.Stacked),
                     )
@@ -584,9 +532,7 @@ def scale_by_kron(
         if have_flax:
             boxed_updates, grads_structure = jax.tree.flatten(
                 updates,
-                is_leaf=lambda g: isinstance(
-                    g, (chex.Array, nn.Partitioned, jax.ShapeDtypeStruct)
-                ),
+                is_leaf=lambda g: isinstance(g, (chex.Array, nn.Partitioned, jax.ShapeDtypeStruct)),
             )
             if any(isinstance(g, nn.Partitioned) for g in boxed_updates):
                 flax_partitioned = True
@@ -619,9 +565,11 @@ def scale_by_kron(
             scanned_layers_ = jax.tree.map(lambda _: False, updates)
 
         # update probability can be scheduled
-        update_prob_in = preconditioner_update_probability
-        if isinstance(preconditioner_update_probability, Callable):
-            update_prob_in = preconditioner_update_probability(count_inc)
+
+        if callable(preconditioner_update_probability):
+            update_prob_in = cast(Callable[[int], float], preconditioner_update_probability)(count_inc)
+        else:
+            update_prob_in = float(preconditioner_update_probability)
 
         # normalize grads
         def norm_grads(g):
@@ -671,27 +619,20 @@ def scale_by_kron(
         merged_params_sharding = params_sharding_
         original_shapes = None
         if merge_small_dims:
-            original_shapes = jax.tree.map(
-                lambda g, s: g.shape[int(s) :], momentum_updates, scanned_layers_
-            )
+            original_shapes = jax.tree.map(lambda g, s: g.shape[int(s) :], momentum_updates, scanned_layers_)
             output = jax.tree.map(
-                lambda g, dd, s, sh: _merge_small_dims(
-                    g.shape[int(s) :], target_merged_dim_size, dd, sh
-                ),
+                lambda g, dd, s, sh: _merge_small_dims(g.shape[int(s) :], target_merged_dim_size, dd, sh),
                 momentum_updates,
                 dim_diag,
                 scanned_layers_,
                 sharding_without_scan if have_params_sharding else nones,
             )
             merged_shapes, dim_diag, sharding_without_scan = [
-                jax.tree.map(lambda _, x: x[i], momentum_updates, output)
-                for i in range(3)
+                jax.tree.map(lambda _, x: x[i], momentum_updates, output) for i in range(3)
             ]
             # reshape
             momentum_updates = jax.tree.map(
-                lambda g, s, ns: _map_fn(
-                    False, 0, int(s), lambda x, shape=ns: jnp.reshape(x, shape), g
-                ),
+                lambda g, s, ns: _map_fn(False, 0, int(s), lambda x, shape=ns: jnp.reshape(x, shape), g),
                 momentum_updates,
                 scanned_layers_,
                 merged_shapes,
@@ -699,17 +640,13 @@ def scale_by_kron(
             if have_params_sharding:
                 # scanned dim sharding + new merged sharding
                 merged_params_sharding = jax.tree.map(
-                    lambda sws, sds: PartitionSpec(
-                        *(sds + sws if sds is not None else sws)
-                    ),
+                    lambda sws, sds: PartitionSpec(*(sds + sws if sds is not None else sws)),
                     sharding_without_scan,
                     scanned_dim_sharding,
                 )
         # constrain sharding
         if have_params_sharding:
-            momentum_updates = _safe_sharding_constraint(
-                momentum_updates, merged_params_sharding
-            )
+            momentum_updates = _safe_sharding_constraint(momentum_updates, merged_params_sharding)
 
         # partition grads into blocks
         dummy_updates_tree = jax.tree.map(lambda _: jnp.zeros([]), updates)
@@ -740,9 +677,7 @@ def scale_by_kron(
             if have_params_sharding:
                 # constrain partitions to same sharding as entire layer
                 momentum_updates = jax.tree.map(
-                    lambda _, g, mps: jax.tree.map(
-                        lambda x: _safe_sharding_constraint(x, mps), g
-                    ),
+                    lambda _, g, mps: jax.tree.map(lambda x: _safe_sharding_constraint(x, mps), g),
                     dummy_updates_tree,
                     momentum_updates,
                     merged_params_sharding,
@@ -770,9 +705,7 @@ def scale_by_kron(
             n_dims_to_map = jax.tree.map(lambda x: x + 1, n_dims_to_map)
         # constrain sharding
         if have_params_sharding:
-            momentum_updates = _safe_sharding_constraint(
-                momentum_updates, partitioned_sharding
-            )
+            momentum_updates = _safe_sharding_constraint(momentum_updates, partitioned_sharding)
 
         # get einsum expressions and Qs sharding
         Qs = state["Qs_preconditioners"]
@@ -793,8 +726,7 @@ def scale_by_kron(
             n_dims_to_map,
         )
         exprs, Qs_sharding_no_leading_dims = [
-            jax.tree.map(lambda _, x: x[i], dummy_updates_tree, exprs_and_sharding)
-            for i in range(2)
+            jax.tree.map(lambda _, x: x[i], dummy_updates_tree, exprs_and_sharding) for i in range(2)
         ]
         Qs_sharding = None
         if have_qs_sharding:
@@ -819,9 +751,7 @@ def scale_by_kron(
                 # balance preconditioners about every 100 updates
                 def balance_Qs(Qs_to_bal):
                     def _balance_Q(Q):
-                        norms = jnp.array(
-                            [jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32
-                        )
+                        norms = jnp.array([jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32)
                         gmean = jnp.exp(jnp.mean(jnp.log(norms)))
                         to_mul = gmean / norms
                         return [q * x.astype(q.dtype) for q, x in zip(Q, to_mul)]
@@ -920,9 +850,7 @@ def scale_by_kron(
         # precondition gradients
         with jax.default_matmul_precision(precond_grads_precision):
             precond_gs = jax.tree.map(
-                lambda g, Q, expr, nm: _map_fn(
-                    lax_map, bs, nm, partial(_precond_grad, exprs=expr), Q, g
-                ),
+                lambda g, Q, expr, nm: _map_fn(lax_map, bs, nm, partial(_precond_grad, exprs=expr), Q, g),
                 momentum_updates,
                 Qs,
                 exprs,
@@ -948,9 +876,7 @@ def scale_by_kron(
             if have_params_sharding:
                 precond_gs = _safe_sharding_constraint(precond_gs, merged_params_sharding)
             precond_gs = jax.tree.map(
-                lambda _, g, s, p_cls: _map_fn(
-                    False, 0, int(s), p_cls.merge_partitions, g
-                ),
+                lambda _, g, s, p_cls: _map_fn(False, 0, int(s), p_cls.merge_partitions, g),
                 dummy_updates_tree,
                 precond_gs,
                 scanned_layers_,
@@ -962,9 +888,7 @@ def scale_by_kron(
         # un-merge dimensions
         if merge_small_dims:
             precond_gs = jax.tree.map(
-                lambda g, s, os: _map_fn(
-                    False, 0, int(s), lambda p, shape=os: jnp.reshape(p, shape), g
-                ),
+                lambda g, s, os: _map_fn(False, 0, int(s), lambda p, shape=os: jnp.reshape(p, shape), g),
                 precond_gs,
                 scanned_layers_,
                 original_shapes,
@@ -973,9 +897,7 @@ def scale_by_kron(
                 precond_gs = _safe_sharding_constraint(precond_gs, params_sharding_)
 
         # return scalars to original shape
-        precond_gs = jax.tree.map(
-            lambda g, s: jnp.reshape(g, s), precond_gs, input_shapes
-        )
+        precond_gs = jax.tree.map(lambda g, s: jnp.reshape(g, s), precond_gs, input_shapes)
 
         # final constraint for good measure
         if have_params_sharding:
@@ -984,9 +906,7 @@ def scale_by_kron(
         # box preconditioned grads
         if flax_partitioned:
             flat_precond_gs, _ = jax.tree.flatten(precond_gs)
-            precond_gs = [
-                bu.replace_boxed(g) for bu, g in zip(boxed_updates, flat_precond_gs)
-            ]
+            precond_gs = [bu.replace_boxed(g) for bu, g in zip(boxed_updates, flat_precond_gs)]
             precond_gs = grads_structure.unflatten(precond_gs)
         if hax_partitioned:
             precond_gs = updates_struct.unflatten(precond_gs)
@@ -1014,9 +934,7 @@ def kron(
     weight_decay: float = 0.0,
     weight_decay_mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
     normalize_grads: bool = False,
-    preconditioner_update_probability: Union[
-        float, Callable[[int], float]
-    ] = precond_update_prob_schedule(),
+    preconditioner_update_probability: UpdateProbSchedule = precond_update_prob_schedule(),
     max_size_triangular: int = 8192,
     min_ndim_triangular: int = 2,
     memory_save_mode: Optional[str] = None,
@@ -1121,9 +1039,7 @@ def kron(
     return chain(*optimizer)
 
 
-def get_opt_state_partition_specs(
-    params: base.Params, scale_by_kron_only: bool = False, **kwargs
-):
+def get_opt_state_partition_specs(params: base.Params, scale_by_kron_only: bool = False, **kwargs):
     """Get tree of PartitionSpecs for kron optimizer state.
 
     params converted to jax.ShapeDtypeStructs, no arrays are used.
@@ -1160,7 +1076,7 @@ def _get_preconditioner_types(
     shape: Tuple[int, ...], max_size: int, min_ndim: int, mem_save_mode: Optional[str]
 ) -> List[bool]:
     if len(shape) == 0:
-        return True
+        return [True]
 
     if mem_save_mode is None:
         dim_diag = [False for _ in shape]
@@ -1171,10 +1087,7 @@ def _get_preconditioner_types(
     elif mem_save_mode == "all_diag":
         dim_diag = [True for _ in shape]
     else:
-        raise ValueError(
-            f"Invalid mem_save_mode: {mem_save_mode}, must be one of "
-            "[None, 'one_diag', 'all_diag']"
-        )
+        raise ValueError(f"Invalid mem_save_mode: {mem_save_mode}, must be one of [None, 'one_diag', 'all_diag']")
 
     for i, size in enumerate(shape):
         if size == 1 or size > max_size or len(shape) < min_ndim:
@@ -1205,9 +1118,7 @@ def _init_Q_exprs(
             sharding_out = [PartitionSpec()]
     else:  # tensor
         if len(t_shape) > 13:
-            raise ValueError(
-                f"Got tensor with dim {len(t_shape.shape)}; Einstein runs out of letters!"
-            )
+            raise ValueError(f"Got tensor with dim {len(t_shape.shape)}; Einstein runs out of letters!")
         scale = scale ** (1 / len(t_shape))
         Q = [] if existing_Q is None else existing_Q
         piece1A, piece2A, piece3A = ([], "", "")
@@ -1232,12 +1143,7 @@ def _init_Q_exprs(
                 piece2A = piece2A + letters[i]
                 piece3A = piece3A + letters[i]
 
-                piece1 = "".join(
-                    [
-                        (letters[i + 13] if j == i else letters[j])
-                        for j in range(len(t_shape))
-                    ]
-                )
+                piece1 = "".join([(letters[i + 13] if j == i else letters[j]) for j in range(len(t_shape))])
                 exprGs.append(piece1 + "," + piece1 + "->" + letters[i + 13])
 
                 piece1P.append(letters[i + 13])
@@ -1268,11 +1174,7 @@ def _init_Q_exprs(
                     else:
                         # infer a so-so sharding scheme from params if nothing specified
                         # (first dim of q will match corresponding dim in params)
-                        q_sharding = (
-                            precond_sharding
-                            if precond_sharding is not None
-                            else PartitionSpec(dim_sh, None)
-                        )
+                        q_sharding = precond_sharding if precond_sharding is not None else PartitionSpec(dim_sh, None)
                         # TODO ensure array axis is divisible by mesh axis
                     sharding_out[i] = q_sharding
 
@@ -1286,21 +1188,9 @@ def _init_Q_exprs(
                 piece2A = piece2A + letters[i + 13]
                 piece3A = piece3A + letters[i]
 
-                piece1 = "".join(
-                    [
-                        (letters[i + 13] if j == i else letters[j])
-                        for j in range(len(t_shape))
-                    ]
-                )
-                piece2 = "".join(
-                    [
-                        (letters[i + 26] if j == i else letters[j])
-                        for j in range(len(t_shape))
-                    ]
-                )
-                exprGs.append(
-                    piece1 + "," + piece2 + "->" + letters[i + 13] + letters[i + 26]
-                )
+                piece1 = "".join([(letters[i + 13] if j == i else letters[j]) for j in range(len(t_shape))])
+                piece2 = "".join([(letters[i + 26] if j == i else letters[j]) for j in range(len(t_shape))])
+                exprGs.append(piece1 + "," + piece2 + "->" + letters[i + 13] + letters[i + 26])
 
                 a, b, c = (letters[i], letters[i + 13], letters[i + 26])
                 piece1P.append(a + b)
@@ -1309,9 +1199,7 @@ def _init_Q_exprs(
                 piece4P = piece4P + b
 
         exprA = ",".join(piece1A) + "," + piece2A + "->" + piece3A
-        exprP = (
-            ",".join(piece1P) + "," + ",".join(piece2P) + "," + piece3P + "->" + piece4P
-        )
+        exprP = ",".join(piece1P) + "," + ",".join(piece2P) + "," + piece3P + "->" + piece4P
 
     exprGs = tuple(exprGs)
     if existing_Q is not None:
@@ -1389,12 +1277,7 @@ def _update_precond(Q, G, conjB, exprs, precond_lr, qs_sharding, params_sharding
         term2 = jnp.einsum(exprGs[i], conjB, conjB)
 
         if q.ndim < 2:
-            q -= (
-                precond_lr
-                / _add_tiny(jnp.max(jnp.abs(term1 + term2)))
-                * (term1 - term2)
-                * q
-            )
+            q -= precond_lr / _add_tiny(jnp.max(jnp.abs(term1 + term2))) * (term1 - term2) * q
         else:
             if qs_sharding is not None:
                 sharding = qs_sharding[i]
@@ -1406,12 +1289,7 @@ def _update_precond(Q, G, conjB, exprs, precond_lr, qs_sharding, params_sharding
                     sharding = PartitionSpec(*(sharding[1:] + sharding[:1]))
                 term1 = _safe_sharding_constraint(term1, sharding)
                 term2 = _safe_sharding_constraint(term2, sharding)
-            q -= (
-                precond_lr
-                / _add_tiny(_norm_lower_bound(term1 + term2))
-                * jnp.triu(term1 - term2)
-                @ q
-            )
+            q -= precond_lr / _add_tiny(_norm_lower_bound(term1 + term2)) * jnp.triu(term1 - term2) @ q
         return q
 
     return [_update_single_q(i, q) for i, q in enumerate(Q)]
@@ -1447,16 +1325,14 @@ def _map_fn(lax_map, bs, n_maps, fn, *args):
         return vmap(mapped_fn)(*args)
 
 
-def _tree_random_like(
-    rng_key: chex.PRNGKey, target_tree: chex.ArrayTree, dtype=None
-) -> chex.ArrayTree:
+def _tree_random_like(rng_key: chex.PRNGKey, target_tree: chex.ArrayTree, dtype=None) -> chex.ArrayTree:
     # adopted from optax
     tree_def = jax.tree.structure(target_tree)
     keys = jax.random.split(rng_key, tree_def.num_leaves)
     keys_tree = jax.tree.unflatten(tree_def, keys)
     return jax.tree.map(
-        lambda l, k: jax.random.normal(
-            k, l.shape, dtype if dtype is not None else l.dtype
+        lambda target_array, key: jax.random.normal(
+            key, target_array.shape, dtype if dtype is not None else target_array.dtype
         ),
         target_tree,
         keys_tree,
@@ -1474,9 +1350,7 @@ class BlockPartitioner:
     """
 
     def __init__(self, param_shape, block_size, dim_diag):
-        assert len(dim_diag) == len(
-            param_shape
-        ), "dim_diag must have same length as param_shape"
+        assert len(dim_diag) == len(param_shape), "dim_diag must have same length as param_shape"
         self._shape = param_shape
         self._splits = []
         split_sizes = []
@@ -1525,9 +1399,7 @@ class BlockPartitioner:
             partial_merged_tensors = []
             ind = 0
             while ind < len(partitions):
-                partial_merged_tensors.append(
-                    jnp.concatenate(partitions[ind : ind + n], axis=i)
-                )
+                partial_merged_tensors.append(jnp.concatenate(partitions[ind : ind + n], axis=i))
                 ind += n
             partitions = partial_merged_tensors
         assert len(partitions) == 1
@@ -1546,7 +1418,7 @@ def _partitions(lst):
 
 def _merge_small_dims(
     shape_to_merge, max_dim, dim_diag, sharding_to_merge=None
-) -> Tuple[List[int], List[bool], Optional[Tuple]]:
+) -> Tuple[List[int], List[bool], Optional[PartitionSpec]]:
     if not shape_to_merge:  # handles scalar shape ()
         return [], [True], PartitionSpec() if sharding_to_merge is not None else None
     if np.all(np.array(shape_to_merge) == 1):  # handles shape (1,)
@@ -1572,7 +1444,7 @@ def _merge_small_dims(
         return loss
 
     best_loss = float("inf")
-    best_partition = None
+    best_partition = []
 
     for p in _partitions(list(range(len(shape_to_merge)))):
         loss = 0
@@ -1590,7 +1462,7 @@ def _merge_small_dims(
 
     merged_shape = []
     merged_diag = []
-    merged_sharding = []
+    merged_sharding: List[Union[tuple, None]] = []
 
     for group in best_partition:
         merged_shape.append(np.prod([shape_to_merge[i] for i in group]))

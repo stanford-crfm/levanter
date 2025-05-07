@@ -88,10 +88,13 @@ class ScionConfig(OptimizerConfig):
                 return "signum"
 
         return jax.tree_util.tree_map(mask_fn, params, paths, is_leaf=lambda x: isinstance(x, Linear))
+
+
 class ScaleByScionState(NamedTuple):
     """State for the Mars algorithm."""
 
     momentum_buffer: optax.Updates
+
 
 def scale_by_signum(momentum=0.95):
     def init_fn(params):
@@ -107,20 +110,14 @@ def scale_by_signum(momentum=0.95):
             is_leaf=lambda x: x is None,
         )
 
-        updates = jax.tree_map(
-            lambda u: None if u is None else jnp.sign(u),
-            buf,
-            is_leaf=lambda x: x is None
-        )
+        updates = jax.tree_map(lambda u: None if u is None else jnp.sign(u), buf, is_leaf=lambda x: x is None)
 
         return updates, ScaleByScionState(momentum_buffer=buf)
 
     return optax.GradientTransformation(init_fn, update_fn)
 
 
-
-
-def scale_with_scion(momentum=0.95, steps=5, scion_eps = 1e-8):
+def scale_with_scion(momentum=0.95, steps=5, scion_eps=1e-8):
     def init_fn(params):
         momentum_buffer = otu.tree_zeros_like(params)  # First moment
         return ScaleByScionState(momentum_buffer=momentum_buffer)
@@ -138,7 +135,7 @@ def scale_with_scion(momentum=0.95, steps=5, scion_eps = 1e-8):
         def transform_linear_layer(layer: haliax.nn.Linear):
             assert layer.weight.ndim == 2
 
-            updated_weight_array = zeropower_via_newtonschulz5(layer.weight.array, steps=steps, eps = scion_eps)
+            updated_weight_array = zeropower_via_newtonschulz5(layer.weight.array, steps=steps, eps=scion_eps)
 
             scale = jnp.sqrt(jnp.maximum(1, updated_weight_array.shape[0] / updated_weight_array.shape[1]))
             updated_weight_array *= scale
@@ -160,7 +157,7 @@ def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
     """
     chex.assert_rank(X, 2)
     a, b, c = (3.4445, -4.7750, 2.0315)
-    X /= (jnp.linalg.norm(X) + eps)  # Ensure top singular value <= 1
+    X /= jnp.linalg.norm(X) + eps  # Ensure top singular value <= 1
     transpose = False
     if X.shape[0] > X.shape[1]:
         X = X.T
@@ -172,5 +169,5 @@ def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
     if transpose:
         X = X.T
     # https://x.com/leloykun/status/1874358290093924849
-    
+
     return X

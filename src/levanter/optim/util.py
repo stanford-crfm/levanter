@@ -1,7 +1,5 @@
-import equinox as eqx
-import jax
-from typing import Callable, TypeVar
 import dataclasses
+from typing import Callable, TypeVar
 
 import equinox as eqx
 import jax
@@ -13,7 +11,9 @@ from haliax.tree_util import scan_aware_tree_map
 
 from levanter.utils.jax_utils import is_inexact_arrayish
 
+
 T = TypeVar("T")
+
 
 def hvp(f, x, v):
     """Compute the Hessian-vector product of a function."""
@@ -21,6 +21,7 @@ def hvp(f, x, v):
     # grad_f = eqx.filter_grad(f)
     # _, vjp_fn = eqx.filter_vjp(grad_f, x)
     # return vjp_fn(v)[0]
+
 
 def tree_gaussian_like(key, tree):
     """
@@ -114,6 +115,8 @@ def unflatten_linear_layers(template: T, tree_with_flattened_linears: T) -> T:
     return jax.tree.map(
         _unflatten_linear, template, tree_with_flattened_linears, is_leaf=lambda x: isinstance(x, Linear)
     )
+
+
 def map_flattened_linear_layers(
     f: Callable[[hax.nn.Linear], hax.nn.Linear],
     params: PyTree,

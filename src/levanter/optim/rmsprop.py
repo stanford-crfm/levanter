@@ -1,30 +1,22 @@
 # Standard Library Imports
-import abc
-import functools
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Optional, TypeVar
+from typing import NamedTuple, Optional
 
 # Third-Party Imports
 import chex
-import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import jit
-from jax.random import PRNGKey
-import jaxtyping
-from jaxtyping import PRNGKeyArray
 import optax
 from optax import tree_utils as otu
 
-# Local Application/Library-Specific Imports
-import levanter.tracker
 from levanter.optim.config import OptimizerConfig
-from levanter.optim.util import hvp, tree_gaussian_like
-from levanter.utils.jax_utils import parameter_count, tree_filter_like
+
+
 @OptimizerConfig.register_subclass("rmsprop")
 @dataclass
 class RMSPropMomentumConfig(OptimizerConfig):
     """Configuration for RMSProp with Momentum."""
+
     beta1: float = 0.9
     beta2: float = 0.99
     eps: float = 1e-30
@@ -44,22 +36,11 @@ class RMSPropMomentumConfig(OptimizerConfig):
                 transforms.append(optax.clip_by_global_norm(self.max_grad_norm))
 
             # 2) RMSProp with momentum
-            transforms.append(
-                scale_by_rmsprop_momentum(
-                    beta2=self.beta2,
-                    beta1=self.beta1,
-                    eps=self.eps
-                )
-            )
+            transforms.append(scale_by_rmsprop_momentum(beta2=self.beta2, beta1=self.beta1, eps=self.eps))
 
             # 3) (Optional) Weight beta2
             if self.weight_decay > 0.0:
-                transforms.append(
-                    optax.add_decayed_weights(
-                        self.weight_decay,
-                        self.build_weight_decay_mask()
-                    )
-                )
+                transforms.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
 
             # 4) Finally, scale by negative learning rate for gradient descent
             transforms.append(optax.scale(-learning_rate))
@@ -67,21 +48,19 @@ class RMSPropMomentumConfig(OptimizerConfig):
             return optax.chain(*transforms)
 
         # Inject the (possibly schedule-driven) learning rate
-        return optax.inject_hyperparams(_optimizer)(
-            learning_rate=self.lr_scheduler(num_train_steps)
-        )
+        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
 
 class ScaleByRMSPropMomState(NamedTuple):
     """State for RMSProp with momentum."""
+
     count: chex.Array  # shape=(), dtype=jnp.int32
     mean_square: optax.Updates
     momentum: optax.Updates
 
+
 def scale_by_rmsprop_momentum(
-    beta1: float = 0.9,
-    beta2: float = 0.99,
-    eps: float = 1e-30
+    beta1: float = 0.9, beta2: float = 0.99, eps: float = 1e-30
 ) -> optax.GradientTransformation:
     r"""
     Scale updates according to the RMSProp algorithm, then apply momentum.
@@ -102,6 +81,7 @@ def scale_by_rmsprop_momentum(
     Returns:
         An `optax.GradientTransformation` to be used in an Optax chain.
     """
+
     def init_fn(params):
         # Initialize mean_square and momentum buffers to zero trees
         mean_square = otu.tree_zeros_like(params)
@@ -113,16 +93,15 @@ def scale_by_rmsprop_momentum(
         )
 
     def update_fn(updates, state, params=None):
-      
+
         count_inc = optax.safe_increment(state.count)
         # 1) Update the mean of squared gradients
         new_mean_square = jax.tree_map(
-            lambda ms, g: beta2 * ms + (1.0 - beta2) * (g ** 2),
+            lambda ms, g: beta2 * ms + (1.0 - beta2) * (g**2),
             state.mean_square,
             updates,
         )
         new_mean_square_hat = otu.tree_bias_correction(new_mean_square, beta2, count_inc)
-        
 
         # 2) Compute the RMS-scaled updates
         scaled_updates = jax.tree_map(
@@ -140,7 +119,7 @@ def scale_by_rmsprop_momentum(
         )
 
         # 4) Increment step count
-        
+
         update = otu.tree_bias_correction(new_momentum, beta1, count_inc)
 
         # 5) Return final updates and new state

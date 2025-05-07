@@ -1,20 +1,16 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import NamedTuple, Optional, Tuple, List, Union
+from typing import NamedTuple
 
 import chex
 import jax
 import jax.numpy as jnp
 import optax
 from optax import tree_utils as otu
-from jax.sharding import PartitionSpec
 
-import haliax
 from haliax.nn import Linear
-from haliax.partitioning import infer_resource_partitions
 
 from levanter.optim.config import OptimizerConfig
-from levanter.optim.util import map_flattened_linear_layers
 from levanter.utils.jax_utils import leaf_key_paths
 
 
@@ -40,10 +36,9 @@ class MiniConfig(OptimizerConfig):
         learning_rate_schedule = self.lr_scheduler(num_train_steps)
 
         def optimizer(learning_rate):
-
             def mini_transform(mean_axis):
                 components = []
-                components.append(scale_with_mini(self.beta1, self.beta2, self.epsilon, mean_axis = mean_axis))
+                components.append(scale_with_mini(self.beta1, self.beta2, self.epsilon, mean_axis=mean_axis))
                 if self.weight_decay > 0:
                     components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
                 components.append(optax.scale(-learning_rate))
@@ -62,13 +57,13 @@ class MiniConfig(OptimizerConfig):
                 return optimizer
 
             transformations = {
-                "embedding": mini_transform(mean_axis = (1,)),
-                "lm_head": mini_transform(mean_axis = (1,)),
-                "query": mini_transform(mean_axis = (2, 3, 4)),
-                "key": mini_transform(mean_axis = (2, 3)),
-                "value": mini_transform(mean_axis = (3,)),
-                "output": mini_transform(mean_axis = (2, 3)),
-                "linear": mini_transform(mean_axis = (2,)),
+                "embedding": mini_transform(mean_axis=(1,)),
+                "lm_head": mini_transform(mean_axis=(1,)),
+                "query": mini_transform(mean_axis=(2, 3, 4)),
+                "key": mini_transform(mean_axis=(2, 3)),
+                "value": mini_transform(mean_axis=(3,)),
+                "output": mini_transform(mean_axis=(2, 3)),
+                "linear": mini_transform(mean_axis=(2,)),
                 "adamw": adamw_transform(),
             }
 
@@ -109,6 +104,7 @@ class MiniConfig(OptimizerConfig):
 
 class ScaleByMiniState(NamedTuple):
     """State for the Mars algorithm."""
+
     count: chex.Array  # shape=(), dtype=jnp.int32.
     momentum_buffer: optax.Updates
     second_moment_buffer: optax.Updates
@@ -117,28 +113,30 @@ class ScaleByMiniState(NamedTuple):
 def scale_with_mini(beta1, beta2, epsilon, mean_axis=(1,)):
     """
     Implementation of the Mini algorithm: Momentum optimizer with second moment scaling.
-    
+
     Args:
         beta1: momentum decay rate
         beta2: second moment decay rate
         epsilon: small constant for numerical stability
         mean_axis: axes over which to compute the mean for the second moment
-    
+
     Returns:
         An optax GradientTransformation
     """
+
     def init_fn(params):
         momentum_buffer = otu.tree_zeros_like(params)  # First moment
         second_moment_buffer = otu.tree_zeros_like(params)  # Second moment
         count = jnp.zeros([], jnp.int32)
-        
-        return ScaleByMiniState(count=count, momentum_buffer=momentum_buffer, 
-                               second_moment_buffer=second_moment_buffer)
+
+        return ScaleByMiniState(
+            count=count, momentum_buffer=momentum_buffer, second_moment_buffer=second_moment_buffer
+        )
 
     def update_fn(updates, state, params=None):
         # Update momentum buffer (step 6 in algorithm)
         momentum_buffer = otu.tree_update_moment(updates, state.momentum_buffer, beta1, 1)
-        
+
         # Calculate second moment along specified axes (step 8 in algorithm)
         def calc_and_update_second_moment(update, prev_moment):
             # Calculate squared and take mean over specified axes
@@ -153,30 +151,23 @@ def scale_with_mini(beta1, beta2, epsilon, mean_axis=(1,)):
             return prev_moment * beta2 + squared * (1 - beta2)
 
         second_moment_buffer = jax.tree_util.tree_map(
-            calc_and_update_second_moment,
-            updates,
-            state.second_moment_buffer)
-        
+            calc_and_update_second_moment, updates, state.second_moment_buffer
+        )
+
         # Bias correction (steps 7 and 9 in algorithm)
         count_inc = optax.safe_increment(state.count)
         momentum_hat = otu.tree_bias_correction(momentum_buffer, beta1, count_inc)
         second_moment_hat = otu.tree_bias_correction(second_moment_buffer, beta2, count_inc)
-        
+
         # Calculate updates (step 10 in algorithm)
         def apply_update(m_hat, v_hat):
             return m_hat / (jnp.sqrt(v_hat) + epsilon)
-        
+
         # Apply the update using the momentum and second moment
-        updates = jax.tree_util.tree_map(
-            lambda m, v: apply_update(m, v), 
-            momentum_hat, 
-            second_moment_hat
-        )
-        
+        updates = jax.tree_util.tree_map(lambda m, v: apply_update(m, v), momentum_hat, second_moment_hat)
+
         return updates, ScaleByMiniState(
-            count=count_inc, 
-            momentum_buffer=momentum_buffer, 
-            second_moment_buffer=second_moment_buffer
+            count=count_inc, momentum_buffer=momentum_buffer, second_moment_buffer=second_moment_buffer
         )
-    
+
     return optax.GradientTransformation(init_fn, update_fn)

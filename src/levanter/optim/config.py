@@ -306,6 +306,7 @@ class AdamConfig(OptimizerConfig):
 
     def build(self, num_train_steps):
         """Creates the optimizer"""
+
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
             components = []
@@ -313,7 +314,7 @@ class AdamConfig(OptimizerConfig):
             if self.max_grad_norm:
                 components.append(optax.clip_by_global_norm(self.max_grad_norm))
 
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon, nesterov = self.nesterov))
+            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon, nesterov=self.nesterov))
 
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
@@ -327,6 +328,7 @@ class AdamConfig(OptimizerConfig):
 
         return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
 
+
 @OptimizerConfig.register_subclass("lion")
 @dataclass
 class LionConfig(OptimizerConfig):
@@ -338,6 +340,7 @@ class LionConfig(OptimizerConfig):
 
     def build(self, num_train_steps):
         """Creates the optimizer"""
+
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
             components = []
