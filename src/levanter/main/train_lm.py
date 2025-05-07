@@ -140,7 +140,10 @@ def main(config: TrainLmConfig):
         )
 
         # Get the tagged evaluation datasets
-        tagged_eval_datasets = config.data.tagged_eval_sets(Pos)
+        tagged_eval_datasets = config.data.tagged_eval_sets(
+            Pos,
+            config.trainer.batch_schedule,
+        )
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
