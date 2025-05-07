@@ -1125,11 +1125,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     """Block size for deterministic mixing. In each block, a given dataset will have exactly the same number
     of samples, equal to the expected number of samples in the mixture, rounding in the expected way."""
 
-    max_batches_dict: Optional[Dict[str, int]] = None
+    max_train_batches: Optional[Dict[str, int]] = None
     """ Maximum number of batches to use from each dataset for training (using the initial batch size)"""
 
     validation_batch_size: int = 1024
-    num_validation_batches_dict: Optional[Dict[str, int]] = None
+    num_validation_batches: Optional[Dict[str, int]] = None
     """ Number of validation batches to sample from the training set for each dataset"""
 
     def __post_init__(self):
@@ -1150,10 +1150,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         else:
             raise ValueError(f"Invalid train_weights type: {type(self.train_weights)}")
 
-        if self.max_batches_dict is not None or self.num_validation_batches_dict is not None:
+        if self.max_train_batches is not None or self.num_validation_batches is not None:
             assert (
                 self.experiment_budget is None and self.target_budget is None
-            ), "max_batches_dict and num_validation_batches_dict and simulated data budget cannot all be set"
+            ), "max_train_batches and num_validation_batches and simulated data budget cannot all be set"
 
     def build_token_datasets(self, caches: Mapping[str, TreeCache[dict]], Pos: Axis):
         token_datasets = {
@@ -1256,14 +1256,14 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 sliced_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             datasets = sliced_datasets
 
-        if self.num_validation_batches_dict is not None:
+        if self.num_validation_batches is not None:
             assert (
                 initial_batch_size is not None
-            ), "initial_batch_size must be provided if num_validation_batches_dict is provided"
+            ), "initial_batch_size must be provided if num_validation_batches is provided"
 
             for name, ds in datasets.items():
-                if name in self.num_validation_batches_dict:
-                    num_sequences = self.num_validation_batches_dict[name] * self.validation_batch_size
+                if name in self.num_validation_batches:
+                    num_sequences = self.num_validation_batches[name] * self.validation_batch_size
                     len_dataset = len(ds.as_sync_dataset())
                     # Reserve the last N sequences for validation and use the rest for training
                     logger.info(
@@ -1272,14 +1272,14 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                     )
                     datasets[name] = ds.slice_dataset(start_index=0, end_index=len_dataset - num_sequences)
 
-        if self.max_batches_dict is not None:
+        if self.max_train_batches is not None:
             assert (
                 initial_batch_size is not None
-            ), "initial_batch_size must be provided if max_batches_dict is provided"
+            ), "initial_batch_size must be provided if max_train_batches is provided"
 
             for name, ds in datasets.items():
-                if name in self.max_batches_dict:
-                    num_sequences = self.max_batches_dict[name] * initial_batch_size
+                if name in self.max_train_batches:
+                    num_sequences = self.max_train_batches[name] * initial_batch_size
                     len_dataset = len(ds.as_sync_dataset())
                     assert (
                         num_sequences <= len_dataset
@@ -1295,11 +1295,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         doc_caches = self.build_caches("validation", monitors=monitors)
         validation_datasets = self.build_token_datasets(doc_caches, Pos)
 
-        if self.num_validation_batches_dict is not None:
+        if self.num_validation_batches is not None:
             train_doc_caches = self.build_caches("train", monitors=monitors)
             train_datasets = self.build_token_datasets(train_doc_caches, Pos)
 
-            for name, num_batches in self.num_validation_batches_dict.items():
+            for name, num_batches in self.num_validation_batches.items():
                 num_sequences = num_batches * self.validation_batch_size
                 len_dataset = len(train_datasets[name].as_sync_dataset())
                 logger.info(
