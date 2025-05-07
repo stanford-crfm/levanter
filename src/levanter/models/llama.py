@@ -298,13 +298,11 @@ class LlamaDecoderLayer(eqx.Module):
         )
         ln_1 = config.mk_LayerNorm(config.Embed)
         ln_2 = config.mk_LayerNorm(config.Embed)
-        
         post_attn_ln = None
         post_mlp_ln = None
         if config.hybrid_norm:
             post_attn_ln = config.mk_LayerNorm(config.Embed)
             post_mlp_ln = config.mk_LayerNorm(config.Embed)
-
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2, post_attn_ln, post_mlp_ln)
 
     @named_call
