@@ -9,7 +9,7 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import Axis, NamedArray
+from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import ScanCheckpointPolicy, Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
@@ -184,7 +184,12 @@ class LlamaMlp(eqx.Module):
 
     @staticmethod
     def init(
-        Embed: Axis, Mlp: Axis, activation_fn: Union[ActivationFunctionEnum, Callable], *, key, use_bias: bool = False
+        Embed: AxisSpec,
+        Mlp: AxisSpec,
+        activation_fn: Union[ActivationFunctionEnum, Callable],
+        *,
+        key,
+        use_bias: bool = False,
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
         gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
@@ -246,6 +251,11 @@ class LlamaAttention(eqx.Module):
         rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
         q, k = rot_embs(self.config.HeadSize, q, k)
 
+        # gradient checkpointing
+        q = hax.tree_checkpoint_name(q, "q")
+        k = hax.tree_checkpoint_name(k, "k")
+        v = hax.tree_checkpoint_name(v, "v")
+
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
@@ -268,6 +278,10 @@ class LlamaAttention(eqx.Module):
         attn_output = attn_output.astype(x.dtype)
 
         attn_output = self.o_proj(attn_output, key=key_o)
+
+        # gradient checkpointing
+        attn_output = hax.tree_checkpoint_name(attn_output, "attn_output")
+
         return attn_output
 
 
