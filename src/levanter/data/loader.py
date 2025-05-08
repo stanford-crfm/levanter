@@ -292,7 +292,6 @@ class DataLoaderIterator(Iterator[Ex]):
                 batches[-1] = dataclasses.replace(batches[-1], global_size=final_batch_size)
 
             batch_of_batches: list[_Batch[Ex]] = await self._do_retrieve_batch_of_batches(batches)
-            logger.debug(f"Time to get {len(next_batch_numbers)} batches: {time_end - time_start:.3f}")
 
             for batch in batch_of_batches:
                 yield batch
