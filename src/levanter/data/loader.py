@@ -1,14 +1,15 @@
 import asyncio
 import dataclasses
+import functools
 import logging
 import time
 import warnings
 from collections import defaultdict
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import AsyncIterator, Callable, Generic, Iterable, Iterator, Optional, Tuple, TypeVar
+from typing import Generic, TypeVar
 
-import equinox
 import jax
 from jax import Array
 from jax import numpy as jnp
@@ -68,9 +69,9 @@ class DataLoader(Iterable[Ex]):
         batch_size: int | IntSchedule | hax.Axis,
         *,
         batch_axis_name: str | None = None,
-        max_buffered_batches: Optional[int] = 64,
+        max_buffered_batches: int | None = 64,
         mesh: Mesh | None = None,
-        axis_resources: Optional[ResourceMapping] = None,
+        axis_resources: ResourceMapping | None = None,
         prefetch_size: int = 32,
         pad_final_batch: bool = True,
         allow_nondivisible_batch_size: bool = False,
@@ -209,7 +210,7 @@ class DataLoader(Iterable[Ex]):
     def __iter__(self):
         return self.iter_from_step(None)
 
-    def iter_from_step(self, start_from_batch: Optional[int] = None):
+    def iter_from_step(self, start_from_batch: int | None = None):
         # sometimes we pass in an array for the start_from_batch, so we need to check for that
         start_from_batch = int(start_from_batch) if start_from_batch is not None else None
         return DataLoaderIterator(self, start_from_batch=start_from_batch)
@@ -226,7 +227,7 @@ class DataLoader(Iterable[Ex]):
 
 
 class DataLoaderIterator(Iterator[Ex]):
-    def __init__(self, data_loader: DataLoader, start_from_batch: Optional[int] = None):
+    def __init__(self, data_loader: DataLoader, start_from_batch: int | None = None):
         self.dl = data_loader
         self._start_from_batch = start_from_batch
         self.mapping = self.dl.axis_resources
@@ -243,11 +244,16 @@ class DataLoaderIterator(Iterator[Ex]):
     def __next__(self):
         time_start = time.time()
         individual_data_batch = next(self._batches)
+        time_mid = time.time()
         batch = self._batchify_local_data(individual_data_batch)
 
         time_end = time.time()
+        time_batch = time_end - time_mid
         if (time_end - time_start) > 0.5:
-            logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}")
+            if time_batch > 0.1:
+                logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}. {time_batch:.3f} in batchify")
+            else:
+                logger.info(f"Prefetch wasn't fast enough: {time_end - time_start:.3f}.")
         return batch
 
     def __del__(self):
@@ -285,9 +291,7 @@ class DataLoaderIterator(Iterator[Ex]):
             if final_batch_size is not None:
                 batches[-1] = dataclasses.replace(batches[-1], global_size=final_batch_size)
 
-            time_start = time.time()
             batch_of_batches: list[_Batch[Ex]] = await self._do_retrieve_batch_of_batches(batches)
-            time_end = time.time()
             logger.debug(f"Time to get {len(next_batch_numbers)} batches: {time_end - time_start:.3f}")
 
             for batch in batch_of_batches:
@@ -297,7 +301,7 @@ class DataLoaderIterator(Iterator[Ex]):
 
         logger.debug(f"DataLoaderIterator finished at batch number {batch_number}")
 
-    async def _dataset_get_available_batch_number(self, target_max_batch_number: int) -> tuple[int, Optional[int]]:
+    async def _dataset_get_available_batch_number(self, target_max_batch_number: int) -> tuple[int, int | None]:
         """
         Wait until the data store has enough data to support the given batch number. If
         the data store is finite, this will wait until the data store has at least `target_max_batch_number` batches
@@ -446,7 +450,7 @@ class DataLoaderIterator(Iterator[Ex]):
 
         out: list[_Batch[Ex]] = []
 
-        for batch, global_indices_batch in zip(batch_specs, global_indices_for_each_batch):
+        for batch, global_indices_batch in zip(batch_specs, global_indices_for_each_batch, strict=False):
             local_index_to_example = {}
             for global_index in global_indices_batch:
                 local_index = global_index - batch.global_data_offset
@@ -532,7 +536,7 @@ class _JaxCpuBackgroundIterator(BackgroundIterator[Ex]):
     We want the thread to only use the CPU device.
     """
 
-    def __init__(self, producer_fn: Callable[[], Iterator[Ex] | AsyncIterator[Ex]], max_capacity: Optional[int]):
+    def __init__(self, producer_fn: Callable[[], Iterator[Ex] | AsyncIterator[Ex]], max_capacity: int | None):
         super().__init__(producer_fn, max_capacity)
 
     def _fill_queue_with_batches(self):
@@ -540,7 +544,8 @@ class _JaxCpuBackgroundIterator(BackgroundIterator[Ex]):
             super()._fill_queue_with_batches()
 
 
-@equinox.filter_jit
+# @equinox.filter_jit
+@functools.partial(jax.jit, static_argnums=(0,))
 def stack_tree(batch_name, individual_datums):
     def _stack_leaves_unchecked(*leaves):
         if is_named_array(leaves[0]):
@@ -559,9 +564,9 @@ def check_sharded_consistency(tree: PyTree, check_disjoint_indices_are_different
     # index is a tuple[slice, ...], slices are obnoxiously not hashable so we have to convert to tuple
 
     def check_array(array):
-        def _to_tuple(index: Tuple[slice, ...]) -> Tuple[Tuple[int, int], ...]:
-            my_indices: Tuple[Tuple[int, int], ...] = tuple(
-                s.indices(axis_size)[0:2] for axis_size, s in zip(array.shape, index)
+        def _to_tuple(index: tuple[slice, ...]) -> tuple[tuple[int, int], ...]:
+            my_indices: tuple[tuple[int, int], ...] = tuple(
+                s.indices(axis_size)[0:2] for axis_size, s in zip(array.shape, index, strict=False)
             )
 
             return my_indices
