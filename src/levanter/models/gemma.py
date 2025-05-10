@@ -76,7 +76,7 @@ class GemmaConfig(HFCompatConfig):
     attn_dropout = 0.0
     norm_eps = 1e-6
 
-    norm_embeddings: bool = True
+    input_embedding_norm: bool = False
 
     # Attention-related config
     upcast_attn: bool = False
