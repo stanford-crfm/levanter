@@ -129,7 +129,18 @@ class LlamaConfig(HFCompatConfig):
 
         Returns:
             HfLlamaConfig: HuggingFace's LlamaConfig
+
+        Raises:
+            ValueError: If hybrid_norm or input_embedding_norm are enabled, as these features
+                are not supported in the HuggingFace config format.
         """
+        if self.hybrid_norm or self.input_embedding_norm:
+            raise ValueError(
+                "Cannot export to HuggingFace format with hybrid_norm or input_embedding_norm enabled. "
+                "These features are not supported in the HuggingFace config format. "
+                "Please disable these features before exporting."
+            )
+
         if config_overrides is None:
             config_overrides = {}
 
