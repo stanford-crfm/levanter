@@ -45,6 +45,8 @@ class LlamaConfig(HFCompatConfig):
             Note that num_heads must be divisible by this number. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
+        hybrid_norm (bool, optional): whether to use hybrid normalization with additional layer norms after attention and MLP. Defaults to False.
+        input_embedding_norm (bool, optional): whether to use layer normalization after input embeddings. Defaults to False.
     """
 
     seq_len: int = 2048
@@ -57,6 +59,8 @@ class LlamaConfig(HFCompatConfig):
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
     tie_word_embeddings: bool = False
+    hybrid_norm: bool = False
+    input_embedding_norm: bool = False
 
     # Attention-related config
     upcast_attn: bool = False
@@ -125,7 +129,18 @@ class LlamaConfig(HFCompatConfig):
 
         Returns:
             HfLlamaConfig: HuggingFace's LlamaConfig
+
+        Raises:
+            ValueError: If hybrid_norm or input_embedding_norm are enabled, as these features
+                are not supported in the HuggingFace config format.
         """
+        if self.hybrid_norm or self.input_embedding_norm:
+            raise ValueError(
+                "Cannot export to HuggingFace format with hybrid_norm or input_embedding_norm enabled. "
+                "These features are not supported in the HuggingFace config format. "
+                "Please disable these features before exporting."
+            )
+
         if config_overrides is None:
             config_overrides = {}
 
@@ -291,6 +306,8 @@ class LlamaDecoderLayer(eqx.Module):
     mlp: LlamaMlp
     input_layernorm: hnn.RmsNorm
     post_attention_layernorm: hnn.RmsNorm
+    post_attn_layernorm: Optional[hnn.RmsNorm] = None
+    post_mlp_layernorm: Optional[hnn.RmsNorm] = None
 
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
@@ -306,8 +323,12 @@ class LlamaDecoderLayer(eqx.Module):
         )
         ln_1 = config.mk_LayerNorm(config.Embed)
         ln_2 = config.mk_LayerNorm(config.Embed)
-
-        return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2)
+        post_attn_ln = None
+        post_mlp_ln = None
+        if config.hybrid_norm:
+            post_attn_ln = config.mk_LayerNorm(config.Embed)
+            post_mlp_ln = config.mk_LayerNorm(config.Embed)
+        return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2, post_attn_ln, post_mlp_ln)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
@@ -316,12 +337,16 @@ class LlamaDecoderLayer(eqx.Module):
         residual = x
         x = self.input_layernorm(x)
         attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
+        if self.post_attn_layernorm is not None:
+            attn_output = self.post_attn_layernorm(attn_output)
         x = residual + attn_output
 
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
         mlp_output = self.mlp(x, key=k_mlp)
+        if self.post_mlp_layernorm is not None:
+            mlp_output = self.post_mlp_layernorm(mlp_output)
         output = residual + mlp_output
         return output
 
@@ -363,10 +388,15 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
     """
 
     token_embeddings: hnn.Embedding
+    norm: Optional[hnn.RmsNorm] = None
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        return LlamaEmbedding(hnn.Embedding.init(Vocab, config.Embed, key=key))
+        token_embeddings = hnn.Embedding.init(Vocab, config.Embed, key=key)
+        norm = None
+        if config.input_embedding_norm:
+            norm = config.mk_LayerNorm(config.Embed)
+        return LlamaEmbedding(token_embeddings, norm)
 
     @property
     def Vocab(self) -> Axis:
@@ -379,8 +409,9 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
     @named_call
     def embed(self, input_ids, *args):
         input_embeds = self.token_embeddings(input_ids)
-        x = input_embeds
-        return x
+        if self.norm is not None:
+            input_embeds = self.norm(input_embeds)
+        return input_embeds
 
     def unembed(self, x: NamedArray):
         return self.token_embeddings.unembed(x)
@@ -390,7 +421,7 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
-        return dataclasses.replace(self, token_embeddings=new_weights)
+        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
 
 
 class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig]):
