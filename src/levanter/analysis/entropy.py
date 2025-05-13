@@ -1,4 +1,5 @@
 """Functions for computing and visualizing token-level entropy."""
+
 import logging
 from typing import Callable, TypeVar
 
