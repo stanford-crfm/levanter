@@ -448,16 +448,12 @@ class LmDatasetSourceConfigBase(abc.ABC):
     def get_shard_source(self, split) -> Optional[ShardedDataSource[dict]]:
         raise NotImplementedError
 
-    def load_cache(self,
-                   tokenizer: HfTokenizer,
-                   override_cache_dir: str | None = None,
-                   enforce_eos = True) -> TreeCache[dict]:
-        return load_lm_dataset_cache(
-            override_cache_dir if override_cache_dir is not None else self.cache_dir,
-            self.format,
-            tokenizer,
-            enforce_eos=enforce_eos
-        )
+    def load_cache(
+        self, split, tokenizer: HfTokenizer, override_cache_dir: str | None = None, enforce_eos=True
+    ) -> TreeCache[dict]:
+        base_cache = override_cache_dir if override_cache_dir is not None else self.cache_dir
+        return load_lm_dataset_cache(os.path.join(base_cache, split), self.format, tokenizer, enforce_eos=enforce_eos)
+
 
 @dataclass
 class HfDatasetSourceConfig(LmDatasetSourceConfigBase):
