@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -12,6 +13,8 @@ import tensorstore as ts
 from levanter.utils import fsspec_utils
 from levanter.utils.thread_utils import future_from_value
 
+
+CACHE_BYTES_LIMIT = int(os.getenv("LEVANTER_TS_CACHE_LIMIT", "1000000000"))
 
 # zarr suggests 1MB chunk size
 # at 4 bytes this is 256k elements
@@ -105,14 +108,19 @@ class JaggedArrayStore:
         path: Optional[str], *, mode="a", item_rank=1, dtype, cache_metadata: bool = False
     ) -> "JaggedArrayStore":
         offset_path = _extend_path(path, "offsets")
-        offsets = _ts_open_async(offset_path, jnp.int64, [1], mode=mode)
+        cache_settings = {"total_bytes_limit": CACHE_BYTES_LIMIT} if cache_metadata and mode == "r" else {}
+        print(cache_settings)
+        offsets = _ts_open_async(offset_path, jnp.int64, [1], mode=mode, cache_settings=cache_settings)
 
         data_path = _extend_path(path, "data")
-        data = _ts_open_async(data_path, dtype, [0], mode=mode)
+        # not generally worth this
+        data = _ts_open_async(data_path, dtype, [0], mode=mode, cache_settings={})
 
         if item_rank > 1:
             shape_path = _extend_path(path, "shapes")
-            shapes = _ts_open_async(shape_path, jnp.int64, [0, item_rank - 1], mode=mode)
+            shapes = _ts_open_async(
+                shape_path, jnp.int64, [0, item_rank - 1], mode=mode, cache_settings=cache_settings
+            )
         else:
             shapes = None
 
@@ -123,14 +131,16 @@ class JaggedArrayStore:
     @staticmethod
     def open(path: Optional[str], *, mode="a", item_rank=1, dtype, cache_metadata: bool = False) -> "JaggedArrayStore":
         offset_path = _extend_path(path, "offsets")
-        offsets = _ts_open_sync(offset_path, jnp.int64, [1], mode=mode)
+        cache_settings = {"total_bytes_limit": CACHE_BYTES_LIMIT} if cache_metadata and mode == "r" else {}
+        print(cache_settings)
+        offsets = _ts_open_sync(offset_path, jnp.int64, [1], mode=mode, cache_settings=cache_settings)
 
         data_path = _extend_path(path, "data")
-        data = _ts_open_sync(data_path, dtype, [0], mode=mode)
+        data = _ts_open_sync(data_path, dtype, [0], mode=mode, cache_settings=cache_settings)
 
         if item_rank > 1:
             shape_path = _extend_path(path, "shapes")
-            shapes = _ts_open_sync(shape_path, jnp.int64, [0, item_rank - 1], mode=mode)
+            shapes = _ts_open_sync(shape_path, jnp.int64, [0, item_rank - 1], mode=mode, cache_settings=cache_settings)
         else:
             shapes = None
 
@@ -375,24 +385,33 @@ class JaggedArrayStore:
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[np.ndarray]:
         # get indices
-        with ts.Batch():
-            all_indices_futs = [self._bounds_for_rows_async(indices[i], indices[i] + 1) for i in range(len(indices))]
+        time_in = time.time()
+        all_indices_fut = self._bounds_for_rows_batch_async(indices)
 
         # shapes, if applicable
         if self.shapes is not None:
             with ts.Batch():
                 shapes_futs = [self.shapes[i].read() for i in indices]
 
-        all_indices = [(start, stop) for start, stop, _ in await asyncio.gather(*all_indices_futs)]
+        all_indices = await all_indices_fut
+        time_out = time.time()
+        print(f"Time to get indices: {time_out - time_in:.3f} seconds")
+        time_in = time.time()
 
         # get data
         with ts.Batch():
             data_futs = [self.data[start:stop].read() for start, stop in all_indices]
 
         data = await asyncio.gather(*data_futs)
+        time_out = time.time()
+        print(f"Time to get data: {time_out - time_in:.3f} seconds")
+        time_in = time.time()
 
         if self.shapes is not None:
             shapes = await asyncio.gather(*shapes_futs)
+            time_out = time.time()
+            print(f"Time to get shapes: {time_out - time_in:.3f} seconds")
+            time_in = time.time()
 
             data = [d.reshape(*s, -1) for d, s in zip(data, shapes)]
 
@@ -487,6 +506,30 @@ class JaggedArrayStore:
 
         return offsets
 
+    async def _bounds_for_rows_batch_async(self, indices):
+        num_rows = await self.num_rows_async()
+        offsets_futs: list = []
+
+        zero_pos = None
+
+        with ts.Batch():
+            for index in indices:
+                if index >= num_rows or index < 0:
+                    raise IndexError("Index out of bounds")
+                offsets = self.offsets[index : index + 2].read()
+                offsets_futs.append(offsets)
+
+                if index == 0:
+                    zero_pos = len(offsets_futs) - 1
+
+        offsets = await asyncio.gather(*[fut for fut in offsets_futs])
+        offsets = [(offset[0], offset[-1]) for offset in offsets]
+
+        if zero_pos is not None:
+            offsets[zero_pos] = [0, offsets[zero_pos][1]]
+
+        return offsets
+
     async def _bounds_for_rows_async(self, start, stop):
         offsets = await self.offsets[start : stop + 1].read()
         data_start, data_stop = offsets[0], offsets[-1]
@@ -503,14 +546,14 @@ def _unshaped_spec(store: ts.TensorStore) -> ts.Spec:
     return spec
 
 
-def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
+def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode, cache_settings: dict):
     spec = _get_spec(path, shape)
     mode = _mode_to_open_mode(mode)
 
     # Basically, we want to load the existing shape metadata if it exists
     if not mode.get("delete_existing", False):
         try:
-            return ts.open(spec, **mode).result()
+            return ts.open(spec, context=ts.Context({"cache_pool": cache_settings}), **mode).result()
         except FileNotFoundError:
             pass
         except ValueError:
@@ -523,6 +566,7 @@ def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
             spec,
             dtype=jnp.dtype(dtype).name,
             shape=[2**54, *shape[1:]],
+            context=ts.Context({"cache_pool": cache_settings}),
             # chunk_layout=ts.ChunkLayout(
             #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
             #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
@@ -537,14 +581,14 @@ def _ts_open_sync(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
             raise e
 
 
-async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
+async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode, cache_settings: dict):
     spec = _get_spec(path, shape)
     mode = _mode_to_open_mode(mode)
 
     # Basically, we want to load the existing shape metadata if it exists
     if not mode.get("delete_existing", False):
         try:
-            return await ts.open(spec, **mode)
+            return await ts.open(spec, context=ts.Context({"cache_pool": cache_settings}), **mode)
         except FileNotFoundError:
             pass
         except ValueError:
@@ -556,6 +600,7 @@ async def _ts_open_async(path: Optional[str], dtype: jnp.dtype, shape, *, mode):
         spec,
         dtype=jnp.dtype(dtype).name,
         shape=[2**54, *shape[1:]],
+        context=ts.Context({"cache_pool": cache_settings}),
         # chunk_layout=ts.ChunkLayout(
         #     read_chunk_shape=[DEFAULT_CHUNK_SIZE, *shape[1:]],
         #     write_chunk_shape=[DEFAULT_WRITE_CHUNK_SIZE, *shape[1:]]
