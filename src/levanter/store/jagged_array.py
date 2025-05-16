@@ -1,6 +1,5 @@
 import asyncio
 import os
-import time
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -109,7 +108,6 @@ class JaggedArrayStore:
     ) -> "JaggedArrayStore":
         offset_path = _extend_path(path, "offsets")
         cache_settings = {"total_bytes_limit": CACHE_BYTES_LIMIT} if cache_metadata and mode == "r" else {}
-        print(cache_settings)
         offsets = _ts_open_async(offset_path, jnp.int64, [1], mode=mode, cache_settings=cache_settings)
 
         data_path = _extend_path(path, "data")
@@ -132,7 +130,6 @@ class JaggedArrayStore:
     def open(path: Optional[str], *, mode="a", item_rank=1, dtype, cache_metadata: bool = False) -> "JaggedArrayStore":
         offset_path = _extend_path(path, "offsets")
         cache_settings = {"total_bytes_limit": CACHE_BYTES_LIMIT} if cache_metadata and mode == "r" else {}
-        print(cache_settings)
         offsets = _ts_open_sync(offset_path, jnp.int64, [1], mode=mode, cache_settings=cache_settings)
 
         data_path = _extend_path(path, "data")
@@ -385,7 +382,6 @@ class JaggedArrayStore:
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[np.ndarray]:
         # get indices
-        time_in = time.time()
         all_indices_fut = self._bounds_for_rows_batch_async(indices)
 
         # shapes, if applicable
@@ -394,24 +390,15 @@ class JaggedArrayStore:
                 shapes_futs = [self.shapes[i].read() for i in indices]
 
         all_indices = await all_indices_fut
-        time_out = time.time()
-        print(f"Time to get indices: {time_out - time_in:.3f} seconds")
-        time_in = time.time()
 
         # get data
         with ts.Batch():
             data_futs = [self.data[start:stop].read() for start, stop in all_indices]
 
         data = await asyncio.gather(*data_futs)
-        time_out = time.time()
-        print(f"Time to get data: {time_out - time_in:.3f} seconds")
-        time_in = time.time()
 
         if self.shapes is not None:
             shapes = await asyncio.gather(*shapes_futs)
-            time_out = time.time()
-            print(f"Time to get shapes: {time_out - time_in:.3f} seconds")
-            time_in = time.time()
 
             data = [d.reshape(*s, -1) for d, s in zip(data, shapes)]
 
