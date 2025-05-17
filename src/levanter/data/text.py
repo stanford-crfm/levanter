@@ -62,7 +62,7 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
-from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
+from levanter.data._preprocessor import BatchProcessor, IdentityProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
 from levanter.data.sharded_datasource import (  # noqa
     JsonlDataSource,
@@ -447,6 +447,14 @@ class LmDatasetSourceConfigBase(abc.ABC):
     @abc.abstractmethod
     def get_shard_source(self, split) -> Optional[ShardedDataSource[dict]]:
         raise NotImplementedError
+
+    def load_cache(
+        self, split, tokenizer: HfTokenizer, override_cache_dir: str | None = None, enforce_eos=True
+    ) -> TreeCache[dict]:
+        base_cache = override_cache_dir if override_cache_dir is not None else self.cache_dir
+        if base_cache is None:
+            raise ValueError("cache_dir must be set or override_cache_dir must be provided")
+        return load_lm_dataset_cache(os.path.join(base_cache, split), self.format, tokenizer, enforce_eos=enforce_eos)
 
 
 @dataclass
@@ -924,6 +932,7 @@ def load_lm_dataset_cache(
     enforce_eos=True,
 ) -> TreeCache[dict]:
     """Similar to build_lm_dataset_cache, but just loads the cache. Raises an error if the cache doesn't exist."""
+
     processor = preprocessor_for_format(format, tokenizer, enforce_bos=True, enforce_eos=enforce_eos)
     cache = TreeCache.load(
         cache_dir,
@@ -1342,7 +1351,16 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
             # drop the data source and corresponding weight if the cache is not built
             if source is None:
-                logger.warning(f"Skipping {name} for split {split} because no source was provided")
+                try:
+                    caches[name] = load_lm_dataset_cache(
+                        os.path.join(cache_dir, split),
+                        source_config.format,
+                        self.the_tokenizer,
+                        self.enforce_eos,
+                    )
+                except FileNotFoundError:
+                    logger.warning(f"No source for {name} in {split} split and no cache either, skipping")
+                    continue
             else:
                 caches[name] = build_lm_dataset_cache(
                     os.path.join(cache_dir, split),

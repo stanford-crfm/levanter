@@ -50,7 +50,7 @@ class BatchProcessor(Generic[T_contra, U_co], ABC):
 
     @property
     @abstractmethod
-    def num_cpus(self) -> int:
+    def num_cpus(self) -> float | int:
         """The number of CPUs this processor needs to run."""
         raise NotImplementedError
 
@@ -252,3 +252,23 @@ def _to_list_of_dicts(batch: dict) -> list[dict]:
     values = list(batch.values())
     num_rows = len(values[0])
     return [{key: values[i][j] for i, key in enumerate(keys)} for j in range(num_rows)]
+
+
+class IdentityProcessor(BatchProcessor[T, T]):
+    def __init__(self, exemplar):
+        self.exemplar = exemplar
+
+    def __call__(self, batch: Sequence[T]) -> Sequence[T]:
+        return batch
+
+    @property
+    def output_exemplar(self):
+        return self.exemplar
+
+    @property
+    def num_cpus(self) -> float:
+        return 0.1
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
