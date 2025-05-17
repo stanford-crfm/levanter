@@ -50,7 +50,7 @@ class BatchProcessor(Generic[T_contra, U_co], ABC):
 
     @property
     @abstractmethod
-    def num_cpus(self) -> int:
+    def num_cpus(self) -> float | int:
         """The number of CPUs this processor needs to run."""
         raise NotImplementedError
 
@@ -266,8 +266,8 @@ class IdentityProcessor(BatchProcessor[T, T]):
         return self.exemplar
 
     @property
-    def num_cpus(self) -> int:
-        return 0.5
+    def num_cpus(self) -> float:
+        return 0.1
 
     @property
     def metadata(self) -> Dict[str, Any]:

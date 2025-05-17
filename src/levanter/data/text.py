@@ -452,6 +452,8 @@ class LmDatasetSourceConfigBase(abc.ABC):
         self, split, tokenizer: HfTokenizer, override_cache_dir: str | None = None, enforce_eos=True
     ) -> TreeCache[dict]:
         base_cache = override_cache_dir if override_cache_dir is not None else self.cache_dir
+        if base_cache is None:
+            raise ValueError("cache_dir must be set or override_cache_dir must be provided")
         return load_lm_dataset_cache(os.path.join(base_cache, split), self.format, tokenizer, enforce_eos=enforce_eos)
 
 
