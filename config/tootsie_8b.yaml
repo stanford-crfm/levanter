@@ -1,0 +1,433 @@
+data:
+  cache_dir: null
+  cache_options:
+    batch_size: 128
+    num_shard_groups: 128
+    target_size_per_flush: 512MB
+  chat_template: null
+  configs:
+    nemotron_cc/hq_actual:
+      cache_dir: gs://marin-us-central2/tokenized/nemotron_cc/hq_actual-5af4cc
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/nemotro-cc-eeb783/contrib/Nemotron/Nemotron-CC/data-jsonl/quality=high/kind=actual/**/*.jsonl.gz
+      validation_urls: []
+    nemotron_cc/hq_synth:
+      cache_dir: gs://marin-us-central2/tokenized/nemotron_cc/hq_synth-3525e2
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/nemotro-cc-eeb783/contrib/Nemotron/Nemotron-CC/data-jsonl/quality=high/kind=synthetic/**/*.jsonl.gz
+      validation_urls: []
+    nemotron_cc/low_actual:
+      cache_dir: gs://marin-us-central2/tokenized/nemotron_cc/low_actual-cb3f2c
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/nemotro-cc-eeb783/contrib/Nemotron/Nemotron-CC/data-jsonl/quality=low/kind=actual/**/*.jsonl.gz
+      validation_urls: []
+    nemotron_cc/low_synth:
+      cache_dir: gs://marin-us-central2/tokenized/nemotron_cc/low_synth-3c57b3
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/nemotro-cc-eeb783/contrib/Nemotron/Nemotron-CC/data-jsonl/quality=low/kind=synthetic/**/*.jsonl.gz
+      validation_urls: []
+    nemotron_cc/medium:
+      cache_dir: gs://marin-us-central2/tokenized/nemotron_cc/medium-d86506
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/nemotro-cc-eeb783/contrib/Nemotron/Nemotron-CC/data-jsonl/quality=medium/**/*.jsonl.gz
+      validation_urls: []
+    nemotron_cc/medium_high:
+      cache_dir: gs://marin-us-central2/tokenized/nemotron_cc/medium_high-d21701
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/nemotro-cc-eeb783/contrib/Nemotron/Nemotron-CC/data-jsonl/quality=medium-high/**/*.jsonl.gz
+      validation_urls: []
+    nemotron_cc/medium_low:
+      cache_dir: gs://marin-us-central2/tokenized/nemotron_cc/medium_low-0fdb07
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/nemotro-cc-eeb783/contrib/Nemotron/Nemotron-CC/data-jsonl/quality=medium-low/**/*.jsonl.gz
+      validation_urls: []
+    paloma/4chan:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/4chan-496ad5
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/4chan_meta_sep/val/val*.jsonl.gz
+    paloma/c4_100_domains:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/c4_100_domains-2b6db7
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/c4_100_domains/val/val*.jsonl.gz
+    paloma/c4_en:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/c4_en-cf1f79
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/c4_en/val/val*.jsonl.gz
+    paloma/dolma-v1_5:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/dolma-v1_5-d3bed7
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/dolma-v1_5/val/val*.jsonl.gz
+    paloma/dolma_100_programing_languages:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/dolma_100_programing_languages-369132
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/dolma_100_programing_languages/val/val*.jsonl.gz
+    paloma/dolma_100_subreddits:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/dolma_100_subreddits-f25f70
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/dolma_100_subreddits/val/val*.jsonl.gz
+    paloma/falcon-refinedweb:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/falcon-refinedweb-75d43b
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/falcon-refinedweb/val/val*.jsonl.gz
+    paloma/gab:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/gab-ccaced
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/gab/val/val*.jsonl.gz
+    paloma/m2d2_s2orc_unsplit:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/m2d2_s2orc_unsplit-7dbcc1
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/m2d2_s2orc_unsplit/val/val*.jsonl.gz
+    paloma/m2d2_wikipedia_unsplit:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/m2d2_wikipedia_unsplit-b33d23
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/m2d2_wikipedia_unsplit/val/val*.jsonl.gz
+    paloma/manosphere_meta_sep:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/manosphere_meta_sep-a07891
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/manosphere_meta_sep/val/val*.jsonl.gz
+    paloma/mc4:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/mc4-ea36a2
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/mc4/val/val*.jsonl.gz
+    paloma/ptb:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/ptb-628036
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/ptb/val/val*.jsonl.gz
+    paloma/redpajama:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/redpajama-9d4ddd
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/redpajama/val/val*.jsonl.gz
+    paloma/twitterAAE_HELM_fixed:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/twitterAAE_HELM_fixed-2e17c1
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/twitterAAE_HELM_fixed/val/val*.jsonl.gz
+    paloma/wikitext_103:
+      cache_dir: gs://marin-us-central2/tokenized/paloma/wikitext_103-1f5636
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls: []
+      validation_urls:
+      - gs://marin-us-central2/raw/paloma-fc6827/65cd6fc/wikitext_103/val/val*.jsonl.gz
+    proofpile_2:
+      cache_dir: gs://marin-us-central2/tokenized/proofpile_2-4a35c7/
+      format:
+        text_key: text
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/proof-pile-2-f1b1d8/901a927/huggingface.co/datasets/EleutherAI/proof-pile-2/resolve/901a927
+      validation_urls: []
+    starcoderdata:
+      cache_dir: gs://marin-us-central2/tokenized/starcoderdata-12f018/
+      format:
+        text_key: content
+        type: text
+      tags: []
+      train_urls:
+      - gs://marin-us-central2/raw/starcoderdata-720c8c
+      validation_urls: []
+  enforce_eos: true
+  experiment_budget: null
+  ignore_token_id: -100
+  max_train_batches: null
+  mixture_block_size: 2048
+  num_validation_sequences: null
+  permutation_type: null
+  shuffle: true
+  stop_strategy: restart
+  target_budget: null
+  tokenizer: meta-llama/Meta-Llama-3.1-8B
+  train_weights:
+    nemotron_cc/hq_actual: 0.913505859375
+    nemotron_cc/hq_synth: 2.72
+    nemotron_cc/low_actual: 0.70123046875
+    nemotron_cc/low_synth: 0.62771484375
+    nemotron_cc/medium: 3.38
+    nemotron_cc/medium_high: 0.824716796875
+    nemotron_cc/medium_low: 1.54
+    paloma/4chan: 0.0
+    paloma/c4_100_domains: 0.0
+    paloma/c4_en: 0.0
+    paloma/dolma-v1_5: 0.0
+    paloma/dolma_100_programing_languages: 0.0
+    paloma/dolma_100_subreddits: 0.0
+    paloma/falcon-refinedweb: 0.0
+    paloma/gab: 0.0
+    paloma/m2d2_s2orc_unsplit: 0.0
+    paloma/m2d2_wikipedia_unsplit: 0.0
+    paloma/manosphere_meta_sep: 0.0
+    paloma/mc4: 0.0
+    paloma/ptb: 0.0
+    paloma/redpajama: 0.0
+    paloma/twitterAAE_HELM_fixed: 0.0
+    paloma/wikitext_103: 0.0
+    proofpile_2: 0.055
+    starcoderdata: 0.25
+  vocab_size: null
+data_seed: null
+epoch: 0
+eval_harness: null
+eval_harness_steps: 10000
+hf_save_path: gs://uscentral2stuff/checkpoints/llama-8b-tootsie/hf
+hf_save_steps: 10000
+hf_upload: null
+initialize_from_checkpoint_path: null
+initialize_from_hf: false
+log_entropy: false
+model:
+  activation_function: silu
+  attn_backend: null
+  cross_entropy_block_size: null
+  flash_attention_block_size: null
+  gradient_checkpointing: true
+    disable: false
+    nested: false
+    offload_block_internals: []
+    prevent_cse: false
+    save_block_internals: false
+    save_carries: offload
+    save_inputs: false
+    simple: false
+  hidden_dim: 4096
+  hybrid_norm: false
+  initializer_range: 0.02
+  input_embedding_norm: false
+  intermediate_dim: 14336
+  layer_norm_epsilon: 1.0e-05
+  num_heads: 32
+  num_kv_heads: 4
+  num_layers: 32
+  reference_checkpoint: meta-llama/Llama-2-7b-hf
+  rope:
+    factor: 8.0
+    high_freq_factor: 4.0
+    low_freq_factor: 1.0
+    original_max_position_embeddings: 8192
+    theta: 500000
+    type: llama3
+  scan_layers: true
+  seq_len: 4096
+  tie_word_embeddings: false
+  tokenizer: null
+  type: llama
+  upcast_attn: false
+  use_bias: false
+  use_flash_attention: true
+  use_layer_norm_weight: true
+optimizer:
+  beta1: 0.9
+  beta2: 0.95
+  cooldown: null
+  cycle_length: null
+  cycles: null
+  decay: 0.4
+  default_weight_decay_mask: null
+  epsilon: 1.0e-08
+  haps: null
+  learning_rate: 7e-4
+  lr_schedule: linear
+  max_grad_norm: 1.0
+  min_lr_ratio: 0.1
+  rewarmup: 0.0
+  type: adam
+  warmup: 0.01
+  weight_decay: 0.05
+  weight_decay_modules: null
+trainer:
+  allow_nondivisible_batch_size: true
+  allow_partial_checkpoint: false
+  axis_resources: {}
+  batch_axis: batch
+  checkpointer:
+    append_run_id_to_base_path: false
+    base_path: gs://uscentral2stuff/checkpoints/llama-8b-tootsie/checkpoints
+    delete_old_temp_checkpoints: true
+    keep:
+    - every: 10000
+    save_interval: 10m
+  crash_on_inf: true
+  crash_on_nan: true
+  distributed:
+    coordinator_address: null
+    local_device_ids: null
+    num_processes: null
+    process_id: null
+  fsdp_axis: embed
+  id: llama-8b-tootsie
+  initialize_from: null
+  jax_config:
+    jax_softmax_custom_jvp: true
+    jax_threefry_partitionable: true
+  load_checkpoint: null
+  load_checkpoint_path: null
+  log_dir: logs
+  log_jaxprs: true
+  log_xla_hlo: true
+  max_eval_batches: null
+  model_averaging:
+    beta: 0.995
+    type: ema
+  model_axis_size: 1
+  mp: compute=bfloat16,params=float32,output=bfloat16
+  num_train_steps: 1000000
+  parameter_axis_resources: {}
+  per_device_eval_parallelism: 8
+  per_device_parallelism: -1
+  profiler: false
+  profiler_num_steps: 100
+  profiler_perfetto_link: false
+  profiler_start_step: 5
+  quantization: null
+  ray:
+    address: null
+    auto_start_cluster: false
+    start_workers: false
+  replica_dcn_axis_size: 1
+  replica_ici_axis_size: 1
+  require_accelerator: true
+  seed: 0
+  shutdown_at_exit: false
+  steps_per_eval: 1000
+  tensor_parallel_axes: null
+  tracker:
+    entity: null
+    group: null
+    id: null
+    mode: null
+    name: null
+    project: marin
+    resume: allow
+    save_code: true
+    save_xla_dumps: false
+    tags:
+    - llama
+    - 8b
+    - ema
+    - exp859
+    - tootsie
+    type: wandb
+  train_batch_size:
+  - start: 0
+    value: 4096
+  - start: 18500
+    value: 3840
+  - start: 21010
+    value: 4096
+  wandb: null
+  watch:
+    include_histograms: false
+    include_norms: true
+    include_per_parameter_norms: true
+    interval: 10
+    split_scan_layers: true
+    watch_targets:
+    - grads
+    - params
+use_hf_model_config: false
+z_loss_weight: 0.0001
+
