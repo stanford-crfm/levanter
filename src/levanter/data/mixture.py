@@ -60,6 +60,9 @@ class MixtureDataset(AsyncDataset[T]):
         else:
             weight_stages = weights
 
+        if len(datasets) == 0:
+            raise ValueError("Datasets cannot be empty")
+
         # assert that steps are in sorted order and that the start index of each stage is a multiple of block_size
         for i, (start_seq_index, _) in enumerate(weight_stages):
             if i == 0:

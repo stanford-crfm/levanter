@@ -1349,7 +1349,16 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
             # drop the data source and corresponding weight if the cache is not built
             if source is None:
-                logger.warning(f"Skipping {name} for split {split} because no source was provided")
+                try:
+                    caches[name] = load_lm_dataset_cache(
+                        os.path.join(cache_dir, split),
+                        source_config.format,
+                        self.the_tokenizer,
+                        self.enforce_eos,
+                    )
+                except FileNotFoundError:
+                    logger.warning(f"No source for {name} in {split} split and no cache either, skipping")
+                    continue
             else:
                 caches[name] = build_lm_dataset_cache(
                     os.path.join(cache_dir, split),
