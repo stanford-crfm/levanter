@@ -55,6 +55,15 @@ def test_llama_flops():
     assert ratio < 1.2, f"ratio {ratio} > 1.2"
 
 
+def test_llama_params():
+    # Check that the computed number of trainable params is close to the actual number of params
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
+    llama_config = LlamaConfig.from_hf_config(hf_config)
+    actual_params = 6.738415616e9
+    params = llama_config.total_trainable_params(hf_config.vocab_size)
+    assert np.isclose(actual_params, params, rtol=1e-2)
+
+
 @skip_if_no_torch
 def test_llama_rotary_embedding():
     import torch
