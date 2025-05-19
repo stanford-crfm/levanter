@@ -138,6 +138,9 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def flops_per_token(self, vocab_size: int) -> Optional[float]:
         return None
 
+    def total_trainable_params(self) -> Optional[float]:
+        return None
+
     def build(self, Vocab: Axis, *, key: PRNGKeyArray) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 
