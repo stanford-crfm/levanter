@@ -16,6 +16,7 @@ References:
 * https://github.com/kingoflolz/mesh-transformer-jax/blob/f8315e3003033b23f21d78361b288953064e0e76/mesh_transformer/TPU_cluster.py#L6
 
 """
+
 import dataclasses
 import json
 import logging
@@ -96,7 +97,9 @@ class _LmEvalHarnessWorker:
     others run in a loop waiting for requests.
     """
 
-    def __init__(self, EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments):
+    def __init__(
+        self, EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments, apply_chat_template=False
+    ):
         self.tokenizer = tokenizer
         self.max_packed_segments = max_packed_segments
         self.EvalBatch = EvalBatch
@@ -105,6 +108,7 @@ class _LmEvalHarnessWorker:
         self.axis_resources = axis_resources
         self.mp = mp
         self.max_packed_segments = max_packed_segments
+        self.apply_chat_template = apply_chat_template
 
         self._dummy_batch = _make_dummy_batch(EvalBatch, EvalPos)
 
@@ -162,7 +166,7 @@ class _LmEvalHarnessWorker:
             _eval_loglikelihood, axis_resources=axis_resources, out_axis_resources={}
         )
 
-    def make_harness_lm(self):
+    def make_harness_lm(self, apply_chat_template: bool = False):
         if jax.process_index() == 0:
             return LevanterHarnessLM(self)
         else:
@@ -259,7 +263,9 @@ class LevanterHarnessLM(LM):
             logger.warning("No pad token set. Setting to eos token.")
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        packed = _pack_requests(requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments)
+        packed = _pack_requests(
+            requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments, self.leader.apply_chat_template
+        )
         packed_iterator = stack_batches(iter(packed), self.EvalPos, self.EvalBatch)
         packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
@@ -376,6 +382,7 @@ class LmEvalHarnessConfig:
     max_eval_length: int | None = None
     log_samples: bool = False
     bootstrap_iters: int = 0
+    apply_chat_template: bool = False
 
     def to_task_spec(self) -> list[str | dict]:
         return [task.to_dict() if isinstance(task, TaskConfig) else task for task in self.task_spec]
@@ -507,6 +514,10 @@ class EvalHarnessMainConfig:
     checkpoint_path: str
     checkpoint_is_hf: bool = False
     """If True, the checkpoint is a HuggingFace checkpoint. Otherwise, it is a Levanter checkpoint."""
+    apply_chat_template: bool = False
+    """
+    Whether or not to apply the chat template this model was trained with before running inference
+    """
     trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
     model: LmConfig = dataclasses.field(default_factory=Gpt2Config)
 
@@ -571,7 +582,16 @@ def _actually_run_eval_harness(
     )
     logger.info("Running eval harness...")
 
-    worker = _LmEvalHarnessWorker(EvalBatch, EvalPos, model, axis_resources, tokenizer, mp, max_packed_segments=64)
+    worker = _LmEvalHarnessWorker(
+        EvalBatch,
+        EvalPos,
+        model,
+        axis_resources,
+        tokenizer,
+        mp,
+        max_packed_segments=64,
+        apply_chat_template=config.apply_chat_template,
+    )
 
     if jax.process_index() == 0:
         logger.info("Process 0 is running the eval harness.")
@@ -796,13 +816,21 @@ def _adjust_config(task_dict, fewshot_random_seed=0):
 
 
 def _iterate_tokenized_requests(
-    requests: list[Instance], tokenizer: HfTokenizer, max_len: int, batch_size: int
+    requests: list[Instance], tokenizer: HfTokenizer, max_len: int, batch_size: int, apply_chat_template: bool = False
 ) -> Iterator[PromptCompletion]:
     """
     Tokenize the requests and yield them as PromptCompletions, for packing into LmExamples.
     """
-    # Separate contexts and completions
-    contexts = [request.args[0] for request in requests]
+    if apply_chat_template:
+        contexts = [
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": request.args[0]}], tokenize=False, add_generation_prompt=True
+            )
+            for request in requests
+        ]
+    else:
+        contexts = [request.args[0] for request in requests]
+
     completions = [request.args[1] for request in requests]
 
     # Combine contexts and completions for full tokenization
@@ -813,7 +841,6 @@ def _iterate_tokenized_requests(
         # Extract batch data
         combined_batch = [combined_texts[i] for i in batch_indices]
         context_batch = [contexts[i] for i in batch_indices]
-
         # Tokenize batched inputs
         combined_encodings = tokenizer(combined_batch, truncation=False, padding=False)
         context_encodings = tokenizer(context_batch, truncation=False, padding=False)
@@ -833,14 +860,19 @@ def _iterate_tokenized_requests(
                 if context_enc_len < 0:
                     context_enc_len = 0
                     logger.warning("Prompt length is negative after truncation. Setting to 0.")
-
             yield PromptCompletion(ids=all_enc, prompt_length=context_enc_len, segment_id=i)
 
 
 def _pack_requests(
-    requests: list[Instance], tokenizer: HfTokenizer, Pos: hax.Axis, max_pack_size: int
+    requests: list[Instance],
+    tokenizer: HfTokenizer,
+    Pos: hax.Axis,
+    max_pack_size: int,
+    apply_chat_template: bool = False,
 ) -> list[LmExample]:
-    packed_iterator = _iterate_tokenized_requests(requests, tokenizer, Pos.size, batch_size=128)
+    packed_iterator = _iterate_tokenized_requests(
+        requests, tokenizer, Pos.size, batch_size=128, apply_chat_template=apply_chat_template
+    )
     # TODO: use a better packing algorithm?
     return greedy_pack_prompt_completions(
         Pos,
