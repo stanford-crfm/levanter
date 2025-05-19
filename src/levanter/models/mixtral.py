@@ -201,6 +201,25 @@ class MixtralConfig(MistralConfig):
             num_experts_per_tok=self.num_experts_per_tok,
         )
 
+    def total_trainable_params(self, vocab_size):
+        token_embedding = vocab_size * self.hidden_dim
+
+        head_size = self.hidden_dim // self.num_heads
+        q_proj = self.hidden_dim * head_size * self.num_heads
+        kv_proj = 2 * self.hidden_dim * head_size * self.num_kv_heads
+        o_proj = head_size * self.num_heads * self.hidden_dim
+        attn = q_proj + kv_proj + o_proj
+
+        router = self.hidden_dim * self.n_routed_experts
+        mlps = 3 * (self.n_routed_experts + self.n_shared_experts) * self.hidden_dim * self.intermediate_dim
+        moe = router + mlps
+
+        transformer_layer = attn + moe + 2 * self.hidden_dim  # plus 2 rmsnorm
+
+        transformer = self.num_layers * transformer_layer + self.hidden_dim  # plus final rmsnorm
+
+        return transformer + token_embedding * 2  # plus embedding and lm head
+
 
 class MixtralMoEMlp(ModuleWithStateDictSerialization):
     """Multi-layer Perceptron with Mixture of Experts"""

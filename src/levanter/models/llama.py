@@ -185,6 +185,27 @@ class LlamaConfig(HFCompatConfig):
             glu=True,
         )
 
+    def total_trainable_params(self, vocab_size):
+        token_embedding = vocab_size * self.hidden_dim
+
+        head_size = self.hidden_dim // self.num_heads
+        q_proj = self.hidden_dim * head_size * self.num_heads
+        kv_proj = 2 * self.hidden_dim * head_size * self.num_kv_heads
+        o_proj = head_size * self.num_heads * self.hidden_dim
+        attn = q_proj + kv_proj + o_proj
+
+        mlp = 3 * self.hidden_dim * self.intermediate_dim
+
+        transformer_layer = attn + mlp + 2 * self.hidden_dim  # plus 2 rmsnorm
+        if self.hybrid_norm:
+            transformer_layer += 2 * self.hidden_dim
+
+        transformer = self.num_layers * transformer_layer + self.hidden_dim  # plus final rmsnorm
+        if self.input_embedding_norm:
+            transformer += self.hidden_dim
+
+        return transformer + token_embedding * 2  # plus embedding and lm head
+
 
 class LlamaMlp(eqx.Module):
     """Multi-layer Perceptron
