@@ -1,4 +1,3 @@
-from lm_eval.api.instance import Instance
 from transformers import AutoTokenizer
 
 from levanter.data.packing import PromptCompletion
@@ -9,6 +8,8 @@ from test_utils import skip_if_module_missing
 @skip_if_module_missing("lm_eval")
 def test_iterate_tokenized_requests_with_chat_template():
     """Test the chat template functionality in _iterate_tokenized_requests"""
+    from lm_eval.api.instance import Instance
+
     # Load a tokenizer with chat template - Llama 3 has one
     hf_tokenizer = AutoTokenizer.from_pretrained("stanford-crfm/marin-tokenizer")
     if hf_tokenizer.pad_token is None:
@@ -83,6 +84,8 @@ def test_iterate_tokenized_requests_with_chat_template():
 
 @skip_if_module_missing("lm_eval")
 def test_iterate_tokenized_requests():
+    from lm_eval.api.instance import Instance
+
     hf_tokenizer = AutoTokenizer.from_pretrained("stanford-crfm/marin-tokenizer")
     if hf_tokenizer.pad_token is None:
         hf_tokenizer.pad_token = hf_tokenizer.eos_token
