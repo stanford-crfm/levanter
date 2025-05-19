@@ -6,6 +6,7 @@ from levanter.eval_harness import LmEvalHarnessConfig, TaskConfig, _iterate_toke
 from test_utils import skip_if_module_missing
 
 
+@skip_if_module_missing("lm_eval")
 def test_iterate_tokenized_requests_with_chat_template():
     """Test the chat template functionality in _iterate_tokenized_requests"""
     # Load a tokenizer with chat template - Llama 3 has one
@@ -80,6 +81,7 @@ def test_iterate_tokenized_requests_with_chat_template():
         ), f"Prompt length not increased by chat template for example {i}"
 
 
+@skip_if_module_missing("lm_eval")
 def test_iterate_tokenized_requests():
     hf_tokenizer = AutoTokenizer.from_pretrained("stanford-crfm/marin-tokenizer")
     if hf_tokenizer.pad_token is None:
