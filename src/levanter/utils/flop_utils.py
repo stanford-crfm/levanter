@@ -84,6 +84,15 @@ DEVICE_AVAILABLE_FLOPS = {
         "bf16": 125e12,
         "amp_bf16": 125e12,
     },
+    # source: https://images.nvidia.com/content/Solutions/data-center/a40/nvidia-a40-datasheet.pdf
+    "a40": {
+        "fp32": 37.4e12,
+        "tf32": 74.8e12,
+        "fp16": 149.7e12,
+        "amp_fp16": 149.7e12,
+        "bf16": 149.7e12,
+        "amp_bf16": 149.7e12,
+    },
     # source: https://images.nvidia.com/content/technologies/volta/pdf/volta-v100-datasheet-update-us-1165301-r5.pdf
     "v100-sxm": {
         "fp64": 7.8e12,
