@@ -22,6 +22,7 @@ from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 
+
 silence_transformer_nag()
 from transformers import Olmo2Config as HfOlmo2Config  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
