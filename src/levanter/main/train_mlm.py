@@ -208,10 +208,10 @@ def main(config: TrainMlmConfig):
 
         train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
 
-        # if int(state.step) > 0:
-        #     import tqdm
-        #     for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-        #         next(train_loader)
+        if int(state.step) > 0:
+            import tqdm
+            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
+                next(train_loader)
 
         trainer.train(state, train_loader)
 
