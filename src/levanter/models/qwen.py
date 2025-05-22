@@ -50,7 +50,7 @@ class QwenConfig(LlamaConfig):
             self.__class__,
             reference_checkpoint=self.reference_checkpoint if ref_checkpoint is None else ref_checkpoint,
             trust_remote_code=True,
-            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
+            tokenizer=ref_checkpoint if self.tokenizer is None else self.tokenizer,
             HfConfigClass=HfQwenConfig,
         )
 
