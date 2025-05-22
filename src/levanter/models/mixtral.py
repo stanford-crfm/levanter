@@ -265,7 +265,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
         num_experts = self.w1.Experts.size
         for i in range(num_experts):
             for j in range(3):
-                key = f"{prefix}.{i}.w{j+1}.weight"
+                key = f"{prefix}.{i}.w{j + 1}.weight"
                 val = w[j]["experts", i].array
                 # out[key] = val
                 out[key] = jnp.swapaxes(val, -1, -2)
@@ -277,7 +277,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
         num_experts = self.w1.Experts.size
         for i in range(num_experts):
             for j in range(3):
-                key = f"{prefix}.{i}.w{j+1}.weight"
+                key = f"{prefix}.{i}.w{j + 1}.weight"
                 val = jnp.swapaxes(state_dict[key], -1, -2)[..., None, :, :]
                 # val = state_dict[key][..., None, :, :]
                 w[j].append(val)
