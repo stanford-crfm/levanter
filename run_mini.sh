@@ -1,12 +1,13 @@
 eval $(ssh-agent -s)
-bash infra/spin-up-vm.sh debug -z us-central2-a -t v5litepod-128 --preemptible
+# bash infra/spin-up-vm.sh debug -z us-central2-b -t v4-32 --preemptible
 
-gcloud compute tpus tpu-vm ssh debug --zone us-central2-a --command="cd levanter && git pull" --worker=all
-gcloud compute tpus tpu-vm scp --zone us-central2-a --worker=all config/llama2_nano.yaml debug:levanter/config/llama2_nano.yaml
-gcloud compute tpus tpu-vm scp --zone us-central2-a --worker=all src/levanter/models/llama.py debug:levanter/src/levanter/models/llama.py
+gcloud compute tpus tpu-vm ssh debug --zone us-central2-b --command="cd levanter && git pull" --worker=all
+gcloud compute tpus tpu-vm ssh debug --zone us-central2-b --command="pip install -U "jax[tpu]==0.4.38" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html" --worker=all
+gcloud compute tpus tpu-vm scp --zone us-central2-b --worker=all config/llama2_nano.yaml debug:levanter/config/llama2_nano.yaml
+gcloud compute tpus tpu-vm scp --zone us-central2-b --worker=all src/levanter/models/llama.py debug:levanter/src/levanter/models/llama.py
 
 
-bash infra/babysit-tpu-vm.sh debug -z us-central2-a -t v5litepod-128 --preemptible -- \
+bash infra/babysit-tpu-vm.sh debug -z us-central2-b -t v4-32 --preemptible -- \
 WANDB_API_KEY=$WANDB_API_KEY \
 bash levanter/infra/run.sh python \
 levanter/src/levanter/main/train_lm.py \
