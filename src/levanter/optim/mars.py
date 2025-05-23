@@ -13,10 +13,13 @@ from levanter.optim.config import OptimizerConfig
 @OptimizerConfig.register_subclass("mars")
 @dataclass
 class MarsConfig(OptimizerConfig):
+    """
+    Mars optimizer configuration
+    cf:
+    Original Paper: https://arxiv.org/abs/2411.10438
+    """
     weight_decay: float = 0.1
     beta1: float = 0.95
-    # cf https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
-    # https://x.com/giffmana/status/1692641748445438301
     beta2: float = 0.99
     gamma: float = 0.025
     epsilon: float = 1e-8
@@ -64,23 +67,20 @@ def scale_by_mars(
     max_grad_norm: float = 0.0,
     mu_dtype: Optional[Any] = None,
     *,
-    nesterov: bool = False,
 ) -> optax.GradientTransformation:
-    r"""Rescale updates according to the Adam algorithm.
-
-    See :func:optax.adam for more details.
+    r"""Rescale updates according to the Mars algorithm.
 
     Args:
       b1: Decay rate for the exponentially weighted average of grads.
       b2: Decay rate for the exponentially weighted average of squared grads.
+      gamma: Decay rate for the exponentially weighted average of the gradient from the previous step.
       eps: Term added to the denominator to improve numerical stability.
       eps_root: Term added to the denominator inside the square-root to improve
         numerical stability when backpropagating gradients through the rescaling.
       mu_dtype: Optional dtype to be used for the first order accumulator; if
         None then the dtype is inferred from params and updates.
-      nesterov: Whether to use Nesterov momentum. The variant of Adam with
-        Nesterov momentum is described in [Dozat 2016]
-
+    
+    
     Returns:
       A :class:optax.GradientTransformation object.
     """
