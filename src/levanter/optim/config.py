@@ -332,10 +332,14 @@ class AdamConfig(OptimizerConfig):
 @OptimizerConfig.register_subclass("lion")
 @dataclass
 class LionConfig(OptimizerConfig):
+    """
+    Lion optimizer configuration
+    cf:
+    Original Paper: 
+    """
     beta1: float = 0.9
-    # cf https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
-    # https://x.com/giffmana/status/1692641748445438301
     beta2: float = 0.95
+    epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
     def build(self, num_train_steps):

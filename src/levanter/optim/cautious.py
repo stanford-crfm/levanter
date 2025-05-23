@@ -50,7 +50,7 @@ class CautiousConfig(OptimizerConfig):
 
 
 class ScaleByCautiousState(NamedTuple):
-    """State for the Mars algorithm."""
+    """State for the Cautious algorithm."""
 
     count: chex.Array  # shape=(), dtype=jnp.int32.
     mu: optax.Updates
@@ -64,9 +64,7 @@ def scale_by_cautious(
     eps_root: float = 0.0,
     mu_dtype: Optional[Any] = None,
 ) -> optax.GradientTransformation:
-    r"""Rescale updates according to the Adam algorithm.
-
-    See :func:optax.adam for more details.
+    r"""Rescale updates according to the Cautious algorithm.
 
     Args:
       b1: Decay rate for the exponentially weighted average of grads.
@@ -76,8 +74,6 @@ def scale_by_cautious(
         numerical stability when backpropagating gradients through the rescaling.
       mu_dtype: Optional dtype to be used for the first order accumulator; if
         None then the dtype is inferred from params and updates.
-      nesterov: Whether to use Nesterov momentum. The variant of Adam with
-        Nesterov momentum is described in [Dozat 2016]
 
     Returns:
       A :class:optax.GradientTransformation object.
