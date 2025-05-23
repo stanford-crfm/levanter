@@ -459,7 +459,6 @@ def scale_by_kron(
             if have_qs_sharding:
                 Qs = _safe_sharding_constraint(Qs, Qs_sharding)
 
-
         if return_partition_specs_only:
             return dict(
                 key=PartitionSpec(),
