@@ -459,12 +459,6 @@ def scale_by_kron(
             if have_qs_sharding:
                 Qs = _safe_sharding_constraint(Qs, Qs_sharding)
 
-            # Calculate and print sizes for preconditioners and momentum
-            Qs_n_elements = sum([q.size for q in jax.tree.leaves(Qs)])
-            Qs_size_MB = sum([q.size * q.dtype.itemsize / (2**20) for q in jax.tree.leaves(Qs)])
-            if mu is not None:
-                mu_n_elements = sum([p.size for p in jax.tree.leaves(mu)])
-                mu_size_MB = sum([p.size * p.dtype.itemsize / (2**20) for p in jax.tree.leaves(mu)])
 
         if return_partition_specs_only:
             return dict(
