@@ -13,10 +13,14 @@ from levanter.optim.config import OptimizerConfig
 @OptimizerConfig.register_subclass("adopt")
 @dataclass
 class AdoptConfig(OptimizerConfig):
+    """
+    Adopt optimizer configuration
+    cf:
+    https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
+    https://x.com/giffmana/status/1692641748445438301
+    """
     weight_decay: float = 0.1
     beta1: float = 0.9
-    # cf https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
-    # https://x.com/giffmana/status/1692641748445438301
     beta2: float = 0.95
     epsilon: float = 1e-6
     max_grad_norm: Optional[float] = 1.0
@@ -64,9 +68,9 @@ def scale_by_adopt(
     *,
     nesterov: bool = False,
 ) -> optax.GradientTransformation:
-    r"""Rescale updates according to the Adam algorithm.
+    r"""Rescale updates according to the Adopt algorithm.
 
-    See :func:optax.adam for more details.
+    Adopt is a variant of Adam that uses a different update rule for the second moment.
 
     Args:
       b1: Decay rate for the exponentially weighted average of grads.
@@ -76,8 +80,6 @@ def scale_by_adopt(
         numerical stability when backpropagating gradients through the rescaling.
       mu_dtype: Optional dtype to be used for the first order accumulator; if
         None then the dtype is inferred from params and updates.
-      nesterov: Whether to use Nesterov momentum. The variant of Adam with
-        Nesterov momentum is described in [Dozat 2016]
 
     Returns:
       A :class:optax.GradientTransformation object.
