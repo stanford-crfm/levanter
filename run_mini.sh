@@ -1,4 +1,6 @@
 eval $(ssh-agent -s)
+gcloud compute tpus tpu-vm ssh debug --zone us-central2-b --command="cd levanter && git pull" --worker=all
+
 bash infra/babysit-tpu-vm.sh debug -z us-central2-b -t v4-32 --preemptible -- \
 WANDB_API_KEY=$WANDB_API_KEY \
 bash levanter/infra/run.sh python \
