@@ -138,6 +138,9 @@ class LmConfig(draccus.PluginRegistry, abc.ABC, Generic[LmT], discover_packages_
     def flops_per_token(self, vocab_size: int) -> Optional[float]:
         return None
 
+    def total_trainable_params(self) -> Optional[float]:
+        return None
+
     def build(self, Vocab: Axis, *, key: PRNGKeyArray) -> "LmT":
         return self.model_type.init(Vocab, self, key=key)  # type: ignore
 
@@ -247,6 +250,10 @@ def compute_next_token_loss(
     """
     activations = model.activations(example.tokens, example.attn_mask, key=key)
 
+    aux_loss = 0
+    if isinstance(activations, tuple):
+        activations, aux_loss = activations
+
     loss = maybe_fused_next_token_loss(
         model.Pos,
         model.Embed,
@@ -262,4 +269,4 @@ def compute_next_token_loss(
         block_size=model.config.cross_entropy_block_size,
     )
 
-    return loss
+    return loss + aux_loss

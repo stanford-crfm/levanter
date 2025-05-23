@@ -297,7 +297,7 @@ model:
   num_layers: 2
 ```
 
-For more details on the training configuration, please refer to [Configuration Guide](../Configuration-Guide.md).
+For more details on the training configuration, please refer to [Configuration Guide](../reference/Configuration.md).
 
 ### Launch Training Job
 Once you have your training configuration ready and your training environment set up, you can launch a training job with the following command:

@@ -103,6 +103,35 @@ data:
 https://github.com/huggingface/transformers/blob/main/src/transformers/tokenization_utils_base.py#L1530
 
 
+### Training Mixture Schedules
+
+Levanter supports training mixtures with different weights at different points in the training schedule.
+
+To do so, you need to specify the transition points in the `train_weights` section:
+
+```yaml
+data:
+  configs:
+    owt:
+      train_urls: ["gs://openwebtext/train.{1..128}.jsonl.gz"]
+    alpaca:
+      id: tatsu-lab/alpaca
+      format:
+        type: supervised
+        input_field: instruction
+        output_field: response
+    tulu:
+      id: allenai/tulu-3-sft-mixture
+      format:
+        type: chat
+        messages_key: messages
+  train_weights:
+    - [0, {"owt": 0.5, "alpaca": 0.3, "tulu": 0.2}]
+    - [1000, {"owt": 0.2, "alpaca": 0.4, "tulu": 0.4}]
+  tokenizer: stanford-crfm/marin-tokenizer
+```
+
+(Again, the weights need not sum to 1.)
 
 ---
 

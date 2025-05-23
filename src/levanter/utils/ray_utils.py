@@ -8,6 +8,7 @@ from typing import Optional
 
 import ray
 import tblib
+from ray.runtime_env import RuntimeEnv
 
 
 @dataclass
@@ -31,15 +32,42 @@ class ExceptionInfo:
 
 @dataclass
 class RayResources:
+    """
+    A dataclass that represents the resources for a ray task or actor. It's main use is to be
+    fed to ray.remote() to specify the resources for a task.
+    """
+
     num_cpus: int = 1
     num_gpus: int = 0
     resources: dict = dataclasses.field(default_factory=dict)
+    runtime_env: RuntimeEnv = dataclasses.field(default_factory=RuntimeEnv)
+    accelerator_type: Optional[str] = None
 
     def to_kwargs(self):
-        return dict(num_cpus=self.num_cpus, num_gpus=self.num_gpus, resources=self.resources)
+        """
+        Returns a dictionary of kwargs that can be passed to ray.remote() to specify the resources for a task.
+        """
+        out = dict(
+            num_cpus=self.num_cpus, num_gpus=self.num_gpus, resources=self.resources, runtime_env=self.runtime_env
+        )
+
+        if self.accelerator_type is not None:
+            out["accelerator_type"] = self.accelerator_type
+
+        return out
 
     def to_resource_dict(self):
-        return dict(CPU=self.num_cpus, GPU=self.num_gpus, **self.resources)
+        """
+        Returns a dictionary of resources that describe the resources.
+
+        Note that Ray for some reason doesn't like passing resources={"GPU": 1} to a remote so you can't use this
+        for that purpose. Instead, use @ray.remote(**ray_resources.to_kwargs())
+        """
+        out = dict(CPU=self.num_cpus, GPU=self.num_gpus, **self.resources)
+        # https://docs.ray.io/en/latest/ray-core/scheduling/accelerators.html#accelerator-types
+        if self.accelerator_type is not None:
+            out[f"accelerator_type:{self.accelerator_type}"] = 0.001
+        return out
 
     @staticmethod
     def from_resource_dict(resources: dict):

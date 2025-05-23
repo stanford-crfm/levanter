@@ -449,6 +449,9 @@ def _handle_ray_error(tpu_info: _TpuInfo, e: RayError):
             return TpuPreempted(tpu_info, e)
 
         logger.exception(f"Task error {e}", exc_info=e)
+        if isinstance(e.cause, TimeoutError) or "timed out" in str(e):
+            logger.exception("Timeout error. Assuming preempted", exc_info=e)
+            return TpuPreempted(tpu_info, e)
         return TpuRunError(tpu_info, e)
 
     else:
@@ -516,11 +519,11 @@ def _separate_process_fn(underlying_function, args, kwargs):
     # Retrieve the result or error from the queue
     logger.info("Process finished")
     try:
-        success, value = queue.get(timeout=10)
+        success, value = queue.get(timeout=5)
     except QueueEmpty:
         logger.error("Process timed out")
         process.terminate()
-        raise RuntimeError("Process timed out")
+        raise TimeoutError("Process timed out")
 
     if success:
         return value
