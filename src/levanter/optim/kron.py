@@ -208,7 +208,7 @@ def scale_by_kron(
     partition_grads_into_blocks: bool = False,
     block_size: int = 256,
     params_sharding: Optional[PartitionSpecTree] = None,
-    preconditioner_sharding: Optional[PartitionSpec[str, str]] = None,
+    preconditioner_sharding: Optional[tuple[str | None, str | None]] = None,
     **kwargs,
 ) -> base.GradientTransformation:
     """
@@ -945,7 +945,7 @@ def kron(
     partition_grads_into_blocks: bool = False,
     block_size: int = 256,
     params_sharding: Optional[PartitionSpecTree] = None,
-    preconditioner_sharding: Optional[PartitionSpec[str, str]] = None,
+    preconditioner_sharding: Optional[tuple[str | None, str | None]] = None,
 ) -> base.GradientTransformation:
     """
     Implements PSGD Kron from https://github.com/lixilinx/psgd_torch.
