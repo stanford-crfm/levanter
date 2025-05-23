@@ -212,7 +212,8 @@ def scale_by_kron(
     **kwargs,
 ) -> base.GradientTransformation:
     """
-    Implements PSGD Kron from https://github.com/lixilinx/psgd_torch.
+    Implements PSGD Kron from https://github.com/lixilinx/psgd_torch. 
+    Author: https://github.com/evanatyourservice
 
     Args:
         b1: float, momentum parameter. 0.9 or 0.95 are common values.
@@ -288,9 +289,7 @@ def scale_by_kron(
                     params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
                 params, params_struct = jax.tree.flatten(params)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
-                print(f"kron scanned_layers_: {scanned_layers_}")
                 params_sharding_ = jax.tree.leaves(params_sharding_)
-                print(f"kron params_sharding_: {params_sharding_}")
 
         have_params_sharding = params_sharding_ is not None
         have_qs_sharding = have_params_sharding or preconditioner_sharding is not None or have_hax
@@ -463,13 +462,9 @@ def scale_by_kron(
             # Calculate and print sizes for preconditioners and momentum
             Qs_n_elements = sum([q.size for q in jax.tree.leaves(Qs)])
             Qs_size_MB = sum([q.size * q.dtype.itemsize / (2**20) for q in jax.tree.leaves(Qs)])
-            if jax.process_index() == 0:
-                print(f"PSGD Preconditioners size: {Qs_n_elements} elements, {Qs_size_MB:.2f} MB")
             if mu is not None:
                 mu_n_elements = sum([p.size for p in jax.tree.leaves(mu)])
                 mu_size_MB = sum([p.size * p.dtype.itemsize / (2**20) for p in jax.tree.leaves(mu)])
-                if jax.process_index() == 0:
-                    print(f"PSGD Momentum size: {mu_n_elements} elements, {mu_size_MB:.2f} MB")
 
         if return_partition_specs_only:
             return dict(
@@ -518,9 +513,7 @@ def scale_by_kron(
                     params_sharding_ = jax.tree.map(lambda x: x.spec, params_sharding_)
                 updates, updates_struct = jax.tree.flatten(updates)
                 scanned_layers_ = jax.tree.leaves(scanned_layers_)
-                print(f"kron scanned_layers_: {scanned_layers_}")
                 params_sharding_ = jax.tree.leaves(params_sharding_)
-                print(f"kron params_sharding_: {params_sharding_}")
 
         have_params_sharding = params_sharding_ is not None
         if have_params_sharding:
