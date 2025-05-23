@@ -18,6 +18,7 @@ class CautiousConfig(OptimizerConfig):
     cf:
     Original Paper: https://arxiv.org/abs/2411.16085
     """
+
     beta1: float = 0.95
     beta2: float = 0.95
     gamma: float = 0.025

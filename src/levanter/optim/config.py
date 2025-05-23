@@ -337,6 +337,7 @@ class LionConfig(OptimizerConfig):
     cf:
     Original Paper:
     """
+
     beta1: float = 0.9
     beta2: float = 0.95
     epsilon: float = 1e-8

@@ -18,6 +18,7 @@ class MarsConfig(OptimizerConfig):
     cf:
     Original Paper: https://arxiv.org/abs/2411.10438
     """
+
     weight_decay: float = 0.1
     beta1: float = 0.95
     beta2: float = 0.99
@@ -65,7 +66,7 @@ def scale_by_mars(
     eps: float = 1e-8,
     eps_root: float = 0.0,
     max_grad_norm: float = 0.0,
-    mu_dtype: Optional[Any] = None
+    mu_dtype: Optional[Any] = None,
 ) -> optax.GradientTransformation:
     r"""Rescale updates according to the Mars algorithm.
 
