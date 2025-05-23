@@ -932,8 +932,6 @@ class BlockPartitioner:
 
     def partition(self, tensor):
         """Partition tensor into blocks."""
-        print("difference")
-        print(tensor.shape, self._shape)
         assert tensor.shape == self._shape
         tensors = [tensor]
         for i, indices in self._splits:
