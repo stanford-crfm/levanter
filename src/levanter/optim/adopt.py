@@ -16,8 +16,7 @@ class AdoptConfig(OptimizerConfig):
     """
     Adopt optimizer configuration
     cf:
-    https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
-    https://x.com/giffmana/status/1692641748445438301
+    Original Paper: https://arxiv.org/abs/2411.02853
     """
     weight_decay: float = 0.1
     beta1: float = 0.9
