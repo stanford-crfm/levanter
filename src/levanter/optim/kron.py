@@ -212,7 +212,7 @@ def scale_by_kron(
     **kwargs,
 ) -> base.GradientTransformation:
     """
-    Implements PSGD Kron from https://github.com/lixilinx/psgd_torch. 
+    Implements PSGD Kron from https://github.com/lixilinx/psgd_torch.
     Author: https://github.com/evanatyourservice
 
     Args:

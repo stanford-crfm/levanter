@@ -78,8 +78,8 @@ def scale_by_mars(
         numerical stability when backpropagating gradients through the rescaling.
       mu_dtype: Optional dtype to be used for the first order accumulator; if
         None then the dtype is inferred from params and updates.
-    
-    
+
+
     Returns:
       A :class:optax.GradientTransformation object.
     """

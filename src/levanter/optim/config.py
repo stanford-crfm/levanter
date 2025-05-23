@@ -335,7 +335,7 @@ class LionConfig(OptimizerConfig):
     """
     Lion optimizer configuration
     cf:
-    Original Paper: 
+    Original Paper:
     """
     beta1: float = 0.9
     beta2: float = 0.95
