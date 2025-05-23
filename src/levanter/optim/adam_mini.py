@@ -18,7 +18,10 @@ from levanter.utils.jax_utils import leaf_key_paths
 @dataclass
 class MiniConfig(OptimizerConfig):
     """
-    Mini optimizer configuration: Momentum Orthogonalized by Newton-Schulz.
+    AdamW Mini optimizer configuration
+    Original Paper: https://arxiv.org/abs/2406.16793
+    Mini group the parameters into groups and only keep one scalar as second moment for each group.
+    Note: The implementation here does not reduce the actual size of the second moment buffer but it has the same update rule as the original paper.
     """
 
     lr: float = 0.02
@@ -73,15 +76,13 @@ class MiniConfig(OptimizerConfig):
 
     def create_mask(self, params):
         """
-        Creates a mask that labels parameters as 'mini' or 'adamw' based on their
-        dimensionality and module path, using AdamW for Embedding and lm_head parameters.
+        Creates a mask that labels parameters by their functionality group.
         """
         paths = leaf_key_paths(params)
 
         def mask_fn(param, path):
             path_str = ".".join(path) if isinstance(path, (list, tuple)) else str(path)
             if "embedding" in path_str:
-                print(f"shape: {param.shape}")
                 return "embedding"
             elif "q_proj" in path_str:
                 return "query"
@@ -94,7 +95,6 @@ class MiniConfig(OptimizerConfig):
             elif "lm_head" in path_str:
                 return "lm_head"
             elif isinstance(param, Linear):
-                # mini for linear layers
                 return dataclasses.replace(param, weight="linear", bias="adamw" if param.bias is not None else None)
             else:
                 return "adamw"
