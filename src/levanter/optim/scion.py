@@ -20,7 +20,9 @@ from levanter.utils.jax_utils import leaf_key_paths
 @dataclass
 class ScionConfig(OptimizerConfig):
     """
-    Scion optimizer configuration: Momentum Orthogonalized by Newton-Schulz.
+    Scion optimizer configuration
+    cf:
+    Original Paper: https://arxiv.org/abs/2502.07529
     """
 
     lr: float = 0.02
@@ -91,7 +93,7 @@ class ScionConfig(OptimizerConfig):
 
 
 class ScaleByScionState(NamedTuple):
-    """State for the Mars algorithm."""
+    """State for the Scion algorithm."""
 
     momentum_buffer: optax.Updates
 
