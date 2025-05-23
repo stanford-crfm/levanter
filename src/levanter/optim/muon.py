@@ -21,6 +21,8 @@ from levanter.utils.jax_utils import leaf_key_paths
 class MuonConfig(OptimizerConfig):
     """
     Muon optimizer configuration: Momentum Orthogonalized by Newton-Schulz.
+    cf:
+    Original Implementation: https://github.com/KellerJordan/modded-nanogpt
     """
 
     lr: float = 0.02
