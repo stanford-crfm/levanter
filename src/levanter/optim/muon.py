@@ -96,7 +96,7 @@ class MuonConfig(OptimizerConfig):
 
 
 class ScaleByMuonState(NamedTuple):
-    """State for the Mars algorithm."""
+    """State for the Muon algorithm."""
 
     momentum_buffer: optax.Updates
 
@@ -163,6 +163,4 @@ def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
         X = a * X + B @ X
     if transpose:
         X = X.T
-    # https://x.com/leloykun/status/1874358290093924849
-
     return X
