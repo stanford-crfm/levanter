@@ -48,6 +48,12 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     """Whether to apply a default reasonable weight decay to modules not explicitly masked. None means it will if
     no weight_decay_modules are set. False means it will not. True means it will regardless of weight_decay_modules."""
 
+    max_lr: Optional[float] = 2e-2
+    a: Optional[float] = 4.6
+    b: Optional[float] = -0.51
+    batch_size: Optional[int] = None
+    seq_length: Optional[int] = None
+
     @classmethod
     def default_choice_name(cls) -> Optional[str]:
         return "adam"
@@ -199,6 +205,19 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                     schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
                 case "inv":
                     schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
+                case "power":
+                    if self.max_lr is None or self.max_lr <= 0:
+                        raise ValueError("max_lr must be positive")
+                    if self.a is None or self.a <= 0:
+                        raise ValueError("a must be positive")
+                    if self.b is None or self.b >= 0:
+                        raise ValueError("b must be negative")
+                    if self.batch_size is None or self.batch_size <= 0:
+                        raise ValueError("batch_size must be positive")
+                    if self.seq_length is None or self.seq_length <= 0:
+                        raise ValueError("seq_length must be positive")
+
+                    schedule = _power_decay_schedule(self.learning_rate, self.max_lr, self.a, self.b, self.batch_size, self.seq_length)
                 case _:
                     raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
@@ -276,6 +295,13 @@ def _inv_decay_schedule(lr: float, min_lr: float, decay_steps: int):
 
     return schedule
 
+
+def _power_decay_schedule(lr: float, max_lr: float, a: float, b: float, batch_size: int, seq_length: int):    
+    def schedule(count):    
+        tokens_trained = count * batch_size * seq_length
+        return min(max_lr, lr * batch_size * a * tokens_trained**b)
+
+    return schedule
 
 def _convert_frac_or_steps(frac_or_steps: float | int, num_train_steps: int):
     # if it's greater than 1, it must be a whole number of steps
