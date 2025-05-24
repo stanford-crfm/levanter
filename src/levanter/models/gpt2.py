@@ -72,7 +72,7 @@ class Gpt2Config(HFCompatConfig):
     def model_type(self) -> Type["Gpt2LMHeadModel"]:
         return Gpt2LMHeadModel
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
+    def hf_checkpoint_converter(self, ref_checkpoint: Optional[str] = None) -> HFCheckpointConverter["Gpt2Config"]:  # type: ignore
         # We trust this code because it's in our hub repo
         return HFCheckpointConverter(self.__class__, reference_checkpoint="gpt2", ignore_prefix="transformer")
 

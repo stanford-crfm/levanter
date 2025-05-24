@@ -93,12 +93,14 @@ class LlamaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
         return HFCheckpointConverter(
             self.__class__,
-            reference_checkpoint=self.reference_checkpoint,
+            reference_checkpoint=self.reference_checkpoint if ref_checkpoint is None else ref_checkpoint,
             trust_remote_code=True,
-            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
+            tokenizer=ref_checkpoint if self.tokenizer is None else self.tokenizer,
             HfConfigClass=HfLlamaConfig,
         )
 
@@ -488,6 +490,9 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
             attn_mask (Union[NamedArray, AttentionMask], optional): [batch, position]
                 Mask to avoid performing attention on the padding token indices of the encoder input.
                 The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
+
+        Returns:
+            NamedArray: logits with shape {Batch, Pos, Vocab}
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)

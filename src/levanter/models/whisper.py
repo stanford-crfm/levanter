@@ -65,8 +65,10 @@ class WhisperConfig(HFCompatConfig, ASRConfig):
     def asr_model_type(self) -> Type["WhisperASRModel"]:
         return WhisperASRModel
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
-        return HFCheckpointConverter(self, "openai/whisper-base", ignore_prefix="model")
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: str = "openai/whisper-base"
+    ) -> HFCheckpointConverter["WhisperModel"]:  # type: ignore
+        return HFCheckpointConverter(self, reference_checkpoint=ref_checkpoint, ignore_prefix="model")
 
     # Axis
     MelPos = property(lambda self: Axis(name="position", size=self.max_source_positions * 2))

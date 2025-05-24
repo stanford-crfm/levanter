@@ -109,10 +109,12 @@ class GemmaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: str = "google/gemma-2b"
+    ) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
         return HFCheckpointConverter(
             self,
-            reference_checkpoint="google/gemma-2b",
+            reference_checkpoint=ref_checkpoint,
             trust_remote_code=True,
             HfConfigClass=HfGemmaConfig,
         )
