@@ -38,7 +38,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     cycles: int | list[int] | None = None
     """Number of cycles or a list of cycle endpoints. Can use at most one of cycle_length, cycles, or haps."""
 
-    lr_schedule: str = "cosine"  # constant, cosine, linear
+    lr_schedule: str = "cosine"  # constant, cosine, linear, power
     haps: Optional[list[int]] = None
     """Deprecated."""
     weight_decay_modules: Optional[list[str] | str] = None
@@ -47,6 +47,15 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     default_weight_decay_mask: Optional[bool] = None
     """Whether to apply a default reasonable weight decay to modules not explicitly masked. None means it will if
     no weight_decay_modules are set. False means it will not. True means it will regardless of weight_decay_modules."""
+
+    power_a: Optional[float] = 4.6
+    """Learning rate amplitude for the power learning rate schedule. Must be a positive number."""
+    power_b: Optional[float] = -0.51
+    """Power-law exponent for the power learning rate schedule. Must be a negative number."""
+    batch_size: Optional[int] = None
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
+    seq_length: Optional[int] = None
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
 
     @classmethod
     def default_choice_name(cls) -> Optional[str]:
@@ -199,6 +208,24 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                     schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
                 case "inv":
                     schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
+                case "power":
+                    # Power Scheduler: A Batch Size and Token Number Agnostic Learning Rate Scheduler (Shen et al., 2024)
+                    # https://arxiv.org/abs/2408.13359
+                    # The scheduler and default hyperparameters are intended for use with maximal update parametrization
+                    # (mup), as described in the paper. The scheduler may work without mup.
+
+                    if self.power_a is None or self.power_a <= 0:
+                        raise ValueError("a must be a positive number")
+                    if self.power_b is None or self.power_b >= 0:
+                        raise ValueError("b must be a negative number")
+                    if self.batch_size is None or self.batch_size <= 0:
+                        raise ValueError("batch_size must be a positive number")
+                    if self.seq_length is None or self.seq_length <= 0:
+                        raise ValueError("seq_length must be a positive number")
+
+                    schedule = _power_decay_schedule(
+                        self.learning_rate, self.power_a, self.power_b, self.batch_size, self.seq_length
+                    )
                 case _:
                     raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
@@ -273,6 +300,14 @@ def _inv_decay_schedule(lr: float, min_lr: float, decay_steps: int):
     def schedule(count):
         decay = jnp.minimum(1.0, 1.0 / ((lr / min_lr - 1) * jnp.maximum(count, 1) / decay_steps + 1))
         return jnp.maximum(lr * decay, min_lr)
+
+    return schedule
+
+
+def _power_decay_schedule(max_lr: float, a: float, b: float, batch_size: int, seq_length: int):
+    def schedule(count):
+        tokens_trained = count * batch_size * seq_length
+        return jnp.minimum(max_lr, batch_size * a * tokens_trained**b)
 
     return schedule
 
