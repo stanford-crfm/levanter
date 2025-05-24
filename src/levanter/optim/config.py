@@ -38,7 +38,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     cycles: int | list[int] | None = None
     """Number of cycles or a list of cycle endpoints. Can use at most one of cycle_length, cycles, or haps."""
 
-    lr_schedule: str = "cosine"  # constant, cosine, linear
+    lr_schedule: str = "cosine"  # constant, cosine, linear, power
     haps: Optional[list[int]] = None
     """Deprecated."""
     weight_decay_modules: Optional[list[str] | str] = None
@@ -48,11 +48,14 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     """Whether to apply a default reasonable weight decay to modules not explicitly masked. None means it will if
     no weight_decay_modules are set. False means it will not. True means it will regardless of weight_decay_modules."""
 
-    max_lr: Optional[float] = 2e-2
-    a: Optional[float] = 4.6
-    b: Optional[float] = -0.51
+    power_a: Optional[float] = 4.6
+    """Learning rate amplitude for the power learning rate schedule. Must be a positive number."""
+    power_b: Optional[float] = -0.51
+    """Power-law exponent for the power learning rate schedule. Must be a negative number."""
     batch_size: Optional[int] = None
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
     seq_length: Optional[int] = None
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
 
     @classmethod
     def default_choice_name(cls) -> Optional[str]:
@@ -206,18 +209,23 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 case "inv":
                     schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
                 case "power":
-                    if self.max_lr is None or self.max_lr <= 0:
-                        raise ValueError("max_lr must be positive")
-                    if self.a is None or self.a <= 0:
-                        raise ValueError("a must be positive")
-                    if self.b is None or self.b >= 0:
-                        raise ValueError("b must be negative")
-                    if self.batch_size is None or self.batch_size <= 0:
-                        raise ValueError("batch_size must be positive")
-                    if self.seq_length is None or self.seq_length <= 0:
-                        raise ValueError("seq_length must be positive")
+                    # Power Scheduler: A Batch Size and Token Number Agnostic Learning Rate Scheduler (Shen et al., 2024)
+                    # https://arxiv.org/abs/2408.13359
+                    # The scheduler and default hyperparameters are intended for use with maximal update parametrization
+                    # (mup), as described in the paper. The scheduler may work without mup.
 
-                    schedule = _power_decay_schedule(self.learning_rate, self.max_lr, self.a, self.b, self.batch_size, self.seq_length)
+                    if self.power_a is None or self.power_a <= 0:
+                        raise ValueError("a must be a positive number")
+                    if self.power_b is None or self.power_b >= 0:
+                        raise ValueError("b must be a negative number")
+                    if self.batch_size is None or self.batch_size <= 0:
+                        raise ValueError("batch_size must be a positive number")
+                    if self.seq_length is None or self.seq_length <= 0:
+                        raise ValueError("seq_length must be a positive number")
+
+                    schedule = _power_decay_schedule(
+                        self.learning_rate, self.power_a, self.power_b, self.batch_size, self.seq_length
+                    )
                 case _:
                     raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
 
@@ -296,12 +304,13 @@ def _inv_decay_schedule(lr: float, min_lr: float, decay_steps: int):
     return schedule
 
 
-def _power_decay_schedule(lr: float, max_lr: float, a: float, b: float, batch_size: int, seq_length: int):    
-    def schedule(count):    
+def _power_decay_schedule(max_lr: float, a: float, b: float, batch_size: int, seq_length: int):
+    def schedule(count):
         tokens_trained = count * batch_size * seq_length
-        return min(max_lr, lr * batch_size * a * tokens_trained**b)
+        return jnp.minimum(max_lr, batch_size * a * tokens_trained**b)
 
     return schedule
+
 
 def _convert_frac_or_steps(frac_or_steps: float | int, num_train_steps: int):
     # if it's greater than 1, it must be a whole number of steps
