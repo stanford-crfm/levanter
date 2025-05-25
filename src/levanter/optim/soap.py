@@ -2,7 +2,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
-from typing import List, NamedTuple, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -250,7 +250,6 @@ def scale_by_soap(
         ]
         Q = _safe_sharding_constraint(Q, GG_sharding)
 
-
         return {
             "count": jnp.zeros([], jnp.int32),
             "exp_avg": exp_avg,
@@ -284,7 +283,7 @@ def scale_by_soap(
                 scanned_layers_,
                 merged_shapes,
             )
-                
+
         if partition_grads_into_blocks:
             partitioners = jax.tree.map(
                 lambda _, ps, dd: BlockPartitioner(ps, block_size, dd),
@@ -325,7 +324,7 @@ def scale_by_soap(
         new_Q = jax.tree.map(
             lambda nm, gg: _map_fn(False, 0, nm, partial(get_orthogonal_matrix, epsilon=epsilon), gg),
             jax.tree.leaves(n_dims_to_map),
-            new_GG
+            new_GG,
         )
 
         new_GG = otu.tree_cast(new_GG, precond_dtype)
@@ -484,66 +483,45 @@ def scale_by_soap(
             blocked_exp_avg_sq = exp_avg_sq
 
         # # Project gradients
-        
-        
+
         grad_projected_leaves = jax.tree.map(
-            lambda _, nm, grad, q: 
-                _map_fn(False,
-                    0,
-                    nm,
-                    partial(project, precision=precision),
-                   grad,
-                   q
-            ),
+            lambda _, nm, grad, q: _map_fn(False, 0, nm, partial(project, precision=precision), grad, q),
             jax.tree.leaves(dummy_updates_tree),
             jax.tree.leaves(n_dims_to_map),
             jax.tree.leaves(blocked_updates),
-            state["Q"]
+            state["Q"],
         )
 
         grad_projected = grads_structure.unflatten(grad_projected_leaves)
-        
+
         blocked_exp_avg_sq = otu.tree_update_moment_per_elem_norm(grad_projected, blocked_exp_avg_sq, b2, 2)
-        
+
         blocked_exp_avg_projected_leaves = jax.tree.map(
-            lambda _, nm, e, q: _map_fn(
-                False,
-                0,
-                nm,
-                partial(project, precision=precision),
-                e,
-                q
-            ),
+            lambda _, nm, e, q: _map_fn(False, 0, nm, partial(project, precision=precision), e, q),
             jax.tree.leaves(dummy_updates_tree),
             jax.tree.leaves(n_dims_to_map),
             jax.tree.leaves(blocked_exp_avg),
-            state["Q"]
+            state["Q"],
         )
 
         blocked_exp_avg_projected = grads_structure.unflatten(blocked_exp_avg_projected_leaves)
-        
-        
+
         # # # Project back
         blocked_norm_updates_leaves = jax.tree.map(
             lambda _, nm, e_avg, e_avg_sq, q: _map_fn(
-                False,
-                0,
-                nm,
-                partial(project_back, precision = precision),
-                (e_avg / (jnp.sqrt(e_avg_sq) + epsilon)),
-                q
+                False, 0, nm, partial(project_back, precision=precision), (e_avg / (jnp.sqrt(e_avg_sq) + epsilon)), q
             ),
             jax.tree.leaves(dummy_updates_tree),
             jax.tree.leaves(n_dims_to_map),
             jax.tree.leaves(blocked_exp_avg_projected),
             jax.tree.leaves(blocked_exp_avg_sq),
-            state["Q"]
-        )        
+            state["Q"],
+        )
 
         blocked_norm_updates = grads_structure.unflatten(blocked_norm_updates_leaves)
-        
-        bc1 = 1 - b1**state["count"]
-        bc2 = 1 - b2**state["count"]
+
+        bc1 = 1 - b1 ** state["count"]
+        bc2 = 1 - b2 ** state["count"]
         corr = jnp.sqrt(bc2) / bc1
 
         # Bias correction on the updates
@@ -554,47 +532,43 @@ def scale_by_soap(
 
         # Update the preconditioner
         new_GG = jax.tree.map(
-            lambda nm, grad, gg: _map_fn(False,
-                    0,
-                    nm, 
-                   partial(update_preconditioner, beta = shampoo_beta),
-                   grad,
-                   gg
-            ),
+            lambda nm, grad, gg: _map_fn(False, 0, nm, partial(update_preconditioner, beta=shampoo_beta), grad, gg),
             jax.tree.leaves(n_dims_to_map),
             jax.tree.leaves(blocked_updates),
-            state["GG"]
+            state["GG"],
         )
 
         new_Q_and_exp_avg_sq = jax.lax.cond(
             state["count"] % precondition_frequency == 0,
             lambda: jax.tree.map(
-                    lambda nm, e, gg, q: _map_fn(
-                            False,
-                            0,
-                            nm,
-                            partial(get_orthogonal_matrix_QR, precision = precision, precond_dtype = precond_dtype, mu_dtype = mu_dtype),
-                            gg,
-                            q,
-                            e
-                        ),
-                    jax.tree.leaves(n_dims_to_map),
-                    jax.tree.leaves(blocked_exp_avg_sq),
-                    state["GG"],
-                    state["Q"]
+                lambda nm, e, gg, q: _map_fn(
+                    False,
+                    0,
+                    nm,
+                    partial(
+                        get_orthogonal_matrix_QR, precision=precision, precond_dtype=precond_dtype, mu_dtype=mu_dtype
+                    ),
+                    gg,
+                    q,
+                    e,
                 ),
+                jax.tree.leaves(n_dims_to_map),
+                jax.tree.leaves(blocked_exp_avg_sq),
+                state["GG"],
+                state["Q"],
+            ),
             lambda: jax.tree.map(
                 lambda nm, e, gg, q: (q, e),
                 jax.tree.leaves(n_dims_to_map),
                 jax.tree.leaves(blocked_exp_avg_sq),
                 state["GG"],
-                state["Q"]
-            )
+                state["Q"],
+            ),
         )
         new_Q = [x[0] for x in new_Q_and_exp_avg_sq]
         blocked_exp_avg_sq_leaves = [x[1] for x in new_Q_and_exp_avg_sq]
         blocked_exp_avg_sq = grads_structure.unflatten(blocked_exp_avg_sq_leaves)
-        # revert blocking of everything    
+        # revert blocking of everything
         if partition_grads_into_blocks:
             norm_updates = jax.tree.map(
                 lambda g, s, ps: _map_fn(
