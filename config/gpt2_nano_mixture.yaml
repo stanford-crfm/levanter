@@ -3,12 +3,12 @@ data:
   configs:
     wikitext:
       id: dlwh/wikitext_103_detokenized
-    w2:
-      id: dlwh/wikitext_103_detokenized
-      cache_dir: wikitext2_cache
+#    w2:
+#      id: dlwh/wikitext_103_detokenized
+#      cache_dir: wikitext2_cache
   train_weights:
-    - [0, {"wikitext": 0.8, "w2": 0.2}]
-    - [100, {"w2": 0.5, "wikitext": 0.5}]
+    wikitext: 1.0
+#    - [0, {"wikitext": 0.8, "w2": 0.2}]
 model:
   type: gpt2
   hidden_dim: 32
@@ -24,7 +24,7 @@ trainer:
     save_interval: 5m
 
   per_device_eval_parallelism: 16
-  train_batch_size: 32
+  train_batch_size: 8
 
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"

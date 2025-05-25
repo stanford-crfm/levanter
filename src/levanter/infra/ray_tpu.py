@@ -65,6 +65,27 @@ class TpuRunError(_TpuRunResult):
     error: Exception
 
 
+
+# @ray.remote
+# class FlexsliceActor:
+#     def __init__(self,
+#                  workload: Callable[[int], None],
+#                  slice_type: str,
+#                  valid_slice_counts: Sequence[int]
+#                  ):
+#         self.workload = workload
+#         self.slice_type = slice_type
+#         self.valid_slice_counts = valid_slice_counts
+#
+#
+#
+# def run_on_pod_flex(workload: RemoteFunction | Callable, tpu_type: str, valid_slice_counts: Sequence[int]):
+#     # First query how many we think have. We'll try to be greedy and grab them all (as makes sense)
+#     for
+
+
+
+
 def run_on_pod(remote_fn: RemoteFunction | Callable, tpu_type: str) -> ray.ObjectRef:
     """
     Run a remote function on a TPU pod.
