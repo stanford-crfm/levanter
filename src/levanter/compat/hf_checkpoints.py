@@ -775,7 +775,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         save_tokenizer: bool = True,
         max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
         save_feature_extractor: bool = False,
-                dtype: Optional[jnp.dtype] = None,
+        dtype: Optional[jnp.dtype] = None,
         **hf_upload_kwargs,
     ):
         """
