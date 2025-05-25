@@ -1,0 +1,53 @@
+name: GPT-2 Small Integration Test
+
+on:
+  push:
+    branches:
+      - main # Trigger on merges/pushes to main
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  integration_test:
+    runs-on: ubuntu-latest
+    env:
+      TPU_ZONE: "us-central2-b" # Matching the launch script
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3 # Use a more recent version
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Google Cloud
+        run: |
+          gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Run GPT-2 Small Integration Test
+        run: |
+          # The launch script handles TPU creation and deletion
+          bash scripts/launch_gpt2_small_itest_tpu.sh
+        env:
+          USER: ci-runner-${{ github.run_id }} # Set a unique user for TPU naming in the script
+          # Ensure other necessary env vars for the script are set if any
+
+      # infra/launch.py with --foreground should handle cleanup.
+      # If not, a manual cleanup step would be needed here similar to tpu_unit_tests.yaml,
+      # but it would need to know the TPU_NAME used by launch.py.
+      # For now, relying on launch.py for cleanup.
+      # - name: Cleanup TPU
+      #   if: ${{ always() }}
+      #   run: |
+      #     # This would require launch.py to output the TPU name or use a predictable one
+      #     # For example, if TPU_NAME was consistently $(whoami)-levanter-itest-32 as in the script
+      #     TPU_NAME_IN_SCRIPT="ci-runner-${{ github.run_id }}-levanter-itest-32"
+      #     echo "Attempting to delete TPU: $TPU_NAME_IN_SCRIPT in zone ${TPU_ZONE}"
+      #     gcloud compute tpus tpu-vm delete $TPU_NAME_IN_SCRIPT --zone ${TPU_ZONE} --quiet || echo "TPU deletion failed or TPU did not exist."
