@@ -8,7 +8,7 @@ data:
   tokenizer: "NousResearch/Llama-2-7b-hf"
 model:
   type: llama
-  hidden_dim: 32
+  hidden_dim: 64
   num_heads: 4
   num_kv_heads: 4
   num_layers: 2

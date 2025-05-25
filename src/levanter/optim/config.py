@@ -335,9 +335,8 @@ class LionConfig(OptimizerConfig):
     """
     Lion optimizer configuration
     cf:
-    Original Paper:
+    Original Paper: https://arxiv.org/abs/2302.06675
     """
-
     beta1: float = 0.9
     beta2: float = 0.95
     epsilon: float = 1e-8

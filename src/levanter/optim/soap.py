@@ -23,14 +23,6 @@ import haliax as hax
 from levanter.optim.config import OptimizerConfig
 
 
-class SOAPState(NamedTuple):
-    count: jnp.ndarray  # type: ignore
-    exp_avg: Updates
-    exp_avg_sq: Updates
-    GG: Updates
-    Q: Updates
-
-
 @OptimizerConfig.register_subclass("soap")
 @dataclass
 class SoapConfig(OptimizerConfig):
@@ -151,7 +143,7 @@ def scale_by_soap(
     precond_dtype = canonicalize_dtype(precond_dtype) if precond_dtype is not None else None
     shampoo_beta = shampoo_beta if shampoo_beta >= 0 else b2
 
-    def init_fn(params: Updates) -> SOAPState:
+    def init_fn(params: Updates) -> dict:
         scanned_layers_ = jax.tree.map(
             lambda x: (
                 jax.tree.map(lambda _: True, x, is_leaf=lambda x: isinstance(x, jax.Array))
@@ -204,7 +196,6 @@ def scale_by_soap(
                     null_dims_leaf,
                 )
             ]
-
         partitioned_shapes = merged_shapes
         partitioned_shapes_leaf = merged_shapes_leaf
         if partition_grads_into_blocks:
@@ -259,19 +250,16 @@ def scale_by_soap(
         ]
         Q = _safe_sharding_constraint(Q, GG_sharding)
 
-        # make GG and Q tree
-        _, params_structure = jax.tree.flatten(params, is_leaf=lambda x: isinstance(x, jax.Array))
-        GG = params_structure.unflatten(GG)
-        Q = params_structure.unflatten(Q)
-        return SOAPState(
-            count=jnp.zeros([], jnp.int32),
-            exp_avg=exp_avg,
-            exp_avg_sq=exp_avg_sq,
-            GG=GG,
-            Q=Q,
-        )
 
-    def init_step(updates: Updates, state: SOAPState, scanned_layers_: Updates) -> tuple[Updates, SOAPState]:
+        return {
+            "count": jnp.zeros([], jnp.int32),
+            "exp_avg": exp_avg,
+            "exp_avg_sq": exp_avg_sq,
+            "GG": GG,
+            "Q": Q,
+        }
+
+    def init_step(updates: Updates, state: dict, scanned_layers_: Updates) -> tuple[Updates, dict]:
         n_dims_to_map = jax.tree.map(lambda s: int(s), scanned_layers_)
         dummy_updates_tree = jax.tree.map(lambda _: jnp.zeros([]), updates)
         null_dims = jax.tree.map(
@@ -279,8 +267,9 @@ def scale_by_soap(
             updates,
             scanned_layers_,
         )
+        merged_shapes = jax.tree.map(lambda p, s: p.shape[int(s) :], updates, scanned_layers_)
         if merge_small_dims:
-            original_shapes = jax.tree.map(lambda g, s: g.shape[int(s) :], updates, scanned_layers_)
+            original_shapes = merged_shapes
             output = jax.tree.map(
                 lambda g, dd, s: _merge_small_dims(g.shape[int(s) :], target_merged_dim_size, dd),
                 updates,
@@ -295,7 +284,7 @@ def scale_by_soap(
                 scanned_layers_,
                 merged_shapes,
             )
-
+                
         if partition_grads_into_blocks:
             partitioners = jax.tree.map(
                 lambda _, ps, dd: BlockPartitioner(ps, block_size, dd),
@@ -328,15 +317,15 @@ def scale_by_soap(
 
         new_GG = jax.tree.map(
             lambda nm, grad, gg: _map_fn(False, 0, nm, partial(update_preconditioner, beta=shampoo_beta), grad, gg),
-            n_dims_to_map,
-            blocked_updates,
-            state.GG,
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_updates),
+            state["GG"],
         )
 
         new_Q = jax.tree.map(
             lambda nm, gg: _map_fn(False, 0, nm, partial(get_orthogonal_matrix, epsilon=epsilon), gg),
-            n_dims_to_map,
-            new_GG,
+            jax.tree.leaves(n_dims_to_map),
+            new_GG
         )
 
         new_GG = otu.tree_cast(new_GG, precond_dtype)
@@ -353,12 +342,20 @@ def scale_by_soap(
         # Replace updates with zeros
         new_updates = otu.tree_zeros_like(updates)
 
-        return new_updates, state._replace(GG=new_GG, Q=new_Q)
+        new_state = {
+            "GG": new_GG,
+            "Q": new_Q,
+            "exp_avg": state["exp_avg"],
+            "exp_avg_sq": state["exp_avg_sq"],
+            "count": state["count"],
+        }
 
-    def update_step(updates: Updates, state: SOAPState, scanned_layers_: Updates) -> tuple[Updates, SOAPState]:
+        return new_updates, new_state
+
+    def update_step(updates: Updates, state: dict, scanned_layers_: Updates) -> tuple[Updates, dict]:
         # Update moments
         _, grads_structure = jax.tree.flatten(updates, is_leaf=lambda x: isinstance(x, jax.Array))
-        exp_avg = otu.tree_update_moment(updates, state.exp_avg, b1, 1)
+        exp_avg = otu.tree_update_moment(updates, state["exp_avg"], b1, 1)
         shapes = jax.tree.map(lambda p, s: p.shape[int(s) :], updates, scanned_layers_)
         # block gradients, exp_avg, exp_avg_sq
         n_dims_to_map = jax.tree.map(lambda s: int(s), scanned_layers_)
@@ -371,7 +368,7 @@ def scale_by_soap(
         # merge small dims
         merged_shapes = shapes
         if merge_small_dims:
-            original_shapes = jax.tree.map(lambda g, s: g.shape[int(s) :], updates, scanned_layers_)
+            original_shapes = shapes
             output = jax.tree.map(
                 lambda g, dd, s: _merge_small_dims(g.shape[int(s) :], target_merged_dim_size, dd),
                 updates,
@@ -394,12 +391,12 @@ def scale_by_soap(
             )
             exp_avg_sq = jax.tree.map(
                 lambda g, s, ns: _map_fn(False, 0, int(s), lambda x, shape=ns: jnp.reshape(x, shape), g),
-                state.exp_avg_sq,
+                state["exp_avg_sq"],
                 scanned_layers_,
                 merged_shapes,
             )
         else:
-            exp_avg_sq = state.exp_avg_sq
+            exp_avg_sq = state["exp_avg_sq"]
 
         # partition
         partitioned_shapes = merged_shapes
@@ -484,42 +481,69 @@ def scale_by_soap(
         else:
             blocked_updates = updates
             blocked_exp_avg = exp_avg
-            blocked_exp_avg_sq = state.exp_avg_sq
+            blocked_exp_avg_sq = exp_avg_sq
 
         # # Project gradients
-
-        grad_projected = jax.tree.map(
-            lambda _, nm, grad, q: _map_fn(False, 0, nm, partial(project, precision=precision), grad, q),
-            dummy_updates_tree,
-            n_dims_to_map,
-            blocked_updates,
-            state.Q,
-        )
-
-        blocked_exp_avg_sq = otu.tree_update_moment_per_elem_norm(grad_projected, blocked_exp_avg_sq, b2, 2)
-
-        blocked_exp_avg_projected = jax.tree.map(
-            lambda _, nm, e, q: _map_fn(False, 0, nm, partial(project, precision=precision), e, q),
-            dummy_updates_tree,
-            n_dims_to_map,
-            blocked_exp_avg,
-            state.Q,
-        )
-
-        # # # Project back
-        blocked_norm_updates = jax.tree.map(
-            lambda _, nm, e_avg, e_avg_sq, q: _map_fn(
-                False, 0, nm, partial(project_back, precision=precision), (e_avg / (jnp.sqrt(e_avg_sq) + epsilon)), q
+        
+        
+        grad_projected_leaves = jax.tree.map(
+            lambda _, nm, grad, q: 
+                _map_fn(False,
+                    0,
+                    nm,
+                    partial(project, precision=precision),
+                   grad,
+                   q
             ),
-            dummy_updates_tree,
-            n_dims_to_map,
-            blocked_exp_avg_projected,
-            blocked_exp_avg_sq,
-            state.Q,
+            jax.tree.leaves(dummy_updates_tree),
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_updates),
+            state["Q"]
         )
 
-        bc1 = 1 - b1**state.count
-        bc2 = 1 - b2**state.count
+        grad_projected = grads_structure.unflatten(grad_projected_leaves)
+        
+        blocked_exp_avg_sq = otu.tree_update_moment_per_elem_norm(grad_projected, blocked_exp_avg_sq, b2, 2)
+        
+        blocked_exp_avg_projected_leaves = jax.tree.map(
+            lambda _, nm, e, q: _map_fn(
+                False,
+                0,
+                nm,
+                partial(project, precision=precision),
+                e,
+                q
+            ),
+            jax.tree.leaves(dummy_updates_tree),
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_exp_avg),
+            state["Q"]
+        )
+
+        blocked_exp_avg_projected = grads_structure.unflatten(blocked_exp_avg_projected_leaves)
+        
+        
+        # # # Project back
+        blocked_norm_updates_leaves = jax.tree.map(
+            lambda _, nm, e_avg, e_avg_sq, q: _map_fn(
+                False,
+                0,
+                nm,
+                partial(project_back, precision = precision),
+                (e_avg / (jnp.sqrt(e_avg_sq) + epsilon)),
+                q
+            ),
+            jax.tree.leaves(dummy_updates_tree),
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_exp_avg_projected),
+            jax.tree.leaves(blocked_exp_avg_sq),
+            state["Q"]
+        )        
+
+        blocked_norm_updates = grads_structure.unflatten(blocked_norm_updates_leaves)
+        
+        bc1 = 1 - b1**state["count"]
+        bc2 = 1 - b2**state["count"]
         corr = jnp.sqrt(bc2) / bc1
 
         # Bias correction on the updates
@@ -530,40 +554,47 @@ def scale_by_soap(
 
         # Update the preconditioner
         new_GG = jax.tree.map(
-            lambda nm, grad, gg: _map_fn(False, 0, nm, partial(update_preconditioner, beta=shampoo_beta), grad, gg),
-            n_dims_to_map,
-            blocked_updates,
-            state.GG,
+            lambda nm, grad, gg: _map_fn(False,
+                    0,
+                    nm, 
+                   partial(update_preconditioner, beta = shampoo_beta),
+                   grad,
+                   gg
+            ),
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_updates),
+            state["GG"]
         )
 
         new_Q_and_exp_avg_sq = jax.lax.cond(
-            state.count % precondition_frequency == 0,
+            state["count"] % precondition_frequency == 0,
             lambda: jax.tree.map(
-                lambda nm, e, gg, q: _map_fn(
-                    False,
-                    0,
-                    nm,
-                    partial(
-                        get_orthogonal_matrix_QR, precision=precision, precond_dtype=precond_dtype, mu_dtype=mu_dtype
-                    ),
-                    gg,
-                    q,
-                    e,
+                    lambda nm, e, gg, q: _map_fn(
+                            False,
+                            0,
+                            nm,
+                            partial(get_orthogonal_matrix_QR, precision = precision, precond_dtype = precond_dtype, mu_dtype = mu_dtype),
+                            gg,
+                            q,
+                            e
+                        ),
+                    jax.tree.leaves(n_dims_to_map),
+                    jax.tree.leaves(blocked_exp_avg_sq),
+                    state["GG"],
+                    state["Q"]
                 ),
-                n_dims_to_map,
-                blocked_exp_avg_sq,
-                state.GG,
-                state.Q,
-            ),
             lambda: jax.tree.map(
-                lambda e, q: (q, e),
-                blocked_exp_avg_sq,
-                state.Q,
-            ),
+                lambda nm, e, gg, q: (q, e),
+                jax.tree.leaves(n_dims_to_map),
+                jax.tree.leaves(blocked_exp_avg_sq),
+                state["GG"],
+                state["Q"]
+            )
         )
-        new_Q = jax.tree.map(lambda _, x: x[0], dummy_updates_tree, new_Q_and_exp_avg_sq)
-        blocked_exp_avg_sq = jax.tree.map(lambda _, x: x[1], dummy_updates_tree, new_Q_and_exp_avg_sq)
-        # revert blocking of everything
+        new_Q = [x[0] for x in new_Q_and_exp_avg_sq]
+        blocked_exp_avg_sq_leaves = [x[1] for x in new_Q_and_exp_avg_sq]
+        blocked_exp_avg_sq = grads_structure.unflatten(blocked_exp_avg_sq_leaves)
+        # revert blocking of everything    
         if partition_grads_into_blocks:
             norm_updates = jax.tree.map(
                 lambda g, s, ps: _map_fn(
@@ -653,19 +684,19 @@ def scale_by_soap(
         exp_avg_sq = otu.tree_cast(exp_avg_sq, mu_dtype)
         new_GG = otu.tree_cast(new_GG, precond_dtype)
         new_Q = otu.tree_cast(new_Q, precond_dtype)
-        new_state = SOAPState(
-            count=state.count,
-            exp_avg=exp_avg,
-            exp_avg_sq=exp_avg_sq,
-            GG=new_GG,
-            Q=new_Q,
-        )
+        new_state = {
+            "GG": new_GG,
+            "Q": new_Q,
+            "exp_avg": exp_avg,
+            "exp_avg_sq": exp_avg_sq,
+            "count": state["count"],
+        }
 
         return norm_updates, new_state
 
-    def update_fn(updates: Updates, state: SOAPState, params: Optional[Updates] = None) -> tuple[Updates, SOAPState]:
-        count_inc = jnp.asarray(optax.safe_int32_increment(state.count))
-        state = state._replace(count=count_inc)
+    def update_fn(updates: Updates, state: dict, params: Optional[Updates] = None) -> tuple[Updates, dict]:
+        count_inc = jnp.asarray(optax.safe_int32_increment(state["count"]))
+        state["count"] = count_inc
         scanned_layers_ = jax.tree.map(
             lambda x: (
                 jax.tree.map(lambda _: True, x, is_leaf=lambda x: isinstance(x, jax.Array))
@@ -679,6 +710,7 @@ def scale_by_soap(
         updates, new_state = jax.lax.cond(
             count_inc == 1,
             lambda: init_step(updates, state, scanned_layers_),
+            # lambda: (updates, state), # do nothing to debug
             lambda: update_step(updates, state, scanned_layers_),
         )
 
