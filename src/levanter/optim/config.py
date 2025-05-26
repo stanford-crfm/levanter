@@ -71,20 +71,21 @@ class InvLrSchedule(LrSchedule):
 
 
 @LrSchedule.register_subclass("power")
+@dataclass
 class PowerLrSchedule(LrSchedule):
     # Power Scheduler: A Batch Size and Token Number Agnostic Learning Rate Scheduler (Shen et al., 2024)
     # https://arxiv.org/abs/2408.13359
     # The scheduler and default hyperparameters are intended for use with maximal update parametrization
     # (mup), as described in the paper. The scheduler may work without mup.
 
-    a: float = 4.6
-    """Learning rate amplitude for the power learning rate schedule. Must be a positive number."""
-    b: float = -0.51
-    """Power-law exponent for the power learning rate schedule. Must be a negative number."""
     batch_size: int
     """Required for the power learning rate schedule to determine number of tokens trained on so far."""
     seq_length: int
     """Required for the power learning rate schedule to determine number of tokens trained on so far."""
+    a: float = 4.6
+    """Learning rate amplitude for the power learning rate schedule. Must be a positive number."""
+    b: float = -0.51
+    """Power-law exponent for the power learning rate schedule. Must be a negative number."""
 
     def __post_init__(self):
         if self.a <= 0 or self.b >= 0:
