@@ -448,7 +448,7 @@ class RobertaOutput(eqx.Module, StateDictSerializationMixin):
         dense = hnn.Linear.init(In=config.Mlp, Out=Embed, key=key, out_first=True)
         LayerNorm = hnn.LayerNorm.init(axis=Embed, eps=config.layer_norm_eps)
         dropout = hnn.Dropout(config.hidden_dropout_prob)
-        return RobertaSelfOutput(dense, LayerNorm, dropout)
+        return RobertaOutput(dense, LayerNorm, dropout)
 
     @named_call
     def __call__(self, hidden_states: NamedArray, input: NamedArray, *, key) -> NamedArray:
