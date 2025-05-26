@@ -658,6 +658,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         save_reference_code: Optional[bool],
         max_shard_size: int,
         save_feature_extractor: bool = False,
+        dtype: Optional[jnp.dtype] = None,
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
@@ -743,6 +744,15 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         # Model
         state_dict = to_torch_compatible_state_dict(model)
+
+        if dtype is not None:
+            logger.info(f"Converting floating-point arrays in state_dict to {dtype}")
+            for k, v in state_dict.items():
+                if jnp.issubdtype(v.dtype, jnp.floating):
+                    state_dict[k] = v.astype(dtype)
+                else:
+                    logger.debug(f"Skipping dtype conversion for non-floating point array {k} with dtype {v.dtype}")
+
         shards, index = _shard_hf_checkpoint(state_dict, max_shard_size, SAFE_TENSORS_MODEL)
         if index is None:
             save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
@@ -765,6 +775,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         save_tokenizer: bool = True,
         max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
         save_feature_extractor: bool = False,
+        dtype: Optional[jnp.dtype] = None,
         **hf_upload_kwargs,
     ):
         """
@@ -796,6 +807,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 save_tokenizer=save_tokenizer,
                 save_feature_extractor=save_feature_extractor,
                 max_shard_size=max_shard_size,
+                dtype=dtype,
             )
 
             if upload_to_hf is True:
@@ -886,6 +898,7 @@ def save_hf_checkpoint_callback(
     base_path,
     converter: HFCheckpointConverter,
     upload_to_hf: Union[bool, str, RepoRef] = False,
+    save_dtype: Optional[jnp.dtype] = None,
     **hf_upload_kwargs,
 ):
     """
@@ -912,6 +925,7 @@ def save_hf_checkpoint_callback(
             cast(ModelWithHfSerializationMixin, step.eval_model),
             os.path.join(base_path, f"step-{step.step}"),
             upload_to_hf=upload_to_hf,
+            dtype=save_dtype,
             **my_upload_kwargs,
         )
 
