@@ -106,6 +106,7 @@ pip install -U wheel
 # jax and jaxlib
 # libtpu sometimes has issues installing for clinical (probably firewall?)
 retry pip install -U "jax[tpu]==0.4.38" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+retry pip install -U "jaxlib==0.4.38"
 
 # clone levanter
 git clone $REPO levanter
