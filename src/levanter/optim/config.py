@@ -3,7 +3,7 @@ import re
 import warnings
 from dataclasses import dataclass
 from functools import partial
-from typing import Optional
+from typing import Callable, Optional
 
 import draccus
 import equinox as eqx
@@ -16,6 +16,86 @@ import haliax
 
 import levanter.tracker
 from levanter.utils.jax_utils import leaf_key_paths
+
+
+@dataclass
+class LrScheduleContext:
+    warmup_steps: int
+    decay_steps: int
+    learning_rate: float
+    min_lr_ratio: float
+    min_lr: float
+
+
+class LrSchedule(draccus.ChoiceRegistry, abc.ABC):
+    @abc.abstractmethod
+    def build(self, ctx: LrScheduleContext) -> Callable:
+        raise NotImplementedError
+
+
+@LrSchedule.register_subclass("constant")
+@dataclass
+class ConstantLrSchedule(LrSchedule):
+    def build(self, ctx: LrScheduleContext):
+        return optax.constant_schedule(ctx.learning_rate)
+
+
+@LrSchedule.register_subclass("cosine")
+@dataclass
+class CosineLrSchedule(LrSchedule):
+    def build(self, ctx: LrScheduleContext):
+        return optax.cosine_decay_schedule(ctx.learning_rate, ctx.decay_steps, ctx.min_lr_ratio)
+
+
+@LrSchedule.register_subclass("linear")
+@dataclass
+class LinearLrSchedule(LrSchedule):
+    def build(self, ctx: LrScheduleContext):
+        return optax.linear_schedule(ctx.learning_rate, ctx.min_lr, ctx.decay_steps)
+
+
+@LrSchedule.register_subclass("inv_sqrt")
+@dataclass
+class InvSqrtLrSchedule(LrSchedule):
+    timescale: float = 10000
+
+    def build(self, ctx: LrScheduleContext):
+        return _inv_sqrt_decay_schedule(ctx.learning_rate, ctx.min_lr, ctx.warmup_steps, self.timescale)
+
+
+@LrSchedule.register_subclass("inv")
+@dataclass
+class InvLrSchedule(LrSchedule):
+    def build(self, ctx: LrScheduleContext):
+        return _inv_decay_schedule(ctx.learning_rate, ctx.min_lr, ctx.decay_steps)
+
+
+@LrSchedule.register_subclass("power")
+class PowerLrSchedule(LrSchedule):
+    # Power Scheduler: A Batch Size and Token Number Agnostic Learning Rate Scheduler (Shen et al., 2024)
+    # https://arxiv.org/abs/2408.13359
+    # The scheduler and default hyperparameters are intended for use with maximal update parametrization
+    # (mup), as described in the paper. The scheduler may work without mup.
+
+    a: float = 4.6
+    """Learning rate amplitude for the power learning rate schedule. Must be a positive number."""
+    b: float = -0.51
+    """Power-law exponent for the power learning rate schedule. Must be a negative number."""
+    batch_size: int
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
+    seq_length: int
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
+
+    def __post_init__(self):
+        if self.a <= 0 or self.b >= 0:
+            raise ValueError("Power schedule expects a > 0 and b < 0")
+
+    def build(self, ctx: LrScheduleContext):
+        def schedule(count):
+            tokens_trained = count * self.batch_size * self.seq_length
+            return jnp.minimum(ctx.learning_rate, self.batch_size * self.a * tokens_trained**self.b)
+
+        return schedule
 
 
 @dataclass
@@ -38,7 +118,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     cycles: int | list[int] | None = None
     """Number of cycles or a list of cycle endpoints. Can use at most one of cycle_length, cycles, or haps."""
 
-    lr_schedule: str = "cosine"  # constant, cosine, linear, power
+    lr_schedule: str | LrSchedule = "cosine"  # constant, cosine, linear
     haps: Optional[list[int]] = None
     """Deprecated."""
     weight_decay_modules: Optional[list[str] | str] = None
@@ -47,15 +127,6 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     default_weight_decay_mask: Optional[bool] = None
     """Whether to apply a default reasonable weight decay to modules not explicitly masked. None means it will if
     no weight_decay_modules are set. False means it will not. True means it will regardless of weight_decay_modules."""
-
-    power_a: Optional[float] = 4.6
-    """Learning rate amplitude for the power learning rate schedule. Must be a positive number."""
-    power_b: Optional[float] = -0.51
-    """Power-law exponent for the power learning rate schedule. Must be a negative number."""
-    batch_size: Optional[int] = None
-    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
-    seq_length: Optional[int] = None
-    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
 
     @classmethod
     def default_choice_name(cls) -> Optional[str]:
@@ -197,37 +268,32 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 schedules.append(stable)
                 boundaries.append(start + warmup_steps + stable_steps)
 
-            match self.lr_schedule:
-                case "constant":
-                    schedule = optax.constant_schedule(self.learning_rate)
-                case "cosine":
-                    schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-                case "linear":
-                    schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps)
-                case "inv_sqrt":
-                    schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
-                case "inv":
-                    schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
-                case "power":
-                    # Power Scheduler: A Batch Size and Token Number Agnostic Learning Rate Scheduler (Shen et al., 2024)
-                    # https://arxiv.org/abs/2408.13359
-                    # The scheduler and default hyperparameters are intended for use with maximal update parametrization
-                    # (mup), as described in the paper. The scheduler may work without mup.
-
-                    if self.power_a is None or self.power_a <= 0:
-                        raise ValueError("a must be a positive number")
-                    if self.power_b is None or self.power_b >= 0:
-                        raise ValueError("b must be a negative number")
-                    if self.batch_size is None or self.batch_size <= 0:
-                        raise ValueError("batch_size must be a positive number")
-                    if self.seq_length is None or self.seq_length <= 0:
-                        raise ValueError("seq_length must be a positive number")
-
-                    schedule = _power_decay_schedule(
-                        self.learning_rate, self.power_a, self.power_b, self.batch_size, self.seq_length
+            if isinstance(self.lr_schedule, str):
+                match self.lr_schedule:
+                    case "constant":
+                        schedule = optax.constant_schedule(self.learning_rate)
+                    case "cosine":
+                        schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
+                    case "linear":
+                        schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps)
+                    case "inv_sqrt":
+                        schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
+                    case "inv":
+                        schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
+                    case _:
+                        raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+            elif isinstance(self.lr_schedule, LrSchedule):
+                schedule = self.lr_schedule.build(
+                    LrScheduleContext(
+                        warmup_steps=warmup_steps,
+                        decay_steps=lr_decay_steps,
+                        learning_rate=self.learning_rate,
+                        min_lr_ratio=self.min_lr_ratio,
+                        min_lr=min_lr,
                     )
-                case _:
-                    raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+                )
+            else:
+                raise ValueError(f"lr_schedule must be a string or an instance of LrSchedule, got {self.lr_schedule}")
 
             previous_end = schedule(lr_decay_steps)
 
@@ -300,14 +366,6 @@ def _inv_decay_schedule(lr: float, min_lr: float, decay_steps: int):
     def schedule(count):
         decay = jnp.minimum(1.0, 1.0 / ((lr / min_lr - 1) * jnp.maximum(count, 1) / decay_steps + 1))
         return jnp.maximum(lr * decay, min_lr)
-
-    return schedule
-
-
-def _power_decay_schedule(max_lr: float, a: float, b: float, batch_size: int, seq_length: int):
-    def schedule(count):
-        tokens_trained = count * batch_size * seq_length
-        return jnp.minimum(max_lr, batch_size * a * tokens_trained**b)
 
     return schedule
 
