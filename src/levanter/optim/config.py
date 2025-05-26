@@ -18,7 +18,7 @@ import levanter.tracker
 from levanter.utils.jax_utils import leaf_key_paths
 
 
-@dataclass
+@dataclass(frozen=True)
 class LrScheduleContext:
     warmup_steps: int
     decay_steps: int
