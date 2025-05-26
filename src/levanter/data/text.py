@@ -97,7 +97,7 @@ class MaskedLmDataset(ShardableDataset[MaskedLmExample]):
                 targets = tokens_array.copy()
 
                 if self.mask_prob > 0:
-                    this_key, self.key = jax.random.split(key)
+                    this_key, key = jax.random.split(key)
                     mask_shape = tokens_array.shape
                     mask = jax.random.bernoulli(this_key, self.mask_prob, mask_shape)
 
