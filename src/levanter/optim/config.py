@@ -43,8 +43,10 @@ class ConstantLrSchedule(LrSchedule):
 @LrSchedule.register_subclass("cosine")
 @dataclass
 class CosineLrSchedule(LrSchedule):
+    exponent: float = 1.0
+
     def build(self, ctx: LrScheduleContext):
-        return optax.cosine_decay_schedule(ctx.learning_rate, ctx.decay_steps, ctx.min_lr_ratio)
+        return optax.cosine_decay_schedule(ctx.learning_rate, ctx.decay_steps, ctx.min_lr_ratio, self.exponent)
 
 
 @LrSchedule.register_subclass("linear")
