@@ -91,8 +91,8 @@ class PowerLrSchedule(LrSchedule):
             raise ValueError("Power schedule expects a > 0 and b < 0")
 
     def build(self, ctx: LrScheduleContext):
-        def schedule(count):
-            tokens_trained = count * self.batch_size * self.seq_length
+        def schedule(step):
+            tokens_trained = step * self.batch_size * self.seq_length
             return jnp.minimum(ctx.learning_rate, self.batch_size * self.a * tokens_trained**self.b)
 
         return schedule
