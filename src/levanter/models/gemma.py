@@ -355,6 +355,8 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
                 The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
         """
         x = self.embeddings.embed(input_ids)
+        normalizer = jnp.sqrt(self.config.hidden_dim).astype(x.dtype)
+        x = x * normalizer
         x = self.transformer(x, attn_mask=attn_mask, key=key)
         return x
 
