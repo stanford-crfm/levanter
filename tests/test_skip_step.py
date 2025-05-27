@@ -9,6 +9,16 @@ from levanter.optim import AdamConfig
 from levanter.optim.skipstep import SkipStepConfig, SkipStepState
 
 
+@pytest.fixture
+def initialized_wrapped_optimizer():
+    mock_opt = mock_optimizer_transform()
+    skip_conf = SkipStepConfig(rolling_interval_length=10)  # smaller interval for tests
+    wrapped_opt = skip_conf.wrap(mock_opt)
+    dummy_params = {"w": jnp.array([1.0, 2.0, 3.0]), "b": jnp.array([0.5])}
+    initial_state = wrapped_opt.init(dummy_params)
+    return wrapped_opt, initial_state, dummy_params, skip_conf
+
+
 # Helper function to run update_fn for a number of steps to populate history
 def populate_history(wrapped_optimizer, initial_state, params, num_steps, base_loss, base_grads):
     current_state = initial_state
@@ -89,7 +99,7 @@ def test_update_fn_skip_logic(initialized_wrapped_optimizer, trigger_high_loss):
     assert np.isclose(new_state.losses[last_idx], trigger_loss)
     assert np.isclose(new_state.grad_norms[last_idx], optax.global_norm(trigger_grads))
     assert new_state.count == state_after_population.count + 1
-    assert new_state.current_idx == (state_after_population.current_idx + 1) % (config.rolling_interval_length + 1)
+    assert new_state.current_idx == (state_after_population.current_idx + 1) % (config.rolling_interval_length)
 
 
 def test_update_fn_proceed_normally(initialized_wrapped_optimizer):
@@ -140,21 +150,21 @@ def test_update_fn_circular_buffer_and_count_cap(initialized_wrapped_optimizer):
         recorded_losses.append(loss_val)
         recorded_gnorms.append(optax.global_norm(current_grads))
 
-    # Verify count caps at rolling_interval_length + 1
-    assert current_state.count == config.rolling_interval_length + 1
+    # Verify count caps at rolling_interval_length
+    assert current_state.count == config.rolling_interval_length
 
     # Verify current_idx wraps around
     # current_idx is where the *next* write will happen.
     # After N updates, current_idx should be N % (length+1)
-    # So after num_updates, it should be num_updates % (config.rolling_interval_length + 1)
-    expected_idx = num_updates % (config.rolling_interval_length + 1)
+    # So after num_updates updates, current_idx should be num_updates % (length+1)
+    expected_idx = num_updates % (config.rolling_interval_length)
     assert current_state.current_idx == expected_idx
 
     # Verify that losses and grad_norms arrays store the most recent values
-    # The history arrays store (rolling_interval_length + 1) values.
-    # The values in the state.losses/grad_norms should be the last (rolling_interval_length + 1) recorded values.
-    expected_stored_losses = np.array(recorded_losses[-(config.rolling_interval_length + 1) :])
-    expected_stored_gnorms = np.array(recorded_gnorms[-(config.rolling_interval_length + 1) :])
+    # The history arrays store (rolling_interval_length) values.
+    # The values in the state.losses/grad_norms should be the last (rolling_interval_length) recorded values.
+    expected_stored_losses = np.array(recorded_losses[-(config.rolling_interval_length) :])
+    expected_stored_gnorms = np.array(recorded_gnorms[-(config.rolling_interval_length) :])
 
     # The order in state.losses/grad_norms might be wrapped. We need to reconstruct it.
     # current_idx points to the oldest value + 1 (or where the next value will be written)
@@ -172,7 +182,7 @@ def test_update_fn_circular_buffer_and_count_cap(initialized_wrapped_optimizer):
 
 def test_integration_with_optimizer_config_build():
     skip_config = SkipStepConfig(rolling_interval_length=5, sigma_factor=1.0)  # Aggressive skipping for test
-    adam_config = AdamConfig(learning_rate=1e-3, skip_step=skip_config)
+    adam_config = AdamConfig(learning_rate=1e-3, skip_bad_steps=skip_config)
 
     optimizer = adam_config.build(num_train_steps=100)
 
@@ -181,8 +191,9 @@ def test_integration_with_optimizer_config_build():
     dummy_params = {"w": jnp.array([1.0, 2.0]), "b": jnp.array([0.5])}
     initial_state = optimizer.init(dummy_params)
 
-    assert isinstance(initial_state, SkipStepState), "Optimizer was not wrapped by SkipStep"
-    assert initial_state.losses.shape == (skip_config.rolling_interval_length + 1,)
+    initial_skip_state = initial_state.inner_state  # Should be SkipStepState
+    assert isinstance(initial_skip_state, SkipStepState), "Optimizer was not wrapped by SkipStep"
+    assert initial_skip_state.losses.shape == (skip_config.rolling_interval_length,)
 
     # Try a simple update sequence to see if it can skip
     # Populate history
@@ -208,7 +219,7 @@ def test_integration_with_optimizer_config_build():
     # If they are zero, it means the step was skipped.
 
     # Capture inner state before potentially skipping
-    pre_skip_inner_opt_state = current_state.inner_opt_state
+    pre_skip_inner_opt_state = current_state.inner_state.inner_opt_state
 
     updates, final_state = optimizer.update(base_grads, current_state, dummy_params, loss=high_loss)
 
@@ -228,7 +239,110 @@ def test_integration_with_optimizer_config_build():
 
     # Assert inner optimizer state is preserved
     chex.assert_trees_all_close(
-        final_state.inner_opt_state,
+        final_state.inner_state.inner_opt_state,
         pre_skip_inner_opt_state,
         custom_message="Inner optimizer state was modified during a skipped step in integration test.",
     )
+
+
+# Mock optimizer for testing SkipStepConfig.wrap
+# A simple optimizer that just scales gradients by -1 and maintains a count state
+def mock_optimizer_transform() -> optax.GradientTransformation:
+    def init_fn(params):
+        return {"count": jnp.array(0, dtype=jnp.int32)}
+
+    def update_fn(updates, state, params=None):
+        new_state = {"count": state["count"] + 1}
+        # simple transformation: negate gradients
+        transformed_updates = jax.tree_util.tree_map(lambda g: -g, updates)
+        return transformed_updates, new_state
+
+    return optax.GradientTransformation(init_fn, update_fn)
+
+
+def test_skip_step_config_wrap_basic_setup():
+    mock_optimizer = mock_optimizer_transform()
+    skip_config = SkipStepConfig()
+
+    wrapped_optimizer = skip_config.wrap(mock_optimizer)
+
+    assert isinstance(wrapped_optimizer, optax.GradientTransformation)
+    # Check if it has init and update attributes
+    assert hasattr(wrapped_optimizer, "init")
+    assert hasattr(wrapped_optimizer, "update")
+
+
+def test_skip_step_init_fn():
+    mock_optimizer = mock_optimizer_transform()
+    skip_config = SkipStepConfig(rolling_interval_length=10)  # Use a smaller interval for easier testing
+    wrapped_optimizer = skip_config.wrap(mock_optimizer)
+
+    dummy_params = {"w": jnp.array([1.0, 2.0])}
+    state: SkipStepState = wrapped_optimizer.init(dummy_params)
+
+    # Check inner_opt_state
+    expected_inner_state = mock_optimizer.init(dummy_params)
+    chex.assert_trees_all_close(state.inner_opt_state, expected_inner_state)
+
+    # Check losses and grad_norms arrays
+    assert state.losses.shape == (skip_config.rolling_interval_length,)
+    assert state.grad_norms.shape == (skip_config.rolling_interval_length,)
+    assert jnp.all(state.losses == 0)
+    assert jnp.all(state.grad_norms == 0)
+
+    # Check current_idx and count
+    chex.assert_trees_all_close(state.current_idx, jnp.array(0, dtype=jnp.int32))
+    chex.assert_trees_all_close(state.count, jnp.array(0, dtype=jnp.int32))
+
+
+def test_skip_step_update_fn_loss_kwarg_requirement():
+    mock_optimizer = mock_optimizer_transform()
+    skip_config = SkipStepConfig()
+    wrapped_optimizer = skip_config.wrap(mock_optimizer)
+
+    dummy_params = {"w": jnp.array([1.0, 2.0])}
+    dummy_grads = {"w": jnp.array([-0.1, 0.1])}
+    initial_state = wrapped_optimizer.init(dummy_params)
+
+    with pytest.raises(ValueError, match="Loss must be provided"):
+        wrapped_optimizer.update(dummy_grads, initial_state, dummy_params)
+
+    # Test that it works if loss is provided
+    try:
+        wrapped_optimizer.update(dummy_grads, initial_state, dummy_params, loss=jnp.array(1.0))
+    except ValueError:
+        pytest.fail("ValueError raised unexpectedly when loss was provided.")
+
+
+def test_update_fn_initial_phase_not_enough_data(initialized_wrapped_optimizer):
+    wrapped_optimizer, state, params, config = initialized_wrapped_optimizer
+
+    num_initial_steps = config.rolling_interval_length // 2 - 1
+    if num_initial_steps < 1:  # ensure at least one step for the test logic
+        num_initial_steps = 1
+
+    dummy_updates = {"w": jnp.array([0.1, 0.2, 0.3]), "b": jnp.array([0.05])}
+    loss_val = jnp.array(10.0)
+
+    current_state = state
+    for i in range(num_initial_steps):
+        updates, new_state = wrapped_optimizer.update(dummy_updates, current_state, params, loss=loss_val + i)
+
+        # Assert step_factor was 1.0 by checking if inner optimizer was applied
+        # Mock optimizer negates gradients
+        expected_inner_updates = jax.tree_util.tree_map(lambda g: -g, dummy_updates)
+        chex.assert_trees_all_close(updates, expected_inner_updates, atol=1e-5)
+
+        # Check state updates
+        assert new_state.count == i + 1
+        assert new_state.current_idx == (i + 1) % (config.rolling_interval_length)
+        assert np.isclose(new_state.losses[i], loss_val + i)
+        expected_gnorm = optax.global_norm(dummy_updates)
+        assert np.isclose(new_state.grad_norms[i], expected_gnorm)
+
+        current_state = new_state
+
+    # Check that after these initial steps, count is num_initial_steps
+    assert current_state.count == num_initial_steps
+    # And current_idx has advanced
+    assert current_state.current_idx == num_initial_steps % (config.rolling_interval_length)

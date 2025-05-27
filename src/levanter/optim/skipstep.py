@@ -1,17 +1,23 @@
 from dataclasses import dataclass
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Union
 
 import jax
 import optax
 from jax import numpy as jnp
 
+from haliax.jax_utils import is_jax_array_like
 
+import levanter.tracker
+
+
+# Define the state structure for the optimizer
 class SkipStepState(NamedTuple):
     inner_opt_state: optax.OptState
-    losses: jax.Array  # Shape: (rolling_interval_length + 1,), dtype: jnp.float32
-    grad_norms: jax.Array  # Shape: (rolling_interval_length + 1,), dtype: jnp.float32
-    current_idx: jax.Array  # Scalar int
-    count: jax.Array  # Scalar int
+    losses: jax.Array  # Stores last 'rolling_interval_length' losses
+    grad_norms: jax.Array  # Stores last 'rolling_interval_length' grad_norms
+    valid_mask: jax.Array  # Boolean mask for valid entries in losses/grad_norms
+    current_idx: jax.Array  # Current index in the rolling window (circular buffer)
+    count: jax.Array  # Number of valid entries currently in the buffer (up to buffer_size)
 
 
 @dataclass
@@ -26,24 +32,53 @@ class SkipStepConfig:
     `rolling_interval_length` steps.
 
     IF there are fewer than `rolling_interval_length // 2` steps in the history, the step is always taken.
+
+    See https://github.com/allenai/OLMo-core/blob/main/src/olmo_core/optim/skip_step_optimizer.py
     """
 
     rolling_interval_length: int = 128
     sigma_factor: float = 6.0
 
+    @staticmethod
+    def from_bool_int_or_config(config: Union[bool, int, "SkipStepConfig"]) -> Optional["SkipStepConfig"]:
+        """
+        Converts a boolean, integer, or SkipStepConfig to a SkipStepConfig.
+        If the input is True, it returns a default SkipStepConfig.
+        If the input is False, it returns None.
+        If the input is an integer, it sets rolling_interval_length to that value.
+        """
+        if isinstance(config, SkipStepConfig):
+            return config
+        elif config is True:
+            return SkipStepConfig()
+        elif config is False:
+            return None
+        elif isinstance(config, int):
+            return SkipStepConfig(rolling_interval_length=config)
+        else:
+            raise ValueError(f"Invalid type for SkipStepConfig: {type(config)}")
+
     def wrap(self, inner_optimizer: optax.GradientTransformation) -> optax.GradientTransformation:
         def init_fn(params):
             inner_opt_state = inner_optimizer.init(params)
-            losses = jnp.full((self.rolling_interval_length + 1,), jnp.nan, dtype=jnp.float32)
-            grad_norms = jnp.full((self.rolling_interval_length + 1,), jnp.nan, dtype=jnp.float32)
+            buffer_size = self.rolling_interval_length
+
+            # Initialize losses and grad_norms with zeros.
+            losses = jnp.zeros((buffer_size,), dtype=jnp.float32)
+            grad_norms = jnp.zeros((buffer_size,), dtype=jnp.float32)
+
+            # Initialize valid_mask to all False, as no data is valid yet.
+            valid_mask = jnp.full((buffer_size,), False, dtype=jnp.bool_)
             current_idx = jnp.zeros((), dtype=jnp.int32)
             count = jnp.zeros((), dtype=jnp.int32)
+
             return SkipStepState(
                 inner_opt_state=inner_opt_state,
                 losses=losses,
                 grad_norms=grad_norms,
                 current_idx=current_idx,
                 count=count,
+                valid_mask=valid_mask,
             )
 
         def update_fn(updates, state: SkipStepState, params, *, loss: Optional[jax.Array] = None, **extra_args):
@@ -59,28 +94,13 @@ class SkipStepConfig:
             # can_skip_based_on_history uses state.count (count before adding current data point)
             can_skip_based_on_history = state.count >= min_data_points
 
-            # Create a mask for valid (non-NaN) entries in the *current* state.losses/grad_norms
-            idx_range = jnp.arange(self.rolling_interval_length + 1)
-            # valid_mask_history uses state.count
-            valid_mask_history = idx_range < state.count
-
-            # Calculate stats for skipping from history, ensuring NaNs are handled and std is not zero
-            masked_losses_history = jnp.where(valid_mask_history, state.losses, jnp.nan)
-            loss_mean_history = jnp.nanmean(masked_losses_history)
-            loss_std_history = jnp.nanstd(masked_losses_history)
+            loss_mean_history = jnp.mean(state.losses, where=state.valid_mask)
+            loss_std_history = jnp.std(state.losses, where=state.valid_mask)
             loss_std_safe_history = jnp.maximum(loss_std_history, 1e-6)
 
-            masked_grad_norms_history = jnp.where(valid_mask_history, state.grad_norms, jnp.nan)
-            grad_norm_mean_history = jnp.nanmean(masked_grad_norms_history)
-            grad_norm_std_history = jnp.nanstd(masked_grad_norms_history)
+            grad_norm_mean_history = jnp.mean(state.grad_norms, where=state.valid_mask)
+            grad_norm_std_history = jnp.std(state.grad_norms, where=state.valid_mask)
             grad_norm_std_safe_history = jnp.maximum(grad_norm_std_history, 1e-6)
-
-            # if mean or std is nan (e.g. if state.count is 0 or 1), set to benign values.
-            # can_skip_based_on_history will likely be false anyway in these early stages.
-            loss_mean_history = jnp.nan_to_num(loss_mean_history, nan=0.0)
-            loss_std_safe_history = jnp.nan_to_num(loss_std_safe_history, nan=1e-6, posinf=1e-6, neginf=1e-6)
-            grad_norm_mean_history = jnp.nan_to_num(grad_norm_mean_history, nan=0.0)
-            grad_norm_std_safe_history = jnp.nan_to_num(grad_norm_std_safe_history, nan=1e-6, posinf=1e-6, neginf=1e-6)
 
             loss_threshold = loss_mean_history + self.sigma_factor * loss_std_safe_history
             grad_norm_threshold = grad_norm_mean_history + self.sigma_factor * grad_norm_std_safe_history
@@ -96,49 +116,45 @@ class SkipStepConfig:
 
             step_factor = jnp.where(jnp.logical_and(can_skip_based_on_history, should_skip), 0.0, 1.0)
 
-            # Update rolling statistics with CURRENT data point (AFTER decision is made)
+            buffer_size = state.losses.shape[0]
+
             new_losses = state.losses.at[state.current_idx].set(loss)
             new_grad_norms = state.grad_norms.at[state.current_idx].set(global_norm)
-            new_current_idx = (state.current_idx + 1) % (self.rolling_interval_length + 1)
-            new_count = jnp.minimum(state.count + 1, self.rolling_interval_length + 1)
+            new_valid_mask = state.valid_mask.at[state.current_idx].set(True)
+            new_current_idx = (state.current_idx + 1) % buffer_size
+            new_count = jnp.minimum(state.count + 1, buffer_size)
 
-            # Apply Update based on step_factor
-            # We need to define the two branches for jax.lax.cond
-            # Signature for cond branches: operand -> result
-            # Here, operand is (updates, state.inner_opt_state, params, extra_args)
-            # Result is (new_inner_updates, new_inner_opt_state)
-
-            def skip_step_branch(_):
-                # updates are zeroed out, inner state is preserved
-                zeroed_updates = jax.tree_util.tree_map(jnp.zeros_like, updates)
-                return zeroed_updates, state.inner_opt_state
-
-            def proceed_step_branch(_):
-                # updates are applied as is, inner state is updated
-                return inner_optimizer.update(updates, state.inner_opt_state, params, **extra_args)
-
-            # Use jax.lax.cond to choose branch based on step_factor
-            # pred is true if step_factor == 0.0 (skip)
-            new_inner_updates, new_inner_opt_state = jax.lax.cond(
-                step_factor == 0.0,
-                skip_step_branch,
-                proceed_step_branch,
-                operand=None,  # operand not strictly needed as branches capture necessary values
+            levanter.tracker.jit_log(
+                {
+                    "optim/skipped_step": (step_factor == 0.0).astype(jnp.float32),
+                    "optim/skip_step/loss_threshold": loss_threshold,
+                    "optim/skip_step/loss": loss,
+                    "optim/skip_step/loss_std": loss_std_safe_history,
+                    "optim/skip_step/grad_norm_threshold": grad_norm_threshold,
+                    "optim/skip_step/grad_norm": global_norm,
+                    "optim/skip_step/grad_norm_std": grad_norm_std_safe_history,
+                }
             )
 
-            # Log whether a step was skipped
-            # TODO: make this a proper metric when levanter.tracker.log_metrics is a thing
-            # For now, we can log it as a hyperparameter, though it's not ideal.
-            # Alternatively, print it, but that's noisy.
-            # For now, let's skip explicit logging here as it's not requested and might be noisy.
-            # A more advanced solution would involve passing a logging callback or similar.
+            inner_opt_state = state.inner_opt_state
 
-            return new_inner_updates, SkipStepState(
+            inner_updates, new_inner_opt_state = inner_optimizer.update(updates, inner_opt_state, params, **extra_args)
+            actual_updates = jax.tree.map(
+                lambda x: step_factor * x if is_jax_array_like(x) else x,
+                inner_updates,  # type: ignore
+            )
+
+            new_inner_opt_state = jax.tree_map(
+                lambda x, y: jnp.where(step_factor == 0.0, x, y), inner_opt_state, new_inner_opt_state  # type: ignore
+            )
+
+            return actual_updates, SkipStepState(
                 inner_opt_state=new_inner_opt_state,
                 losses=new_losses,
                 grad_norms=new_grad_norms,
                 current_idx=new_current_idx,
                 count=new_count,
+                valid_mask=new_valid_mask,
             )
 
-        return optax.GradientTransformation(init_fn, update_fn)
+        return optax.GradientTransformationExtraArgs(init_fn, update_fn)

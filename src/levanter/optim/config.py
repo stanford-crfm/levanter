@@ -304,8 +304,17 @@ class AdamConfig(OptimizerConfig):
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
-    skip_step: Optional[SkipStepConfig] = None
-    """If set, defines the configuration for skipping steps when gradients are too large."""
+    skip_bad_steps: SkipStepConfig | int | bool = False
+    """
+    If set, defines the configuration for skipping steps when gradients are too large.
+
+    int means history length, bool means True for default config, False for no skipping.
+
+    "Bad" here means either the loss or grad norm is much much larger than the average of the last
+    `rolling_interval_length` steps. (Default is 128 steps, with a sigma factor of 6.0)
+
+    See https://github.com/allenai/OLMo-core/blob/main/src/olmo_core/optim/skip_step_optimizer.py
+    """
 
     def build(self, num_train_steps):
         """Creates the optimizer"""
@@ -326,11 +335,11 @@ class AdamConfig(OptimizerConfig):
 
             optimizer = optax.chain(*components)
 
+            if self.skip_bad_steps:
+                optimizer = SkipStepConfig.from_bool_int_or_config(self.skip_bad_steps).wrap(optimizer)
+
             return optimizer
 
         optimizer_instance = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
-
-        if self.skip_step is not None:
-            optimizer_instance = self.skip_step.wrap(optimizer_instance)
 
         return optimizer_instance
