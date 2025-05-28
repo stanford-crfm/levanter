@@ -654,6 +654,7 @@ class SupervisedHfSourceConfig(SupervisedSourceConfigBase):
     cache_dir: str
     id: str
     name: str | None = None
+    # add plaintext option 
 
     streaming: bool = True
 
