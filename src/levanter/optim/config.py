@@ -15,6 +15,7 @@ from jax import numpy as jnp
 import haliax
 
 import levanter.tracker
+from levanter.optim.skipstep import SkipStepConfig
 from levanter.utils.jax_utils import leaf_key_paths
 
 
@@ -399,6 +400,18 @@ class AdamConfig(OptimizerConfig):
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
 
+    skip_bad_steps: SkipStepConfig | int | bool = False
+    """
+    If set, defines the configuration for skipping steps when gradients are too large.
+
+    int means history length, bool means True for default config, False for no skipping.
+
+    "Bad" here means either the loss or grad norm is much much larger than the average of the last
+    `rolling_interval_length` steps. (Default is 128 steps, with a sigma factor of 6.0)
+
+    See https://github.com/allenai/OLMo-core/blob/main/src/olmo_core/optim/skip_step_optimizer.py
+    """
+
     def build(self, num_train_steps):
         """Creates the optimizer"""
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
@@ -418,6 +431,11 @@ class AdamConfig(OptimizerConfig):
 
             optimizer = optax.chain(*components)
 
+            if self.skip_bad_steps:
+                optimizer = SkipStepConfig.from_bool_int_or_config(self.skip_bad_steps).wrap(optimizer)
+
             return optimizer
 
-        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+        optimizer_instance = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+
+        return optimizer_instance

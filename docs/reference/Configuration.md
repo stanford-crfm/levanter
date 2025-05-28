@@ -445,6 +445,8 @@ trainer:
 
 ::: levanter.optim.AdamConfig
 
+::: levanter.optim.SkipStepConfig
+
 
 ### LM Model
 
