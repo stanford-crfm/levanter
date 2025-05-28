@@ -137,3 +137,30 @@ class NoopTracker(Tracker):
 class NoopConfig(TrackerConfig):
     def init(self, run_id: Optional[str]) -> Tracker:
         return NoopTracker()
+
+
+class DictTracker(Tracker):
+    """
+    A tracker that logs to a dictionary. We mostly use this to smuggle things outside of jit
+    """
+
+    def __init__(self):
+        self.metrics: dict[str, Any] = {}
+
+    def log_hyperparameters(self, hparams: dict[str, Any]):
+        self.metrics["hparams"] = hparams
+
+    def log(self, metrics: typing.Mapping[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
+        if step is not None:
+            self.metrics[f"step_{step}"] = metrics
+        else:
+            self.metrics.update(metrics)
+
+    def log_summary(self, metrics: dict[str, Any]):
+        self.metrics["summary"] = metrics
+
+    def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
+        self.metrics["artifact"] = {"path": artifact_path, "name": name, "type": type}
+
+    def finish(self):
+        pass
