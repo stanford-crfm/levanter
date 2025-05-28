@@ -112,12 +112,14 @@ class MixtralConfig(MistralConfig):
             self.num_experts_per_tok <= self.n_routed_experts
         ), f"num_experts_per_tok={self.num_experts_per_tok} greater than by n_routed_experts={self.n_routed_experts}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MixtralConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["MixtralConfig"]:  # type: ignore
         return HFCheckpointConverter(
             self.__class__,
-            reference_checkpoint=self.reference_checkpoint,
+            reference_checkpoint=self.reference_checkpoint if ref_checkpoint is None else ref_checkpoint,
             trust_remote_code=True,
-            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
+            tokenizer=ref_checkpoint if self.tokenizer is None else self.tokenizer,
             HfConfigClass=HfMixtralConfig,
         )
 
@@ -265,7 +267,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
         num_experts = self.w1.Experts.size
         for i in range(num_experts):
             for j in range(3):
-                key = f"{prefix}.{i}.w{j+1}.weight"
+                key = f"{prefix}.{i}.w{j + 1}.weight"
                 val = w[j]["experts", i].array
                 # out[key] = val
                 out[key] = jnp.swapaxes(val, -1, -2)
@@ -277,7 +279,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
         num_experts = self.w1.Experts.size
         for i in range(num_experts):
             for j in range(3):
-                key = f"{prefix}.{i}.w{j+1}.weight"
+                key = f"{prefix}.{i}.w{j + 1}.weight"
                 val = jnp.swapaxes(state_dict[key], -1, -2)[..., None, :, :]
                 # val = state_dict[key][..., None, :, :]
                 w[j].append(val)
