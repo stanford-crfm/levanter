@@ -1,0 +1,41 @@
+data:
+  train_urls:
+      - "/user/s/siqichen/projects/anticipation/data/train.txt"
+  validation_urls:
+      - "/user/s/siqichen/projects/anticipation/data/valid.txt"
+  # cache_dir: "/user/s/siqichen/projects/anticipation/data/cache/"
+
+  tokenizer: "passthrough"
+  plaintext: True 
+  vocab_size: 55028  # This is required for passthrough tokenizer
+  enforce_eos: False
+
+model:
+  type: gpt2
+  hidden_dim: 768
+  num_heads: 12
+  num_layers: 12
+  seq_len: 1024
+  scale_attn_by_inverse_layer_idx: true
+
+trainer:
+  mp: p=f32,c=bfloat16
+  model_axis_size: 1
+  per_device_parallelism: 4
+  train_batch_size: 512
+
+  checkpointer:
+    base_path: "/user/s/siqichen/projects/anticipation/checkpoints/"
+    save_interval: 30m
+
+  axis_resources:
+    batch: "data"
+    vocab: "model"
+    mlp: "model"
+    heads: "model"
+  parameter_axis_resources:
+    embed: "data"
+
+optimizer:
+  learning_rate: 6E-4
+  weight_decay: 0.1
