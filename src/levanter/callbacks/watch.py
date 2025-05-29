@@ -1,3 +1,4 @@
+import dataclasses
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence, Union
 
@@ -16,7 +17,11 @@ Target = Literal["grads", "params", "opt_state", "updates"]
 
 @dataclass(frozen=True)
 class WatchConfig:
-    watch_targets: Union[Sequence[Target], Target] = ("grads", "params")
+    watch_targets: Union[list[Target], Target] = dataclasses.field(default_factory=lambda: ["grads", "params"])
+    """
+    What to watch during training. Can be a single target or a list of targets.
+    Valid targets are: 'grads', 'params', 'opt_state', 'updates'.
+    """
     include_norms: bool = True
     include_per_parameter_norms: bool = True
     include_histograms: bool = False
