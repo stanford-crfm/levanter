@@ -1,7 +1,7 @@
 from typing import Any
 
 import jax
-from jax import numpy as jnp
+import optax
 
 import haliax.nn
 from haliax import NamedArray, is_named_array
@@ -64,15 +64,14 @@ def summary_statistics_for_tree(
                         hists[f"{key_path}.{i}.{k}"] = jax.tree.map(lambda x: x[i] if is_jax_array_like(x) else x, v)
 
             elif isinstance(g, NamedArray):
-                # TODO: add linalg.norm to Haliax
                 if include_norms:
-                    norms[key_path] = jnp.linalg.norm(g.array)
+                    norms[key_path] = optax.global_norm(g)
                 if include_histogram:
                     hist = Histogram.from_named_array(g)
                     hists[key_path] = hist
             elif is_jax_array_like(g):
                 if include_norms:
-                    norms[key_path] = jnp.linalg.norm(g)
+                    norms[key_path] = optax.global_norm(g)
 
                 if include_histogram:
                     with jax.named_scope(f"histogram({prefix}/{key_path})"):
@@ -88,13 +87,11 @@ def summary_statistics_for_tree(
 
     to_log: dict[str, jax.Array | Histogram] = {}
 
-    total_norm = jnp.zeros((), jnp.float32)
     for key, value in norms_to_log.items():
         if include_per_parameter_norms:
             to_log[f"{prefix}/norm/{key}"] = value
-        total_norm += value
 
-    to_log[f"{prefix}/norm/total"] = total_norm
+    to_log[f"{prefix}/norm/total"] = optax.global_norm(tree)
 
     for key, hist in hists_to_log.items():
         to_log[f"{prefix}/hist/{key}"] = hist
