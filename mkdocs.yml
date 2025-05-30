@@ -41,7 +41,7 @@ plugins:
 #              - import pytkdocs_tweaks
 #              - pytkdocs_tweaks.main()
           paths: [src]
-          import:
+          inventories:
             - https://docs.python.org/3/objects.inv
             - https://jax.readthedocs.io/en/latest/objects.inv
             - https://haliax.readthedocs.io/en/latest/objects.inv

@@ -1222,7 +1222,7 @@ def _copy_cache_data(dest_path, source_path, processor, data_offset_tree, rows_s
 
 
 @ray.remote(
-    num_cpus=1,
+    num_cpus=0.5,
     memory=1 * 1024 * 1024 * 1024,
     runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORMS": "cpu"}),
 )

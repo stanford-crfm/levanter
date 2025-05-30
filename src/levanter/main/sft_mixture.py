@@ -354,7 +354,7 @@ def reinitialize_some_tokens(
     So we (Will, specifically) realized that we were in this situation where we never saw SFT tokens during pretraining,
     which meant they had much lower norm than tokens that had been seen.
 
-    https://github.com/stanford-crfm/marin/issues/954
+    https://github.com/marin-community/marin/issues/954
     """
     ids_to_reinit = [tokenizer.convert_tokens_to_ids(token) for token in tokens_to_reinit]
     if len(ids_to_reinit) == 0:
