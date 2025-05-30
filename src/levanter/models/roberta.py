@@ -443,7 +443,7 @@ class RobertaOutput(eqx.Module, StateDictSerializationMixin):
     dropout: hnn.Dropout
 
     @staticmethod
-    def init(config: RobertaConfig, *, key) -> "RobertaSelfOutput":
+    def init(config: RobertaConfig, *, key) -> "RobertaOutput":
         Embed = config.Embed
         dense = hnn.Linear.init(In=config.Mlp, Out=Embed, key=key, out_first=True)
         LayerNorm = hnn.LayerNorm.init(axis=Embed, eps=config.layer_norm_eps)
