@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax as hax
@@ -51,6 +52,7 @@ class TrainLmConfig:
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
+    hf_save_dtype: Optional[str] = None
 
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
@@ -203,8 +205,17 @@ def main(config: TrainLmConfig):
             else:
                 full_save_path = config.hf_save_path
 
+            save_dtype: Optional[jnp.dtype] = None
+            if config.hf_save_dtype is not None:
+                try:
+                    save_dtype = jnp.dtype(config.hf_save_dtype)
+                except TypeError:
+                    logger.warning(f"Invalid hf_save_dtype: {config.hf_save_dtype}. Defaulting to None.")
+
             trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
+                save_hf_checkpoint_callback(
+                    full_save_path, converter, upload_to_hf=config.hf_upload or False, save_dtype=save_dtype
+                ),
                 every=config.hf_save_steps,
             )
 

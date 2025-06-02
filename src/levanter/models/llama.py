@@ -93,12 +93,14 @@ class LlamaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
         return HFCheckpointConverter(
             self.__class__,
-            reference_checkpoint=self.reference_checkpoint,
+            reference_checkpoint=self.reference_checkpoint if ref_checkpoint is None else ref_checkpoint,
             trust_remote_code=True,
-            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
+            tokenizer=ref_checkpoint if self.tokenizer is None else self.tokenizer,
             HfConfigClass=HfLlamaConfig,
         )
 
@@ -184,6 +186,27 @@ class LlamaConfig(HFCompatConfig):
             vocab_size=vocab_size,
             glu=True,
         )
+
+    def total_trainable_params(self, vocab_size):
+        token_embedding = vocab_size * self.hidden_dim
+
+        head_size = self.hidden_dim // self.num_heads
+        q_proj = self.hidden_dim * head_size * self.num_heads
+        kv_proj = 2 * self.hidden_dim * head_size * self.num_kv_heads
+        o_proj = head_size * self.num_heads * self.hidden_dim
+        attn = q_proj + kv_proj + o_proj
+
+        mlp = 3 * self.hidden_dim * self.intermediate_dim
+
+        transformer_layer = attn + mlp + 2 * self.hidden_dim  # plus 2 rmsnorm
+        if self.hybrid_norm:
+            transformer_layer += 2 * self.hidden_dim
+
+        transformer = self.num_layers * transformer_layer + self.hidden_dim  # plus final rmsnorm
+        if self.input_embedding_norm:
+            transformer += self.hidden_dim
+
+        return transformer + token_embedding * 2  # plus embedding and lm head
 
 
 class LlamaMlp(eqx.Module):
@@ -421,7 +444,7 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
 
     def resize_embeddings(self, new_size: int, key: Optional[PRNGKeyArray] = None):
         new_weights = self.token_embeddings.resize_embeddings(new_size, key=key)
-        return dataclasses.replace(self, Vocab=self.Vocab.resize(new_size), token_embeddings=new_weights)
+        return dataclasses.replace(self, token_embeddings=new_weights)
 
 
 class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig]):
@@ -467,6 +490,9 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
             attn_mask (Union[NamedArray, AttentionMask], optional): [batch, position]
                 Mask to avoid performing attention on the padding token indices of the encoder input.
                 The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
+
+        Returns:
+            NamedArray: logits with shape {Batch, Pos, Vocab}
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)

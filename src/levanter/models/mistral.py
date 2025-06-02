@@ -74,12 +74,16 @@ class MistralConfig(LlamaConfig):
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
+        hf_model_path = "mistralai/Mistral-7B-v0.1" if ref_checkpoint is None else ref_checkpoint
+
         return HFCheckpointConverter(
             self,
-            "mistralai/Mistral-7B-v0.1",
+            reference_checkpoint=hf_model_path,
             trust_remote_code=True,
-            tokenizer="mistralai/Mistral-7B-v0.1",
+            tokenizer=hf_model_path,
             HfConfigClass=HfMistralConfig,
         )
 

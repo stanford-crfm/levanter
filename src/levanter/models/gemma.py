@@ -1,12 +1,12 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import Dict, Optional, Type, Union
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax as hax
+import haliax.nn as hnn
 from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.normalization import LayerNormBase
@@ -64,6 +64,7 @@ class GemmaConfig(HFCompatConfig):
     activation_function: ActivationFunctionEnum = ActivationFunctionEnum.gelu_new
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
+    tie_word_embeddings: bool = False
 
     seq_len: int = 8192
     hidden_dim: int = 2048
@@ -80,9 +81,9 @@ class GemmaConfig(HFCompatConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: Optional[bool] = None
-    attn_backend: Optional[AttentionBackend] = None
-    flash_attention_block_size: Optional[int] = None
+    use_flash_attention: bool | None = None
+    attn_backend: AttentionBackend | None = None
+    flash_attention_block_size: int | None = None
 
     gradient_checkpointing: bool = True
     scan_layers: bool = True
@@ -109,10 +110,12 @@ class GemmaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: str = "google/gemma-2b"
+    ) -> HFCheckpointConverter["GemmaConfig"]:  # type: ignore
         return HFCheckpointConverter(
             self,
-            reference_checkpoint="google/gemma-2b",
+            reference_checkpoint=ref_checkpoint,
             trust_remote_code=True,
             HfConfigClass=HfGemmaConfig,
         )
@@ -145,10 +148,11 @@ class GemmaConfig(HFCompatConfig):
             num_kv_heads=hf_config.num_key_value_heads,
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
+            tie_word_embeddings=hf_config.tie_word_embeddings,
             rope_theta=hf_config.rope_theta,
         )
 
-    def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfGemmaConfig:
+    def to_hf_config(self, vocab_size: int, config_overrides: dict | None = None) -> HfGemmaConfig:
         """Convert to HuggingFace's GemmaConfig
 
         Args:
@@ -174,16 +178,17 @@ class GemmaConfig(HFCompatConfig):
             ),
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
+            tie_word_embeddings=self.tie_word_embeddings,
             vocab_size=vocab_size,
             **config_overrides,
         )
         return config
 
     @property
-    def model_type(cls) -> Type["GemmaLMHeadModel"]:
+    def model_type(cls) -> type["GemmaLMHeadModel"]:
         return GemmaLMHeadModel
 
-    def flops_per_token(self, vocab_size: int) -> Optional[float]:
+    def flops_per_token(self, vocab_size: int) -> float | None:
         return lm_flops_per_token(
             hidden_dim=self.hidden_dim,
             intermediate_dim=self.intermediate_dim,
@@ -252,7 +257,7 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
         return GemmaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+    def __call__(self, x: NamedArray, mask: NamedArray | AttentionMask | None, *, key=None) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
         # self attention and skip connection
         residual = x
@@ -290,7 +295,7 @@ class GemmaTransformer(ModuleWithStateDictSerialization):
         return GemmaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
+    def __call__(self, x: NamedArray, attn_mask: NamedArray | AttentionMask | None, *, key) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x = self.layers.fold(x, mask=attn_mask, key=keys)
         x = self.norm(x)
@@ -305,6 +310,7 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
     # use eqx.Shared which is a bit cumbersome, we juse re-use the embedding matrix
     # as we do in GPT-2.
     embeddings: LlamaEmbedding
+    lm_head: hnn.Linear | None
 
     @property
     def config(self):
@@ -319,19 +325,26 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
         return self.embeddings.Vocab
 
     def get_lm_head(self) -> hax.NamedArray:
-        return self.embeddings.token_embeddings.weight
+        if self.lm_head is None:
+            return self.embeddings.token_embeddings.weight
+        else:
+            return self.lm_head.weight
 
     @classmethod
     def init(cls, Vocab: Axis, config: GemmaConfig, *, key) -> "GemmaLMHeadModel":
         k_t, k_emb = jrandom.split(key, 2)
         transformer = GemmaTransformer.init(config, key=k_t)
         embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
-        return GemmaLMHeadModel(transformer, embeddings)
+        if config.tie_word_embeddings:
+            lm_head = None
+        else:
+            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+        return GemmaLMHeadModel(transformer, embeddings, lm_head)
 
     def activations(
         self,
         input_ids: NamedArray,
-        attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
+        attn_mask: NamedArray | AttentionMask | None = None,
         *,
         key=None,
     ) -> NamedArray:
@@ -344,14 +357,22 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
                 The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
         """
         x = self.embeddings.embed(input_ids)
+        normalizer = jnp.sqrt(self.config.hidden_dim).astype(x.dtype)
+        x = x * normalizer
         x = self.transformer(x, attn_mask=attn_mask, key=key)
         return x
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[GemmaConfig]":
-        new_embeddings = self.embeddings.resize_embeddings(new_size, key=key)
+        new_Vocab = self.Vocab.resize(new_size)
+        k1, k2 = maybe_rng_split(key, 2)
+        new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
+        if self.lm_head is not None:
+            new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
+            new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
+            return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
+        else:
+            return dataclasses.replace(self, embeddings=new_embeddings)
 
-        return dataclasses.replace(self, embeddings=new_embeddings)
-
-    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+    def _state_dict_key_map(self) -> dict[str, str | None]:
         """Map from Levanter model names to HF."""
         return {"transformer": "model", "embeddings": None}
