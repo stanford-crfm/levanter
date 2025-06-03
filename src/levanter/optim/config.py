@@ -437,10 +437,18 @@ class AdamConfig(OptimizerConfig):
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
 
+            if self.update_rms_clipping is not None:
+                components.append(log_norm_passthrough("optim/pre_clip_update_norm"))
+                components.append(scan_aware_clip_by_block_rms(self.update_rms_clipping))
+                components.append(log_norm_passthrough("optim/post_clip_update_norm"))
+
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))
 
             optimizer = optax.chain(*components)
+
+            if self.skip_bad_steps:
+                optimizer = SkipStepConfig.from_bool_int_or_config(self.skip_bad_steps).wrap(optimizer)
 
             return optimizer
 
@@ -476,18 +484,10 @@ class LionConfig(OptimizerConfig):
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
 
-            if self.update_rms_clipping is not None:
-                components.append(log_norm_passthrough("optim/pre_clip_update_norm"))
-                components.append(scan_aware_clip_by_block_rms(self.update_rms_clipping))
-                components.append(log_norm_passthrough("optim/post_clip_update_norm"))
-
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))
 
             optimizer = optax.chain(*components)
-
-            if self.skip_bad_steps:
-                optimizer = SkipStepConfig.from_bool_int_or_config(self.skip_bad_steps).wrap(optimizer)
 
             return optimizer
 
