@@ -157,3 +157,4 @@ local_*.sh
 .aider*
 
 .benchmarks
+uv.lock
