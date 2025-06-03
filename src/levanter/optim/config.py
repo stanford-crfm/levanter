@@ -400,9 +400,12 @@ class AdamConfig(OptimizerConfig):
     beta2: float = 0.95
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
+    nesterov: bool = False
     update_rms_clipping: Optional[float] = None
     """
     If set, this will use RMS clipping on the update, a la Adafactor or StableAdamW (https://arxiv.org/pdf/2304.13013)
+
+    (Note that this is distinct from StableAdamW b/c we clip on RMS(m/sqrt(v)) rather than RMS(g/sqrt(v)).)
 
     A value of 1.0 is recommended for most models, but you can set it to None to disable RMS clipping.
     """
@@ -421,6 +424,7 @@ class AdamConfig(OptimizerConfig):
 
     def build(self, num_train_steps):
         """Creates the optimizer"""
+
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
             components = []
@@ -428,7 +432,46 @@ class AdamConfig(OptimizerConfig):
             if self.max_grad_norm:
                 components.append(optax.clip_by_global_norm(self.max_grad_norm))
 
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
+            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon, nesterov=self.nesterov))
+
+            if self.weight_decay > 0:
+                components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
+
+            # - learning rate for descent
+            components.append(optax.scale(-learning_rate))
+
+            optimizer = optax.chain(*components)
+
+            return optimizer
+
+        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+
+
+@OptimizerConfig.register_subclass("lion")
+@dataclass
+class LionConfig(OptimizerConfig):
+    """
+    Lion optimizer configuration
+    cf:
+    Original Paper: https://arxiv.org/abs/2302.06675
+    """
+
+    beta1: float = 0.9
+    beta2: float = 0.95
+    epsilon: float = 1e-8
+    max_grad_norm: Optional[float] = 1.0
+
+    def build(self, num_train_steps):
+        """Creates the optimizer"""
+
+        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
+        def _optimizer(learning_rate):
+            components = []
+
+            if self.max_grad_norm:
+                components.append(optax.clip_by_global_norm(self.max_grad_norm))
+
+            components.append(optax.scale_by_lion(self.beta1, self.beta2))
 
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
