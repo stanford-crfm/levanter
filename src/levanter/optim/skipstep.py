@@ -1,23 +1,62 @@
 from dataclasses import dataclass
-from typing import NamedTuple, Optional, Union
+from typing import Optional, Union
 
 import jax
 import optax
 from jax import numpy as jnp
+from jax.tree_util import register_pytree_with_keys_class
+from jaxlib.xla_extension.pytree import GetAttrKey
 
 from haliax.jax_utils import is_jax_array_like
 
 import levanter.tracker
+from levanter.utils.tree_utils import tree_flatten_one_level_with_keys
 
 
 # Define the state structure for the optimizer
-class SkipStepState(NamedTuple):
+# We use a custom pytree so that we can load a skipstep state from a non-skipstep state.
+@register_pytree_with_keys_class
+@dataclass
+class SkipStepState:
     inner_opt_state: optax.OptState
     losses: jax.Array  # Stores last 'rolling_interval_length' losses
     grad_norms: jax.Array  # Stores last 'rolling_interval_length' grad_norms
     valid_mask: jax.Array  # Boolean mask for valid entries in losses/grad_norms
     current_idx: jax.Array  # Current index in the rolling window (circular buffer)
     count: jax.Array  # Number of valid entries currently in the buffer (up to buffer_size)
+
+    def tree_flatten_with_keys(self):
+        inner_pairs, inner_def = tree_flatten_one_level_with_keys(self.inner_opt_state)
+        pairs = None
+        if len(inner_pairs) == 1:
+            # make sure it's not a singleton
+            if inner_pairs[0][0] is None:
+                pairs = [GetAttrKey("inner_opt_state"), self.inner_opt_state]
+
+        if pairs is None:
+            pairs = [
+                *inner_pairs,
+                (GetAttrKey("_skipstep_losses"), self.losses),
+                (GetAttrKey("_skipstep_grad_norms"), self.grad_norms),
+                (GetAttrKey("_skipstep_valid_mask"), self.valid_mask),
+                (GetAttrKey("_skipstep_current_idx"), self.current_idx),
+                (GetAttrKey("_skipstep_count"), self.count),
+            ]
+
+        return pairs, inner_def
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        inner_state = jax.tree.unflatten(aux_data, children[:-5])
+
+        return cls(
+            inner_opt_state=inner_state,
+            losses=children[-5],
+            grad_norms=children[-4],
+            valid_mask=children[-3],
+            current_idx=children[-2],
+            count=children[-1],
+        )
 
 
 @dataclass
