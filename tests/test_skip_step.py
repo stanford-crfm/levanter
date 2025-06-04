@@ -1,3 +1,5 @@
+import tempfile
+
 import chex
 import jax
 import numpy as np
@@ -5,8 +7,11 @@ import optax
 import pytest
 from jax import numpy as jnp
 
+import haliax
+
 from levanter.optim import AdamConfig
 from levanter.optim.skipstep import SkipStepConfig, SkipStepState
+from levanter.tensorstore_serialization import tree_deserialize_leaves_tensorstore, tree_serialize_leaves_tensorstore
 
 
 @pytest.fixture
@@ -346,3 +351,41 @@ def test_update_fn_initial_phase_not_enough_data(initialized_wrapped_optimizer):
     assert current_state.count == num_initial_steps
     # And current_idx has advanced
     assert current_state.current_idx == num_initial_steps % (config.rolling_interval_length)
+
+
+def test_flatten_unflatten_skip_step_state():
+    # Create a SkipStepState instance
+    mock_opt = mock_optimizer_transform()
+    skip_conf = SkipStepConfig(rolling_interval_length=5)
+    wrapped_opt = skip_conf.wrap(mock_opt)
+    dummy_params = {"w": jnp.array([1.0, 2.0]), "b": jnp.array([0.5])}
+    initial_state = wrapped_opt.init(dummy_params)
+
+    # Flatten the state
+    flat_state, tree_def = jax.tree.flatten(initial_state)
+
+    # Unflatten the state
+    unflattened_state = jax.tree.unflatten(tree_def, flat_state)
+
+    # Check if the unflattened state matches the original
+    chex.assert_trees_all_equal(unflattened_state, initial_state)
+
+
+def test_skip_step_state_serialization_can_load_non_skip():
+    A, B = haliax.make_axes(A=2, B=3)
+    model = {"w": jnp.array([1.0, 2.0]), "b": jnp.array([0.5]), "n": haliax.zeros((A, B))}
+    skip_conf = SkipStepConfig(rolling_interval_length=5)
+    optimizer = optax.adam(1e-3)
+    initial_state = optimizer.init(model)
+    wrapped_optimizer = skip_conf.wrap(optimizer)
+    wrapped_state = wrapped_optimizer.init(model)
+
+    with tempfile.TemporaryDirectory() as tmpdir, jax.sharding.Mesh(jax.devices(), ("device",)):
+        tree_serialize_leaves_tensorstore(tmpdir, initial_state)
+
+        restored_state = tree_deserialize_leaves_tensorstore(tmpdir, initial_state)
+
+        # now load the wrapped state
+        wrapped_state_restored = tree_deserialize_leaves_tensorstore(tmpdir, wrapped_state, allow_missing=True)
+
+        chex.assert_trees_all_equal(wrapped_state_restored.inner_opt_state, restored_state)
