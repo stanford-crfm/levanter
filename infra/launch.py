@@ -115,6 +115,8 @@ def main():
         )
 
     print(f"Built docker image {local_id} with tag {tag}")
+    print(f"Docker repository: {docker_repository}")
+    print(f"Docker registry: {registry}")
 
     if registry == "ghcr":
         full_image_id = docker.push_to_github(
