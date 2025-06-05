@@ -213,13 +213,30 @@ class Checkpointer:
             destination = f"step-{step}"
 
             if not save_permanent_ckpt:
-                self._last_temporary_checkpoint = destination
+                self._last_temporary_checkpoint = os.path.join(self.base_path, destination)
             else:
                 self._last_temporary_checkpoint = None
 
             def callback():
                 if last_checkpoint is not None:
-                    self._rm_checkpoint(last_checkpoint)
+                    # check if we still want to delete it. Sometimes we like to replace the metadata of the last
+                    # checkpoint. It'd be nice if the process weren't manual, but this is a good compromise
+                    try:
+                        last_metadata = _load_metadata(last_checkpoint)
+                        if last_metadata.get("is_temporary", False):
+                            logger.info(
+                                f"Deleting old temporary checkpoint {last_checkpoint} after saving new checkpoint."
+                            )
+                            # we can delete the last temporary checkpoint now
+                            self._rm_checkpoint(last_checkpoint)
+                        else:
+                            logger.info(
+                                f"Not deleting old temporary checkpoint {last_checkpoint} because it is no longer"
+                                " temporary."
+                            )
+                    except FileNotFoundError:
+                        logger.warning(f"Could not load metadata for last temporary checkpoint {last_checkpoint}.")
+                        # if we can't load the metadata, we can't delete it, so just log a warning
 
             self.save_checkpoint(info, destination, commit_callback=callback, is_temporary=not save_permanent_ckpt)
 
