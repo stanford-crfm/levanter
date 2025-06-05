@@ -16,6 +16,7 @@ import haliax
 
 import levanter.tracker
 from levanter.optim.skipstep import SkipStepConfig
+from levanter.optim.util import log_norm_passthrough, scan_aware_clip_by_block_rms
 from levanter.utils.jax_utils import leaf_key_paths
 
 
@@ -400,6 +401,14 @@ class AdamConfig(OptimizerConfig):
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
     nesterov: bool = False
+    update_rms_clipping: Optional[float] = None
+    """
+    If set, this will use RMS clipping on the update, a la Adafactor or StableAdamW (https://arxiv.org/pdf/2304.13013)
+
+    (Note that this is distinct from StableAdamW b/c we clip on RMS(m/sqrt(v)) rather than RMS(g/sqrt(v)).)
+
+    A value of 1.0 is recommended for most models, but you can set it to None to disable RMS clipping.
+    """
 
     skip_bad_steps: SkipStepConfig | int | bool = False
     """
@@ -427,6 +436,11 @@ class AdamConfig(OptimizerConfig):
 
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
+
+            if self.update_rms_clipping is not None:
+                components.append(log_norm_passthrough("optim/pre_clip_update_norm"))
+                components.append(scan_aware_clip_by_block_rms(self.update_rms_clipping))
+                components.append(log_norm_passthrough("optim/post_clip_update_norm"))
 
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))
