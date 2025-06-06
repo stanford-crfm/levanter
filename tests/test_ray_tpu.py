@@ -1,5 +1,6 @@
 import os
 
+import jax.distributed
 import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
@@ -344,6 +345,8 @@ def test_single_slice_handles_preemption():
 
 @ray.remote(max_calls=1)
 def fail_on_slice_0_fn():
+    # need to ensure JAX is initialized or else we get weird crashes
+    jax.distributed.initialize()
     slice_id_str = os.getenv("MEGASCALE_SLICE_ID")
     if slice_id_str == "0":
         raise DeliberatelyRaisedException("Slice 0 is failing.")
@@ -378,7 +381,7 @@ def test_multislice_one_slice_fails():
                 tpu_type,
                 num_slices=num_slices,
                 max_retries_failure=2,  # low retry
-                max_retries_preemption=0,
+                max_retries_preemption=1,
             )
         )
 
