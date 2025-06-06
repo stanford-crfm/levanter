@@ -288,8 +288,6 @@ class MixtureDataset(AsyncDataset[T]):
             if ds.is_finite():
                 max_elem = max(indices_into_ds)
                 length_of_dataset = await ds.wait_until_len_at_least(max_elem + 1)
-                assert isinstance(length_of_dataset, int)
-                length_of_dataset = int(length_of_dataset)
                 indices_into_ds = [idx % length_of_dataset for idx in indices_into_ds]
 
             return indices_into_ds
