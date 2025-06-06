@@ -3,9 +3,9 @@ data:
   configs:
     wikitext:
       id: dlwh/wikitext_103_detokenized
-#    w2:
-#      id: dlwh/wikitext_103_detokenized
-#      cache_dir: wikitext2_cache
+    w2:
+      id: dlwh/wikitext_103_detokenized
+      cache_dir: wikitext2_cache
   train_weights:
     - [0, {"wikitext": 0.8, "w2": 0.2}]
     - [100, {"w2": 0.5, "wikitext": 0.5}]
