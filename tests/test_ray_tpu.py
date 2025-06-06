@@ -1,0 +1,394 @@
+import os
+
+import jax.numpy as jnp
+import jax.random as jrandom
+import numpy as np
+import pytest
+import ray
+from jax.lax import with_sharding_constraint
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
+from ray.exceptions import RayTaskError
+
+from levanter.infra.ray_tpu import run_on_pod_new
+
+
+# Store whether TPUs are available and if multislice is possible
+_TPU_AVAILABLE = False
+_MULTISLICE_POSSIBLE = False
+
+
+@pytest.fixture(scope="module", autouse=True)
+def setup_ray_tpu_tests():
+    global _TPU_AVAILABLE, _MULTISLICE_POSSIBLE
+    if os.getenv("CI"):
+        pytest.skip("Skipping TPU tests in CI environment", allow_module_level=True)
+
+    try:
+        ray.init(ignore_reinit_error=True)
+    except Exception as e:
+        raise
+        pytest.skip(f"Ray initialization failed: {e}", allow_module_level=True)
+
+    available_resources = ray.cluster_resources()
+    tpu_v4_8_head_count = available_resources.get("TPU-v4-8-head", 0)
+
+    if tpu_v4_8_head_count < 1:
+        raise RuntimeError("No TPU-v4-8-head resources available for tests")
+        pytest.skip("No TPU-v4-8-head resources available", allow_module_level=True)
+
+    _TPU_AVAILABLE = True  # At least one TPU is available
+
+    if tpu_v4_8_head_count >= 2:
+        _MULTISLICE_POSSIBLE = True
+
+    yield
+
+    ray.shutdown()
+
+
+# Helper to skip multislice tests if not enough TPUs
+skip_if_no_multislice = pytest.mark.skipif(
+    not _MULTISLICE_POSSIBLE, reason="Less than 2 TPU-v4-8-head resources available for multislice tests"
+)
+
+
+# Base function for tests, similar to the one in ray_tpu.py
+@ray.remote(max_calls=1)
+def simple_jax_fn():
+    # Ensure jax is initialized on the remote worker
+    try:
+        jax.devices()
+    except Exception:
+        # if this happens, it's likely because the runtime_env for the worker wasn't set up correctly
+        # to include jax, or jax failed to initialize on the tpu.
+        import jax
+        import jax.numpy  # noqa
+
+    # Check if we are on a TPU
+    try:
+        if jax.default_backend() != "tpu":
+            # This can happen if the test is run on a CPU node by mistake or if JAX doesn't see the TPU
+            # We won't raise an error here, but the test will likely fail later if it expects TPU behavior.
+            # Or, more likely, jax.devices() will be empty or only show CPUs.
+            print(f"Warning: JAX default backend is {jax.default_backend()}, not TPU.")
+
+        devices = jax.devices("tpu")
+        if not devices:
+            raise RuntimeError("No JAX TPU devices found on the worker.")
+
+        mesh = Mesh(devices, ("data",))  # Simple 1D mesh over all available TPUs on the host
+        # print(f"JAX devices found on worker: {devices}")
+        # print(f"Mesh created: {mesh}")
+
+    except Exception as e:
+        print(f"Error during JAX device/mesh setup on worker: {e}")
+        # Raise an error that can be caught by the test runner if JAX setup fails.
+        raise RuntimeError(f"JAX TPU initialization failed on worker: {e}")
+
+    key_x, key_weights, key_bias = jrandom.split(jrandom.PRNGKey(0), 3)
+
+    # Define array dimensions
+    dim_in = 8  # factor of num_tpus_per_host usually
+    dim_out = 4
+
+    with mesh:
+        x = jrandom.normal(key_x, (dim_in,))
+        weights = jrandom.normal(key_weights, (dim_in, dim_out))
+        bias = jrandom.normal(key_bias, (dim_out,))
+
+        # Shard inputs - simple 1D sharding for x and weights
+        # Adjust PartitionSpec based on your actual sharding strategy.
+        # For a single host, this might just be P(None) or P('data') if you intend to shard across cores.
+        x_sharded = with_sharding_constraint(x, P("data"))
+        weights_sharded = with_sharding_constraint(weights, P("data"))
+        # Bias is usually replicated or not sharded
+        bias_sharded = with_sharding_constraint(bias, P())
+
+    @jax.jit
+    def layer(x_arg, weights_arg, bias_arg):
+        with mesh:  # Ensure the computation also happens within the mesh context
+            return with_sharding_constraint(jnp.dot(x_arg, weights_arg) + bias_arg, P())
+
+    output = layer(x_sharded, weights_sharded, bias_sharded)
+    return np.array(output)
+
+
+# --- Single Slice Tests ---
+
+
+def test_single_slice_simple_run():
+    """1. Run a simple function on a single slice and verify it runs correctly."""
+    if not _TPU_AVAILABLE:
+        pytest.skip("TPU not available for single slice test")
+
+    num_slices = 1
+    results = ray.get(run_on_pod_new(simple_jax_fn, "v4-8", num_slices=num_slices))
+
+    assert results is not None
+    assert len(results) == num_slices
+
+    # For `num_slices=1` with "v4-8" (1 host per slice):
+    assert len(results) == 1  # One result because one host in total for one v4-8 slice.
+    assert isinstance(results[0], np.ndarray)
+    assert results[0].shape == (4,)  # Based on simple_jax_fn's output dim_out
+
+    # Verify a second run works
+    results_2 = ray.get(run_on_pod_new(simple_jax_fn, "v4-8", num_slices=num_slices))
+    assert len(results_2) == 1
+    assert isinstance(results_2[0], np.ndarray)
+    assert np.array_equal(results[0], results_2[0])  # Deterministic function
+
+
+def test_single_slice_run_twice():
+    """2. Run a second function after the first one and verify it runs correctly."""
+    if not _TPU_AVAILABLE:
+        pytest.skip("TPU not available for single slice test")
+
+    num_slices = 1
+    # First run
+    results1 = ray.get(run_on_pod_new(simple_jax_fn, "v4-8", num_slices=num_slices))
+    assert len(results1) == 1
+    assert isinstance(results1[0], np.ndarray)
+    assert results1[0].shape == (4,)
+
+    # Second run
+    results2 = ray.get(run_on_pod_new(simple_jax_fn, "v4-8", num_slices=num_slices))
+    assert len(results2) == 1
+    assert isinstance(results2[0], np.ndarray)
+    assert results2[0].shape == (4,)
+
+    # Check if results are the same (since PRNGKey is fixed)
+    assert np.array_equal(results1[0], results2[0])
+
+
+# --- Multislice Tests ---
+
+
+def test_multislice_simple_run():
+    """1. Run a simple function on a multislice and verify it runs correctly."""
+    if not _MULTISLICE_POSSIBLE:  # Redundant due to marker, but good for clarity
+        pytest.skip("Not enough TPUs for multislice test")
+
+    num_slices = 2
+    tpu_type = "v4-8"  # Each slice is a v4-8
+
+    results = ray.get(run_on_pod_new(simple_jax_fn, tpu_type, num_slices=num_slices))
+
+    # run_on_pod_new returns a flat list of results from all hosts across all slices.
+    # If each v4-8 slice has 1 host (as per TPU-v4-8-head resource meaning),
+    # then for num_slices=2, we expect 2 results in the list.
+    assert results is not None
+    assert len(results) == num_slices  # num_slices * hosts_per_slice (assuming 1 host per v4-8 slice)
+
+    for i in range(num_slices):
+        assert isinstance(results[i], np.ndarray)
+        assert results[i].shape == (4,)
+        if i > 0:
+            # Due to MEGASCALE_SLICE_ID, the PRNG key might differ effectively if the code used it.
+            # simple_jax_fn uses a fixed PRNGKey(0) so all slices should produce identical results.
+            assert np.array_equal(results[i], results[0])
+
+
+def test_multislice_run_twice():
+    """2. Run a second function after the first one and verify it runs correctly."""
+    if not _MULTISLICE_POSSIBLE:
+        pytest.skip("Not enough TPUs for multislice test")
+
+    num_slices = 2
+    tpu_type = "v4-8"
+
+    # First run
+    results1 = ray.get(run_on_pod_new(simple_jax_fn, tpu_type, num_slices=num_slices))
+    assert len(results1) == num_slices
+    for i in range(num_slices):
+        assert isinstance(results1[i], np.ndarray)
+        assert np.array_equal(results1[i], results1[0])  # All slices should be same
+
+    # Second run
+    results2 = ray.get(run_on_pod_new(simple_jax_fn, tpu_type, num_slices=num_slices))
+    assert len(results2) == num_slices
+    for i in range(num_slices):
+        assert isinstance(results2[i], np.ndarray)
+        assert np.array_equal(results2[i], results2[0])
+
+    # Compare first and second run (should be identical)
+    for i in range(num_slices):
+        assert np.array_equal(results1[i], results2[i])
+
+
+# TODO:
+# Single Slice
+# 3. Run a function that fails and verify it retries the correct number of times and doesn't have libtpu problems
+# 4. Run a function that preempts and verify it retries the correct number of times and doesn't have libtpu problems
+
+# Multislice
+# 3. Run a function where one slice fails and verify it retries the correct number of times and doesn't have libtpu problems
+
+# For tests 3 and 4, we'll need functions that can be made to fail or simulate preemption.
+# We might also need to inspect logs or pass mock objects to `run_on_pod_new` to verify retry counts,
+# or adjust `max_retries_failure` to a small number and check for the expected exception.
+
+
+@ray.remote(max_calls=1)
+def failing_fn():
+    print("Executing failing_fn. This should fail.")
+    raise deliberately_raised_exception  # Use a unique exception name
+
+
+class DeliberatelyRaisedException(Exception):
+    pass
+
+
+# Monkeypatch the global for the test
+deliberately_raised_exception = DeliberatelyRaisedException("This function is designed to fail.")
+
+
+def test_single_slice_catches_failure():
+    """Test that run_on_pod_new correctly handles a failing function after retries."""
+    # if not _TPU_AVAILABLE:
+    #     pytest.skip("TPU not available for failure test")
+
+    with pytest.raises(RayTaskError) as excinfo:
+        ray.get(run_on_pod_new(failing_fn, "v4-8", num_slices=1, max_retries_failure=0, max_retries_preemption=0))
+
+    assert "DeliberatelyRaisedException" in str(
+        excinfo.value
+    ), f"Expected 'Failed too many times' but got: {excinfo.value}"
+
+
+# For preemption tests, it's harder to simulate reliably from user code without mocking ray/gcp apis.
+# One way could be to have a function that checks a global flag (set by the test) and raises a "preemption-like" error.
+# Or, if `get_current_tpu_is_preempted` can be mocked for a specific actor.
+
+# Simulating preemption is tricky.
+# We can define a function that, after a few calls, starts raising an error that `_handle_ray_error`
+# would interpret as a preemption (e.g. a TimeoutError, or by mocking `get_current_tpu_is_preempted`).
+
+# Let's try mocking `get_current_tpu_is_preempted` within the remote task.
+# This requires a bit of care because the mock needs to exist in the context of the Ray remote task.
+
+# We'll need a counter for how many times the function has been called.
+# This counter needs to be managed by Ray or be a Ray actor itself if we want to share it across retries
+# of the main remote function.
+# For simplicity for now, let's assume `max_calls=1` on the test function means it's fresh.
+
+
+@ray.remote
+class PreemptionCountingActor:
+    """Actor to count calls to a preemptible function."""
+
+    def __init__(self, fn_id: str, preempt_until_n_calls: int):
+        self.fn_id = fn_id
+        self.preempt_until_n_calls = preempt_until_n_calls
+        self.call_count = 0
+
+    def run(self):
+        self.call_count += 1
+        print(f"Running {self.fn_id}, call count: {self.call_count}")
+        if self.call_count < self.preempt_until_n_calls:
+            raise TimeoutError("Simulated preemption via TimeoutError")
+
+        return np.zeros(1)
+
+
+def test_single_slice_handles_preemption():
+    """4. Run a function that preempts and verify it retries and eventually fails due to preemption retries."""
+    # if not _TPU_AVAILABLE:
+    #     pytest.skip("TPU not available for preemption test")
+
+    actor = PreemptionCountingActor.remote("preemptible_fn", preempt_until_n_calls=4)
+
+    @ray.remote(max_calls=1)
+    def preempted_until_n():
+        return ray.get(actor.run.remote())
+
+    with pytest.raises(RuntimeError) as excinfo:
+        ray.get(
+            run_on_pod_new(
+                # We need to curry arguments into preemptible_fn or wrap it
+                preempted_until_n,
+                "v4-8",
+                num_slices=1,
+                max_retries_failure=1,
+                max_retries_preemption=2,  # Should retry preemption twice
+            )
+        )
+
+    assert "preempted too many times" in str(
+        excinfo.value
+    ), f"Expected 'Preempted too many times' but got: {excinfo.value}"
+
+    # now let's call with a lower preempt_until_n_calls to ensure it succeeds
+
+    actor = PreemptionCountingActor.remote("preemptible_fn_always", preempt_until_n_calls=2)
+
+    @ray.remote(max_calls=1)
+    def preempted_always():
+        return ray.get(actor.run.remote())
+
+    # This should succeed after 2 retries
+    results = ray.get(
+        run_on_pod_new(
+            preempted_always,
+            "v4-8",
+            num_slices=1,
+            max_retries_failure=0,  # No failure retries
+            max_retries_preemption=2,  # Should retry preemption twice
+        )
+    )
+
+    assert len(results) == 1
+    assert isinstance(results[0], np.ndarray)
+
+
+@ray.remote(max_calls=1)
+def fail_on_slice_0_fn():
+    slice_id_str = os.getenv("MEGASCALE_SLICE_ID")
+    if slice_id_str == "0":
+        raise DeliberatelyRaisedException("Slice 0 is failing.")
+
+    # Do simple JAX work for other slices
+    key = jrandom.PRNGKey(int(slice_id_str) if slice_id_str else 42)
+    data = jrandom.normal(key, (4,))
+    return np.array(data)
+
+
+# Multislice failure: one slice fails, the whole thing should retry and eventually fail.
+def test_multislice_one_slice_fails():
+    """3. Run a function where one slice fails, verify retries and eventual failure."""
+    # if not _MULTISLICE_POSSIBLE:
+    #     pytest.skip("Not enough TPUs for multislice failure test")
+
+    num_slices = 2
+    tpu_type = "v4-8"
+
+    # We need a function that fails only on a specific slice_id.
+    # The `remote_fn` passed to `SliceActor.do_run` gets `mxla_env` which contains `slice_id`.
+    # However, `simple_jax_fn` and `failing_fn` don't accept arguments.
+    # We need to make `run_on_pod_new` capable of passing slice-specific info or use a different fn.
+    # The `remote_fn` in `run_on_pod_new` is a no-arg function.
+    # The `mxla_env` is set by `SliceActor` *around* the call to `host.do_run`, which then calls `remote_fn`.
+    # So, `remote_fn` can access `os.environ["MEGASCALE_SLICE_ID"]`.
+
+    with pytest.raises(RayTaskError) as excinfo:
+        ray.get(
+            run_on_pod_new(
+                fail_on_slice_0_fn,
+                tpu_type,
+                num_slices=num_slices,
+                max_retries_failure=2,  # low retry
+                max_retries_preemption=0,
+            )
+        )
+
+    # When one slice fails, `_run_on_pod_ray` should mark `had_a_failure = True`.
+    # It then processes `slice_actor_results`. The failing slice will have a TpuRunError/TpuFailed.
+    # This leads to `any_failed = True`.
+    # The loop continues, `num_failures` increments. Eventually, "Failed too many times".
+    assert "DeliberatelyRaisedException" in str(excinfo.value)
+
+
+if __name__ == "__main__":
+    # test_single_slice_catches_failure()
+    test_single_slice_handles_preemption()
