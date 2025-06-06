@@ -331,8 +331,7 @@ def run_on_pod_ray(
     num_preemptions = 0
     attempt = 0
 
-    pool: list[ActorHandle] = []  # pool of SliceActors
-    # Ray doesn't free PGs automatically, so we need to keep track of them
+    slice_pool: list[ActorHandle] = []  # pool of SliceActors
     slice_infos: dict[ActorHandle, SliceInfo] = {}
     problems: list[Exception] = []
     problem: Exception | None
@@ -346,27 +345,6 @@ def run_on_pod_ray(
     elif remote_fn._default_options.get("max_calls") is None:
         raise ValueError("Remote function must have max_calls set to 1 for TPU workloads.")
 
-    def process_failure(exception: RayError, increment_counts: bool):
-        nonlocal num_failures, num_preemptions, problems
-
-        problems.append(exception)
-        error_type = _handle_ray_error(exception)
-
-        if isinstance(error_type, TpuPreempted):
-            if increment_counts:
-                num_preemptions += 1
-
-            if num_preemptions <= max_retries_preemption:
-                logger.warning(f"Preempted {num_preemptions} times. Continuing to retry.", exc_info=exception)
-        elif isinstance(error_type, TpuRunError | TpuFailed):
-            if increment_counts:
-                num_failures += 1
-
-            if num_failures <= max_retries_failure:
-                logger.warning(f"Failed {num_failures} times. Continuing to retry.", exc_info=exception)
-
-        return error_type
-
     try:
         while num_failures <= max_retries_failure and num_preemptions <= max_retries_preemption:
             logger.info(f"Running on {num_slices} x TPU {tpu_type}. Attempt {attempt}")
@@ -374,17 +352,17 @@ def run_on_pod_ray(
             problems.clear()
 
             # prune all bad actors from pool
-            if len(pool):
-                pool, slice_infos = _prune_dead_slices(pool, slice_infos)
-                if len(pool) < num_slices:
-                    logger.info(f"Pool has {len(pool)} actors, but we need {num_slices}. Creating more actors.")
+            if len(slice_pool):
+                slice_pool, slice_infos = _prune_dead_slices(slice_pool, slice_infos)
+                if len(slice_pool) < num_slices:
+                    logger.info(f"Pool has {len(slice_pool)} actors, but we need {num_slices}. Creating more actors.")
 
             # if we don't have enough actors, create more
             new_actor_to_slice_infos: dict[ActorHandle, ray.ObjectRef] = {}  # ref is to SliceInfo
-            while len(pool) < num_slices:
+            while len(slice_pool) < num_slices:
                 a = SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote()  # type: ignore
                 new_actor_to_slice_infos[a] = a.get_slice_info.remote()
-                pool.append(a)
+                slice_pool.append(a)
 
             # wait for all new actors to be ready
             if new_actor_to_slice_infos:
@@ -395,26 +373,25 @@ def run_on_pod_ray(
                     except ray.exceptions.RayError as e:
                         logger.exception("Failed to get new actors ready", exc_info=e)
                         continue
-                logger.info(f"Pool ready with {len(pool)} actors.")
+                logger.info(f"Pool ready with {len(slice_pool)} actors.")
 
             # If we're doing multislice, we need to get the slice info from the first actor
-            head_slice_info = slice_infos[pool[0]] if len(slice_infos) > 1 else None
+            head_slice_info = slice_infos[slice_pool[0]] if len(slice_infos) > 1 else None
 
             # Ok finally time to run the remote function on all slices
             futures: list[ray.ObjectRef] = []  # one per host in each slice
             future_to_index: dict[ray.ObjectRef, int] = {}  # maps futures to their index in the results list
             global_index = 0  # index into results list
 
-            for i, actor in enumerate(pool):
+            for i, actor in enumerate(slice_pool):
                 if head_slice_info is not None:
-                    multislice_info = _multislice_info_from_head(head_slice_info, i, len(pool))
+                    multislice_info = _multislice_info_from_head(head_slice_info, i, len(slice_pool))
                     mxla_env = _multislice_info_to_env_vars(multislice_info)
                 else:
                     mxla_env = {}
 
                 slice_info = slice_infos[actor]
 
-                logger.info(mxla_env)
                 futures_for_slice = _start_fn_on_slice(slice_info, remote_fn, mxla_env)
 
                 futures.extend(futures_for_slice)
@@ -424,27 +401,26 @@ def run_on_pod_ray(
 
             tpu_results: list[_TpuRunResult | None] = [None] * len(futures)
 
-            # Proactively cancel jobs if one fails.
-            # We wait for one job to finish at a time. If it fails, we cancel the rest.
+            # We wait for jobs to finish one at a time. If a preemption or failure occurs, we cancel all
             pending_futures = list(futures)
             had_a_failure = False
 
             while pending_futures and not had_a_failure:
-                # wait for one to finish
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1)
 
                 for f in finished:
                     try:
-                        r = TpuSuccess(ray.get(f))
-                        tpu_results[future_to_index[f]] = r
+                        tpu_results[future_to_index[f]] = TpuSuccess(ray.get(f))
                     except RayError as e:
                         had_a_failure = True
-                        tpu_results[future_to_index[f]] = process_failure(e, increment_counts=False)
+                        problems.append(e)
+                        tpu_results[future_to_index[f]] = _handle_ray_error(e)
                     except Exception as e:
                         logger.warning(f"Task {f} failed with unexpected error {e}. Will retry.")
                         had_a_failure = True
                         tpu_results[future_to_index[f]] = TpuRunError(e)
 
+            # Proactively cancel jobs if one fails.
             if had_a_failure and pending_futures:
                 logger.info(f"Failure detected. Cancelling {len(pending_futures)} futures.")
                 try:
@@ -462,9 +438,6 @@ def run_on_pod_ray(
                         )
                     else:
                         logger.warning(f"Future {f} was not found in future_to_index. Skipping.")
-
-            # at this point, all futures are accounted for in tpu_results
-            # so we can process them as a complete set
 
             # Process results, figure out if we succeeded or failed or preempted
             out_results: list = []
@@ -492,6 +465,17 @@ def run_on_pod_ray(
                     assert False, "We should never have None results here. "
                 else:
                     raise RuntimeError(f"Unexpected result: {result}")
+
+            # try to cleanup lockfiles
+            cleanup_futs = []
+            for slice in slice_infos.values():
+                cleanup_futs.extend(_cleanup_lockfiles(slice))
+
+            if cleanup_futs:
+                try:
+                    ray.get(cleanup_futs)
+                except Exception as e:
+                    logger.warning("Failed to cleanup lockfiles", exc_info=e)
 
             if any_preempted:
                 problem = problems[0] if problems else RuntimeError("TPU job was preempted")
@@ -529,13 +513,13 @@ def run_on_pod_ray(
             except Exception as e:
                 logger.warning(f"Failed to remove placement group {pg}: {e}")
 
-        for actor in pool:
+        for actor in slice_pool:
             try:
                 ray.kill(actor)
             except Exception as e:
                 logger.warning(f"Failed to kill actor {actor}: {e}")
 
-        pool.clear()
+        slice_pool.clear()
         slice_infos.clear()
 
     # Note: PyCharm flags this as unreachable code, but it is reachable if the loop exits without returning.
