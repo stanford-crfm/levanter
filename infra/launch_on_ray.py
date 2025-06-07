@@ -61,7 +61,7 @@ def main():
     github_token = args.github_token
     extra_context = args.extra_context
 
-    env = config.env_for_accel(tpu_type)
+    env = dict(**config.env_for_accel(tpu_type))
     for key, value in args.env or []:
         env[key] = value
 
@@ -104,8 +104,6 @@ def main():
         )
     else:
         raise ValueError(f"Unknown docker registry: {registry}")
-
-    env = {k: v for k, v in args.env}
 
     if "WANDB_PROJECT" not in env:
         env["WANDB_PROJECT"] = "levanter"
