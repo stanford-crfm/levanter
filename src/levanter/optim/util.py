@@ -103,7 +103,7 @@ def flatten_linear_layers(tree: T) -> T:
             else:
                 weight = weight.rearrange((..., "__IN__", "__OUT__"))
 
-            if bias is not None:
+            if isinstance(bias, hax.NamedArray):  # bias can be None or some weird sentinel like
                 bias = bias.flatten_axes(layer.Out, "__OUT__")
 
             In = weight.resolve_axis("__IN__")

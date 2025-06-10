@@ -15,6 +15,7 @@ from jax import numpy as jnp
 import haliax
 
 import levanter.tracker
+from levanter.optim.clip_update_norm import ClipUpdateNormConfig
 from levanter.optim.skipstep import SkipStepConfig
 from levanter.optim.util import log_norm_passthrough, scan_aware_clip_by_block_rms
 from levanter.utils.jax_utils import leaf_key_paths
@@ -410,6 +411,11 @@ class AdamConfig(OptimizerConfig):
     A value of 1.0 is recommended for most models, but you can set it to None to disable RMS clipping.
     """
 
+    clip_update_norm: Optional[ClipUpdateNormConfig] = None
+    """
+    If set, this will clip the update norm based on the historical mean and standard deviation of update norms. A less extreme version of skip_bad_steps.
+    """
+
     skip_bad_steps: SkipStepConfig | int | bool = False
     """
     If set, defines the configuration for skipping steps when gradients are too large.
@@ -421,6 +427,13 @@ class AdamConfig(OptimizerConfig):
 
     See https://github.com/allenai/OLMo-core/blob/main/src/olmo_core/optim/skip_step_optimizer.py
     """
+
+    def __post_init__(self):
+        if self.update_rms_clipping is not None and self.update_rms_clipping <= 0:
+            raise ValueError("update_rms_clipping must be a positive number or None.")
+
+        if self.clip_update_norm is not None and self.update_rms_clipping is not None:
+            raise ValueError("Cannot use both update_rms_clipping and clip_update_norm at the same time.")
 
     def build(self, num_train_steps):
         """Creates the optimizer"""
@@ -441,6 +454,9 @@ class AdamConfig(OptimizerConfig):
                 components.append(log_norm_passthrough("optim/pre_clip_update_norm"))
                 components.append(scan_aware_clip_by_block_rms(self.update_rms_clipping))
                 components.append(log_norm_passthrough("optim/post_clip_update_norm"))
+
+            if self.clip_update_norm is not None:
+                components.append(self.clip_update_norm.build())
 
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))

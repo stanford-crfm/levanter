@@ -5,7 +5,7 @@ import jax
 import optax
 from jax import numpy as jnp
 from jax.tree_util import register_pytree_with_keys_class
-from jaxlib.xla_extension.pytree import GetAttrKey
+from jax.tree_util import GetAttrKey
 
 from haliax.jax_utils import is_jax_array_like
 
