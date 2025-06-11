@@ -218,24 +218,37 @@ def _multislice_info_to_env_vars(multislice):
 def _ensure_pg(pod_name: str, num_hosts: int, num_tpus: int):
     pg_name = f"tpu-slice-{pod_name}"
 
-    # 1) Re-use an existing PG if one was leaked by a previous crash
-    for pg in ray.list_placement_groups():
-        if pg.name == pg_name:
-            return pg
+    bundles = [
+        {
+            "CPU": 8,
+            "TPU": num_tpus,
+            "memory": 20e9,
+            pod_name: 1,  # your custom resource key
+        }
+        for _ in range(num_hosts)
+    ]
 
-    # 2) Otherwise create a fresh one
-    bundles = [{
-        "CPU": 8,
-        "TPU": num_tpus,
-        "memory": 20e9,
-        pod_name: 1,      # your custom resource key
-    } for _ in range(num_hosts)]
-
-    pg = ray.placement_group(bundles=bundles, name=pg_name)
+    pg = ray.util.placement_group(bundles=bundles, name=pg_name)
     try:
-        ray.get(pg.ready(), timeout=300)          # fail fast if the slice never comes up
+        ray.get(pg.ready(), timeout=300)
+    except RaySystemError as e:
+        if "already exists" in str(e):
+            logger.warning(f"Placement group {pg_name} already exists. Reusing it.")
+            # In theory this is fine since in order to use this PG we have to have the lock on the slice
+            pg = ray.util.get_placement_group(pg_name)
+        else:
+            logger.exception(f"Failed to create placement group {pg_name}. Error: {e}")
+            try:
+                ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
+            except Exception as e:
+                logger.exception(f"Failed to remove placement group {pg_name} after failure: {e}")
+                raise RuntimeError(f"Failed to create placement group {pg_name}") from e
     except Exception:
-        ray.remove_placement_group(pg)               # don’t leave a half-ready PG behind
+        try:
+            logger.warning(f"Failed to create placement group {pg_name}. Removing it.")
+            ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
+        except Exception as e:
+            logger.exception(f"Failed to remove placement group {pg_name} after failure: {e}")
         raise
     return pg
 
@@ -250,11 +263,8 @@ class SliceActor:
         self.slice_info = None
         self._failed = False
 
-
-
     def healthy(self):
         return not self._failed and not self.is_being_preempted()
-
 
     def is_being_preempted(self):
         """
@@ -279,6 +289,7 @@ class SliceActor:
             slice_name=pod_name,
             num_hosts=num_hosts,
             num_tpus_per_host=num_tpus_per_host,
+            ip_address=socket.gethostbyname(socket.gethostname()),
             pg=pg,
         )
 
@@ -332,7 +343,9 @@ def run_on_pod_ray(
     if num_slices <= 0:
         raise ValueError("num_slices must be greater than 0")
 
+    # failures here means the job failed due to an error in the remote function, not a preemption
     num_failures = 0
+    # we include any kind of non-`remote_fn` failure in this count, including preemptions
     num_preemptions = 0
     attempt = 0
 
@@ -357,28 +370,13 @@ def run_on_pod_ray(
             problems.clear()
 
             # prune all bad actors from pool
-            if len(slice_pool):
-                slice_pool, slice_infos = _prune_dead_slices(slice_pool, slice_infos)
-                if len(slice_pool) < num_slices:
-                    logger.info(f"Pool has {len(slice_pool)} actors, but we need {num_slices}. Creating more actors.")
-
-            # if we don't have enough actors, create more
-            new_actor_to_slice_infos: dict[ActorHandle, ray.ObjectRef] = {}  # ref is to SliceInfo
-            while len(slice_pool) < num_slices:
-                a = SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote()  # type: ignore
-                new_actor_to_slice_infos[a] = a.get_slice_info.remote()
-                slice_pool.append(a)
-
-            # wait for all new actors to be ready
-            if new_actor_to_slice_infos:
-                logger.info(f"Waiting for {len(new_actor_to_slice_infos)} new actors to be ready...")
-                for a, info_ref in new_actor_to_slice_infos.items():
-                    try:
-                        slice_infos[a] = ray.get(info_ref)
-                    except ray.exceptions.RayError as e:
-                        logger.exception("Failed to get new actors ready", exc_info=e)
-                        continue
-                logger.info(f"Pool ready with {len(slice_pool)} actors.")
+            try:
+                slice_infos, slice_pool = _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices)
+            except Exception as e:
+                logger.exception("Failed to prune dead slices or create new actors", exc_info=e)
+                problems.append(e)
+                num_preemptions += 1
+                continue
 
             # If we're doing multislice, we need to get the slice info from the first actor
             head_slice_info = slice_infos[slice_pool[0]] if len(slice_infos) > 1 else None
@@ -538,6 +536,45 @@ def run_on_pod_ray(
         raise problem or RuntimeError("TPU job failed too many times")
     else:
         raise RuntimeError("Unknown error occurred during TPU job") from problem
+
+
+def _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices):
+    """
+    Pre-condition: slice_pool is a list of SliceActor handles, slice_infos is a dict mapping with one
+        SliceActor to its SliceInfo. Some actors may be dead or unhealthy.
+    Post-condition: slice_pool is a list of num_slices SliceActor handles, slice_infos is a dict mapping
+        each SliceActor to its SliceInfo.
+    """
+    assert len(slice_infos) == len(slice_pool)
+    if len(slice_pool):
+        slice_pool, slice_infos = _prune_dead_slices(slice_pool, slice_infos)
+        if len(slice_pool) < num_slices:
+            logger.info(f"Pool has {len(slice_pool)} actors, but we need {num_slices}. Creating more actors.")
+
+    # if we don't have enough actors, create more
+    new_actor_to_slice_infos: dict[ActorHandle, ray.ObjectRef] = {}  # ref is to SliceInfo
+    while len(slice_pool) < num_slices:
+        a = SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote()  # type: ignore
+        new_actor_to_slice_infos[a] = a.get_slice_info.remote()
+        slice_pool.append(a)
+
+    # wait for all new actors to be ready
+    if new_actor_to_slice_infos:
+        logger.info(f"Waiting for {len(new_actor_to_slice_infos)} new actors to be ready...")
+        for a, info_ref in new_actor_to_slice_infos.items():
+            try:
+                slice_infos[a] = ray.get(info_ref)
+            except ray.exceptions.RayError as e:
+                # this can happen with a logic error or if the actor is unhealthy/preempted/whatever
+                logger.exception("Failed to get new actors ready", exc_info=e)
+                raise
+
+        logger.info(f"Pool ready with {len(slice_pool)} actors.")
+
+    assert len(slice_pool) == num_slices
+    assert len(slice_pool) == len(slice_infos), "Slice pool and slice infos must be the same length"
+    assert all(isinstance(a, ActorHandle) for a in slice_pool), "All slice pool elements must be ActorHandles"
+    return slice_infos, slice_pool
 
 
 def _start_fn_on_slice(slice_info, remote_fn, mxla_env: dict | None) -> list[ray.ObjectRef]:
