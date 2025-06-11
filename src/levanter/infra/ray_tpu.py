@@ -189,32 +189,6 @@ class SliceInfo:
             memory=20e9,
         )
 
-    @staticmethod
-    def reserve(slice_name: str, num_hosts: int, num_tpus_per_host: int) -> "SliceInfo":
-        """
-        Reserve a slice of the TPU pod with the given name, number of hosts, and number of TPUs per host.
-        This is used to create a SliceInfo object for a slice that is not yet running.
-        """
-        pg = ray.util.placement_group(
-            name=f"tpu-slice-{slice_name}",
-            bundles=[
-                {
-                    "CPU": 8,  # default number of CPUs per host
-                    "TPU": num_tpus_per_host,
-                    "memory": 20e9,  # default memory per host
-                    slice_name: 1,
-                }
-                for _ in range(num_hosts)
-            ],
-        )
-        return SliceInfo(
-            slice_name=slice_name,
-            num_hosts=num_hosts,
-            ip_address=socket.gethostbyname(socket.gethostname()),
-            num_tpus_per_host=num_tpus_per_host,
-            pg=pg,
-        )
-
 
 def _multislice_info_from_head(head: SliceInfo, slice_id: int, num_slices: int) -> MultisliceInfo:
     """
@@ -241,35 +215,46 @@ def _multislice_info_to_env_vars(multislice):
     return mxla_env
 
 
-@ray.remote(max_concurrency=4)
+def _ensure_pg(pod_name: str, num_hosts: int, num_tpus: int):
+    pg_name = f"tpu-slice-{pod_name}"
+
+    # 1) Re-use an existing PG if one was leaked by a previous crash
+    for pg in ray.list_placement_groups():
+        if pg.name == pg_name:
+            return pg
+
+    # 2) Otherwise create a fresh one
+    bundles = [{
+        "CPU": 8,
+        "TPU": num_tpus,
+        "memory": 20e9,
+        pod_name: 1,      # your custom resource key
+    } for _ in range(num_hosts)]
+
+    pg = ray.placement_group(bundles=bundles, name=pg_name)
+    try:
+        ray.get(pg.ready(), timeout=300)          # fail fast if the slice never comes up
+    except Exception:
+        ray.remove_placement_group(pg)               # don’t leave a half-ready PG behind
+        raise
+    return pg
+
+
+@ray.remote
 class SliceActor:
     """
     Actor that manages a single TPU slice.
     """
 
     def __init__(self):
-        pod_name = ray.util.accelerators.tpu.get_current_pod_name()
-        num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
-        num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()
-        self.slice_info = SliceInfo.reserve(
-            slice_name=pod_name,
-            num_hosts=num_hosts,
-            num_tpus_per_host=num_tpus_per_host,
-        )
-
-        ray.get(self.slice_info.pg.ready())
+        self.slice_info = None
         self._failed = False
 
-    def get_pg(self):
-        """
-        Get the placement group for this SliceActor.
-        We expose this b/c Ray apparently doesn't free PGs if the actor is killed, so we need to
-        return it to the caller to remove it manually.
-        """
-        return self.slice_info.pg
+
 
     def healthy(self):
         return not self._failed and not self.is_being_preempted()
+
 
     def is_being_preempted(self):
         """
@@ -281,6 +266,23 @@ class SliceActor:
         return get_current_tpu_is_preempted()
 
     def get_slice_info(self):
+        if self.slice_info is not None:
+            return self.slice_info
+
+        pod_name = ray.util.accelerators.tpu.get_current_pod_name()
+        num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
+        num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()
+
+        pg = _ensure_pg(pod_name, num_hosts, num_tpus_per_host)
+
+        self.slice_info = SliceInfo(
+            slice_name=pod_name,
+            num_hosts=num_hosts,
+            num_tpus_per_host=num_tpus_per_host,
+            pg=pg,
+        )
+
+        ray.get(self.slice_info.pg.ready())
         return self.slice_info
 
 
