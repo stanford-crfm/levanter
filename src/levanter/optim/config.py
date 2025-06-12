@@ -123,7 +123,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     cycles: int | list[int] | None = None
     """Number of cycles or a list of cycle endpoints. Can use at most one of cycle_length, cycles, or haps."""
 
-    lr_schedule: str | LrSchedule = "cosine"  # constant, cosine, linear
+    lr_schedule: LrSchedule | str = "cosine"  # constant, cosine, linear
     haps: Optional[list[int]] = None
     """Deprecated."""
     weight_decay_modules: Optional[list[str] | str] = None
@@ -232,7 +232,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
             return mask_fn
 
-    def lr_scheduler(self, num_train_steps):
+    def lr_scheduler(self, num_train_steps, override_lr=None):
         if self.cooldown is not None:
             warnings.warn("cooldown is deprecated. Just use the normal schedule.", DeprecationWarning)
             cooldown_steps = _convert_frac_or_steps(self.cooldown, num_train_steps)
@@ -242,7 +242,11 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         total_main_steps = num_train_steps - cooldown_steps
         cooldown_points = self._get_cycle_minima(total_main_steps)
 
-        min_lr = self.learning_rate * self.min_lr_ratio
+        learning_rate = self.learning_rate
+        if override_lr is not None:
+            learning_rate = override_lr
+
+        min_lr = learning_rate * self.min_lr_ratio
 
         schedules = []
         boundaries = []
@@ -257,7 +261,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 warmup_steps = _convert_frac_or_steps(self.rewarmup, cycle_steps)
 
             if warmup_steps != 0:
-                warmup = optax.linear_schedule(previous_end, self.learning_rate, warmup_steps)
+                warmup = optax.linear_schedule(previous_end, learning_rate, warmup_steps)
                 schedules.append(warmup)
                 boundaries.append(start + warmup_steps)
 
@@ -269,22 +273,22 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             stable_steps = cycle_steps - warmup_steps - lr_decay_steps
 
             if stable_steps != 0:
-                stable = optax.constant_schedule(self.learning_rate)
+                stable = optax.constant_schedule(learning_rate)
                 schedules.append(stable)
                 boundaries.append(start + warmup_steps + stable_steps)
 
             if isinstance(self.lr_schedule, str):
                 match self.lr_schedule:
                     case "constant":
-                        schedule = optax.constant_schedule(self.learning_rate)
+                        schedule = optax.constant_schedule(learning_rate)
                     case "cosine":
-                        schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
+                        schedule = optax.cosine_decay_schedule(learning_rate, lr_decay_steps, self.min_lr_ratio)
                     case "linear":
-                        schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps)
+                        schedule = optax.linear_schedule(learning_rate, min_lr, lr_decay_steps)
                     case "inv_sqrt":
-                        schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
+                        schedule = _inv_sqrt_decay_schedule(learning_rate, min_lr, warmup_steps, 10000)
                     case "inv":
-                        schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
+                        schedule = _inv_decay_schedule(learning_rate, min_lr, lr_decay_steps)
                     case _:
                         raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
             elif isinstance(self.lr_schedule, LrSchedule):
@@ -292,7 +296,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                     LrScheduleContext(
                         warmup_steps=warmup_steps,
                         decay_steps=lr_decay_steps,
-                        learning_rate=self.learning_rate,
+                        learning_rate=learning_rate,
                         min_lr_ratio=self.min_lr_ratio,
                         min_lr=min_lr,
                     )
