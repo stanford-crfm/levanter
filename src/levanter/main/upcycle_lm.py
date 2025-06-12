@@ -31,6 +31,9 @@ class UpcycleLmConfig:
     dense_model: LlamaConfig = field(default_factory=LlamaConfig)
     sparse_model: MixtralConfig = field(default_factory=MixtralConfig)
 
+    # the std of noise added to expert layers
+    noise_scale: float = 1e-3
+
 
 class DummyState(eqx.Module, Generic[M]):
     """
