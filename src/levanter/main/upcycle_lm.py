@@ -122,9 +122,9 @@ def main(config: UpcycleLmConfig):
 
             # Add tiny noise to moe layers.
             experts = sparse_model.transformer.layers.stacked.block_sparse_moe.experts
-            experts = lens.w1.weight.set(w1 + hax.random.normal(w1_key, w1.axes) * 1e-3)(experts)
-            experts = lens.w2.weight.set(w2 + hax.random.normal(w2_key, w2.axes) * 1e-3)(experts)
-            experts = lens.w3.weight.set(w3 + hax.random.normal(w3_key, w3.axes) * 1e-3)(experts)
+            experts = lens.w1.weight.set(w1 + hax.random.normal(w1_key, w1.axes) * config.noise_scale)(experts)
+            experts = lens.w2.weight.set(w2 + hax.random.normal(w2_key, w2.axes) * config.noise_scale)(experts)
+            experts = lens.w3.weight.set(w3 + hax.random.normal(w3_key, w3.axes) * config.noise_scale)(experts)
             sparse_model = lens.transformer.layers.stacked.block_sparse_moe.experts.set(experts)(sparse_model)
 
         if avg_model is not None:
