@@ -7,6 +7,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from asyncio import QueueEmpty
 from dataclasses import dataclass
 from queue import Empty as QueueEmpty
 from typing import Callable, Optional, Sequence
@@ -520,6 +521,41 @@ def _separate_process_fn(underlying_function, args, kwargs):
     logger.info("Process finished")
     try:
         success, value = queue.get(timeout=5)
+    except QueueEmpty:
+        logger.error("Process timed out")
+        process.terminate()
+        raise TimeoutError("Process timed out")
+
+    if success:
+        return value
+    else:
+        value.reraise()
+
+
+def _separate_process_fn(underlying_function, args, kwargs):
+    """
+    Helper function for _forkify_remote_fn. This runs the function in a separate process.
+    """
+
+    def target_fn(queue, args, kwargs):
+        try:
+            # Call the original function
+            result = underlying_function(*args, **kwargs)
+            queue.put((True, result))  # Success, put the result
+        except Exception as e:
+            # Capture and return the full traceback in case of an exception
+            info = ser_exc_info(e)
+            queue.put((False, info))
+
+    queue = multiprocessing.Queue()
+    process = multiprocessing.Process(target=target_fn, args=(queue, args, kwargs))
+    process.start()
+    process.join()
+
+    # Retrieve the result or error from the queue
+    logger.info("Process finished")
+    try:
+        success, value = queue.get(timeout=1)
     except QueueEmpty:
         logger.error("Process timed out")
         process.terminate()
