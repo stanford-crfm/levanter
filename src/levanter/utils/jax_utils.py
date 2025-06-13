@@ -89,9 +89,8 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: 
         return obj
 
     import jax._src.distributed as distributed
-    from jaxlib.xla_extension import DistributedRuntimeClient
 
-    client: Optional[DistributedRuntimeClient] = distributed.global_state.client
+    client = distributed.global_state.client
 
     if client is None:
         raise RuntimeError("multihost_broadcast_sync requires jax distributed client to be initialized")
