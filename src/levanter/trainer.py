@@ -716,6 +716,7 @@ class TrainerConfig:
     jax_config: Mapping[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
     )  # config to pass to jax.config.update
+    jax_compilation_cache_dir: Optional[str] = None
 
     distributed: DistributedConfig = DistributedConfig()
     ray: RayConfig = field(default_factory=RayConfig)
@@ -868,6 +869,9 @@ class TrainerConfig:
     def _initialize_jax_config(self):
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
+
+        if self.jax_compilation_cache_dir is not None:
+            jax.config.update("jax_compilation_cache_dir", self.jax_compilation_cache_dir)
 
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right
