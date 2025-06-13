@@ -456,7 +456,9 @@ class AdamConfig(OptimizerConfig):
                 components.append(log_norm_passthrough("optim/post_clip_update_norm"))
 
             if self.clip_update_norm is not None:
+                components.append(log_norm_passthrough("optim/pre_clip_update_norm"))
                 components.append(self.clip_update_norm.build())
+                components.append(log_norm_passthrough("optim/post_clip_update_norm"))
 
             # - learning rate for descent
             components.append(optax.scale(-learning_rate))

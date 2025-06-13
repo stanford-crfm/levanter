@@ -253,9 +253,8 @@ def auto_ray_cluster(
 
                         # install an atexit handler to kill the head when we exit
                         def kill_ray():
-                            print("Hi", flush=True)
-                            os.system("ray stop -g 10 --force &> /dev/null")
-                            print("done", flush=True)
+                            # silence spam from ray stop
+                            os.system("bash -c 'ray stop -g 10 --force &> /dev/null'")
 
                         atexit.register(kill_ray)
                     elif start_workers:

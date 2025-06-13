@@ -4,8 +4,7 @@ from typing import Optional, Union
 import jax
 import optax
 from jax import numpy as jnp
-from jax.tree_util import register_pytree_with_keys_class
-from jax.tree_util import GetAttrKey
+from jax.tree_util import GetAttrKey, register_pytree_with_keys_class
 
 from haliax.jax_utils import is_jax_array_like
 
