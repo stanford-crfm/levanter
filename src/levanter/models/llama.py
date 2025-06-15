@@ -153,7 +153,6 @@ class LlamaConfig(HFCompatConfig):
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
             tie_word_embeddings=self.tie_word_embeddings,
-            # rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
@@ -205,7 +204,7 @@ class LlamaConfig(HFCompatConfig):
     def to_attention_config(self) -> AttentionConfig:
         """Convert this LlamaConfig to an AttentionConfig for use with Attention."""
         return AttentionConfig(
-            hidden_dim=self.hidden_dim,
+            Embed=self.Embed,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
             use_bias=self.use_bias,
@@ -270,7 +269,7 @@ class LlamaDecoderLayer(eqx.Module):
         k_attn, k_mlp = jrandom.split(key, 2)
 
         attn_config = config.to_attention_config()
-        attn = Attention.init(attn_config, config.Embed, key=k_attn)
+        attn = Attention.init(attn_config, key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,
             config.Mlp,

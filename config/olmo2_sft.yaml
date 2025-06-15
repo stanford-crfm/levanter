@@ -26,7 +26,6 @@ model:  # Olmo2 7B model config
   num_layers: 32
   num_heads: 32
   num_kv_heads: 32
-  use_flash_attention: True
   flash_attention_block_size: 512
   use_bias: false
   use_layer_norm_weight: true

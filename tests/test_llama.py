@@ -11,8 +11,8 @@ from jax import random
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.models.attention import AttentionMask
-from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
+from levanter.models.attention import Attention, AttentionMask
+from levanter.models.llama import LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
 from levanter.models.rotary import _rotate_half as levanter_rotate_half
 from levanter.utils.jax_utils import parameter_count
@@ -70,7 +70,7 @@ def test_llama_rotary_embedding():
     from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     llama_config = _get_llama_config()
-    HeadSize = llama_config.HeadSize
+    HeadSize = llama_config.to_attention_config().HeadSize
     Pos = llama_config.Pos
     seq_len = Pos.size
     key = random.PRNGKey(0)
@@ -109,8 +109,8 @@ def test_apply_rotary_pos_emb(model_seq_len, test_seq_len):
     llama_config = _get_llama_config(seq_len=model_seq_len)
 
     Pos = llama_config.Pos.resize(test_seq_len)
-    Heads = llama_config.Heads
-    HeadSize = llama_config.HeadSize
+    Heads = llama_config.to_attention_config().Heads
+    HeadSize = llama_config.to_attention_config().HeadSize
     Batch = hax.Axis("batch", 2)
 
     # note here we switch Heads and Pos for the shape of the output tensors
@@ -156,7 +156,7 @@ def test_llama_attention(use_flash, num_kv_heads):
 
     config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))  # type: ignore
+    attention = Attention.init(config=config.to_attention_config(), key=random.PRNGKey(0))  # type: ignore
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
@@ -349,7 +349,6 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
         num_heads=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
-        use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,
     )
 
@@ -383,7 +382,6 @@ def test_pass_different_length_seq(num_kv_heads):
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
-        use_flash_attention=True,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
 

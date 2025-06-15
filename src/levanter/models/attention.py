@@ -1017,7 +1017,7 @@ class AttentionConfig:
     """Configuration for attention layers.
 
     Args:
-        hidden_dim: dimension of the hidden state
+        Embed: Axis for the embedding dimension
         num_heads: number of attention heads
         num_kv_heads: number of attention heads for keys and values. Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA.
         use_bias: whether to use bias in linear layers
@@ -1025,9 +1025,10 @@ class AttentionConfig:
         attn_backend: which attention backend to use. If None, will use the default for the current accelerator.
         flash_attention_block_size: block size for flash attention
         rope: configuration for rotary position embeddings. If None, no rotary embeddings will be applied.
+        scaling_factor: scaling factor for attention scores. If None, will use 1/sqrt(head_size).
     """
 
-    hidden_dim: int
+    Embed: Axis
     num_heads: int
     num_kv_heads: int
     use_bias: bool = False
@@ -1035,6 +1036,7 @@ class AttentionConfig:
     attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
     rope: Optional[RotaryEmbeddingsConfig] = None
+    scaling_factor: Optional[float] = None
 
     def __post_init__(self):
         assert (
@@ -1043,7 +1045,7 @@ class AttentionConfig:
 
     @property
     def head_size(self) -> int:
-        return self.hidden_dim // self.num_heads
+        return self.Embed.size // self.num_heads
 
     @property
     def q_heads_per_group(self) -> int:
@@ -1076,25 +1078,37 @@ class Attention(eqx.Module):
     o_proj: hnn.Linear  # projection from Heads to output
 
     @staticmethod
-    def init(config: AttentionConfig, Embed: Axis, *, key) -> "Attention":
+    def init(config: AttentionConfig, *, key) -> "Attention":
         use_bias = config.use_bias
 
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=Embed,
+            In=config.Embed,
             Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize),
             key=k_q,
             use_bias=use_bias,
             out_first=True,
         )
         k_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
+            In=config.Embed,
+            Out=(config.KVHeads, config.HeadSize),
+            key=k_k,
+            use_bias=use_bias,
+            out_first=True,
         )
         v_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
+            In=config.Embed,
+            Out=(config.KVHeads, config.HeadSize),
+            key=k_v,
+            use_bias=use_bias,
+            out_first=True,
         )
         o_proj = hnn.Linear.init(
-            In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True
+            In=(config.Heads, config.HeadSize),
+            Out=config.Embed,
+            key=k_o,
+            use_bias=use_bias,
+            out_first=True,
         )
         return Attention(config, q_proj, k_proj, v_proj, o_proj)
 
@@ -1133,6 +1147,7 @@ class Attention(eqx.Module):
             use_flash=c.use_flash_attention,
             attn_backend=c.attn_backend,
             flash_block_size=c.flash_attention_block_size,
+            scaling_factor=c.scaling_factor,
         )
 
         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
