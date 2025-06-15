@@ -1,3 +1,5 @@
+import math
+
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -166,6 +168,7 @@ def test_llama_attention_uses_te(q_heads):
         v,
         mask,
         attention_dtype=jnp.bfloat16,
+        scaling_factor=1 / math.sqrt(D.size),
     )
 
     assert_trees_all_close(out.array, 0.0)
@@ -193,6 +196,7 @@ def test_gpt2_attention_uses_te():
         v,
         mask,
         attention_dtype=jnp.bfloat16,
+        scaling_factor=1 / math.sqrt(D.size),
     )
     assert_trees_all_close(out.array, 0.0)
 
@@ -215,7 +219,18 @@ def test_tpu_splash_attention():
     mask = AttentionMask.causal()
 
     with jax.sharding.Mesh(jax.devices(), ("dp",)):
-        flash_out = _tpu_splash_attention(QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE)
+        flash_out = _tpu_splash_attention(
+            QPos,
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            inference=True,
+            mask=mask,
+            block_size=BLOCK_SIZE,
+            scaling_factor=1 / math.sqrt(Head.size),
+        )
         hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
         assert hax_out.axes == flash_out.axes
         assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
