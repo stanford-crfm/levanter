@@ -1,4 +1,5 @@
 import functools
+import math
 
 import equinox
 import jax.numpy as jnp
@@ -165,7 +166,16 @@ def test_tpu_flash_attention():
         v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
 
         flash_out = levanter.models.attention._tpu_splash_attention(
-            QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE
+            QPos,
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            inference=True,
+            mask=mask,
+            block_size=BLOCK_SIZE,
+            scaling_factor=1 / math.sqrt(Key.size),  # Use the default scaling factor
         )
         hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
 
