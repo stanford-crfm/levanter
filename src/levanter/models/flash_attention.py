@@ -70,6 +70,10 @@ def flash_attention(
             QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
         )
 
+    if scaling_factor is None:
+        if Key.size == 0:
+            raise ValueError("Key axis must be non-empty")
+        scaling_factor = 1 / jnp.sqrt(Key.size)
     q = q * scaling_factor
 
     return _flash_attention(
