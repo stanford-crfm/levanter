@@ -1,3 +1,5 @@
+import math
+
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -166,6 +168,7 @@ def test_llama_attention_uses_te(q_heads):
         v,
         mask,
         attention_dtype=jnp.bfloat16,
+        scaling_factor=1 / math.sqrt(D.size),
     )
 
     assert_trees_all_close(out.array, 0.0)
@@ -193,6 +196,7 @@ def test_gpt2_attention_uses_te():
         v,
         mask,
         attention_dtype=jnp.bfloat16,
+        scaling_factor=1 / math.sqrt(D.size),
     )
     assert_trees_all_close(out.array, 0.0)
 
