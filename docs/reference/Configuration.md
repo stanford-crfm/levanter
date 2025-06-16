@@ -176,6 +176,44 @@ checkpointer:
 This policy will save permanent checkpoints every 1,000 steps until 10,000 steps, then every 5,000 steps until 40,000 steps, then every 10,000 steps.
 The default step-based checkpoint policy is to save a checkpoint every 10,000 steps.
 
+### JAX Compilation Cache Configuration
+
+Levanter allows you to configure JAX's persistent compilation cache. This can significantly speed up startup times by caching compiled JAX functions.
+The primary way to specify the cache directory is via the `jax_compilation_cache_dir` field in the `TrainerConfig`.
+
+| Parameter                   | Description                                                                                               | Type            | Default                                                                   |
+|-----------------------------|-----------------------------------------------------------------------------------------------------------|-----------------|---------------------------------------------------------------------------|
+| `jax_compilation_cache_dir` | Path to a directory to store the persistent compilation cache. Can be a local path or a GCS path.         | `Optional[str]` | `None` (JAX default, usually `~/.cache/jax` or platform specific)         |
+
+Other JAX compilation cache settings (like `jax_persistent_cache_min_compile_time_secs`, `jax_persistent_cache_min_entry_size_bytes`, `jax_persistent_cache_enable_xla_caches`, etc.)
+can be configured by including them in the `trainer.jax_config` dictionary. This dictionary allows you to pass arbitrary JAX configuration options.
+For more details on all available JAX compilation cache options and how JAX's compilation cache works, please refer to the [official JAX documentation](https://docs.jax.dev/en/latest/persistent_compilation_cache.html).
+
+Here's an example of how to configure these options in your YAML file:
+
+```yaml
+trainer:
+  # ... other trainer configs
+  jax_compilation_cache_dir: "/path/to/your/jax_cache"  # Or "gs://your-bucket/jax_cache"
+
+  # To set other JAX compilation cache options or any other JAX global flag:
+  jax_config:
+    jax_persistent_cache_min_compile_time_secs: 5.0
+    jax_persistent_cache_min_entry_size_bytes: 1024
+    jax_persistent_cache_enable_xla_caches: "all" # or "xla_gpu_kernel_cache_file", etc.
+    # ... other jax settings like jax_threefry_partitionable
+```
+
+Alternatively, JAX's compilation cache directory can be set using the `JAX_COMPILATION_CACHE_DIR` environment variable.
+This method is particularly useful for workflows involving `launch.py` on TPUs, as environment variables can be specified in the `.levanter.yaml` configuration file used by `launch.py`.
+For more details on using `launch.py`, see the [Using launch.py](../Getting-Started-TPU-VM.md#using-launchpy) section in the TPU VM guide.
+
+Example `.levanter.yaml` snippet:
+```yaml
+env:
+  JAX_COMPILATION_CACHE_DIR: "gs://your-compile-cache-bucket/path"
+  # ... other environment variables
+```
 
 
 ## Trackers and Logging

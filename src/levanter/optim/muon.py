@@ -6,6 +6,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import optax
+from jax.sharding import PartitionSpec
 from optax import tree_utils as otu
 
 import haliax
@@ -26,10 +27,10 @@ class MuonConfig(OptimizerConfig):
     """
 
     lr: float = 0.02
-    muon_to_adam_lr: float = 0.25  # Scaling factor between AdamW and Muon learning rates
+    adam_lr: float = 6e-4  # Adam LR
     momentum: float = 0.95
     nesterov: bool = True
-    backend_steps: int = 10  # Number of steps for Newton-Schulz orthogonalization
+    backend_steps: int = 5  # Number of steps for Newton-Schulz orthogonalization
     weight_decay: float = 0.0
     beta1: float = 0.9
     beta2: float = 0.95
@@ -42,10 +43,9 @@ class MuonConfig(OptimizerConfig):
         Creates the optimizer.
         """
         learning_rate_schedule = self.lr_scheduler(num_train_steps)
+        adam_lr_schedule = self.lr_scheduler(num_train_steps, override_lr=self.adam_lr)
 
-        def optimizer(learning_rate):
-            adam_lr = learning_rate * self.muon_to_adam_lr
-
+        def optimizer(learning_rate, adam_lr):
             def muon_transform():
                 components = []
                 components.append(scale_with_muon(self.momentum, self.nesterov, self.backend_steps, self.muon_epsilon))
@@ -73,7 +73,7 @@ class MuonConfig(OptimizerConfig):
 
             return optax.multi_transform(transformations, self.create_mask)
 
-        return optax.inject_hyperparams(optimizer)(learning_rate=learning_rate_schedule)
+        return optax.inject_hyperparams(optimizer)(learning_rate=learning_rate_schedule, adam_lr=adam_lr_schedule)
 
     def create_mask(self, params):
         """
@@ -130,7 +130,8 @@ def scale_with_muon(momentum=0.95, nesterov=True, steps=5, muon_eps=1e-8):
         def transform_linear_layer(layer: haliax.nn.Linear):
             assert layer.weight.ndim == 2
             # steps is now a concrete int
-            updated_weight_array = zeropower_via_newtonschulz5(layer.weight.array, steps=steps, eps=muon_eps)
+            array = layer.weight.array
+            updated_weight_array = zeropower_via_newtonschulz5(array, steps=steps, eps=muon_eps)
 
             scale = jnp.sqrt(jnp.maximum(1, updated_weight_array.shape[0] / updated_weight_array.shape[1]))
             updated_weight_array *= scale
@@ -146,7 +147,7 @@ def scale_with_muon(momentum=0.95, nesterov=True, steps=5, muon_eps=1e-8):
     return optax.GradientTransformation(init_fn, update_fn)
 
 
-def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
+def zeropower_via_newtonschulz5(X, steps=5, eps=1e-7):
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G.
     """
@@ -154,11 +155,25 @@ def zeropower_via_newtonschulz5(X, steps=10, eps=1e-7):
     a, b, c = (3.4445, -4.7750, 2.0315)
     X /= jnp.linalg.norm(X) + eps  # Ensure top singular value <= 1
     transpose = False
+    # assert X.shape[0] <= X.shape[1], "X should have more columns than rows for this implementation."
+    # TODO: we should be smarter and also transpose if they're ~the same and X is already sharded along first axis
     if X.shape[0] > X.shape[1]:
         X = X.T
         transpose = True
-    for _ in range(steps):
+
+    # TODO: because most things are in fact scan layers [L, m, n] (we vmap L)
+    # it would be smarter to shard the layers so that basically each device gets its own layer
+    # This doesn't quite optimally use the compute because there are usually more devices than layers, so we should
+    # really do something even fancier.
+    # It would be even smarter to stack similar layers together, but that would require more even more work
+    # Let's call this good enough until we think it's not good enough
+    if len(haliax.partitioning._get_mesh().devices):
+        X = jax.lax.with_sharding_constraint(X, PartitionSpec(None, ("data", "model")))
+
+    for i in range(steps):
         A = X @ X.T
+        # doesn't seem to be necessary, so leaivng it out. When I used inspect_sharding it was a problem, but I dunno
+        # A = jax.lax.with_sharding_constraint(A, PartitionSpec(None, None))  # ensure it's desharded
         B = b * A + c * A @ A
         X = a * X + B @ X
     if transpose:

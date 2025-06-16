@@ -659,7 +659,27 @@ def is_checkpoint_path(path: str) -> bool:
     Check if a given path is a checkpoint path.
     """
     try:
-        return fsspec_utils.exists(path)
+        if not fsspec_utils.exists(path):
+            return False
+        # Sometimes we have incomplete checkpoints due to preemption or other issues.
+        # try to find a metadata file in the path
+        fs, plain_path = _get_fs_and_plain_path(path)
+        metadata_path = os.path.join(plain_path, "metadata.json")
+        if fs.exists(metadata_path):
+            return True
+        # glob
+        # if we don't find a metadata file, we can check if the path has any subdirectories
+        metadata_files = fs.glob(os.path.join(plain_path, "*", "metadata.json"))
+        if len(metadata_files) > 0:
+            return True
+        else:
+            logger.warning(
+                f"While checkpoint path {path} exists, it does not contain a metadata.json file or subdirectories with"
+                " metadata files. Most likely, this path has other data or incomplete checkpoints. Acting as if it is"
+                " not a checkpoint path."
+            )
+            return False
+
     except Exception:  # noqa
         logger.exception(f"Error checking if {path} is a checkpoint path")
         raise
