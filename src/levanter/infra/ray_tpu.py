@@ -408,8 +408,13 @@ def run_on_pod_ray(
             pending_futures = list(futures)
             had_a_failure = False
 
+            # check health of actors in the loop too
+            actor_health_futures = [
+                actor.healthy.remote() for actor in slice_pool
+            ]
+
             while pending_futures and not had_a_failure:
-                finished, pending_futures = ray.wait(pending_futures, num_returns=1)
+                finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
 
                 for f in finished:
                     try:
@@ -422,6 +427,23 @@ def run_on_pod_ray(
                         logger.warning(f"Task {f} failed with unexpected error {e}. Will retry.")
                         had_a_failure = True
                         tpu_results[future_to_index[f]] = TpuRunError(e)
+
+                if had_a_failure:
+                    # skip health checks if we already had a failure
+                    break
+
+                # Check if any actors are unhealthy. We hit this if it's been 10 seconds or we got a result
+                try:
+                    actor_healths = ray.get(actor_health_futures)
+                except RayError as e:
+                    logger.warning("Failed to get actor healths", exc_info=e)
+                    # assume things are bad
+                    had_a_failure = True
+                else:
+                    for i, healthy in enumerate(actor_healths):
+                        if not healthy:
+                            logger.warning(f"Actor {slice_pool[i]} is unhealthy. Will retry.")
+                            had_a_failure = True
 
             # Proactively cancel jobs if one fails.
             if had_a_failure and pending_futures:
