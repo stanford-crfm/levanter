@@ -164,7 +164,7 @@ class MistralConfig(LlamaConfig):
             upcast_attn=self.upcast_attn,
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
-            rope=self.rope_scaling,
+            rope=self.rope,
         )
 
 
