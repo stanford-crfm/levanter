@@ -10,7 +10,7 @@ from jaxtyping import PRNGKeyArray
 import haliax as hax
 from haliax import Axis, NamedArray, NamedOrNumeric
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.loss import maybe_fused_next_token_loss
 
 

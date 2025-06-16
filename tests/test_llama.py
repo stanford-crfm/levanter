@@ -11,10 +11,10 @@ from jax import random
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.models.attention import Attention, AttentionMask
-from levanter.models.llama import LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
-from levanter.models.rotary import _rotate_half as levanter_rotate_half
+from levanter.layers.attention import AttentionBackend, AttentionMask
+from levanter.models.llama import Attention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
+from levanter.layers.rotary import _rotate_half as levanter_rotate_half
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -156,7 +156,8 @@ def test_llama_attention(use_flash, num_kv_heads):
 
     config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = Attention.init(config=config.to_attention_config(), key=random.PRNGKey(0))  # type: ignore
+    attention_config = config.to_attention_config()
+    attention = Attention.init(config=attention_config, key=random.PRNGKey(0))  # type: ignore
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
@@ -349,6 +350,7 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
         num_heads=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
+        attn_backend=AttentionBackend.DEFAULT if use_flash else AttentionBackend.VANILLA,
         flash_attention_block_size=8 if use_flash else None,
     )
 

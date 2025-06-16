@@ -14,10 +14,11 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.models.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.normalization import LayerNormConfigBase
 from levanter.models.llama import LlamaEmbedding, LlamaMlp  # Gemma attention and MLP is identical to LLama
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -25,7 +26,7 @@ from levanter.utils.types import BlockFoldable
 
 
 silence_transformer_nag()
-from transformers import GemmaConfig as HfGemmaConfig  # noqa: E402
+from transformers import Gemma3Config as HfGemmaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
@@ -36,6 +37,16 @@ from transformers import PretrainedConfig as HfConfig  # noqa: E402
 # * Embedding weights are tied to the LM head
 # * Gemma allows specifying a head dimension independently of the hidden and intermediate dims.
 
+# Gemma 2 adds logit capping and alternating sliding window attention
+# Gemma 3 removes logit capping and replaces with qk-norm, uses 5-1 global/local attention,
+
+
+@LayerNormConfigBase.register_subclass("gemma")
+@dataclass
+class GemmaNormConfig(LayerNormConfigBase):
+    """Configuration for Gemma's custom RMS normalization."""
+    def build(self, axis: AxisSpec) -> "GemmaRMSNorm":
+        return GemmaRMSNorm.init(axis, eps=self.eps, use_weight=self.use_weight, use_bias=self.use_bias)
 
 @LmConfig.register_subclass("gemma")
 @dataclass(frozen=True)
@@ -85,11 +96,20 @@ class GemmaConfig(HFCompatConfig):
     scan_layers: bool = True
 
     use_bias: bool = False
-    rope_theta: float = 10000.0
+    rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
+    rope_local_base_freq: float = 10_000.0
 
     @property
-    def rope(self) -> RotaryEmbeddingsConfig:
-        return DefaultRotaryEmbeddingsConfig(theta=self.rope_theta)
+    def local_rope(self) -> RotaryEmbeddingsConfig:
+        """Local rope config for Gemma."""
+        # HF doesn't document this particularly well, but there are two different Rope configs for
+        # Gemma. The `rope` is used for global attention, and the `local_rope` is used for local attention.
+        return dataclasses.replace(self.rope, theta=self.rope_local_base_freq)
+
+    query_pre_attn_scalar: float | None = None
+    final_logit_softcapping: float | None = None
+    attn_logit_softcapping: float | None = None
+    rms_norm_eps: float = 1e-6
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -99,7 +119,7 @@ class GemmaConfig(HFCompatConfig):
     KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
-    HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
+    HeadSize = property(lambda self: Axis(name="head_size", size=self.head_dim))
 
     def __post_init__(self):
         assert (
@@ -134,6 +154,9 @@ class GemmaConfig(HFCompatConfig):
         assert activation_function is not None, "No activation function found in HF configuration."
         activation_function_enum = getattr(ActivationFunctionEnum, activation_function)
 
+        rope_theta = hf_config.rope_theta
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
+
         return GemmaConfig(
             seq_len=hf_config.max_position_embeddings,
             activation_function=activation_function_enum,
@@ -145,7 +168,11 @@ class GemmaConfig(HFCompatConfig):
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
-            rope_theta=hf_config.rope_theta,
+            rope=rope_config,
+            head_dim=hf_config.head_dim,
+            query_pre_attn_scalar=getattr(hf_config, "query_pre_attn_scalar", hf_config.head_dim),
+            final_logit_softcapping=getattr(hf_config, "final_logit_softcapping", None),
+            attn_logit_softcapping=getattr(hf_config, "attn_logit_softcapping", None),
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: dict | None = None) -> HfGemmaConfig:
@@ -161,6 +188,11 @@ class GemmaConfig(HFCompatConfig):
         if config_overrides is None:
             config_overrides = {}
 
+        rope = self.rope
+        assert isinstance(rope, DefaultRotaryEmbeddingsConfig), \
+            "Only DefaultRotaryEmbeddingsConfig is supported for Gemma."
+        rope_theta, rope_scaling = rope.to_hf_config()
+
         config = HfGemmaConfig(
             max_position_embeddings=self.seq_len,
             hidden_size=self.hidden_dim,
@@ -168,7 +200,7 @@ class GemmaConfig(HFCompatConfig):
             num_hidden_layers=self.num_layers,
             num_attention_heads=self.num_heads,
             num_key_value_heads=self.num_kv_heads,
-            head_dim=self.hidden_dim // self.num_heads,
+            head_dim=self.head_dim,
             hidden_activation=(
                 "gelu_pytorch_tanh" if self.activation_function == "gelu_new" else self.activation_function
             ),
@@ -176,6 +208,11 @@ class GemmaConfig(HFCompatConfig):
             rms_norm_eps=self.layer_norm_epsilon,
             tie_word_embeddings=self.tie_word_embeddings,
             vocab_size=vocab_size,
+            rope_theta=rope_theta,
+            rope_scaling=rope_scaling,
+            query_pre_attn_scalar=self.query_pre_attn_scalar,
+            final_logit_softcapping=self.final_logit_softcapping,
+            attn_logit_softcapping=self.attn_logit_softcapping,
             **config_overrides,
         )
         return config
@@ -207,15 +244,31 @@ class GemmaConfig(HFCompatConfig):
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
             rope=self.rope,
+            qk_norm=GemmaNormConfig(eps=self.norm_eps, use_weight=True, use_bias=False) if self.use_qk_norm else None,
         )
+
+    @property
+    def norm_config(self) -> LayerNormConfigBase:
+        """Get the normalization configuration for Gemma."""
+        return GemmaNormConfig(
+            eps=self.norm_eps,
+            use_weight=True,  # GemmaRMSNorm requires use_weight=True
+            use_bias=False,   # GemmaRMSNorm doesn't support bias
+        )
+
+    def mk_LayerNorm(self, axis: AxisSpec):
+        """Create a layer normalization module using the config."""
+        return self.norm_config.build(axis)
 
 
 class GemmaRMSNorm(LayerNormBase):
     """
     Like Llama, Gemma uses an RMSNorm instead of a layer norm.
 
-    The canonical Gemma model computes the variances calculation in fp32 explicity, so
+    The canonical Gemma model computes the variances calculation in fp32 explicitly, so
     we do the same for compatibility.
+
+    Also note that Gemma's RMSNorm adds 1 to the output, which is different from most RMSNorm implementations.
     """
 
     @classmethod
@@ -247,8 +300,8 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
     config: GemmaConfig = eqx.field(static=True)
     self_attn: Attention
     mlp: LlamaMlp
-    input_layernorm: GemmaRMSNorm
-    post_attention_layernorm: GemmaRMSNorm
+    input_layernorm: LayerNormBase
+    post_attention_layernorm: LayerNormBase
 
     @staticmethod
     def init(config: GemmaConfig, *, key) -> "GemmaDecoderLayer":
@@ -263,8 +316,8 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
             key=k_mlp,
             use_bias=config.use_bias,
         )
-        ln_1 = GemmaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        ln_2 = GemmaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_1 = config.mk_LayerNorm(config.Embed)
+        ln_2 = config.mk_LayerNorm(config.Embed)
 
         return GemmaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
@@ -288,21 +341,20 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
 class GemmaTransformer(ModuleWithStateDictSerialization):
     config: GemmaConfig = eqx.field(static=True)
     layers: BlockFoldable[GemmaDecoderLayer]
-    norm: GemmaRMSNorm
+    norm: LayerNormBase
 
     @staticmethod
     def init(config: GemmaConfig, *, key) -> "GemmaTransformer":
         S = Stacked
         if not config.scan_layers:
             from haliax.nn.scan import BlockSeq
-
             S = BlockSeq
 
         layers = S.init(config.Layers, GemmaDecoderLayer, gradient_checkpointing=config.gradient_checkpointing)(
             config,
             key=shaped_rng_split(key, config.num_layers),
         )
-        ln_f = GemmaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_f = config.mk_LayerNorm(config.Embed)
 
         return GemmaTransformer(config, layers, ln_f)
 

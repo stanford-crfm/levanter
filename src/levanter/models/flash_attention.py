@@ -15,7 +15,7 @@ from haliax import ds
 from haliax.jax_utils import named_call
 from haliax.types import PrecisionLike
 
-from levanter.models.attention import AttentionMask, materialize_mask
+from levanter.layers.attention import AttentionMask, materialize_mask
 
 
 BLOCK_SIZE = 1024
@@ -64,7 +64,7 @@ def flash_attention(
     KPos = k.resolve_axis(KPos)
 
     if QPos.size < block_size or KPos.size < block_size:
-        from levanter.models.attention import simple_attention_with_dropout
+        from levanter.layers.attention import simple_attention_with_dropout
 
         return simple_attention_with_dropout(
             QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key

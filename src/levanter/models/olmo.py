@@ -13,11 +13,12 @@ from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
+from haliax.nn.normalization import LayerNorm
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
+from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -224,6 +225,21 @@ class Olmo2Config(HFCompatConfig):
             glu=True,
         )
 
+    def to_attention_config(self) -> AttentionConfig:
+        """Convert this Olmo2Config to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.attention_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+            use_qk_norm=True,  # OLMo2 always uses QK normalization
+            qk_norm_type=LayerNorm,  # OLMo2 uses LayerNorm for QK normalization
+        )
+
 
 class Olmo2MLP(eqx.Module):
     """Multi-layer Perceptron for Olmo2
@@ -345,7 +361,7 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
 
 class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
     config: Olmo2Config = eqx.field(static=True)
-    self_attn: Olmo2Attention
+    self_attn: Attention
     mlp: Olmo2MLP
     post_attention_layernorm: hnn.RmsNorm
     post_feedforward_layernorm: hnn.RmsNorm
@@ -354,7 +370,8 @@ class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
     def init(config: Olmo2Config, *, key) -> "Olmo2DecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn = Olmo2Attention.init(config, key=k_attn)
+        attn_config = config.to_attention_config()
+        attn = Attention.init(attn_config, key=k_attn)
         mlp = Olmo2MLP.init(
             config.Embed,
             config.Mlp,

@@ -15,7 +15,7 @@ from haliax.jax_utils import named_call
 from haliax.state_dict import ModuleWithStateDictSerialization, StateDict, with_prefix
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, LmWithHfSerializationMixin
-from levanter.models.attention import AttentionMask, materialize_mask
+from levanter.layers.attention import AttentionMask, materialize_mask
 from levanter.models.gpt2 import Gpt2Config, Gpt2Transformer
 from levanter.models.lm_model import LmConfig
 from levanter.utils.activation import ActivationFunctionEnum

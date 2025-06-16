@@ -11,8 +11,8 @@ from chex import assert_trees_all_close
 import haliax as hax
 import haliax.nn as hnn
 
-import levanter.models.attention
-from levanter.models.attention import AttentionMask, simple_attention_with_dropout
+import levanter.layers.attention
+from levanter.layers.attention import AttentionMask, simple_attention_with_dropout
 from levanter.models.flash_attention import flash_attention
 
 
@@ -165,7 +165,7 @@ def test_tpu_flash_attention():
         k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
         v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
 
-        flash_out = levanter.models.attention._tpu_splash_attention(
+        flash_out = levanter.layers.attention._tpu_splash_attention(
             QPos,
             KPos,
             Key,

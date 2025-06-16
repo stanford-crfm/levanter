@@ -17,7 +17,7 @@ from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
 import haliax as hax
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig

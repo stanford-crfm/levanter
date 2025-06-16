@@ -39,6 +39,8 @@ class RotaryEmbeddings(eqx.Module):
 
 @dataclass
 class RotaryEmbeddingsConfig(abc.ABC, draccus.ChoiceRegistry):
+    theta: float = 10000.0
+
     @abc.abstractmethod
     def build(self, HeadSize: Axis, Pos: Axis) -> RotaryEmbeddings:
         pass

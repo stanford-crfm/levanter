@@ -14,9 +14,10 @@ from haliax.nn.scan import ScanCheckpointPolicy, Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.models.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers import LayerNormConfigBase, RmsNormConfig
+from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -163,10 +164,16 @@ class LlamaConfig(HFCompatConfig):
     def model_type(self) -> Type["LlamaLMHeadModel"]:
         return LlamaLMHeadModel
 
-    def mk_LayerNorm(self, axis: Axis) -> hnn.RmsNorm:
-        return hnn.RmsNorm.init(
-            axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
+    @property
+    def norm_config(self) -> LayerNormConfigBase:
+        return RmsNormConfig(
+            use_weight=self.use_layer_norm_weight,
+            use_bias=self.use_bias,
+            eps=self.layer_norm_epsilon,
         )
+
+    def mk_LayerNorm(self, axis: AxisSpec):
+        return self.norm_config.build(axis)
 
     def flops_per_token(self, vocab_size: int):
         return lm_flops_per_token(

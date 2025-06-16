@@ -25,7 +25,7 @@ from levanter.lora import (
     save_merged_hf_model,
     save_peft_pretrained,
 )
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_state import TrainerState
 from levanter.utils.tree_utils import inference_mode

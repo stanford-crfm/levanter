@@ -10,7 +10,7 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.attention import Attention, AttentionMask
+from levanter.layers.attention import Attention, AttentionMask
 from levanter.models.gemma import GemmaConfig, GemmaDecoderLayer, GemmaLMHeadModel, GemmaRMSNorm
 from levanter.models.llama import LlamaMlp
 from levanter.utils.jax_utils import parameter_count
@@ -318,3 +318,59 @@ def test_gemma_mlp():
     hf_out = hf_mlp(x_torch)
 
     chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
+
+
+def test_gemma2_roundtrip():
+    import torch
+    from transformers import AutoModelForCausalLM, Gemma2ForCausalLM
+
+    config = GemmaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_kv_heads=4,
+        gradient_checkpointing=False,
+    )
+    converter = config.hf_checkpoint_converter()
+
+    Vocab = hax.Axis("vocab", 1000)
+    hf_config = config.to_hf_config(Vocab.size)
+
+    # Make input and attn_mask
+    input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
+    attn_mask = AttentionMask.causal()
+    input_torch = torch.from_numpy(np.array(input.array)).to(torch.int32).unsqueeze(0)
+
+    torch.random.manual_seed(0)
+
+    torch_model = Gemma2ForCausalLM(hf_config)
+    torch_model.eval()
+
+    torch_out = torch_model(input_torch)
+    torch_out = torch_out.logits[0].detach().cpu().numpy()
+    torch_out = jax.nn.softmax(torch_out, axis=-1)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        torch_model.save_pretrained(f"{tmpdir}/torch_model")
+
+        model = converter.load_pretrained(
+            converter.default_config.model_type, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+        )
+
+        def compute(input):
+            model_output = model(input, attn_mask=attn_mask)
+            return hax.nn.softmax(model_output, axis=model.Vocab)
+
+        compute = jax.jit(compute)
+        jax_out = compute(input).array
+
+        assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-3, atol=1e-3).all(), f"{torch_out} != {jax_out}"
+
+        converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
+        torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
+        torch_model2.eval()
+
+        torch_out2 = torch_model2(input_torch)
+        torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
+        torch_out2

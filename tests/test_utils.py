@@ -19,7 +19,7 @@ import haliax as hax
 from levanter.checkpoint import _get_fs_and_plain_path
 from levanter.data._preprocessor import BatchProcessor
 from levanter.data.sharded_datasource import ShardedDataSource
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 
 
 T = TypeVar("T")
