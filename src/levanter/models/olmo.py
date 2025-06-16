@@ -90,12 +90,14 @@ class Olmo2Config(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["Olmo2Config"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["Olmo2Config"]:  # type: ignore
         return HFCheckpointConverter(
             self.__class__,
-            reference_checkpoint=self.reference_checkpoint,
+            reference_checkpoint=self.reference_checkpoint if ref_checkpoint is None else ref_checkpoint,
             trust_remote_code=True,
-            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
+            tokenizer=ref_checkpoint if self.tokenizer is None else self.tokenizer,
             HfConfigClass=HfOlmo2Config,
         )
 
@@ -162,6 +164,53 @@ class Olmo2Config(HFCompatConfig):
         return hnn.RmsNorm.init(
             axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
         )
+
+    def total_trainable_params(self, vocab_size):
+        """Calculate total trainable parameters for OLMo 2 model.
+
+        Args:
+            vocab_size: Size of the vocabulary
+
+        Returns:
+            int: Total number of trainable parameters
+        """
+        # Token embedding parameters (input embeddings)
+        token_embedding = vocab_size * self.hidden_dim
+
+        # Head dimensions
+        head_size = self.hidden_dim // self.num_heads
+
+        # Attention module parameters
+        q_proj = self.hidden_dim * head_size * self.num_heads
+        kv_proj = 2 * self.hidden_dim * head_size * self.num_kv_heads
+        o_proj = head_size * self.num_heads * self.hidden_dim
+        attn = q_proj + kv_proj + o_proj
+
+        # MLP parameters (with SiLU activation using gate and up projections)
+        mlp = 3 * self.hidden_dim * self.intermediate_dim
+
+        # Layer norm parameters for standard attention and MLP norms
+        # RMSNorm only has a single weight vector per dimension (no bias)
+        layer_norm = 2 * self.hidden_dim  # post-attention and post-feedforward norms
+
+        # Additional norms for QK normalization in each attention layer
+        qk_norm = 2 * self.hidden_dim  # q_norm and k_norm (OLMo 2 applies norm to Q and K)
+
+        # Total parameters per transformer layer
+        transformer_layer = attn + mlp + layer_norm + qk_norm
+
+        # All transformer layers plus final layer norm
+        transformer = self.num_layers * transformer_layer + self.hidden_dim  # plus final rmsnorm
+
+        # Input embedding norm if used
+        if hasattr(self, "input_embedding_norm") and self.input_embedding_norm:
+            transformer += self.hidden_dim
+
+        # Total parameters (transformer + embeddings + LM head)
+        # LM head shares weights with token embeddings if tie_word_embeddings is True
+        lm_head = 0 if (hasattr(self, "tie_word_embeddings") and self.tie_word_embeddings) else token_embedding
+
+        return transformer + token_embedding + lm_head
 
     def flops_per_token(self, vocab_size: int):
         return lm_flops_per_token(

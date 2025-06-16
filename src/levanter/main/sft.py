@@ -18,14 +18,13 @@ import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data import PermutationDataset, batched
-from levanter.data.dataset import AsyncDataset
+from levanter.data.dataset import AsyncDataset, EpochDataset
 from levanter.data.loader import stack_batches
 from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
-    EpochDataset,
     SupervisedSourceConfig,
-    mk_cached_sft_dataset,
+    mk_single_turn_cached_sft_dataset,
     mk_supervised_dataset,
 )
 from levanter.models.llama import LlamaConfig
@@ -163,7 +162,7 @@ def train(config: SFTConfig):
             input_role=config.input_role,
             output_role=config.output_role,
         )
-        train_dataset = mk_cached_sft_dataset(chat_config, tokenizer, model_config.Pos)
+        train_dataset = mk_single_turn_cached_sft_dataset(chat_config, tokenizer, model_config.Pos)
     else:
         assert config.supervised_data is not None
         if isinstance(config.supervised_data, dict):
@@ -313,7 +312,7 @@ def reinitialize_some_tokens(
     So we (Will, specifically) realized that we were in this situation where we never saw SFT tokens during pretraining,
     which meant they had much lower norm than tokens that had been seen.
 
-    https://github.com/stanford-crfm/marin/issues/954
+    https://github.com/marin-community/marin/issues/954
     """
     ids_to_reinit = [tokenizer.convert_tokens_to_ids(token) for token in tokens_to_reinit]
     if len(ids_to_reinit) == 0:

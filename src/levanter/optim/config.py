@@ -3,7 +3,7 @@ import re
 import warnings
 from dataclasses import dataclass
 from functools import partial
-from typing import Optional
+from typing import Callable, Optional
 
 import draccus
 import equinox as eqx
@@ -15,7 +15,92 @@ from jax import numpy as jnp
 import haliax
 
 import levanter.tracker
+from levanter.optim.skipstep import SkipStepConfig
+from levanter.optim.util import log_norm_passthrough, scan_aware_clip_by_block_rms
 from levanter.utils.jax_utils import leaf_key_paths
+
+
+@dataclass(frozen=True)
+class LrScheduleContext:
+    warmup_steps: int
+    decay_steps: int
+    learning_rate: float
+    min_lr_ratio: float
+    min_lr: float
+
+
+class LrSchedule(draccus.ChoiceRegistry, abc.ABC):
+    @abc.abstractmethod
+    def build(self, ctx: LrScheduleContext) -> Callable:
+        raise NotImplementedError
+
+
+@LrSchedule.register_subclass("constant")
+@dataclass
+class ConstantLrSchedule(LrSchedule):
+    def build(self, ctx: LrScheduleContext):
+        return optax.constant_schedule(ctx.learning_rate)
+
+
+@LrSchedule.register_subclass("cosine")
+@dataclass
+class CosineLrSchedule(LrSchedule):
+    exponent: float = 1.0
+
+    def build(self, ctx: LrScheduleContext):
+        return optax.cosine_decay_schedule(ctx.learning_rate, ctx.decay_steps, ctx.min_lr_ratio, self.exponent)
+
+
+@LrSchedule.register_subclass("linear")
+@dataclass
+class LinearLrSchedule(LrSchedule):
+    def build(self, ctx: LrScheduleContext):
+        return optax.linear_schedule(ctx.learning_rate, ctx.min_lr, ctx.decay_steps)
+
+
+@LrSchedule.register_subclass("inv_sqrt")
+@dataclass
+class InvSqrtLrSchedule(LrSchedule):
+    timescale: float = 10000
+
+    def build(self, ctx: LrScheduleContext):
+        return _inv_sqrt_decay_schedule(ctx.learning_rate, ctx.min_lr, ctx.warmup_steps, self.timescale)
+
+
+@LrSchedule.register_subclass("inv")
+@dataclass
+class InvLrSchedule(LrSchedule):
+    def build(self, ctx: LrScheduleContext):
+        return _inv_decay_schedule(ctx.learning_rate, ctx.min_lr, ctx.decay_steps)
+
+
+@LrSchedule.register_subclass("power")
+@dataclass
+class PowerLrSchedule(LrSchedule):
+    # Power Scheduler: A Batch Size and Token Number Agnostic Learning Rate Scheduler (Shen et al., 2024)
+    # https://arxiv.org/abs/2408.13359
+    # The scheduler and default hyperparameters are intended for use with maximal update parametrization
+    # (mup), as described in the paper. The scheduler may work without mup.
+
+    batch_size: int
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
+    seq_length: int
+    """Required for the power learning rate schedule to determine number of tokens trained on so far."""
+    a: float = 4.6
+    """Learning rate amplitude for the power learning rate schedule. Must be a positive number."""
+    b: float = -0.51
+    """Power-law exponent for the power learning rate schedule. Must be a negative number."""
+
+    def __post_init__(self):
+        if self.a <= 0 or self.b >= 0:
+            raise ValueError("Power schedule expects a > 0 and b < 0")
+
+    def build(self, ctx: LrScheduleContext):
+        def schedule(step):
+            tokens_trained = step * self.batch_size * self.seq_length
+            return jnp.minimum(ctx.learning_rate, self.batch_size * self.a * tokens_trained**self.b)
+
+        return schedule
 
 
 @dataclass
@@ -38,7 +123,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     cycles: int | list[int] | None = None
     """Number of cycles or a list of cycle endpoints. Can use at most one of cycle_length, cycles, or haps."""
 
-    lr_schedule: str = "cosine"  # constant, cosine, linear
+    lr_schedule: LrSchedule | str = "cosine"  # constant, cosine, linear
     haps: Optional[list[int]] = None
     """Deprecated."""
     weight_decay_modules: Optional[list[str] | str] = None
@@ -147,7 +232,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
 
             return mask_fn
 
-    def lr_scheduler(self, num_train_steps):
+    def lr_scheduler(self, num_train_steps, override_lr=None):
         if self.cooldown is not None:
             warnings.warn("cooldown is deprecated. Just use the normal schedule.", DeprecationWarning)
             cooldown_steps = _convert_frac_or_steps(self.cooldown, num_train_steps)
@@ -157,7 +242,11 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
         total_main_steps = num_train_steps - cooldown_steps
         cooldown_points = self._get_cycle_minima(total_main_steps)
 
-        min_lr = self.learning_rate * self.min_lr_ratio
+        learning_rate = self.learning_rate
+        if override_lr is not None:
+            learning_rate = override_lr
+
+        min_lr = learning_rate * self.min_lr_ratio
 
         schedules = []
         boundaries = []
@@ -172,7 +261,7 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
                 warmup_steps = _convert_frac_or_steps(self.rewarmup, cycle_steps)
 
             if warmup_steps != 0:
-                warmup = optax.linear_schedule(previous_end, self.learning_rate, warmup_steps)
+                warmup = optax.linear_schedule(previous_end, learning_rate, warmup_steps)
                 schedules.append(warmup)
                 boundaries.append(start + warmup_steps)
 
@@ -184,23 +273,36 @@ class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
             stable_steps = cycle_steps - warmup_steps - lr_decay_steps
 
             if stable_steps != 0:
-                stable = optax.constant_schedule(self.learning_rate)
+                stable = optax.constant_schedule(learning_rate)
                 schedules.append(stable)
                 boundaries.append(start + warmup_steps + stable_steps)
 
-            match self.lr_schedule:
-                case "constant":
-                    schedule = optax.constant_schedule(self.learning_rate)
-                case "cosine":
-                    schedule = optax.cosine_decay_schedule(self.learning_rate, lr_decay_steps, self.min_lr_ratio)
-                case "linear":
-                    schedule = optax.linear_schedule(self.learning_rate, min_lr, lr_decay_steps)
-                case "inv_sqrt":
-                    schedule = _inv_sqrt_decay_schedule(self.learning_rate, min_lr, warmup_steps, 10000)
-                case "inv":
-                    schedule = _inv_decay_schedule(self.learning_rate, min_lr, lr_decay_steps)
-                case _:
-                    raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+            if isinstance(self.lr_schedule, str):
+                match self.lr_schedule:
+                    case "constant":
+                        schedule = optax.constant_schedule(learning_rate)
+                    case "cosine":
+                        schedule = optax.cosine_decay_schedule(learning_rate, lr_decay_steps, self.min_lr_ratio)
+                    case "linear":
+                        schedule = optax.linear_schedule(learning_rate, min_lr, lr_decay_steps)
+                    case "inv_sqrt":
+                        schedule = _inv_sqrt_decay_schedule(learning_rate, min_lr, warmup_steps, 10000)
+                    case "inv":
+                        schedule = _inv_decay_schedule(learning_rate, min_lr, lr_decay_steps)
+                    case _:
+                        raise ValueError(f"Unknown lr_schedule: {self.lr_schedule}")
+            elif isinstance(self.lr_schedule, LrSchedule):
+                schedule = self.lr_schedule.build(
+                    LrScheduleContext(
+                        warmup_steps=warmup_steps,
+                        decay_steps=lr_decay_steps,
+                        learning_rate=learning_rate,
+                        min_lr_ratio=self.min_lr_ratio,
+                        min_lr=min_lr,
+                    )
+                )
+            else:
+                raise ValueError(f"lr_schedule must be a string or an instance of LrSchedule, got {self.lr_schedule}")
 
             previous_end = schedule(lr_decay_steps)
 
@@ -302,9 +404,31 @@ class AdamConfig(OptimizerConfig):
     beta2: float = 0.95
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
+    nesterov: bool = False
+    update_rms_clipping: Optional[float] = None
+    """
+    If set, this will use RMS clipping on the update, a la Adafactor or StableAdamW (https://arxiv.org/pdf/2304.13013)
+
+    (Note that this is distinct from StableAdamW b/c we clip on RMS(m/sqrt(v)) rather than RMS(g/sqrt(v)).)
+
+    A value of 1.0 is recommended for most models, but you can set it to None to disable RMS clipping.
+    """
+
+    skip_bad_steps: SkipStepConfig | int | bool = False
+    """
+    If set, defines the configuration for skipping steps when gradients are too large.
+
+    int means history length, bool means True for default config, False for no skipping.
+
+    "Bad" here means either the loss or grad norm is much much larger than the average of the last
+    `rolling_interval_length` steps. (Default is 128 steps, with a sigma factor of 6.0)
+
+    See https://github.com/allenai/OLMo-core/blob/main/src/olmo_core/optim/skip_step_optimizer.py
+    """
 
     def build(self, num_train_steps):
         """Creates the optimizer"""
+
         # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
         def _optimizer(learning_rate):
             components = []
@@ -312,7 +436,54 @@ class AdamConfig(OptimizerConfig):
             if self.max_grad_norm:
                 components.append(optax.clip_by_global_norm(self.max_grad_norm))
 
-            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon))
+            components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon, nesterov=self.nesterov))
+
+            if self.weight_decay > 0:
+                components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
+
+            if self.update_rms_clipping is not None:
+                components.append(log_norm_passthrough("optim/pre_clip_update_norm"))
+                components.append(scan_aware_clip_by_block_rms(self.update_rms_clipping))
+                components.append(log_norm_passthrough("optim/post_clip_update_norm"))
+
+            # - learning rate for descent
+            components.append(optax.scale(-learning_rate))
+
+            optimizer = optax.chain(*components)
+
+            if self.skip_bad_steps:
+                optimizer = SkipStepConfig.from_bool_int_or_config(self.skip_bad_steps).wrap(optimizer)
+
+            return optimizer
+
+        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+
+
+@OptimizerConfig.register_subclass("lion")
+@dataclass
+class LionConfig(OptimizerConfig):
+    """
+    Lion optimizer configuration
+    cf:
+    Original Paper: https://arxiv.org/abs/2302.06675
+    """
+
+    beta1: float = 0.9
+    beta2: float = 0.95
+    epsilon: float = 1e-8
+    max_grad_norm: Optional[float] = 1.0
+
+    def build(self, num_train_steps):
+        """Creates the optimizer"""
+
+        # indirection makes it work with optax.inject_hyperparams so we can log the learning rate
+        def _optimizer(learning_rate):
+            components = []
+
+            if self.max_grad_norm:
+                components.append(optax.clip_by_global_norm(self.max_grad_norm))
+
+            components.append(optax.scale_by_lion(self.beta1, self.beta2))
 
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
@@ -324,4 +495,6 @@ class AdamConfig(OptimizerConfig):
 
             return optimizer
 
-        return optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+        optimizer_instance = optax.inject_hyperparams(_optimizer)(learning_rate=self.lr_scheduler(num_train_steps))
+
+        return optimizer_instance

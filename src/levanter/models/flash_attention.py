@@ -1,7 +1,6 @@
 # cf https://github.com/lucidrains/flash-attention-jax
 # cf https://tridao.me/publications/flash2/flash2.pdf
 # cf https://arxiv.org/pdf/2205.14135.pdf
-import math
 from typing import Optional, Tuple
 
 import equinox
@@ -39,6 +38,7 @@ def flash_attention(
     block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
+    scaling_factor: float | None = None,
 ):
     """
     Flash Attention impl, vaguely following the v2 paper.
@@ -70,8 +70,11 @@ def flash_attention(
             QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
         )
 
-    # premultiply by 1/sqrt(d_k) for normal dot product attention
-    q = q / math.sqrt(float(q.axis_size(Key)))
+    if scaling_factor is None:
+        if Key.size == 0:
+            raise ValueError("Key axis must be non-empty")
+        scaling_factor = 1 / jnp.sqrt(Key.size)
+    q = q * scaling_factor
 
     return _flash_attention(
         (q, k, v),

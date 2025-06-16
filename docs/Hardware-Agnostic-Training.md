@@ -25,12 +25,12 @@ python src/levanter/main/train_lm.py \
 
 In our example, we used 2 GPUs and a batch size of 256.
 
-We have documentation on [getting started with training](Getting-Started-Training.md) in Levanter, the [configuration file](Configuration-Guide.md), and [training on your own dataset](Training-On-Your-Data.md) that you should check out for more details. We also have a notebook tutorial on [how to add FSDP to custom architectures](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) implemented in Levanter with Haliax.
+We have documentation on [getting started with training](Getting-Started-Training.md) in Levanter, the [configuration file](./reference/Configuration.md), and [training on your own dataset](Training-On-Your-Data.md) that you should check out for more details. We also have a notebook tutorial on [how to add FSDP to custom architectures](https://colab.research.google.com/drive/1QX4yH3zRFF3Xiibf1aahETcSQ5nbcUMz) implemented in Levanter with Haliax.
 
 ### How the Model Checkpoint is Saved
 By default, checkpoints are saved every 15 minutes, and every 10000 training steps.
 The frequency of time-based checkpoint saves can be adjusted by configuring the `checkpointer.save_interval` parameter in your training command.
-(See the [configuration guide](Configuration-Guide.md) for more details on how to configure the checkpointer.)
+(See the [configuration guide](./reference/Configuration.md) for more details on how to configure the checkpointer.)
 
 This parameter accepts any reasonable time phrase (15min, 60s, etc.), that specifies the interval between each checkpoint save.
 

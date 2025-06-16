@@ -1,5 +1,11 @@
 # Custom Fine-Tuning: Alpaca
 
+
+!!! warning
+
+    This tutorial has been superseded by Levanter now supporting chat and supervised datasets directly in the main
+    entry points. See the [Training Data Guide](./guides/Training-Data-Guide.md) for more information.
+
 While Levanter's main focus is pretraining, we can also use it for fine-tuning.
 As an example, we'll show how to reproduce [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html),
 using [Levanter](https://github.com/stanford-crfm/levanter) and either [Llama 1](https://arxiv.org/abs/2302.13971) or [Llama 2](https://ai.meta.com/llama/) 7B.

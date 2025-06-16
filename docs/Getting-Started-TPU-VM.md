@@ -89,8 +89,8 @@ env:
     WANDB_ENTITY:
     WANDB_PROJECT:
     HF_TOKEN:
-    TPU_STDERR_LOG_LEVEL: 0
-    TPU_MIN_LOG_LEVEL: 0
+    TPU_STDERR_LOG_LEVEL: 2
+    TPU_MIN_LOG_LEVEL: 2
     LIBTPU_INIT_ARGS: <extra args to libtpu>  # Optional
 
 # Optional: specific environment variables for TPUs based on the TPU type
