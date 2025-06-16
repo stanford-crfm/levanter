@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
+from litellm.litellm_core_utils.prompt_templates.common_utils import convert_openai_message_to_only_content_messages
 
 import haliax as hax
 import haliax.nn as hnn
@@ -26,7 +27,9 @@ from levanter.utils.types import BlockFoldable
 
 
 silence_transformer_nag()
-from transformers import Gemma3Config as HfGemmaConfig  # noqa: E402
+from transformers import GemmaConfig as HfGemmaConfig  # noqa: E402
+from transformers import Gemma2Config as HfGemma2Config  # noqa: E402
+from transformers import Gemma3Config as HfGemma3Config  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
@@ -82,8 +85,8 @@ class GemmaConfig(HFCompatConfig):
     head_dim: int = 256
     num_kv_heads: int = 1
     attn_dropout = 0.0
-    norm_eps = 1e-6
 
+    use_bias: bool = False
     input_embedding_norm: bool = False
 
     # Attention-related config
@@ -91,13 +94,15 @@ class GemmaConfig(HFCompatConfig):
     use_flash_attention: bool | None = None
     attn_backend: AttentionBackend | None = None
     flash_attention_block_size: int | None = None
+    use_qk_norm: bool = False
+
+    rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
+    rope_local_base_freq: float = 10_000.0
+    query_pre_attn_scalar: float | None = None
 
     gradient_checkpointing: bool = True
     scan_layers: bool = True
 
-    use_bias: bool = False
-    rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
-    rope_local_base_freq: float = 10_000.0
 
     @property
     def local_rope(self) -> RotaryEmbeddingsConfig:
@@ -106,10 +111,8 @@ class GemmaConfig(HFCompatConfig):
         # Gemma. The `rope` is used for global attention, and the `local_rope` is used for local attention.
         return dataclasses.replace(self.rope, theta=self.rope_local_base_freq)
 
-    query_pre_attn_scalar: float | None = None
     final_logit_softcapping: float | None = None
     attn_logit_softcapping: float | None = None
-    rms_norm_eps: float = 1e-6
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -175,7 +178,7 @@ class GemmaConfig(HFCompatConfig):
             attn_logit_softcapping=getattr(hf_config, "attn_logit_softcapping", None),
         )
 
-    def to_hf_config(self, vocab_size: int, config_overrides: dict | None = None) -> HfGemmaConfig:
+    def to_hf_config(self, vocab_size: int, config_overrides: dict | None = None) -> HfGemmaConfig | HfGemma2Config | HfGemma3Config:
         """Convert to HuggingFace's GemmaConfig
 
         Args:
@@ -193,7 +196,9 @@ class GemmaConfig(HFCompatConfig):
             "Only DefaultRotaryEmbeddingsConfig is supported for Gemma."
         rope_theta, rope_scaling = rope.to_hf_config()
 
-        config = HfGemmaConfig(
+        config_class = HfGemmaConfig
+
+        common_args = dict(
             max_position_embeddings=self.seq_len,
             hidden_size=self.hidden_dim,
             intermediate_size=self.intermediate_dim,
@@ -210,9 +215,23 @@ class GemmaConfig(HFCompatConfig):
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
-            query_pre_attn_scalar=self.query_pre_attn_scalar,
-            final_logit_softcapping=self.final_logit_softcapping,
-            attn_logit_softcapping=self.attn_logit_softcapping,
+        )
+
+        if self.use_qk_norm:
+            config_class = HfGemma3Config
+            common_args["use_qk_norm"] = self.use_qk_norm
+            common_args["rope_local_base_freq"] = self.rope_local_base_freq
+            common_args["query_pre_attn_scalar"] = self.query_pre_attn_scalar or self.head_dim
+            common_args["final_logit_softcapping"] = self.final_logit_softcapping
+            common_args["attn_logit_softcapping"] = self.attn_logit_softcapping
+        elif self.final_logit_softcapping or self.query_pre_attn_scalar:
+            config_class = HfGemma2Config
+            common_args["final_logit_softcapping"] = self.final_logit_softcapping
+            common_args["attn_logit_softcapping"] = self.attn_logit_softcapping
+            common_args["query_pre_attn_scalar"] = self.query_pre_attn_scalar or self.head_dim
+
+        config = config_class(
+            **common_args,
             **config_overrides,
         )
         return config
@@ -244,14 +263,14 @@ class GemmaConfig(HFCompatConfig):
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
             rope=self.rope,
-            qk_norm=GemmaNormConfig(eps=self.norm_eps, use_weight=True, use_bias=False) if self.use_qk_norm else None,
+            qk_norm=self.norm_config if self.use_qk_norm else None,
         )
 
     @property
     def norm_config(self) -> LayerNormConfigBase:
         """Get the normalization configuration for Gemma."""
         return GemmaNormConfig(
-            eps=self.norm_eps,
+            eps=self.layer_norm_epsilon,
             use_weight=True,  # GemmaRMSNorm requires use_weight=True
             use_bias=False,   # GemmaRMSNorm doesn't support bias
         )

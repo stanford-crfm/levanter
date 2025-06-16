@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import transformers
 from jax import random
+from transformers import Gemma2Config
 
 import haliax as hax
 
@@ -167,6 +168,7 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
         scan_layers=scan_layers,
+        head_dim=4,
     )
     converter = config.hf_checkpoint_converter()
 
@@ -225,6 +227,23 @@ def _get_gemma_config(use_flash=False, num_kv_heads=4, seq_len=128) -> GemmaConf
         gradient_checkpointing=False,  # disable for tests so debugging is easier
         use_flash_attention=use_flash,
         flash_attention_block_size=8 if use_flash else None,
+        head_dim=4,
+    )
+
+
+def _get_gemma2_config(use_flash=False, num_kv_heads=4, seq_len=128) -> GemmaConfig:
+    return GemmaConfig(
+        seq_len=seq_len,
+        hidden_dim=16,
+        num_heads=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,  # disable for tests so debugging is easier
+        use_flash_attention=use_flash,
+        flash_attention_block_size=8 if use_flash else None,
+        head_dim=4,
+        query_pre_attn_scalar=4,
+        attn_logit_softcapping=None,
+        final_logit_softcapping=None,
     )
 
 
@@ -255,6 +274,7 @@ def test_pass_different_length_seq(num_kv_heads):
         num_heads=2,
         num_kv_heads=num_kv_heads,
         use_flash_attention=True,
+        head_dim=4,
     )
     check_model_works_with_seqlen(GemmaLMHeadModel, config, 16)
 
@@ -262,12 +282,19 @@ def test_pass_different_length_seq(num_kv_heads):
 @skip_if_no_torch
 @pytest.mark.parametrize("use_flash", [True, False])
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
-def test_gemma_attention(use_flash, num_kv_heads):
+@pytest.mark.parametrize("gemma_version", [1, 2])
+def test_gemma_attention(use_flash, num_kv_heads, gemma_version):
     import torch
-    from transformers.models.gemma.modeling_gemma import GemmaAttention as HFGemmaAttention
-    from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
+    if gemma_version == 1:
+        from transformers.models.gemma.modeling_gemma import GemmaAttention as HFGemmaAttention
+        from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding as HFGemmaRotaryEmbedding
 
-    config = _get_gemma_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+        config = _get_gemma_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
+    else:
+        from transformers.models.gemma2.modeling_gemma2 import Gemma2Attention as HFGemmaAttention
+        from transformers.models.gemma2.modeling_gemma2 import Gemma2RotaryEmbedding as HFGemmaRotaryEmbedding
+
+        config = _get_gemma2_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
     attention = Attention.init(config.to_attention_config(), key=random.PRNGKey(0))
 
@@ -320,6 +347,29 @@ def test_gemma_mlp():
     chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
 
+@skip_if_no_torch
+def test_gemma2_mlp():
+    import torch
+    from transformers.models.gemma2.modeling_gemma2 import Gemma2MLP as HFGemmaMLP
+
+    config = _get_gemma2_config()
+    mlp = LlamaMlp.init(config.Embed, config.Mlp, config.activation_function, key=random.PRNGKey(0))
+
+    state = hax.state_dict.to_torch_compatible_state_dict(mlp)
+    state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
+    hf_mlp = HFGemmaMLP(config.to_hf_config(32000))
+    hf_mlp.load_state_dict(state, strict=True)
+
+    x, _ = _get_random_inputs(config)
+    x_torch = torch.from_numpy(np.array(x.array))
+
+    out = mlp(x)
+    hf_out = hf_mlp(x_torch)
+
+    chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
+
+
+
 def test_gemma2_roundtrip():
     import torch
     from transformers import AutoModelForCausalLM, Gemma2ForCausalLM
@@ -330,11 +380,14 @@ def test_gemma2_roundtrip():
         num_heads=4,
         num_kv_heads=4,
         gradient_checkpointing=False,
+        head_dim=4,
+        query_pre_attn_scalar=4,
     )
     converter = config.hf_checkpoint_converter()
 
     Vocab = hax.Axis("vocab", 1000)
     hf_config = config.to_hf_config(Vocab.size)
+    assert isinstance(hf_config, Gemma2Config)
 
     # Make input and attn_mask
     input = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
@@ -364,8 +417,7 @@ def test_gemma2_roundtrip():
         compute = jax.jit(compute)
         jax_out = compute(input).array
 
-        assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-3, atol=1e-3).all(), f"{torch_out} != {jax_out}"
+        chex.assert_trees_all_close(jax_out, torch_out, rtol=1e-3, atol=1e-3)
 
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
@@ -373,4 +425,6 @@ def test_gemma2_roundtrip():
 
         torch_out2 = torch_model2(input_torch)
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-        torch_out2
+        torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
+        assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
+        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-3, atol=1e-3).all(), f"{torch_out2} != {jax_out}"
