@@ -39,9 +39,10 @@ def flash_attention(
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
     scaling_factor: float | None = None,
+    logits_soft_cap: float | None = None,
 ):
     """
-    Flash Attention impl, vaguely following the v2 paper.
+    Crappy pure-jax Flash Attention impl, vaguely following the v2 paper.
 
     Args:
         Key: axis of key dim.
@@ -88,6 +89,7 @@ def flash_attention(
         key=key,
         block_size=block_size,
         precision=precision,
+        logits_soft_cap=logits_soft_cap,
     )
 
 
@@ -105,6 +107,7 @@ def _flash_attention(
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
     precision: PrecisionLike,
+    logits_soft_cap: Optional[float] = None,
 ) -> hax.NamedArray:
     return _flash_attention_forward(
         None,
@@ -119,6 +122,7 @@ def _flash_attention(
         key=key,
         block_size=block_size,
         precision=precision,
+        logits_soft_cap=logits_soft_cap,
     )[0]
 
 
@@ -137,6 +141,7 @@ def _flash_attention_forward(
     key: Optional[PRNGKeyArray],
     block_size: int,
     precision: PrecisionLike,
+    logits_soft_cap: Optional[float] = None,
 ):
     del ignore
     q, k, v = qkv
@@ -198,6 +203,9 @@ def _flash_attention_forward(
 
                 attn_ij = attn_ij + bias_ij
 
+            if logits_soft_cap is not None:
+                attn_ij = hax.tanh(attn_ij / logits_soft_cap) * logits_soft_cap
+
             if mask is not None:
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
@@ -234,7 +242,6 @@ def _flash_attention_forward(
 
         return i + 1, o, ell
 
-    # o, ell = hax.map(do_o_block, Tr)(jnp.arange(Tr.size))
     _, o, ell = jax.lax.while_loop(lambda state: state[0] < Tr, do_o_block, (0, o, ell))
 
     return o, (o, ell)
@@ -257,6 +264,7 @@ def _flash_attention_backward(
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
     precision: PrecisionLike,
+    logits_soft_cap: Optional[float] = None,
 ):
     del ignore
     O, L = residuals
@@ -307,6 +315,9 @@ def _flash_attention_backward(
             if bias is not None:
                 bias_ij = bias[QPos, ds.block(i, block_size), KPos, ds.block(j, block_size)]
                 attn_ij = attn_ij + bias_ij
+
+            if logits_soft_cap is not None:
+                attn_ij = hax.tanh(attn_ij / logits_soft_cap) * logits_soft_cap
 
             if mask is not None:
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)

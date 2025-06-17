@@ -63,9 +63,10 @@ def dot_product_attention(
     flash_block_size: Optional[int] = None,
     dropout: float = 0.0,
     *,
+    logits_soft_cap: float | None = None,
     scaling_factor: float | None = None,
     inference: bool = True,
-    prng: Optional[PRNGKeyArray] = None,
+    prng: PRNGKeyArray | None = None,
 ):
     """
     This method is similar to [haliax.nn.attention.dot_product_attention][] but it can use different backends for
@@ -88,12 +89,14 @@ def dot_product_attention(
         attention_dtype: Optional dtype to use for attention
         precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
         use_flash: whether to use flash attention
+        attn_backend: AttentionBackend to use. If None, will use the default for the accelerator.
         flash_block_size: block size for flash attention. If None, will use an appropriate default
         dropout: dropout rate
         inference: whether to use inference mode
         prng: PRNGKeyArray for dropout
         scaling_factor: If not None, query will be multiplied by this value before attention.
              default is 1/sqrt(HeadSize.size)
+        logits_soft_cap: If not None, the attention logits will be soft_capped with tanh(logits / logits_soft_cap) * logits_soft_cap.
     Returns:
         NamedArray of shape (value.axes - KPos + QPos)
     """
@@ -148,6 +151,7 @@ def dot_product_attention(
                 flash_block_size=flash_block_size,
                 force_te=not was_default,
                 scaling_factor=scaling_factor,
+                logits_soft_cap=logits_soft_cap,
             )
         case AttentionBackend.SPLASH:
             attention_out = _try_tpu_splash_attention(
@@ -167,6 +171,7 @@ def dot_product_attention(
                 precision=precision,
                 block_size=flash_block_size,
                 scaling_factor=scaling_factor,
+                logits_soft_cap=logits_soft_cap,
             )
         case AttentionBackend.VANILLA:
             attention_out = simple_attention_with_dropout(
@@ -184,6 +189,7 @@ def dot_product_attention(
                 precision,
                 prng=prng,
                 scaling_factor=scaling_factor,
+                logits_soft_cap=logits_soft_cap,
             )
         case _:
             attention_out = None
@@ -210,6 +216,7 @@ def dot_product_attention(
             dtype=attention_dtype,
             precision=precision,
             scaling_factor=scaling_factor,
+            logits_soft_cap=logits_soft_cap,
         )
 
 
@@ -229,6 +236,7 @@ def simple_attention_with_dropout(
     *,
     prng: Optional[PRNGKeyArray] = None,
     scaling_factor: float | None = None,
+    logits_soft_cap: Optional[float] = None,
 ):
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
@@ -244,6 +252,8 @@ def simple_attention_with_dropout(
         precision=precision,
         scaling_factor=scaling_factor,
     )
+    if logits_soft_cap is not None:
+        weights = hax.tanh(weights / logits_soft_cap) * logits_soft_cap
     weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
     return haliax.dot(weights, value, axis=KPos)
 
@@ -266,6 +276,7 @@ def _try_te_attention(
     flash_block_size: Optional[int] = None,
     force_te: bool,
     scaling_factor: float,
+    logits_soft_cap: Optional[float] = None,
 ):
     try:
         return _te_flash_attention(
@@ -284,6 +295,7 @@ def _try_te_attention(
             precision=precision,
             block_size=flash_block_size,
             scaling_factor=scaling_factor,
+            logits_soft_cap=logits_soft_cap,
         )
     except ImportError as e:
         if "transformer_engine" not in str(e):
@@ -340,9 +352,16 @@ def _te_flash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
     scaling_factor: float,
+    logits_soft_cap: Optional[float] = None,
 ):
     from transformer_engine.jax.attention import fused_attn  # noqa: F401
     from transformer_engine.jax.attention import AttnBiasType, AttnMaskType, QKVLayout  # noqa: F401
+
+    if logits_soft_cap is not None:
+        raise NotImplementedError(
+            "logits_soft_cap is not supported for NVTE fused attention. "
+            "Please use the JAX reference implementation or ask NVIDIA..."
+        )
 
     attention_dtype = attention_dtype or query.dtype
     query = query.astype(attention_dtype)
@@ -760,6 +779,7 @@ def _try_tpu_splash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
     scaling_factor: float,
+    logits_soft_cap: float | None,
 ) -> Optional[NamedArray]:
     if dropout != 0.0:
         if force_flash:
@@ -790,6 +810,7 @@ def _try_tpu_splash_attention(
             precision=precision,
             block_size=block_size,
             scaling_factor=scaling_factor,
+            logits_soft_cap=logits_soft_cap,
         )
     except ImportError as e:
         if "pallas" not in str(e):
@@ -827,6 +848,7 @@ def _tpu_splash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
     scaling_factor: float,
+    logits_soft_cap: float | None = None,
 ) -> Optional[NamedArray]:
     from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
 
@@ -974,7 +996,11 @@ def _tpu_splash_attention(
 
         # copied from MaxText
         splash_kernel = splash_attention_kernel.make_splash_mha(
-            mask=kernel_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
+            mask=kernel_mask,
+            head_shards=1,
+            q_seq_shards=1,
+            block_sizes=block_sizes,
+            attn_logits_soft_cap=logits_soft_cap,
         )
 
         q = q.astype(attention_dtype)
@@ -1032,6 +1058,7 @@ class AttentionConfig:
     """
 
     Embed: Axis
+
     num_heads: int
     num_kv_heads: int
     use_bias: bool = False
@@ -1040,7 +1067,9 @@ class AttentionConfig:
     flash_attention_block_size: Optional[int] = None
     rope: Optional[RotaryEmbeddingsConfig] = None
     scaling_factor: Optional[float] = None
+    logits_soft_cap: Optional[float] = None
     qk_norm: Optional[LayerNormConfigBase] = None
+    """Configuration for QK normalization. If None, no normalization is applied."""
 
     def __post_init__(self):
         assert (
@@ -1157,6 +1186,7 @@ class Attention(eqx.Module):
             attn_backend=self.config.attn_backend,
             flash_block_size=self.config.flash_attention_block_size,
             scaling_factor=self.config.scaling_factor,
+            logits_soft_cap=self.config.logits_soft_cap,
             dropout=0.0,  # TODO: support dropout
             inference=True,  # TODO: support training
             prng=key,
