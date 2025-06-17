@@ -13,12 +13,18 @@ from haliax import Axis, AxisSpec, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
-from haliax.nn.normalization import LayerNorm
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask, dot_product_attention
-from levanter.models.lm_model import LmConfig, LmHeadModel
+from levanter.layers import RmsNormConfig
+from levanter.layers.attention import (
+    Attention,
+    AttentionBackend,
+    AttentionConfig,
+    AttentionMask,
+    dot_product_attention,
+)
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -162,9 +168,7 @@ class Olmo2Config(HFCompatConfig):
         return Olmo2LMHeadModel
 
     def mk_LayerNorm(self, axis: AxisSpec) -> hnn.RmsNorm:
-        return hnn.RmsNorm.init(
-            axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
-        )
+        return self.norm_config.build(axis)
 
     def total_trainable_params(self, vocab_size):
         """Calculate total trainable parameters for OLMo 2 model.
@@ -236,8 +240,16 @@ class Olmo2Config(HFCompatConfig):
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
             rope=self.rope,
-            use_qk_norm=True,  # OLMo2 always uses QK normalization
-            qk_norm_type=LayerNorm,  # OLMo2 uses LayerNorm for QK normalization
+            qk_norm=self.norm_config,  # OLMo2 always uses QK normalization
+        )
+
+    @property
+    def norm_config(self) -> RmsNormConfig:
+        """Return the normalization configuration for OLMo2."""
+        return RmsNormConfig(
+            eps=self.layer_norm_epsilon,
+            use_weight=self.use_layer_norm_weight,
+            use_bias=self.use_bias,
         )
 
 
