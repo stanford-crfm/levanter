@@ -1,5 +1,6 @@
 import dataclasses
 from dataclasses import dataclass
+from typing import Union
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -74,7 +75,7 @@ class GemmaConfig(HFCompatConfig):
     activation_function: ActivationFunctionEnum = ActivationFunctionEnum.gelu_new
     initializer_range: float = 0.02
     layer_norm_epsilon: float = 1e-5
-    tie_word_embeddings: bool = False
+    tie_word_embeddings: bool = True
 
     seq_len: int = 8192
     hidden_dim: int = 2048
@@ -94,21 +95,12 @@ class GemmaConfig(HFCompatConfig):
     use_flash_attention: bool | None = None
     attn_backend: AttentionBackend | None = None
     flash_attention_block_size: int | None = None
-    use_qk_norm: bool = False
 
     rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
-    rope_local_base_freq: float = 10_000.0
     query_pre_attn_scalar: float | None = None
 
     gradient_checkpointing: bool = True
     scan_layers: bool = True
-
-    @property
-    def local_rope(self) -> RotaryEmbeddingsConfig:
-        """Local rope config for Gemma."""
-        # HF doesn't document this particularly well, but there are two different Rope configs for
-        # Gemma. The `rope` is used for global attention, and the `local_rope` is used for local attention.
-        return dataclasses.replace(self.rope, theta=self.rope_local_base_freq)
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -172,9 +164,7 @@ class GemmaConfig(HFCompatConfig):
             query_pre_attn_scalar=getattr(hf_config, "query_pre_attn_scalar", hf_config.head_dim),
         )
 
-    def to_hf_config(
-        self, vocab_size: int, config_overrides: dict | None = None
-    ) -> HfGemmaConfig | HfGemma2Config | HfGemma3Config:
+    def to_hf_config(self, vocab_size: int, config_overrides: dict | None = None) -> HfGemmaConfig:
         """Convert to HuggingFace's GemmaConfig
 
         Args:
@@ -193,9 +183,7 @@ class GemmaConfig(HFCompatConfig):
         ), "Only DefaultRotaryEmbeddingsConfig is supported for Gemma."
         rope_theta, rope_scaling = rope.to_hf_config()
 
-        config_class = HfGemmaConfig
-
-        common_args = dict(
+        config = HfGemmaConfig(
             max_position_embeddings=self.seq_len,
             hidden_size=self.hidden_dim,
             intermediate_size=self.intermediate_dim,
@@ -212,16 +200,6 @@ class GemmaConfig(HFCompatConfig):
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
-        )
-
-        if self.use_qk_norm:
-            config_class = HfGemma3Config
-            common_args["use_qk_norm"] = self.use_qk_norm
-            common_args["rope_local_base_freq"] = self.rope_local_base_freq
-            common_args["query_pre_attn_scalar"] = self.query_pre_attn_scalar or self.head_dim
-
-        config = config_class(
-            **common_args,
             **config_overrides,
         )
         return config
@@ -253,7 +231,7 @@ class GemmaConfig(HFCompatConfig):
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
             rope=self.rope,
-            qk_norm=self.norm_config if self.use_qk_norm else None,
+            qk_norm=self.norm_config if getattr(self, "use_qk_norm", False) else None,
         )
 
     @property
@@ -462,7 +440,7 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
 class Gemma2Config(GemmaConfig):
     """Configuration class for Gemma-2 family.
 
-    Gemma-2 mostly reuses the Gemma-1 hyper-parameters but introduces logit
+    Gemma-2 mostly reuses the Gemma-1 hyperparameters but introduces logit
     soft-capping and uses a slightly different normalization order inside each
     decoder block (implemented in :class:`Gemma2DecoderLayer`).
 
@@ -592,7 +570,7 @@ class Gemma2Config(GemmaConfig):
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
             rope=self.rope,
-            qk_norm=self.norm_config if self.use_qk_norm else None,
+            qk_norm=self.norm_config if getattr(self, "use_qk_norm", False) else None,
             logits_soft_cap=self.attn_logit_softcapping,
         )
 
@@ -677,12 +655,12 @@ class Gemma2DecoderLayer(ModuleWithStateDictSerialization):
 class Gemma2Transformer(ModuleWithStateDictSerialization):
     """Transformer built from :class:`Gemma2DecoderLayer`."""
 
-    config: GemmaConfig = eqx.field(static=True)
+    config: Union[Gemma2Config, "Gemma3Config"] = eqx.field(static=True)
     layers: BlockFoldable[Gemma2DecoderLayer]
     norm: LayerNormBase
 
     @staticmethod
-    def init(config: GemmaConfig, *, key):
+    def init(config: Gemma2Config, *, key):
         # Choose "Stacked" vs "BlockSeq" depending on scan_layers like the original implementation
         S = Stacked
         if not config.scan_layers:
@@ -705,7 +683,7 @@ class Gemma2Transformer(ModuleWithStateDictSerialization):
         return x
 
 
-class Gemma2LMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerialization):
+class Gemma2LMHeadModel(LmHeadModel[Gemma2Config], ModuleWithStateDictSerialization):
     """Gemma 2 language-model head.
 
     Mostly identical to :class:`GemmaLMHeadModel` but uses
@@ -717,9 +695,6 @@ class Gemma2LMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializati
     embeddings: LlamaEmbedding
     lm_head: hnn.Linear | None
 
-    # -------------------------
-    # Convenience / properties
-    # -------------------------
     @property
     def config(self):
         return self.transformer.config
@@ -738,9 +713,6 @@ class Gemma2LMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializati
         else:
             return self.lm_head.weight
 
-    # --------------
-    # Construction
-    # --------------
     @classmethod
     def init(cls, Vocab: Axis, config: GemmaConfig, *, key):
         k_t, k_emb = jrandom.split(key, 2)
@@ -752,9 +724,226 @@ class Gemma2LMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializati
             lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
         return Gemma2LMHeadModel(transformer, embeddings, lm_head)
 
-    # --------------
-    # Forward logic
-    # --------------
+    def activations(
+        self,
+        input_ids: NamedArray,
+        attn_mask: NamedArray | AttentionMask | None = None,
+        *,
+        key=None,
+    ) -> NamedArray:
+        x = self.embeddings.embed(input_ids)
+        normalizer = jnp.sqrt(self.config.hidden_dim).astype(x.dtype)
+        x = x * normalizer
+        x = self.transformer(x, attn_mask=attn_mask, key=key)
+        return x
+
+    def resize_vocab(self, new_size: int, key=None):  # type: ignore[override]
+        new_Vocab = self.Vocab.resize(new_size)
+        k1, k2 = maybe_rng_split(key, 2)
+        new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
+        if self.lm_head is not None:
+            new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
+            new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
+            return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
+        else:
+            return dataclasses.replace(self, embeddings=new_embeddings)
+
+    def _state_dict_key_map(self) -> dict[str, str | None]:
+        return {"transformer": "model", "embeddings": None}
+
+
+# =====================
+# Gemma 3 Configuration
+# =====================
+
+
+@LmConfig.register_subclass("gemma3")
+@dataclass(frozen=True)
+class Gemma3Config(Gemma2Config):
+    """Configuration for Gemma-3 models.
+
+    Differences w.r.t Gemma-2:
+    • Enables QK-norm by default (``use_qk_norm=True``).
+    • Logit soft-capping is **disabled** (defaults to ``None``).
+    Anything related to alternating local/global attention is ignored for now.
+    """
+
+    # Gemma-3 specifics
+    use_qk_norm: bool = True  # activate qk-norm
+    final_logit_softcapping: float | None = None
+    attn_logit_softcapping: float | None = None
+    sliding_window_pattern: int | None = None
+    """
+    Sliding window pattern for Gemma-3, if None, no sliding window layers
+    """
+
+    # Gemma3 specific rope frequency for local attention
+    rope_local_base_freq: float = 10_000.0
+
+    @property
+    def local_rope(self) -> RotaryEmbeddingsConfig:
+        """Local RoPE config used for Gemma-3's alternating local attention."""
+        return dataclasses.replace(self.rope, theta=self.rope_local_base_freq)
+
+    # ---------- Convenience ----------
+    @property  # type: ignore[override]
+    def model_type(self):  # noqa: D401
+        return Gemma3LMHeadModel
+
+    # ---------- HF helpers ----------
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: str = "google/gemma-3-1b-pt"
+    ) -> HFCheckpointConverter["Gemma3Config"]:  # type: ignore
+        return HFCheckpointConverter(
+            self,
+            reference_checkpoint=ref_checkpoint,
+            trust_remote_code=True,
+            HfConfigClass=HfGemma3Config,
+        )
+
+    def to_hf_config(self, vocab_size: int, config_overrides: dict | None = None):  # type: ignore[override]
+        """Convert to ``transformers.Gemma3Config``."""
+        from transformers import Gemma3TextConfig as _HFGemma3Config
+
+        if config_overrides is None:
+            config_overrides = {}
+
+        rope = self.rope
+        assert isinstance(rope, DefaultRotaryEmbeddingsConfig)
+        rope_theta, rope_scaling = rope.to_hf_config()
+
+        common_args = dict(
+            max_position_embeddings=self.seq_len,
+            hidden_size=self.hidden_dim,
+            intermediate_size=self.intermediate_dim,
+            num_hidden_layers=self.num_layers,
+            num_attention_heads=self.num_heads,
+            num_key_value_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            hidden_activation=(
+                "gelu_pytorch_tanh" if self.activation_function == "gelu_new" else self.activation_function
+            ),
+            initializer_range=self.initializer_range,
+            rms_norm_eps=self.layer_norm_epsilon,
+            tie_word_embeddings=self.tie_word_embeddings,
+            vocab_size=vocab_size,
+            rope_theta=rope_theta,
+            rope_scaling=rope_scaling,
+            use_qk_norm=self.use_qk_norm,
+            rope_local_base_freq=self.rope_local_base_freq,
+            query_pre_attn_scalar=self.query_pre_attn_scalar or self.head_dim,
+            final_logit_softcapping=self.final_logit_softcapping,
+            attn_logit_softcapping=self.attn_logit_softcapping,
+            sliding_window=self.sliding_window if self.sliding_window is not None else self.seq_len,
+            # we don't currently suport alternating local/global attention, so every layer is global
+            sliding_window_pattern=self.sliding_window_pattern if self.sliding_window_pattern is not None else 1,
+            attention_dropout=0.0,
+            attention_bias=self.use_bias,  # Gemma3 uses bias in attention
+            # we have to set this for some reason even though it's default
+            use_cache=True,
+        )
+
+        cfg = _HFGemma3Config(
+            **common_args,
+            **config_overrides,
+        )
+        return cfg
+
+    def from_hf_config(cls, hf_config: HfConfig) -> "Gemma3Config":  # type: ignore[override]
+        """Create a :class:`Gemma3Config` from a HuggingFace configuration."""
+        if hf_config.hidden_activation is None:
+            activation_function = "gelu_pytorch_tanh"
+        else:
+            activation_function = hf_config.hidden_activation
+
+        if activation_function == "gelu_pytorch_tanh":
+            activation_function = "gelu_new"
+
+        assert activation_function is not None, "No activation function found in HF configuration."
+        activation_function_enum = getattr(ActivationFunctionEnum, activation_function)
+
+        rope_theta, rope_scaling = hf_config.rope_theta, getattr(hf_config, "rope_scaling", None)
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, rope_scaling)
+
+        return Gemma3Config(
+            seq_len=hf_config.max_position_embeddings,
+            activation_function=activation_function_enum,
+            hidden_dim=hf_config.hidden_size,
+            intermediate_dim=hf_config.intermediate_size,
+            num_layers=hf_config.num_hidden_layers,
+            num_heads=hf_config.num_attention_heads,
+            num_kv_heads=hf_config.num_key_value_heads,
+            initializer_range=hf_config.initializer_range,
+            layer_norm_epsilon=hf_config.rms_norm_eps,
+            tie_word_embeddings=hf_config.tie_word_embeddings,
+            rope=rope_config,
+            head_dim=hf_config.head_dim,
+            query_pre_attn_scalar=getattr(hf_config, "query_pre_attn_scalar", hf_config.head_dim),
+            use_qk_norm=getattr(hf_config, "use_qk_norm", True),
+            rope_local_base_freq=getattr(hf_config, "rope_local_base_freq", 10_000.0),
+        )
+
+    def to_attention_config(self) -> AttentionConfig:  # type: ignore[override]
+        """Gemma-3 uses QK-norm by default."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+            qk_norm=self.norm_config,  # always on for Gemma-3
+        )
+
+
+# -----------------------
+# Gemma 3 Implementation
+# -----------------------
+
+
+class Gemma3LMHeadModel(LmHeadModel[Gemma3Config], ModuleWithStateDictSerialization):
+    """Gemma-3 language-model head.
+
+    Reuses the Gemma-2 transformer/decoder implementation (normalisation order is
+    unchanged) but relies on a different configuration that enables QK-norm and
+    disables logit soft-capping by default.
+    """
+
+    transformer: Gemma2Transformer
+    embeddings: LlamaEmbedding
+    lm_head: hnn.Linear | None
+
+    @property
+    def config(self):
+        return self.transformer.config
+
+    @property
+    def vocab_size(self) -> int:
+        return self.Vocab.size
+
+    @property
+    def Vocab(self) -> Axis:
+        return self.embeddings.Vocab
+
+    def get_lm_head(self) -> hax.NamedArray:
+        if self.lm_head is None:
+            return self.embeddings.token_embeddings.weight
+        else:
+            return self.lm_head.weight
+
+    @classmethod
+    def init(cls, Vocab: Axis, config: Gemma3Config, *, key):
+        k_t, k_emb = jrandom.split(key, 2)
+        transformer = Gemma2Transformer.init(config, key=k_t)
+        embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
+        if config.tie_word_embeddings:
+            lm_head = None
+        else:
+            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+        return Gemma3LMHeadModel(transformer, embeddings, lm_head)
+
     def activations(
         self,
         input_ids: NamedArray,

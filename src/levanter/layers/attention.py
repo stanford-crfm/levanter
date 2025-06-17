@@ -1151,8 +1151,8 @@ class Attention(eqx.Module):
         q_norm = None
         k_norm = None
         if config.qk_norm is not None:
-            q_norm = config.qk_norm.build((config.KVHeads, QHeadsPerGroup, HeadSize))
-            k_norm = config.qk_norm.build((config.KVHeads, HeadSize))
+            q_norm = config.qk_norm.build(HeadSize)
+            k_norm = config.qk_norm.build(HeadSize)
 
         return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
 
