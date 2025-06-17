@@ -10,9 +10,9 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask
+from levanter.models.attention import Attention, AttentionMask
 from levanter.models.gemma import GemmaConfig, GemmaDecoderLayer, GemmaLMHeadModel, GemmaRMSNorm
-from levanter.models.llama import LlamaAttention, LlamaMlp
+from levanter.models.llama import LlamaMlp
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -202,7 +202,8 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         jax_out = compute(input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-3, atol=1e-3).all(), f"{torch_out} != {jax_out}"
+        # TODO: I don't like how loose these tolerances are
+        chex.assert_trees_all_close(jax_out, torch_out, rtol=1e-3, atol=1e-3)
 
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
@@ -212,7 +213,7 @@ def test_gemma_roundtrip(scan_layers, num_kv_heads):
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-3, atol=1e-3).all(), f"{torch_out2} != {jax_out}"
+        chex.assert_trees_all_close(jax_out, torch_out2, rtol=1e-3, atol=1e-3)
 
 
 def _get_gemma_config(use_flash=False, num_kv_heads=4, seq_len=128) -> GemmaConfig:
@@ -268,7 +269,7 @@ def test_gemma_attention(use_flash, num_kv_heads):
 
     config = _get_gemma_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))  # type: ignore
+    attention = Attention.init(config.to_attention_config(), key=random.PRNGKey(0))
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}

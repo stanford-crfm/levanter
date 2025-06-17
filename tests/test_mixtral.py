@@ -181,8 +181,8 @@ def test_mixtral_config():
 #     Vocab = hax.Axis("vocab", 1000)
 #     Pos = mixtral_config.Pos
 #     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-#     mask = hax.nn.attention.causal_mask(Pos, mixtral_config.KeyPos)
-
+#     mask = AttentionMask.causal()
+#
 #     mixtral_model = MixtralLMHeadModel.init(Vocab=Vocab, config=mixtral_config, key=random.PRNGKey(0))
 #     with Mesh(
 #         np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
@@ -195,49 +195,48 @@ def test_mixtral_config():
 # def test_mixtral_lm_head_model_bwd(use_flash):
 #     import torch
 #     from transformers import MixtralForCausalLM
-
+#
 #     converter = MixtralConfig().hf_checkpoint_converter()
 #     config = _get_mixtral_config(use_flash=use_flash, num_kv_heads=2)
 #     Batch = hax.Axis("batch", 2)
 #     Vocab = hax.Axis("vocab", 1000)
 #     Pos = config.Pos
 #     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
-#     mask = hax.nn.attention.causal_mask(Pos, config.KeyPos)
-
+#     mask = AttentionMask.causal()
+#
 #     model = MixtralLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
-
+#
 #     with tempfile.TemporaryDirectory() as tmpdir:
 #         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
 #         torch_model = MixtralForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
 #         torch_model.eval()
-
+#
 #     def torch_loss(model, input_ids) -> torch.Tensor:
 #         return model(input_ids, labels=input_ids).loss
-
+#
 #     torch_out = torch_loss(torch_model, torch.from_numpy(np.array(input_ids.array)).to(torch.int64))
-
+#
 #     def compute_loss(model, input_ids, mask):
 #         pred_y = model(input_ids, key=None, attn_mask=mask)
-
 #         return hax.mean(next_token_loss(model.Pos, model.Vocab, pred_y, input_ids)).scalar()
-
+#
 #     with hax.enable_shape_checks(False), Mesh(
 #         np.array(jax.devices()).reshape(1, -1, 1), (ResourceAxis.REPLICA, ResourceAxis.DATA, ResourceAxis.MODEL)
 #     ):
 #         _, jax_grad = eqx.filter_value_and_grad(compute_loss)(model, input_ids, mask)
-
+#
 #     # gradients are kind of a pain to get at in torch, but we do it anyway
 #     torch_out.backward()
 #     state_dict = torch_model.state_dict(keep_vars=True)
 #     state_dict = {k: v.grad for k, v in state_dict.items()}
-
+#
 #     jax_grad_dict = hax.state_dict.to_torch_compatible_state_dict(jax_grad)
-
+#
 #     for jax_key, jax_g in jax_grad_dict.items():
 #         if jax_key not in state_dict:
 #             assert jax_key == "token_out_embeddings"
 #             continue
-
+#
 #         torch_g = state_dict[jax_key].detach().cpu().numpy()
 #         assert jax_g.shape == torch_g.shape, f"{jax_key}: {jax_g.shape} != {torch_g.shape}"
 #         assert np.isclose(jax_g, torch_g, rtol=1e-2, atol=1e-2).all(), f"{jax_key}: {jax_g} != {torch_g}"

@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
-import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
 
@@ -15,7 +14,7 @@ from haliax.nn.scan import ScanCheckpointPolicy, Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
+from levanter.models.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
@@ -44,7 +43,6 @@ class LlamaConfig(HFCompatConfig):
             Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA.
             Note that num_heads must be divisible by this number. Defaults to 32.
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
-        rope_scaling (Dict, optional): dict containing the scaling configuration for the Rotary Positional Embedding.
         hybrid_norm (bool, optional): whether to use hybrid normalization with additional layer norms after attention and MLP. Defaults to False.
         input_embedding_norm (bool, optional): whether to use layer normalization after input embeddings. Defaults to False.
     """
@@ -64,7 +62,6 @@ class LlamaConfig(HFCompatConfig):
 
     # Attention-related config
     upcast_attn: bool = False
-    use_flash_attention: Optional[bool] = True
     attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
 
@@ -82,11 +79,8 @@ class LlamaConfig(HFCompatConfig):
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
     KeyPos = property(lambda self: self.Pos.alias("key_position"))
     Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
-    Heads = property(lambda self: Axis(name="heads", size=self.num_heads))
-    KVHeads = property(lambda self: Axis(name="kv_heads", size=self.num_kv_heads))
     Layers = property(lambda self: Axis(name="layers", size=self.num_layers))
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
-    HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
     def __post_init__(self):
         assert (
@@ -159,7 +153,6 @@ class LlamaConfig(HFCompatConfig):
             initializer_range=self.initializer_range,
             rms_norm_eps=self.layer_norm_epsilon,
             tie_word_embeddings=self.tie_word_embeddings,
-            # rope_scaling=self.rope_scaling,
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
@@ -208,6 +201,19 @@ class LlamaConfig(HFCompatConfig):
 
         return transformer + token_embedding * 2  # plus embedding and lm head
 
+    def to_attention_config(self) -> AttentionConfig:
+        """Convert this LlamaConfig to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+        )
+
 
 class LlamaMlp(eqx.Module):
     """Multi-layer Perceptron
@@ -249,83 +255,9 @@ class LlamaMlp(eqx.Module):
         return outputs
 
 
-class LlamaAttention(eqx.Module):
-    config: LlamaConfig = eqx.field(static=True)
-    q_proj: hnn.Linear  # projection from Embed to query
-    k_proj: hnn.Linear  # projection from Embed to key
-    v_proj: hnn.Linear  # projection from Embed to value
-    o_proj: hnn.Linear  # projection from Heads to output
-
-    @staticmethod
-    def init(config: LlamaConfig, *, key) -> "LlamaAttention":
-        use_bias = config.use_bias
-        Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
-
-        k_q, k_k, k_v, k_o = jrandom.split(key, 4)
-        q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize), key=k_q, use_bias=use_bias, out_first=True
-        )
-        k_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
-        )
-        v_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
-        )
-        o_proj = hnn.Linear.init(
-            In=(config.Heads, config.HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True
-        )
-        return LlamaAttention(config, q_proj, k_proj, v_proj, o_proj)
-
-    @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
-        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
-
-        # reorder heads and position for better training throughput
-        q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
-        v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
-
-        rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
-        q, k = rot_embs(self.config.HeadSize, q, k)
-
-        # gradient checkpointing
-        q = hax.tree_checkpoint_name(q, "q")
-        k = hax.tree_checkpoint_name(k, "k")
-        v = hax.tree_checkpoint_name(v, "v")
-
-        k = k.rename({"position": "key_position"})
-        v = v.rename({"position": "key_position"})
-
-        c = self.config
-        attn_output = dot_product_attention(
-            "position",
-            "key_position",
-            "head_size",
-            q,
-            k,
-            v,
-            mask,
-            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            use_flash=c.use_flash_attention,
-            attn_backend=self.config.attn_backend,
-            flash_block_size=c.flash_attention_block_size,
-        )
-
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
-        attn_output = attn_output.astype(x.dtype)
-
-        attn_output = self.o_proj(attn_output, key=key_o)
-
-        # gradient checkpointing
-        attn_output = hax.tree_checkpoint_name(attn_output, "attn_output")
-
-        return attn_output
-
-
 class LlamaDecoderLayer(eqx.Module):
     config: LlamaConfig = eqx.field(static=True)
-    self_attn: LlamaAttention
+    self_attn: Attention
     mlp: LlamaMlp
     input_layernorm: hnn.RmsNorm
     post_attention_layernorm: hnn.RmsNorm
@@ -336,7 +268,8 @@ class LlamaDecoderLayer(eqx.Module):
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn = LlamaAttention.init(config, key=k_attn)
+        attn_config = config.to_attention_config()
+        attn = Attention.init(attn_config, key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,
             config.Mlp,
