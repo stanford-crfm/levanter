@@ -12,9 +12,9 @@ import haliax as hax
 import haliax.nn as hnn
 
 from levanter.layers.attention import AttentionBackend, AttentionMask
-from levanter.models.llama import Attention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
 from levanter.layers.rotary import _rotate_half as levanter_rotate_half
+from levanter.models.llama import Attention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
