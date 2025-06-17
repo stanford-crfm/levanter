@@ -1,23 +1,29 @@
 import functools
 import math
 import warnings
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union, overload
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.random as jrandom
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
 
 import haliax
+import haliax as hax
+import haliax.nn as hnn
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
-from haliax.jax_utils import named_call
+from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
+
+from levanter.models.rotary import RotaryEmbeddingsConfig
 
 
 class AttentionBackend(Enum):
@@ -1004,3 +1010,152 @@ def _tpu_splash_attention(
     attn_output = haliax.shard(attn_output)
 
     return attn_output
+
+
+@dataclass(frozen=True)
+class AttentionConfig:
+    """Configuration for attention layers.
+
+    Args:
+        Embed: Axis for the embedding dimension
+        num_heads: number of attention heads
+        num_kv_heads: number of attention heads for keys and values. Setting to 1 means MQA. Setting to num_heads means MHA. Otherwise GQA.
+        use_bias: whether to use bias in linear layers
+        upcast_attn: whether to upcast attention to float32
+        attn_backend: which attention backend to use. If None, will use the default for the current accelerator.
+        flash_attention_block_size: block size for flash attention
+        rope: configuration for rotary position embeddings. If None, no rotary embeddings will be applied.
+        scaling_factor: scaling factor for attention scores. If None, will use 1/sqrt(head_size).
+    """
+
+    Embed: Axis
+    num_heads: int
+    num_kv_heads: int
+    use_bias: bool = False
+    upcast_attn: bool = False
+    attn_backend: Optional[AttentionBackend] = None
+    flash_attention_block_size: Optional[int] = None
+    rope: Optional[RotaryEmbeddingsConfig] = None
+    scaling_factor: Optional[float] = None
+
+    def __post_init__(self):
+        assert (
+            self.num_heads % self.num_kv_heads == 0
+        ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+
+    @property
+    def head_size(self) -> int:
+        return self.Embed.size // self.num_heads
+
+    @property
+    def q_heads_per_group(self) -> int:
+        return self.num_heads // self.num_kv_heads
+
+    QHeadsPerGroup = property(lambda self: hax.Axis("q_heads_per_group", self.q_heads_per_group))
+    KVHeads = property(lambda self: hax.Axis("kv_heads", self.num_kv_heads))
+    HeadSize = property(lambda self: hax.Axis("head_size", self.head_size))
+    Heads = property(lambda self: hax.Axis("heads", self.num_heads))
+
+    @property
+    def use_flash_attention(self) -> bool:
+        """Whether to use flash attention based on the backend."""
+        if self.attn_backend is None:
+            return default_attention_type() != AttentionBackend.VANILLA
+        return self.attn_backend != AttentionBackend.VANILLA
+
+
+class Attention(eqx.Module):
+    """A multi-head attention layer that uses dot product attention.
+
+    This is a general-purpose attention layer that can be used in various transformer architectures.
+    It supports multi-head attention (MHA), multi-query attention (MQA), and grouped-query attention (GQA).
+    """
+
+    config: AttentionConfig = eqx.field(static=True)
+    q_proj: hnn.Linear  # projection from Embed to query
+    k_proj: hnn.Linear  # projection from Embed to key
+    v_proj: hnn.Linear  # projection from Embed to value
+    o_proj: hnn.Linear  # projection from Heads to output
+
+    @staticmethod
+    def init(config: AttentionConfig, *, key) -> "Attention":
+        use_bias = config.use_bias
+
+        k_q, k_k, k_v, k_o = jrandom.split(key, 4)
+        q_proj = hnn.Linear.init(
+            In=config.Embed,
+            Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize),
+            key=k_q,
+            use_bias=use_bias,
+            out_first=True,
+        )
+        k_proj = hnn.Linear.init(
+            In=config.Embed,
+            Out=(config.KVHeads, config.HeadSize),
+            key=k_k,
+            use_bias=use_bias,
+            out_first=True,
+        )
+        v_proj = hnn.Linear.init(
+            In=config.Embed,
+            Out=(config.KVHeads, config.HeadSize),
+            key=k_v,
+            use_bias=use_bias,
+            out_first=True,
+        )
+        o_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize),
+            Out=config.Embed,
+            key=k_o,
+            use_bias=use_bias,
+            out_first=True,
+        )
+        return Attention(config, q_proj, k_proj, v_proj, o_proj)
+
+    @named_call
+    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
+
+        # reorder heads and position for better training throughput
+        q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
+        k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
+        v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
+
+        # Apply rotary embeddings if configured
+        if self.config.rope is not None:
+            rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
+            q, k = rot_embs(self.config.HeadSize, q, k)
+
+        # gradient checkpointing
+        q = hax.tree_checkpoint_name(q, "q")
+        k = hax.tree_checkpoint_name(k, "k")
+        v = hax.tree_checkpoint_name(v, "v")
+
+        k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
+
+        c = self.config
+        attn_output = dot_product_attention(
+            "position",
+            "key_position",
+            "head_size",
+            q,
+            k,
+            v,
+            mask,
+            attention_dtype=jnp.float32 if c.upcast_attn else x.dtype,
+            use_flash=c.use_flash_attention,
+            attn_backend=c.attn_backend,
+            flash_block_size=c.flash_attention_block_size,
+            scaling_factor=c.scaling_factor,
+        )
+
+        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_output.astype(x.dtype)
+
+        attn_output = self.o_proj(attn_output, key=key_o)
+
+        # gradient checkpointing
+        attn_output = hax.tree_checkpoint_name(attn_output, "attn_output")
+
+        return attn_output

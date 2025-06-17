@@ -20,8 +20,8 @@ from haliax.state_dict import ModuleWithStateDictSerialization, StateDict
 
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.models.attention import AttentionBackend, AttentionMask
-from levanter.models.llama import LlamaAttention, LlamaEmbedding, LlamaMlp
+from levanter.models.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.models.llama import LlamaEmbedding, LlamaMlp
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.mistral import MistralConfig
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
@@ -221,6 +221,19 @@ class MixtralConfig(MistralConfig):
         transformer = self.num_layers * transformer_layer + self.hidden_dim  # plus final rmsnorm
 
         return transformer + token_embedding * 2  # plus embedding and lm head
+
+    def to_attention_config(self) -> AttentionConfig:
+        """Convert this MixtralConfig to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+        )
 
 
 class MixtralMoEMlp(ModuleWithStateDictSerialization):
@@ -454,7 +467,7 @@ class MixtralSparseMoeBlock(eqx.Module):
 
 class MixtralDecoderLayer(eqx.Module):
     config: MixtralConfig = eqx.field(static=True)
-    self_attn: LlamaAttention
+    self_attn: Attention
     block_sparse_moe: MixtralSparseMoeBlock
     input_layernorm: hnn.RmsNorm
     post_attention_layernorm: hnn.RmsNorm
@@ -464,22 +477,21 @@ class MixtralDecoderLayer(eqx.Module):
     def init(config: MistralConfig, *, key) -> "MixtralDecoderLayer":
         k_attn, k_moe, k_mlp = jrandom.split(key, 3)
 
-        attn = LlamaAttention.init(config, key=k_attn)
-        moe = MixtralSparseMoeBlock.init(config, key=k_moe)
-        ln_1 = config.mk_LayerNorm(config.Embed)
-        ln_2 = config.mk_LayerNorm(config.Embed)
-
+        attn_config = config.to_attention_config()
+        attn = Attention.init(attn_config, key=k_attn)
+        block_sparse_moe = MixtralSparseMoeBlock.init(config, key=k_moe)
+        ln_1 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_2 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         shared_mlp = None
         if config.n_shared_experts > 0:
             shared_mlp = LlamaMlp.init(
                 config.Embed,
-                (config.SharedExperts, config.Mlp),
+                config.Mlp,
                 config.activation_function,
                 key=k_mlp,
                 use_bias=config.use_bias,
             )
-
-        return MixtralDecoderLayer(config, attn, moe, ln_1, ln_2, shared_mlp)
+        return MixtralDecoderLayer(config, attn, block_sparse_moe, ln_1, ln_2, shared_mlp)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:

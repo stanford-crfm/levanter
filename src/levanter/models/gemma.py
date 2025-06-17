@@ -14,12 +14,8 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.models.attention import AttentionBackend, AttentionMask
-from levanter.models.llama import (  # Gemma attention and MLP is identical to LLama
-    LlamaAttention,
-    LlamaEmbedding,
-    LlamaMlp,
-)
+from levanter.models.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.models.llama import LlamaEmbedding, LlamaMlp  # Gemma attention and MLP is identical to LLama
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
@@ -200,6 +196,19 @@ class GemmaConfig(HFCompatConfig):
             glu=False,
         )
 
+    def to_attention_config(self) -> AttentionConfig:
+        """Convert this GemmaConfig to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+        )
+
 
 class GemmaRMSNorm(LayerNormBase):
     """
@@ -228,13 +237,15 @@ class GemmaRMSNorm(LayerNormBase):
         var = hax.mean(hax.square(x), axis=self.axis)
         inv = hax.rsqrt(var + self.eps)
         out = x * inv
+        # NB: this differs from most RMS Norms by adding 1.
+        # This is probably so we can weight decay to 1?
         out = out * (1.0 + self.weight)
         return out.astype(dtype)
 
 
 class GemmaDecoderLayer(ModuleWithStateDictSerialization):
     config: GemmaConfig = eqx.field(static=True)
-    self_attn: LlamaAttention
+    self_attn: Attention
     mlp: LlamaMlp
     input_layernorm: GemmaRMSNorm
     post_attention_layernorm: GemmaRMSNorm
@@ -243,7 +254,8 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
     def init(config: GemmaConfig, *, key) -> "GemmaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn = LlamaAttention.init(config, key=k_attn)  # type: ignore
+        attn_config = config.to_attention_config()
+        attn = Attention.init(attn_config, key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,
             config.Mlp,
