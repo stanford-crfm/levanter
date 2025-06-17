@@ -41,7 +41,7 @@ class TagPattern:
         Tag to apply to matched parameters.
     """
 
-    pattern: str | list[str]
+    pattern: list[str] | str
     tag: str
 
 
