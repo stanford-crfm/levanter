@@ -241,21 +241,35 @@ def simple_attention_with_dropout(
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
     m = materialize_mask(mask, QPos, KPos)
-    weights = haliax.nn.attention.dot_product_attention_weights(
-        Key,
-        KPos,
-        query,
-        key,
-        mask=m,
-        bias=bias,
-        attention_dtype=attention_dtype,
-        precision=precision,
-        scaling_factor=scaling_factor,
-    )
+    orig_dtype = query.dtype
+
+    if scaling_factor is None:
+        scaling_factor = 1.0 / jnp.sqrt(query.axis_size(Key))
+
+    query = query * scaling_factor
+
+    if attention_dtype is not None:
+        query = query.astype(attention_dtype)
+        key = key.astype(attention_dtype)
+
+    weights = haliax.dot(query, key, precision=precision, axis=Key)
+
+    if bias is not None:
+        weights = weights + bias
+
     if logits_soft_cap is not None:
         weights = hax.tanh(weights / logits_soft_cap) * logits_soft_cap
-    weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
-    return haliax.dot(weights, value, axis=KPos)
+
+    if m is not None:
+        weights = haliax.where(m, weights, -1e9)
+
+    weights = haliax.nn.softmax(weights, axis=KPos)
+
+    weights = weights.astype(orig_dtype)
+
+    out = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
+
+    return haliax.dot(out, value, axis=KPos)
 
 
 def _try_te_attention(

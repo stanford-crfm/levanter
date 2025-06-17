@@ -374,7 +374,7 @@ def _get_gemma2_config(use_flash=False, num_kv_heads=4, seq_len=128) -> Gemma2Co
         flash_attention_block_size=8 if use_flash else None,
         head_dim=4,
         query_pre_attn_scalar=4,
-        attn_logit_softcapping=None,
+        attn_logit_softcapping=4,
         final_logit_softcapping=None,
         sliding_window=seq_len,
     )

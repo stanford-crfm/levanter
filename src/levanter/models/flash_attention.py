@@ -68,7 +68,18 @@ def flash_attention(
         from levanter.layers.attention import simple_attention_with_dropout
 
         return simple_attention_with_dropout(
-            QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
+            QPos,
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            mask=mask,
+            bias=bias,
+            dropout=dropout,
+            inference=inference,
+            prng=key,
+            logits_soft_cap=logits_soft_cap,
         )
 
     if scaling_factor is None:
@@ -107,7 +118,7 @@ def _flash_attention(
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
     precision: PrecisionLike,
-    logits_soft_cap: Optional[float] = None,
+    logits_soft_cap: Optional[float],
 ) -> hax.NamedArray:
     return _flash_attention_forward(
         None,
@@ -141,7 +152,7 @@ def _flash_attention_forward(
     key: Optional[PRNGKeyArray],
     block_size: int,
     precision: PrecisionLike,
-    logits_soft_cap: Optional[float] = None,
+    logits_soft_cap: Optional[float],
 ):
     del ignore
     q, k, v = qkv

@@ -581,6 +581,21 @@ class Gemma2Config(GemmaConfig):
             query_pre_attn_scalar=hf_config.query_pre_attn_scalar,
         )
 
+    def to_attention_config(self) -> AttentionConfig:
+        """Convert this GemmaConfig to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+            qk_norm=self.norm_config if self.use_qk_norm else None,
+            logits_soft_cap=self.attn_logit_softcapping,
+        )
+
 
 # -----------------------
 # Gemma 2 Implementation
