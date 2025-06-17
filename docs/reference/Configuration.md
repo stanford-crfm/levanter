@@ -335,9 +335,8 @@ which are common to all optimizers (and most have to do with learning rate sched
 | Parameter       | Description                                                                   | Default  |
 |-----------------|-------------------------------------------------------------------------------|----------|
 | `weight_decay`  | The weight decay.                                                             | `0.0`    |
-| `learning_rate` | Global learning rate or mapping of tag to rate.                                                            | `1e-4`   |
-| `param_tags`    | Patterns assigning tags to parameters.
-                  | `None`   |
+| `learning_rate` | Global learning rate or mapping of tag to rate.                               | `1e-4`   |
+| `param_tags`    | Patterns assigning tags to parameters                                         | `None`   |
 | `lr_schedule`   | The type of learning rate schedule for decay. See below.                      | `cosine` |
 | `min_lr_ratio`  | The minimum learning rate ratio.                                              | `0.1`    |
 | `warmup`        | Warmup fraction or number of steps                                            | `0.01`   |
@@ -379,10 +378,11 @@ weight_decay_modules:
   - output
 ```
 
-By default, Levanter uses a cosine learning rate decay with warmup. The learning rate is decayed to
-`min_lr_ratio * learning_rate` over the course of the training run. This is a fairly standard default for LLM training.
 
 #### Learning Rate Schedules
+
+By default, Levanter uses a cosine learning rate decay with warmup. The learning rate is decayed to
+`min_lr_ratio * learning_rate` over the course of the training run. This is a fairly standard default for LLM training.
 
 The `lr_schedule` parameter specifies the learning rate schedule. The following schedules are supported:
 
