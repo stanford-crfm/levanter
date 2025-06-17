@@ -1,7 +1,7 @@
 from .adam_mini import MiniConfig, ScaleByMiniState
 from .adopt import AdoptConfig, ScaleByAdoptState
 from .cautious import CautiousConfig
-from .config import AdamConfig, LionConfig, OptimizerConfig
+from .config import AdamConfig, LionConfig, OptimizerConfig, TagPattern
 from .kron import KronConfig
 from .mars import MarsConfig, ScaleByMarsState
 from .muon import MuonConfig, ScaleByMuonState

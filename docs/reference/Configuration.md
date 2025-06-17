@@ -335,7 +335,9 @@ which are common to all optimizers (and most have to do with learning rate sched
 | Parameter       | Description                                                                   | Default  |
 |-----------------|-------------------------------------------------------------------------------|----------|
 | `weight_decay`  | The weight decay.                                                             | `0.0`    |
-| `learning_rate` | The learning rate.                                                            | `1e-4`   |
+| `learning_rate` | Global learning rate or mapping of tag to rate.                                                            | `1e-4`   |
+| `param_tags`    | Patterns assigning tags to parameters.
+                  | `None`   |
 | `lr_schedule`   | The type of learning rate schedule for decay. See below.                      | `cosine` |
 | `min_lr_ratio`  | The minimum learning rate ratio.                                              | `0.1`    |
 | `warmup`        | Warmup fraction or number of steps                                            | `0.01`   |
@@ -343,6 +345,39 @@ which are common to all optimizers (and most have to do with learning rate sched
 | `rewarmup`      | The learning rate re-warmup, if using cycles.                                 | `0.0`    |
 | `cycles`        | The number of cycles for the learning rate, or steps where cycles end         | `None`   |
 | `cycle_length`  | How long the cycles should be (as an int, fraction), or list of cycle lengths | `None`   |
+
+#### Parameter Tags
+
+Parameters can be grouped using ``param_tags``. Each entry is a ``TagPattern``
+consisting of a ``pattern`` (or list of patterns) and a ``tag``.  Patterns
+match either the full dotted parameter path or the module class name, and are
+evaluated in order. The first matching pattern assigns its tag; parameters that
+match no pattern remain untagged.
+
+Tags can then be referenced in ``weight_decay_modules`` and when providing a
+dictionary to ``learning_rate``. Tagged parameters take precedence over pattern
+matches in those fields. A small example:
+
+```yaml
+param_tags:
+  - pattern: lm_head.weight
+    tag: output
+  - pattern: bias
+    tag: bias
+  - pattern: Embedding.weight
+    tag: input
+  - pattern: Linear.weight
+    tag: hidden
+
+learning_rate:
+  default: 6e-4
+  bias: 3e-4
+
+weight_decay_modules:
+  - hidden
+  - input
+  - output
+```
 
 By default, Levanter uses a cosine learning rate decay with warmup. The learning rate is decayed to
 `min_lr_ratio * learning_rate` over the course of the training run. This is a fairly standard default for LLM training.
