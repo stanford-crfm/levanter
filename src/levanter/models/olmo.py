@@ -16,13 +16,7 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.layers import RmsNormConfig
-from levanter.layers.attention import (
-    Attention,
-    AttentionBackend,
-    AttentionConfig,
-    AttentionMask,
-    dot_product_attention,
-)
+from levanter.layers.attention import AttentionBackend, AttentionConfig, AttentionMask, dot_product_attention
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum
@@ -229,7 +223,7 @@ class Olmo2Config(HFCompatConfig):
             glu=True,
         )
 
-    def to_attention_config(self) -> AttentionConfig:
+    def attention_config(self) -> AttentionConfig:
         """Convert this Olmo2Config to an AttentionConfig for use with Attention."""
         return AttentionConfig(
             Embed=self.Embed,
@@ -373,7 +367,7 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
 
 class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
     config: Olmo2Config = eqx.field(static=True)
-    self_attn: Attention
+    self_attn: Olmo2Attention
     mlp: Olmo2MLP
     post_attention_layernorm: hnn.RmsNorm
     post_feedforward_layernorm: hnn.RmsNorm
@@ -382,8 +376,7 @@ class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
     def init(config: Olmo2Config, *, key) -> "Olmo2DecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn_config = config.to_attention_config()
-        attn = Attention.init(attn_config, key=k_attn)
+        attn = Olmo2Attention.init(config, key=k_attn)
         mlp = Olmo2MLP.init(
             config.Embed,
             config.Mlp,

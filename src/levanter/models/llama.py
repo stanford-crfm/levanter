@@ -208,7 +208,7 @@ class LlamaConfig(HFCompatConfig):
 
         return transformer + token_embedding * 2  # plus embedding and lm head
 
-    def to_attention_config(self) -> AttentionConfig:
+    def attention_config(self) -> AttentionConfig:
         """Convert this LlamaConfig to an AttentionConfig for use with Attention."""
         return AttentionConfig(
             Embed=self.Embed,
@@ -275,7 +275,7 @@ class LlamaDecoderLayer(eqx.Module):
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn_config = config.to_attention_config()
+        attn_config = config.attention_config()
         attn = Attention.init(attn_config, key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,

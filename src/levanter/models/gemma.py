@@ -220,7 +220,7 @@ class GemmaConfig(HFCompatConfig):
             glu=False,
         )
 
-    def to_attention_config(self) -> AttentionConfig:
+    def attention_config(self) -> AttentionConfig:
         """Convert this GemmaConfig to an AttentionConfig for use with Attention."""
         return AttentionConfig(
             Embed=self.Embed,
@@ -294,7 +294,7 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
     def init(config: GemmaConfig, *, key) -> "GemmaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn_config = config.to_attention_config()
+        attn_config = config.attention_config()
         attn = Attention.init(attn_config, key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,
@@ -559,7 +559,7 @@ class Gemma2Config(GemmaConfig):
             query_pre_attn_scalar=hf_config.query_pre_attn_scalar,
         )
 
-    def to_attention_config(self) -> AttentionConfig:
+    def attention_config(self) -> AttentionConfig:
         """Convert this GemmaConfig to an AttentionConfig for use with Attention."""
         return AttentionConfig(
             Embed=self.Embed,
@@ -607,7 +607,7 @@ class Gemma2DecoderLayer(ModuleWithStateDictSerialization):
     def init(config: GemmaConfig, *, key):
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn = Attention.init(config.to_attention_config(), key=k_attn)
+        attn = Attention.init(config.attention_config(), key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,
             config.Mlp,
@@ -883,7 +883,7 @@ class Gemma3Config(Gemma2Config):
             rope_local_base_freq=getattr(hf_config, "rope_local_base_freq", 10_000.0),
         )
 
-    def to_attention_config(self) -> AttentionConfig:  # type: ignore[override]
+    def attention_config(self) -> AttentionConfig:  # type: ignore[override]
         """Gemma-3 uses QK-norm by default."""
         return AttentionConfig(
             Embed=self.Embed,

@@ -133,7 +133,7 @@ def test_llama3_rotary_embedding():
     device = "cpu"
 
     lev_config = LlamaConfig.from_hf_config(llama_config)
-    HeadSize = lev_config.to_attention_config().HeadSize
+    HeadSize = lev_config.attention_config().HeadSize
     Pos = lev_config.Pos
     seq_len = Pos.size
 

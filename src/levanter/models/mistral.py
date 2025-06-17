@@ -154,7 +154,7 @@ class MistralConfig(LlamaConfig):
             glu=False,
         )
 
-    def to_attention_config(self) -> AttentionConfig:
+    def attention_config(self) -> AttentionConfig:
         """Convert this MistralConfig to an AttentionConfig for use with Attention."""
         return AttentionConfig(
             Embed=self.Embed,

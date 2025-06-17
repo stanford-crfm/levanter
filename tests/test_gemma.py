@@ -223,7 +223,7 @@ def test_gemma_attention(use_flash, num_kv_heads, gemma_version):
 
         config = _get_gemma2_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = Attention.init(config.to_attention_config(), key=random.PRNGKey(0))
+    attention = Attention.init(config.attention_config(), key=random.PRNGKey(0))
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
@@ -555,7 +555,7 @@ def test_gemma3_attention(use_flash, num_kv_heads):
 
     gemma_config = _get_gemma3_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = Attention.init(gemma_config.to_attention_config(), key=random.PRNGKey(0))
+    attention = Attention.init(gemma_config.attention_config(), key=random.PRNGKey(0))
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}

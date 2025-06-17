@@ -70,7 +70,7 @@ def test_llama_rotary_embedding():
     from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     llama_config = _get_llama_config()
-    HeadSize = llama_config.to_attention_config().HeadSize
+    HeadSize = llama_config.attention_config().HeadSize
     Pos = llama_config.Pos
     seq_len = Pos.size
     key = random.PRNGKey(0)
@@ -109,8 +109,8 @@ def test_apply_rotary_pos_emb(model_seq_len, test_seq_len):
     llama_config = _get_llama_config(seq_len=model_seq_len)
 
     Pos = llama_config.Pos.resize(test_seq_len)
-    Heads = llama_config.to_attention_config().Heads
-    HeadSize = llama_config.to_attention_config().HeadSize
+    Heads = llama_config.attention_config().Heads
+    HeadSize = llama_config.attention_config().HeadSize
     Batch = hax.Axis("batch", 2)
 
     # note here we switch Heads and Pos for the shape of the output tensors
@@ -156,7 +156,7 @@ def test_llama_attention(use_flash, num_kv_heads):
 
     config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention_config = config.to_attention_config()
+    attention_config = config.attention_config()
     attention = Attention.init(config=attention_config, key=random.PRNGKey(0))  # type: ignore
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
