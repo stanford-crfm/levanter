@@ -20,12 +20,12 @@ import haliax.nn as hnn
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
+from haliax.nn.normalization import LayerNormBase
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
-from haliax.nn.normalization import LayerNormBase
 
-from .rotary import RotaryEmbeddingsConfig
 from .normalization import LayerNormConfigBase
+from .rotary import RotaryEmbeddingsConfig
 
 
 class AttentionBackend(Enum):
@@ -1043,7 +1043,9 @@ class AttentionConfig:
     qk_norm: Optional[LayerNormConfigBase] = None
 
     def __post_init__(self):
-        assert self.num_heads % self.num_kv_heads == 0, f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+        assert (
+            self.num_heads % self.num_kv_heads == 0
+        ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
     @property
     def head_size(self) -> int:
@@ -1122,8 +1124,8 @@ class Attention(eqx.Module):
 
         # Apply QK normalization if enabled
         if self.config.qk_norm is not None:
-            q = self.q_norm(q_proj)
-            k = self.k_norm(k_proj)
+            q = self.q_norm(q_proj)  # type: ignore[misc]
+            k = self.k_norm(k_proj)  # type: ignore[misc]
         else:
             q = q_proj
             k = k_proj
