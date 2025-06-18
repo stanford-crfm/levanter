@@ -296,6 +296,7 @@ def test_gemma2_mlp():
     chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-5, atol=1e-5)
 
 
+@skip_if_no_torch
 def test_gemma2_roundtrip():
     import torch
     from transformers import AutoModelForCausalLM, Gemma2ForCausalLM
