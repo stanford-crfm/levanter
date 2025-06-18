@@ -1075,6 +1075,7 @@ class AttentionConfig:
 
     num_heads: int
     num_kv_heads: int
+    head_dim: int | None = None
     use_bias: bool = False
     upcast_attn: bool = False
     attn_backend: Optional[AttentionBackend] = None
@@ -1092,6 +1093,8 @@ class AttentionConfig:
 
     @property
     def head_size(self) -> int:
+        if self.head_dim is not None:
+            return self.head_dim
         return self.Embed.size // self.num_heads
 
     @property
