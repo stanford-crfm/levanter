@@ -409,9 +409,7 @@ def run_on_pod_ray(
             had_a_failure = False
 
             # check health of actors in the loop too
-            actor_health_futures = [
-                actor.healthy.remote() for actor in slice_pool
-            ]
+            actor_health_futures = [actor.healthy.remote() for actor in slice_pool]
 
             while pending_futures and not had_a_failure:
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
