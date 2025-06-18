@@ -9,7 +9,7 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.mistral import MistralConfig, MistralLMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 

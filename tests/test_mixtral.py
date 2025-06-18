@@ -9,7 +9,7 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 
 # from levanter.models.loss import next_token_loss
 from levanter.models.mixtral import MixtralConfig, MixtralLMHeadModel  # , MixtralDecoderLayer, MixtralSparseMoeBlock
