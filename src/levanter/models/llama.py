@@ -53,6 +53,7 @@ class LlamaConfig(HFCompatConfig):
     intermediate_dim: int = 11008
     num_layers: int = 32
     num_heads: int = 32
+    head_dim: int | None = None  # if set, will use this as the head dimension instead of hidden_dim // num_heads
     num_kv_heads: int = 32
     activation_function: ActivationFunctionEnum = ActivationFunctionEnum.silu
     initializer_range: float = 0.02
@@ -214,6 +215,7 @@ class LlamaConfig(HFCompatConfig):
             Embed=self.Embed,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
             use_bias=self.use_bias,
             upcast_attn=self.upcast_attn,
             attn_backend=self.attn_backend,
