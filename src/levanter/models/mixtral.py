@@ -20,11 +20,11 @@ from haliax.state_dict import ModuleWithStateDictSerialization, StateDict
 
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.models.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.llama import LlamaEmbedding, LlamaMlp
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.mistral import MistralConfig
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -222,7 +222,7 @@ class MixtralConfig(MistralConfig):
 
         return transformer + token_embedding * 2  # plus embedding and lm head
 
-    def to_attention_config(self) -> AttentionConfig:
+    def attention_config(self) -> AttentionConfig:
         """Convert this MixtralConfig to an AttentionConfig for use with Attention."""
         return AttentionConfig(
             Embed=self.Embed,
@@ -477,7 +477,7 @@ class MixtralDecoderLayer(eqx.Module):
     def init(config: MistralConfig, *, key) -> "MixtralDecoderLayer":
         k_attn, k_moe, k_mlp = jrandom.split(key, 3)
 
-        attn_config = config.to_attention_config()
+        attn_config = config.attention_config()
         attn = Attention.init(attn_config, key=k_attn)
         block_sparse_moe = MixtralSparseMoeBlock.init(config, key=k_moe)
         ln_1 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)

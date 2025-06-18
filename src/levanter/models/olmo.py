@@ -15,9 +15,10 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
+from levanter.layers import RmsNormConfig
+from levanter.layers.attention import AttentionBackend, AttentionConfig, AttentionMask, dot_product_attention
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -161,9 +162,7 @@ class Olmo2Config(HFCompatConfig):
         return Olmo2LMHeadModel
 
     def mk_LayerNorm(self, axis: AxisSpec) -> hnn.RmsNorm:
-        return hnn.RmsNorm.init(
-            axis, eps=self.layer_norm_epsilon, use_weight=self.use_layer_norm_weight, use_bias=self.use_bias
-        )
+        return self.norm_config.build(axis)
 
     def total_trainable_params(self, vocab_size):
         """Calculate total trainable parameters for OLMo 2 model.
@@ -222,6 +221,29 @@ class Olmo2Config(HFCompatConfig):
             seq_len=self.seq_len,
             vocab_size=vocab_size,
             glu=True,
+        )
+
+    def attention_config(self) -> AttentionConfig:
+        """Convert this Olmo2Config to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.attention_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+            qk_norm=self.norm_config,  # OLMo2 always uses QK normalization
+        )
+
+    @property
+    def norm_config(self) -> RmsNormConfig:
+        """Return the normalization configuration for OLMo2."""
+        return RmsNormConfig(
+            eps=self.layer_norm_epsilon,
+            use_weight=self.use_layer_norm_weight,
+            use_bias=self.use_bias,
         )
 
 

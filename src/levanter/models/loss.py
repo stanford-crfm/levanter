@@ -23,6 +23,7 @@ def maybe_fused_next_token_loss(
     logsumexp_weight: Optional[float] = None,
     block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = jnp.float32,
+    logit_soft_cap: Optional[float] = None,
 ) -> NamedArray:
     """
     Compute the next token loss with optional block-wise processing.
@@ -38,7 +39,8 @@ def maybe_fused_next_token_loss(
         reduction_axis (Optional[hax.AxisSelection]): Axis to apply reduction.
         logsumexp_weight (Optional[float]): Weight for logsumexp penalty.
         block_size (Optional[int]): Size of each block for processing.
-
+        dtype (Optional[jnp.dtype]): Data type for the loss.
+        logit_soft_cap (Optional[float]): Optional soft cap for logits
     Returns:
         NamedArray: Computed loss.
     """
@@ -51,6 +53,9 @@ def maybe_fused_next_token_loss(
         logits = hax.dot(pred_embeddings, pred_lm_head, axis=Embed)
         if dtype is not None:
             logits = logits.astype(dtype)
+
+        if logit_soft_cap is not None:
+            logits = hax.tanh(logits / logit_soft_cap) * logit_soft_cap
 
         # Shift target tokens to predict the next token
         return next_token_loss(Pos, Vocab, logits, true_ids, loss_mask, reduction, reduction_axis, logsumexp_weight)
@@ -78,6 +83,7 @@ def maybe_fused_next_token_loss(
         logsumexp_weight=logsumexp_weight,
         block_size=block_size,
         dtype=dtype,
+        logit_soft_cap=logit_soft_cap,
     )
 
 
@@ -103,6 +109,7 @@ def next_token_loss(
         reduction: reduction function or None to disable reduction
         reduction_axis: axis to apply reduction. None means all axes
         logsumexp_weight: weight for the logsumexp penalty
+        logit_soft_cap: optional soft cap for logits
     Returns:
         NamedArray: computed loss
     """
@@ -162,6 +169,7 @@ def fused_cross_entropy_loss_and_logsumexp_penalty(
     logsumexp_weight: float | None = 0.0,
     block_size: int,
     dtype: Optional[jnp.dtype] = jnp.float32,
+    logit_soft_cap: Optional[float] = None,
 ) -> NamedArray:
     """
     Compute the cross-entropy loss and logsumexp penalty using embeddings and lm_head,
@@ -186,7 +194,13 @@ def fused_cross_entropy_loss_and_logsumexp_penalty(
 
     # Block-wise softmax computation
     loss, log_normalizers = _blockwise_cross_entropy_loss(
-        (pred_embeddings, pred_lm_head), Contract, Label, target_y, block_size, dtype=dtype
+        (pred_embeddings, pred_lm_head),
+        Contract,
+        Label,
+        target_y,
+        block_size,
+        dtype=dtype,
+        logit_soft_cap=logit_soft_cap,
     )
 
     if logsumexp_weight is not None and (not isinstance(logsumexp_weight, (int, float)) or logsumexp_weight != 0.0):
@@ -205,6 +219,7 @@ def _blockwise_cross_entropy_loss(
     labels_y: NamedArray,
     block_size: int,
     dtype: Optional[jnp.dtype],
+    logit_soft_cap: Optional[float] = None,
 ) -> tuple[NamedArray, NamedArray]:
     """
     Compute cross-entropy loss and log normalizers in a block-wise manner without materializing the full logits.
@@ -227,7 +242,7 @@ def _blockwise_cross_entropy_loss(
         tuple[NamedArray, NamedArray]: tuple of loss and log_normalizers.
     """
 
-    return _block_cross_entropy_forward(None, pred, Contract, Label, labels_y, block_size, dtype)[0]
+    return _block_cross_entropy_forward(None, pred, Contract, Label, labels_y, block_size, dtype, logit_soft_cap)[0]
 
 
 def _block_cross_entropy_forward(
@@ -238,6 +253,7 @@ def _block_cross_entropy_forward(
     labels_y: NamedArray,
     block_size: int,
     dtype: Optional[jnp.dtype],
+    logit_soft_cap: Optional[float] = None,
 ) -> tuple[tuple[NamedArray, NamedArray], tuple[NamedArray]]:
     """
     Forward pass for block-wise cross-entropy loss.
@@ -309,6 +325,9 @@ def _block_cross_entropy_forward(
         if dtype is not None:
             logits_b = logits_b.astype(dtype)
 
+        if logit_soft_cap is not None:
+            logits_b = hax.tanh(logits_b / logit_soft_cap) * logit_soft_cap
+
         # Update max and logsumexp
         max_logit = hax.maximum(max_logit_prev, hax.max(logits_b, axis=Block))  # [Batch, Seq]
         # reweight the previous logsumexp by the new max, fold in the new logits' contribution
@@ -362,6 +381,7 @@ def _block_cross_entropy_backward(
     labels_y: NamedArray,
     block_size: int,
     dtype: Optional[jnp.dtype],
+    logit_soft_cap: Optional[float] = None,
 ) -> tuple[NamedArray, NamedArray]:
     """
     Compute the gradients of the block-wise cross-entropy loss.
@@ -375,6 +395,7 @@ def _block_cross_entropy_backward(
         labels_y (NamedArray): Target labels.
         block_size (int): Size of each block.
         dtype (Optional[jnp.dtype]): Data type for the loss.
+        logit_soft_cap (Optional[float]): Optional soft cap for logits.
 
     Returns:
         tuple[NamedArray, NamedArray]: Gradients.
@@ -424,6 +445,9 @@ def _block_cross_entropy_backward(
         # materialize the softmax for the current block
         if dtype is not None:
             logits_b = logits_b.astype(dtype)
+
+        if logit_soft_cap is not None:
+            logits_b = hax.tanh(logits_b / logit_soft_cap) * logit_soft_cap
 
         p_b = hax.exp(logits_b - log_z)  # [Batch, Seq, Block]
 
