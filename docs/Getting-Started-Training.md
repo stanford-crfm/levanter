@@ -125,6 +125,39 @@ This will overwrite the default WandB configuration from the `TrainerConfig` in 
 We pass all these arguments to the `wandb.init()` function at the same verbatim.
 For more information on the WandB configuration, please refer to the [WandB documentation](https://docs.wandb.ai/ref/python/init).
 
+#### Automated Wandb Workspace Setup
+Levanter logs many metrics, and the default WandB workspace layout can sometimes be unhelpful for navigating them. We provide a script to automatically configure a WandB workspace with a preferred layout, including specific plots and grouping settings.
+
+To run the script:
+- Script location: `scripts/setup_wandb_workspace.py`
+- Command-line arguments:
+    - `--entity` (optional): Your WandB entity (username or team name). If not provided, it defaults to the current logged-in WandB user's default entity.
+    - `--project` (optional): The WandB project name for your Levanter runs. Defaults to `"levanter"` if not provided.
+    - `--workspace` (optional): The desired name for the workspace. Defaults to `"levanter-default"` if not provided.
+    - `--base_url` (optional): If you are using a self-hosted WandB instance, specify its base URL here.
+- Example commands:
+  ```bash
+  # Example: Setup a workspace with default project ("levanter") and workspace name ("levanter-default")
+  # using your default WandB entity.
+  python scripts/setup_wandb_workspace.py
+
+  # Example: Setup a specific workspace in a specific project, using your default entity.
+  python scripts/setup_wandb_workspace.py --project my-levanter-experiments --workspace my-custom-view
+
+  # Example: Full specification (e.g., for a different entity or self-hosted instance).
+  python scripts/setup_wandb_workspace.py --entity <your-wandb-entity> --project <your-wandb-project> --workspace <your-desired-workspace-name> --base_url <your-wandb-instance-url>
+  ```
+
+The script applies the following configuration:
+- Sets run grouping to `group_by_prefix="first"`.
+- Creates a "main" section with the following plots:
+    - `log(train/loss)` vs `log(tokens)`
+    - `log(train/loss)` vs `log(steps)`
+    - `log(eval/bpb)` vs `log(tokens)`
+    - A bar chart for `max(throughput/mfu)` (titled "Max MFU").
+
+The script will update the workspace if it already exists or create it if it doesn't.
+
 ### Resume Training Runs
 When you resume a training run, you may like to restart from a previously saved checking and resume the corresponding WandB run, as well.
 To do so, you can use the following command. The `trainer.wandb.resume true` is optional, but will make WandB error out if the run ID does not exist.
