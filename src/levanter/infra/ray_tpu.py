@@ -282,6 +282,12 @@ class SliceActor:
         pod_name = ray.util.accelerators.tpu.get_current_pod_name()
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
         num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()
+        tpe = TPUAcceleratorManager._get_current_node_tpu_pod_type()
+        # there seems to be a bug with some version of ray here
+        if tpe.startswith("v4"):
+            num_cores = int(tpe.split("-")[1])
+            num_tpus_per_host = 4
+            num_hosts = num_cores // 8
 
         pg = _ensure_pg(pod_name, num_hosts, num_tpus_per_host)
 
@@ -573,10 +579,9 @@ def _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices):
 
     # if we don't have enough actors, create more
     new_actor_to_slice_infos: dict[ActorHandle, ray.ObjectRef] = {}  # ref is to SliceInfo
-    while len(slice_pool) < num_slices:
+    while len(slice_pool) + len(new_actor_to_slice_infos) < num_slices:
         a = SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote()  # type: ignore
         new_actor_to_slice_infos[a] = a.get_slice_info.remote()
-        slice_pool.append(a)
 
     # wait for all new actors to be ready
     if new_actor_to_slice_infos:
@@ -584,6 +589,7 @@ def _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices):
         for a, info_ref in new_actor_to_slice_infos.items():
             try:
                 slice_infos[a] = ray.get(info_ref)
+                slice_pool.append(a)
             except ray.exceptions.RayError as e:
                 # this can happen with a logic error or if the actor is unhealthy/preempted/whatever
                 logger.exception("Failed to get new actors ready", exc_info=e)
