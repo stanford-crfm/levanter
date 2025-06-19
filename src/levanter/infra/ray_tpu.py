@@ -409,9 +409,7 @@ def run_on_pod_ray(
             had_a_failure = False
 
             # check health of actors in the loop too
-            actor_health_futures = [
-                actor.healthy.remote() for actor in slice_pool
-            ]
+            actor_health_futures = [actor.healthy.remote() for actor in slice_pool]
 
             while pending_futures and not had_a_failure:
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
@@ -575,10 +573,9 @@ def _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices):
 
     # if we don't have enough actors, create more
     new_actor_to_slice_infos: dict[ActorHandle, ray.ObjectRef] = {}  # ref is to SliceInfo
-    while len(slice_pool) < num_slices:
+    while len(slice_pool) + len(new_actor_to_slice_infos) < num_slices:
         a = SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote()  # type: ignore
         new_actor_to_slice_infos[a] = a.get_slice_info.remote()
-        slice_pool.append(a)
 
     # wait for all new actors to be ready
     if new_actor_to_slice_infos:
@@ -586,6 +583,7 @@ def _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices):
         for a, info_ref in new_actor_to_slice_infos.items():
             try:
                 slice_infos[a] = ray.get(info_ref)
+                slice_pool.append(a)
             except ray.exceptions.RayError as e:
                 # this can happen with a logic error or if the actor is unhealthy/preempted/whatever
                 logger.exception("Failed to get new actors ready", exc_info=e)
