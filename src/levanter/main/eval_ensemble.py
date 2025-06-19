@@ -173,13 +173,10 @@ def main(config: EvalEnsembleConfig):
     if config.checkpoint_paths and config.hf_checkpoints:
         raise ValueError("Must specify either checkpoint_paths or hf_checkpoints, not both")
 
-    logger.info("Starting device mesh")
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
-        logger.info(f"Creating evaluator with axis mapping {compute_axis_mapping}")
         evaluator = TaggedEvaluator(
             Batch, datasets, tokenizer, max_examples_per_dataset=max_examples, axis_mapping=compute_axis_mapping
         )
-        logger.info(f"Created evaluator")
 
         key = jax.random.PRNGKey(0)
 
@@ -211,12 +208,9 @@ def main(config: EvalEnsembleConfig):
                 model = converter.load_pretrained(
                     model_config.model_type, ref=hf_checkpoint, dtype=mp.compute_dtype
                 )
-                # model = converter.load_pretrained(
-                #     model_config.model_type, ref=hf_checkpoint, dtype=mp.compute_dtype, axis_mapping=parameter_axis_mapping
-                # )
+                # model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
                 models.append(model)
         
-        logger.info(f"Loaded {len(models)} models")
 
         # Create ensemble model
         ensemble_model = EnsembleModel(

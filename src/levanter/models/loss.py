@@ -48,8 +48,6 @@ def maybe_fused_next_token_loss(
     has_model_axis = (pred_embeddings.axes[0].name == "model" and pred_lm_head.axes[0].name == "model")
     
     if has_model_axis:
-        
-        # Handle ensemble case: compute logits for each model and then average
         model_axis = pred_embeddings.axes[0]
         logits_list = []
         
@@ -71,7 +69,6 @@ def maybe_fused_next_token_loss(
         # Continue with standard loss computation
         return next_token_loss(Pos, Vocab, logits, true_ids, loss_mask, reduction, reduction_axis, logsumexp_weight)
     
-    raise ValueError("No model axis found in pred_embeddings or pred_lm_head")
     
     # Standard case (no ensemble)
     # Resolve axes

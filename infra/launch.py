@@ -31,7 +31,7 @@ def main():
     cli.add_arg(parser, config, ["--docker_base_image"], default="ghcr.io/stanford-crfm/levanter-base:latest")
     cli.add_arg(parser, config, ["--docker_repository"], default="levanter")
     cli.add_arg(parser, config, ["--foreground"], default=False, action="store_true")
-    cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser()}")
+    cli.add_arg(parser, config, ["--image_name"], default=f"levanter-{getpass.getuser().lower()}")
     cli.add_capacity_type_args(parser, config)
     cli.add_arg(parser, config, ["--project"], default=cli.gcloud_config()["project"])
     cli.add_arg(parser, config, ["--tpu_name"], required=True)
