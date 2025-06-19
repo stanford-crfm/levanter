@@ -26,7 +26,7 @@ from haliax.partitioning import ResourceMapping
 
 from levanter.data.dataset import AsyncDataset
 from levanter.data.utils import batched
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.schedule import BatchSchedule, IntSchedule
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape

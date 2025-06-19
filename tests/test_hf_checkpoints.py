@@ -16,7 +16,7 @@ from haliax import Axis
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import SAFE_TENSORS_MODEL, ModelWithHfSerializationMixin, _convert_to_jnp
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.backpack import BackpackConfig, BackpackLMHeadModel
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.utils.tree_utils import inference_mode

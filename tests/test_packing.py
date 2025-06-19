@@ -16,7 +16,7 @@ from levanter.data.packing import (
     per_segment_correct,
     per_segment_loss,
 )
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.store.jagged_array import JaggedArrayStore
 

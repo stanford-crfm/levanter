@@ -16,7 +16,7 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig, LmWithHfSerializationMixin
-from levanter.models.attention import AttentionBackend, AttentionMask, dot_product_attention
+from levanter.layers.attention import AttentionBackend, AttentionMask, dot_product_attention
 from levanter.models.lm_model import LmConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token

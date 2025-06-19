@@ -14,10 +14,10 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.models.attention import AttentionMask, dot_product_attention
-from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaMlp, LlamaTransformer
+from levanter.layers.attention import Attention, AttentionConfig, AttentionMask, dot_product_attention
+from levanter.layers.rotary import RotaryEmbeddingsConfig
+from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaLMHeadModel, LlamaMlp, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.models.rotary import RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -27,6 +27,7 @@ from levanter.utils.types import BlockFoldable
 silence_transformer_nag()
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
 from transformers import Qwen2Config as HfQwenConfig  # noqa: E402
+from transformers.models.qwen3 import Qwen3Config as HfQwen3Config  # noqa: E402
 
 
 @LmConfig.register_subclass("qwen")
@@ -73,6 +74,7 @@ class QwenConfig(LlamaConfig):
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
             rope=rope_config,
+            use_bias=not hf_config.no_bias,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfQwenConfig:
@@ -98,6 +100,7 @@ class QwenConfig(LlamaConfig):
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
+            no_bias=not self.use_bias,
             **config_overrides,
         )
 
@@ -115,6 +118,20 @@ class QwenConfig(LlamaConfig):
             seq_len=self.seq_len,
             vocab_size=vocab_size,
             glu=True,
+        )
+
+    def attention_config(self) -> AttentionConfig:
+        """Convert this LlamaConfig to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            # qwen2 always uses bias in attention
+            use_bias=True,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
         )
 
 
@@ -172,14 +189,6 @@ class QwenAttention(eqx.Module):
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
 
-        # Apply sliding window attention if configured and past max_window_layers
-        if (
-            self.config.use_sliding_window
-            and self.config.sliding_window is not None
-            and layer_idx >= self.config.max_window_layers
-        ):
-            raise ValueError("Sliding Window Attention is not currently supported.")
-
         # Perform attention
         attn_output = dot_product_attention(
             "position",
@@ -190,7 +199,6 @@ class QwenAttention(eqx.Module):
             v,
             mask,
             attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            use_flash=self.config.use_flash_attention,
             attn_backend=self.config.attn_backend,
             flash_block_size=self.config.flash_attention_block_size,
         )
@@ -205,7 +213,7 @@ class QwenAttention(eqx.Module):
 # Modified decoder layer for Qwen
 class QwenDecoderLayer(eqx.Module):
     config: QwenConfig = eqx.field(static=True)
-    self_attn: QwenAttention
+    self_attn: Attention
     mlp: LlamaMlp  # Can reuse Llama MLP as structure is similar
     input_layernorm: hnn.RmsNorm
     post_attention_layernorm: hnn.RmsNorm
@@ -214,7 +222,7 @@ class QwenDecoderLayer(eqx.Module):
     def init(config: QwenConfig, *, key) -> "QwenDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
 
-        attn = QwenAttention.init(config, key=k_attn)
+        attn = Attention.init(config.attention_config(), key=k_attn)
         mlp = LlamaMlp.init(
             config.Embed,
             config.Mlp,
@@ -230,6 +238,12 @@ class QwenDecoderLayer(eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
+
+        # Apply sliding window attention if configured and past max_window_layers
+        if (self.config.use_sliding_window and self.config.sliding_window is not None) and x.resolve_axis(
+            "position"
+        ) > self.config.sliding_window:
+            raise NotImplementedError("Sliding window attention is not implemented in Qwen yet.")
 
         residual = x
         x = self.input_layernorm(x)
@@ -331,3 +345,97 @@ class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization)
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
+
+
+# =====================
+# Qwen-3 Configuration
+# =====================
+
+
+@LmConfig.register_subclass("qwen3")
+@dataclass(frozen=True)
+class Qwen3Config(LlamaConfig):
+    """Qwen-3 configuration (Llama architecture + QK-norm + Sliding Window)."""
+
+    # TODO: add sliding window attention implementation
+    use_sliding_window: bool = False
+    sliding_window: int = 4096  # Qwen-3 uses sliding window by default
+
+    @property  # type: ignore[override]
+    def model_type(self):  # noqa: D401
+        return Qwen3LMHeadModel
+
+    def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfQwen3Config:
+        if config_overrides is None:
+            config_overrides = {}
+
+        rope_theta, rope_scaling = self.rope.to_hf_config()
+
+        return HfQwen3Config(
+            max_position_embeddings=self.seq_len,
+            hidden_size=self.hidden_dim,
+            intermediate_size=self.intermediate_dim,
+            num_hidden_layers=self.num_layers,
+            num_attention_heads=self.num_heads,
+            num_key_value_heads=self.num_kv_heads,
+            sliding_window=self.sliding_window,
+            use_sliding_window=self.use_sliding_window,
+            hidden_act=self.activation_function,
+            initializer_range=self.initializer_range,
+            rms_norm_eps=self.layer_norm_epsilon,
+            tie_word_embeddings=self.tie_word_embeddings,
+            vocab_size=vocab_size,
+            rope_theta=rope_theta,
+            rope_scaling=rope_scaling,
+            no_bias=not self.use_bias,
+            attention_bias=self.use_bias,
+            head_dim=self.head_dim or self.hidden_dim // self.num_heads,
+            **config_overrides,
+        )
+
+    @classmethod
+    def from_hf_config(cls, hf_config: HfConfig) -> "Qwen3Config":  # type: ignore[override]
+        rope_theta = hf_config.rope_theta
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
+
+        return Qwen3Config(
+            seq_len=hf_config.max_position_embeddings,
+            hidden_dim=hf_config.hidden_size,
+            intermediate_dim=hf_config.intermediate_size,
+            num_layers=hf_config.num_hidden_layers,
+            num_heads=hf_config.num_attention_heads,
+            num_kv_heads=hf_config.num_key_value_heads,
+            sliding_window=getattr(hf_config, "sliding_window", 4096),
+            use_sliding_window=getattr(hf_config, "use_sliding_window", True),
+            activation_function=ActivationFunctionEnum(hf_config.hidden_act),
+            initializer_range=hf_config.initializer_range,
+            layer_norm_epsilon=hf_config.rms_norm_eps,
+            tie_word_embeddings=hf_config.tie_word_embeddings,
+            rope=rope_config,
+            use_bias=hf_config.attention_bias,
+            head_dim=hf_config.head_dim,
+        )
+
+    def attention_config(self) -> AttentionConfig:  # type: ignore[override]
+        cfg = super().attention_config()
+        return dataclasses.replace(cfg, qk_norm=self.norm_config)
+
+
+# =====================
+# Qwen-3 LM Head Model
+# =====================
+
+
+class Qwen3LMHeadModel(LlamaLMHeadModel):
+    """Identical to LlamaLMHeadModel except built off a Qwen3Config."""
+
+    @classmethod
+    def init(cls, Vocab: Axis, config: Qwen3Config, *, key):  # type: ignore[override]
+        k_t, k_emb = jrandom.split(key, 2)
+        transformer = LlamaTransformer.init(config, key=k_t)
+        embeddings = LlamaEmbedding.init(Vocab, config, key=k_emb)
+        if config.tie_word_embeddings:
+            lm_head = None
+        else:
+            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+        return Qwen3LMHeadModel(transformer, embeddings, lm_head)

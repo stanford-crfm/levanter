@@ -11,7 +11,7 @@ from jax.sharding import Mesh
 import haliax as hax
 from haliax import Axis
 
-from levanter.models.attention import (
+from levanter.layers.attention import (
     AttentionBackend,
     AttentionMask,
     _bin_and_group_axes_by_function,

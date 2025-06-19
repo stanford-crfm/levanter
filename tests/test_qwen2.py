@@ -6,7 +6,7 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.qwen import QwenConfig, QwenLMHeadModel
 from test_utils import skip_if_no_torch
 
