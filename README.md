@@ -172,12 +172,15 @@ optimizer:
 ### Other Architectures
 
 Currently, we support the following architectures:
+
 * GPT-2
-* [LLama](https://ai.meta.com/llama/)
-* [Backpacks](http://backpackmodels.science/)
-* [Gemma](https://ai.google.dev/gemma)
-* [Qwen](https://huggingface.co/Qwen/Qwen2.5-7B)
+* [LLama](https://ai.meta.com/llama/), including Llama 1, 2 and 3
+* [Gemma](https://ai.google.dev/gemma), including Gemma 1, 2 and Gemma 3.
+* [Qwen2](https://huggingface.co/Qwen/Qwen2.5-7B)
+* [Qwen3](https://huggingface.co/Qwen/Qwen3-8B)
 * [Mistral](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3)
+* [Mixtral](https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1)
+* [Olmo2](https://huggingface.co/allenai/Olmo-2-1124-7B)
 
 We plan to add more in the future.
 
