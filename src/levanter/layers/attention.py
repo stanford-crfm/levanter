@@ -17,12 +17,13 @@ from jaxtyping import PRNGKeyArray
 import haliax
 import haliax as hax
 import haliax.nn as hnn
-from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
+from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name, dslice
 from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.nn.normalization import LayerNormBase
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
+from haliax.util import ensure_tuple
 
 from .normalization import LayerNormConfigBase
 from .rotary import RotaryEmbeddingsConfig
@@ -606,12 +607,20 @@ def _unflatten_bshd(attn_output, q_class, v_class):
     return attn_output
 
 
-def _materialize_segment_mask(segment_ids, QPos, KPos, q_slice, k_slice) -> NamedArray:
+def _materialize_segment_mask(segment_ids: NamedArray | tuple[NamedArray, NamedArray], QPos, KPos, q_slice, k_slice) -> NamedArray:
     """
     Make a segment mask for attention. This is a mask that prevents attention between different segments.
     """
-    kv_segment_ids = segment_ids.rename({QPos: KPos})[KPos, k_slice]
-    q_segment_ids = segment_ids[QPos, q_slice]
+    if isinstance(segment_ids, tuple):
+        if len(segment_ids) != 2:
+            raise ValueError("segment_ids must be a tuple of two NamedArrays")
+        q_segment_ids, kv_segment_ids = segment_ids
+        kv_segment_ids = kv_segment_ids.rename({QPos: KPos})[KPos, k_slice]
+        q_segment_ids = q_segment_ids.rename({QPos: QPos})[QPos]
+    else:
+        kv_segment_ids = segment_ids.rename({QPos: KPos})[KPos, k_slice]
+        q_segment_ids = segment_ids[QPos, q_slice]
+
     sub_KPos = kv_segment_ids.resolve_axis(KPos.name)
 
     return q_segment_ids.broadcast_axis(sub_KPos) == kv_segment_ids
@@ -645,7 +654,7 @@ class AttentionMask(eqx.Module):
 
     is_causal: bool = eqx.field(static=True)
     explicit_mask: Optional[NamedArray] = None
-    segment_ids: Optional[NamedArray] = None
+    segment_ids: NamedArray | tuple[NamedArray, NamedArray] = None
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
     # TODO: add prefixlm
     # cf https://github.com/google-research/t5x/blob/51a99bff8696c373cc03918707ada1e98cbca407/t5x/examples/decoder_only/layers.py#L978
@@ -710,11 +719,20 @@ class AttentionMask(eqx.Module):
             # b/c we might do this in jit, we use eqx.error_if
             # in theory we can do this one by just assigning unique ids to each unique pair...
             # (but i don't really anticipate needing this)
-            segment_ids = eqx.error_if(
-                self.segment_ids,
-                not haliax.all(self.segment_ids == other.segment_ids),
-                "Only one segment mask is allowed",
-            )
+            if isinstance(self.segment_ids, tuple) != isinstance(other.segment_ids, tuple):
+                raise ValueError("Segment IDs must be either both tuples or both NamedArrays")
+
+            if isinstance(self.segment_ids, tuple):
+                segment_ids = eqx.error_if(
+                    hax.logical_or(self.segment_ids[0] != other.segment_ids[0], self.segment_ids[1] != other.segment_ids[1]),
+                    "Only one segment mask is allowed",
+                )
+            else:
+                segment_ids = eqx.error_if(
+                    self.segment_ids,
+                    not haliax.all(self.segment_ids == other.segment_ids),
+                    "Only one segment mask is allowed",
+                )
         elif self.segment_ids is not None:
             segment_ids = self.segment_ids
         else:
@@ -940,16 +958,17 @@ def _tpu_splash_attention(
     physical_axes_segments = pspec_for_axis(segment_ids.axes) if segment_ids is not None else None
     # do we have a batch axis in segment_ids? (needed for vmap below)
     if segment_ids is not None:
-        index_of_seq_dim = segment_ids.axes.index(QPos)
-        other_indices = [i for i in range(len(segment_ids.axes)) if i != index_of_seq_dim]
-        if len(other_indices) > 1:
-            raise NotImplementedError(
-                f"Only one batch axis is supported in segment_ids right now (got {segment_ids.axes})"
-            )
-        elif len(other_indices) == 1:
-            segment_batch_axis = other_indices[0]
+        if isinstance(segment_ids, tuple):
+            q_segment_ids, kv_segment_ids = segment_ids
+            kv_segment_ids = kv_segment_ids.rename({QPos: KPos})
         else:
-            segment_batch_axis = None
+            assert segment_ids is not None
+            q_segment_ids, kv_segment_ids = segment_ids, segment_ids.rename({QPos: KPos})
+
+        q_segment_batch_axis = _find_batch_axis_for_segment_ids(QPos, q_segment_ids)
+        kv_segment_batch_axis = _find_batch_axis_for_segment_ids(KPos, kv_segment_ids)
+
+        segment_batch_axis = SegmentIds(q_segment_batch_axis, kv_segment_batch_axis)  # type: ignore
     else:
         segment_batch_axis = None
 
@@ -984,11 +1003,6 @@ def _tpu_splash_attention(
             block_q_dq=min(block_size, Sq),
             block_kv_dq=min(block_size, Sq),
         )
-
-        if mask.segment_ids is not None:
-            # for now only support self attention
-            segment_ids = segment_ids.array
-            segment_ids = SegmentIds(segment_ids, segment_ids)
 
         if mask is None:
             base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
@@ -1052,6 +1066,21 @@ def _tpu_splash_attention(
     attn_output = haliax.shard(attn_output)
 
     return attn_output
+
+
+def _find_batch_axis_for_segment_ids(Pos, segment_ids) -> Optional[int]:
+    index_of_seq_dim = segment_ids.axes.index(Pos)
+    other_indices = [i for i in range(len(segment_ids.axes)) if i != index_of_seq_dim]
+    if len(other_indices) > 1:
+        raise NotImplementedError(
+            f"Only one batch axis is supported in segment_ids right now (got {segment_ids.axes})"
+        )
+    elif len(other_indices) == 1:
+        segment_batch_axis = other_indices[0]
+    else:
+        segment_batch_axis = None
+
+    return segment_batch_axis
 
 
 @dataclass(frozen=True)
@@ -1225,11 +1254,13 @@ class Attention(eqx.Module):
                     )
                 )
 
-            # Remove the position axis for storage
-            k_to_cache = k["position", 0]
-            v_to_cache = v["position", 0]
+            # if we're using a mask, we need to get the segment ids
+            # During prefill or autoregressive decoding, we'll have a mask that's
+            # either 0 or 1 for each position. 0 means the position is masked out.
+            # length is then the number of positions that are not masked out.
+            segment_ids = segment_ids_for_mask(mask)
 
-            kv_cache = kv_cache.extend(k_to_cache, v_to_cache)
+            kv_cache = kv_cache.prefill(k, v, lengths=1, num_seqs=1, segment_ids=segment_ids)
             assert kv_cache is not None  # Make mypy happy
 
             # Retrieve full cached tensors and rename position for attention
@@ -1290,31 +1321,34 @@ class KvCache(eqx.Module):
     lengths: NamedArray
     num_seqs: jnp.ndarray
 
-    # --------- public helpers ---------
-
-    def extend(self, keys: NamedArray, values: NamedArray):
+    def extend_one_position(self, keys: NamedArray, values: NamedArray):
         """Append one position worth of `keys` / `values` to the cache.
 
         Expect `keys` and `values` to have axes [Batch, kv_heads, head_size] (no
         position axis); they will be written at `self.lengths` along the position
         dimension.
         """
-        # Scatter at the current lengths for each sequence
-        new_keys = self.keys.at["position", self.lengths].set(keys.astype(self.keys.dtype))
-        new_values = self.values.at["position", self.lengths].set(values.astype(self.values.dtype))
-        new_lengths = self.lengths + 1
+
+        return self.prefill(keys, values, lengths=1, num_seqs=self.num_seqs)
+
+    def prefill(self, keys: NamedArray, values: NamedArray, lengths: NamedArray, num_seqs: jnp.ndarray):
+        """Prefill the cache with keys and values for multiple sequences."""
+        keys = keys.astype(self.keys.dtype)
+        values = values.astype(self.values.dtype)
+
+        new_keys = self.keys.updated_slice({"position": self.lengths}, keys)
+        new_values = self.values.updated_slice({"position": self.lengths}, values)
+        new_lengths = self.lengths + lengths
+        new_num_seqs = num_seqs
 
         # Sanity: don't overflow maximum length
         from jax.experimental import checkify
-
         checkify.debug_check(
             jnp.all(new_lengths <= new_keys.shape["position"]),
             "Cache length exceeds maximum position length",
         )
 
-        return KvCache(new_keys, new_values, new_lengths, self.num_seqs)
-
-    # --------- constructors ---------
+        return KvCache(new_keys, new_values, new_lengths, new_num_seqs)
 
     @staticmethod
     def init(Batch: Axis, Pos: Axis, KVHeads: Axis, HeadDim: Axis, dtype) -> "KvCache":

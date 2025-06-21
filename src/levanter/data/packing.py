@@ -79,7 +79,7 @@ class SequencePacker:
 
         self._ids.extend(ids)
         if segment_id is None:
-            segment_id = self.num_segments
+            segment_id = self.num_segments + 1
 
         self.num_segments += 1
 
@@ -90,7 +90,7 @@ class SequencePacker:
     def pack(self) -> LmExample:
         ids = self._ids + [self.pad_token] * (self.Pos.size - len(self._ids))
 
-        segment_ids = self._segment_ids + [-1] * (self.Pos.size - len(self._segment_ids))
+        segment_ids = self._segment_ids + [0] * (self.Pos.size - len(self._segment_ids))
 
         loss_mask = self._loss_mask + [0] * (self.Pos.size - len(self._loss_mask))
 
