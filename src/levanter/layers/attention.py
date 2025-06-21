@@ -1125,6 +1125,14 @@ class AttentionConfig:
             return default_attention_type() != AttentionBackend.VANILLA
         return self.attn_backend != AttentionBackend.VANILLA
 
+    # ---------------------------------------------------------------------------------
+    # KV-cache helper
+    # ---------------------------------------------------------------------------------
+
+    def empty_kv_cache(self, Batch: Axis, MaxLen: Axis, *, dtype=jnp.float32) -> "KvCache":
+        """Build a zero-initialised KvCache whose axes match this config."""
+        return KvCache.init(Batch, MaxLen, self.KVHeads, self.HeadSize, dtype)
+
 
 class Attention(eqx.Module):
     """A multi-head attention layer that uses dot product attention.
@@ -1172,8 +1180,14 @@ class Attention(eqx.Module):
 
     @named_call
     def __call__(
-        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
-    ) -> NamedArray:
+        self,
+        x: NamedArray,
+        mask: Optional[NamedArray | AttentionMask],
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
+        kv_cache: "KvCache | None" = None,
+    ) -> NamedArray | tuple[NamedArray, "KvCache"]:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
         # Project to query, key, value
@@ -1200,6 +1214,28 @@ class Attention(eqx.Module):
             rot_embs = self.config.rope.build(self.config.HeadSize)
             q = rot_embs(q, pos_ids)
             k = rot_embs(k, pos_ids)
+
+        # Handle KV cache if provided
+        if kv_cache is not None:
+            # Expect the caller is providing one new time-step, so position axis should have size 1
+            if k.axis_size("position") != 1:
+                raise ValueError(
+                    "When using kv_cache, input must have sequence length 1 (got length {} )".format(
+                        k.axis_size("position")
+                    )
+                )
+
+            # Remove the position axis for storage
+            k_to_cache = k["position", 0]
+            v_to_cache = v["position", 0]
+
+            kv_cache = kv_cache.extend(k_to_cache, v_to_cache)
+            assert kv_cache is not None  # Make mypy happy
+
+            # Retrieve full cached tensors and rename position for attention
+            k = kv_cache.keys.rename({"position": "key_position"})
+            v = kv_cache.values.rename({"position": "key_position"})
+            kv_cache = kv_cache
 
         # Rename position axis for attention
         k = k.rename({"position": "key_position"})
@@ -1229,4 +1265,62 @@ class Attention(eqx.Module):
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 
-        return attn_output
+        # Return updated cache if it was provided
+        if kv_cache is not None:
+            return attn_output, kv_cache
+        else:
+            return attn_output
+
+
+class KvCache(eqx.Module):
+    """Simple per-sequence KV cache for autoregressive decoding.
+
+    Shapes (named):
+        keys:   [Batch, position, kv_heads, head_size]
+        values: [Batch, position, kv_heads, head_size]
+        lengths: int32[Batch] - current sequence lengths
+        num_seqs: int32 - currently unused, placeholder for paged caches
+
+    `extend` appends a single time-step worth of key/value vectors to the cache and
+    returns an updated cache instance
+    """
+
+    keys: NamedArray
+    values: NamedArray
+    lengths: NamedArray
+    num_seqs: jnp.ndarray
+
+    # --------- public helpers ---------
+
+    def extend(self, keys: NamedArray, values: NamedArray):
+        """Append one position worth of `keys` / `values` to the cache.
+
+        Expect `keys` and `values` to have axes [Batch, kv_heads, head_size] (no
+        position axis); they will be written at `self.lengths` along the position
+        dimension.
+        """
+        # Scatter at the current lengths for each sequence
+        new_keys = self.keys.at["position", self.lengths].set(keys.astype(self.keys.dtype))
+        new_values = self.values.at["position", self.lengths].set(values.astype(self.values.dtype))
+        new_lengths = self.lengths + 1
+
+        # Sanity: don't overflow maximum length
+        from jax.experimental import checkify
+
+        checkify.debug_check(
+            jnp.all(new_lengths <= new_keys.shape["position"]),
+            "Cache length exceeds maximum position length",
+        )
+
+        return KvCache(new_keys, new_values, new_lengths, self.num_seqs)
+
+    # --------- constructors ---------
+
+    @staticmethod
+    def init(Batch: Axis, Pos: Axis, KVHeads: Axis, HeadDim: Axis, dtype) -> "KvCache":
+        assert Pos.name == "position", "Pos axis must be named 'position'"
+        keys = hax.zeros((Batch, Pos, KVHeads, HeadDim), dtype=dtype)
+        values = hax.zeros((Batch, Pos, KVHeads, HeadDim), dtype=dtype)
+        lengths = hax.zeros((Batch,), dtype=jnp.int32)
+        num_seqs = hax.zeros((), dtype=jnp.int32)
+        return KvCache(keys, values, lengths, num_seqs)
