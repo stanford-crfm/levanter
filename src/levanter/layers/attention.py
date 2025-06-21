@@ -1171,7 +1171,9 @@ class Attention(eqx.Module):
         return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
         # Project to query, key, value
@@ -1194,8 +1196,7 @@ class Attention(eqx.Module):
 
         # Apply rotary position embeddings if configured
         if self.config.rope is not None:
-            # TODO: fix for inference
-            pos_ids = hax.arange(x.resolve_axis("position"))
+            pos_ids = pos_ids or hax.arange(x.resolve_axis("position"))
             rot_embs = self.config.rope.build(self.config.HeadSize)
             q = rot_embs(q, pos_ids)
             k = rot_embs(k, pos_ids)

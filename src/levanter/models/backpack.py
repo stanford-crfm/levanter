@@ -288,11 +288,10 @@ class BackpackGpt2Embeddings(eqx.Module):
         return self.token_embeddings.take("vocab", input_ids)
 
     @named_call
-    def embed(self, input_ids, *, key):
+    def embed(self, input_ids, pos_ids: NamedArray, *, key):
         input_embeds = self.token_embeddings.take("vocab", input_ids)
-        position_embeds = self.position_embeddings
-        input_len = input_ids.resolve_axis("position").size
-        x = input_embeds + position_embeds["position", hax.dslice(0, input_len)]
+        position_embeds = self.position_embeddings[pos_ids]
+        x = input_embeds + position_embeds
         x = self.dropout(x, key=key)
 
         return x
@@ -355,12 +354,18 @@ class BackpackLMHeadModel(LmWithHfSerializationMixin, ModuleWithStateDictSeriali
 
     @named_call
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         k_embed, k_transformer, k_senses, k_sa = haliax.jax_utils.maybe_rng_split(key, 4)
 
         # Compute contextualization weights
-        hidden_states = self.embeddings.embed(input_ids, key=k_embed)
+        pos_ids = pos_ids or hax.arange(self.Pos)
+        hidden_states = self.embeddings.embed(input_ids, pos_ids=pos_ids, key=k_embed)
         hidden_states = self.transformer(hidden_states, attn_mask, key=k_transformer)
         contextualization_weights = self.kq_selfattention(
             hidden_states, mask=attn_mask, layer_idx=self.config.num_layers, key=k_sa

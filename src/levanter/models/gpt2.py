@@ -296,10 +296,9 @@ class Gpt2Embeddings(ModuleWithStateDictSerialization, eqx.Module):
         return Gpt2Embeddings(Vocab, config, token_embeddings, position_embeddings, dropout)
 
     @named_call
-    def embed(self, input_ids, *, key):
+    def embed(self, input_ids, *, key, pos_ids: NamedArray):
         input_embeds = self.token_embeddings(input_ids)
-        input_Pos = input_ids.resolve_axis("position")
-        position_embeds = self.position_embeddings.embed(hax.arange(input_Pos))
+        position_embeds = self.position_embeddings.embed(pos_ids)
         x = input_embeds + position_embeds
         x = self.dropout(x, key=key)
 
@@ -341,10 +340,16 @@ class Gpt2LMHeadModel(LmWithHfSerializationMixin[Gpt2Config]):
         return Gpt2LMHeadModel(transformer, embeddings)
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
-        x = self.embeddings.embed(input_ids, key=k_embed)
+        pos_ids = pos_ids or hax.arange(self.Pos)
+        x = self.embeddings.embed(input_ids, pos_ids=pos_ids, key=k_embed)
         x = self.transformer(x, attn_mask, key=k_transformer)
 
         return x

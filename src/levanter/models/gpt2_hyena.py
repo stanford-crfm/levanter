@@ -158,11 +158,17 @@ class Gpt2HyenaModel(LmHeadModel[Gpt2HyenaConfig]):
         return Gpt2HyenaModel(backbone, embeddings)
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         # NOTE: attn_mask not used since we use the Hyena operator instead of attention.
         k_embed, k_backbone = haliax.jax_utils.maybe_rng_split(key, 2)
-        x = self.embeddings.embed(input_ids, key=k_embed)
+        pos_ids = pos_ids or hax.arange(self.Pos)
+        x = self.embeddings.embed(input_ids, pos_ids=pos_ids, key=k_embed)
 
         x = self.backbone(x, key=k_backbone)
 
