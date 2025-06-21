@@ -1114,6 +1114,11 @@ class AttentionConfig:
         return Axis("head_size", self.head_size)
 
     @property
+    def QHeadsPerGroup(self) -> Axis:
+        """Axis for query heads per group."""
+        return Axis("q_heads_per_group", self.q_heads_per_group)
+
+    @property
     def use_flash_attention(self) -> bool:
         """Whether to use flash attention based on the backend."""
         if self.attn_backend is None:
@@ -1139,23 +1144,29 @@ class Attention(eqx.Module):
     @staticmethod
     def init(config: AttentionConfig, *, key) -> "Attention":
         use_bias = config.use_bias
-        Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.q_heads_per_group)
-        HeadSize = hax.Axis("head_size", config.head_size)
-
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, HeadSize), key=k_q, use_bias=use_bias, out_first=True
+            In=(config.Embed),
+            Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize),
+            key=k_q,
+            use_bias=use_bias,
+            out_first=True,
         )
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_k, use_bias=use_bias, out_first=True)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_v, use_bias=use_bias, out_first=True)
-        o_proj = hnn.Linear.init(In=(config.Heads, HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True)
+        k_proj = hnn.Linear.init(
+            In=config.Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
+        )
+        v_proj = hnn.Linear.init(
+            In=(config.Embed), Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
+        )
+        o_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize), Out=config.Embed, key=k_o, use_bias=use_bias, out_first=True
+        )
 
         q_norm = None
         k_norm = None
         if config.qk_norm is not None:
-            q_norm = config.qk_norm.build(HeadSize)
-            k_norm = config.qk_norm.build(HeadSize)
+            q_norm = config.qk_norm.build(config.HeadSize)
+            k_norm = config.qk_norm.build(config.HeadSize)
 
         return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
 
@@ -1183,8 +1194,11 @@ class Attention(eqx.Module):
 
         # Apply rotary position embeddings if configured
         if self.config.rope is not None:
-            rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
-            q, k = rot_embs(self.config.HeadSize, q, k)
+            # TODO: fix for inference
+            pos_ids = hax.arange(x.resolve_axis("position"))
+            rot_embs = self.config.rope.build(self.config.HeadSize)
+            q = rot_embs(q, pos_ids)
+            k = rot_embs(k, pos_ids)
 
         # Rename position axis for attention
         k = k.rename({"position": "key_position"})
