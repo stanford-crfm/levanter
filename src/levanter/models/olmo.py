@@ -331,8 +331,10 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         v = v.rearrange((..., "kv_heads", "position", "head_size"))
 
         # Apply rotary position embeddings
-        rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
-        q, k = rot_embs(self.config.HeadSize, q, k)
+        pos_ids = hax.arange(x.resolve_axis("position"))
+        rot_embs = self.config.rope.build(self.config.HeadSize)
+        q = rot_embs(q, pos_ids)
+        k = rot_embs(k, pos_ids)
 
         # Rename position axis for attention
         k = k.rename({"position": "key_position"})
