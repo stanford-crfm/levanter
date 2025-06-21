@@ -264,7 +264,7 @@ def test_segment_ids_are_respected(impl):
     segment_ids = np.array([0, 0, 0] + [1] * (L - 3), dtype=np.int32)
     segment_ids = jax.device_put(segment_ids, jax.sharding.PositionalSharding(jax.devices()))
     segment_ids = hax.named(segment_ids, (Pos,))
-    mask = AttentionMask(is_causal=True, segment_ids=segment_ids)
+    mask = AttentionMask(causal_offset=0, segment_ids=segment_ids)
 
     devices = jax.devices()
 
@@ -277,3 +277,60 @@ def test_segment_ids_are_respected(impl):
     assert_trees_all_close(result.array[0:3, 1], 300.0, atol=1e-3, rtol=1e-3)
     # the rest should be 0
     assert_trees_all_close(result.array[3:, 1], 0.0, atol=1e-3, rtol=1e-3)
+
+
+# -----------------------------------------------------------------------------
+# New tests for causal-offset masking behaviour
+# -----------------------------------------------------------------------------
+
+
+def test_causal_offset_cross_attention():
+    """Verify that a positive causal *offset* relaxes the masking during cross-attention.
+
+    We compare the output of ``dot_product_attention`` when provided the structured
+    ``AttentionMask`` with *offset* against the output obtained when passing the
+    *materialised* boolean mask explicitly – they should be identical.
+    """
+
+    Pos = Axis("pos", 4)
+    KeyPos = Axis("key_pos", 6)
+    Head = Axis("head", 2)
+    KeyDim = Axis("embed", 4)
+
+    q = hax.random.normal(jrandom.PRNGKey(0), (Pos, Head, KeyDim))
+    k = hax.random.normal(jrandom.PRNGKey(1), (KeyPos, Head, KeyDim))
+    v = hax.random.normal(jrandom.PRNGKey(2), (KeyPos, Head, KeyDim))
+
+    offset = 2
+    struct_mask = AttentionMask.causal(offset=offset)
+
+    out_struct = dot_product_attention(
+        Pos,
+        KeyPos,
+        KeyDim,
+        q,
+        k,
+        v,
+        mask=struct_mask,
+        inference=True,
+    )
+
+    explicit = struct_mask.materialize(Pos, KeyPos)
+
+    # Sanity-check the materialised mask obeys the offset rule j <= i + offset
+    for i in range(Pos.size):
+        for j in range(KeyPos.size):
+            assert explicit.array[i, j] == (j <= i + offset)
+
+    out_explicit = dot_product_attention(
+        Pos,
+        KeyPos,
+        KeyDim,
+        q,
+        k,
+        v,
+        mask=explicit,
+        inference=True,
+    )
+
+    assert_trees_all_close(out_struct.array, out_explicit.array)
