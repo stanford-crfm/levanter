@@ -618,108 +618,172 @@ def _materialize_segment_mask(segment_ids, QPos, KPos, q_slice, k_slice) -> Name
 
 
 class AttentionMask(eqx.Module):
+    """Abstract base class for attention masks.
+
+    Masks form a small algebraic data type.  Concrete subclasses such as
+    :class:`CausalMask` or :class:`ExplicitMask` implement :meth:`materialize`
+    to build a :class:`NamedArray` representing the mask for a particular slice
+    of the query and key position axes.
+
+    Two concepts are central to this design:
+
+    1. **Materialization**: backends like flash or splash attention often only
+       need the mask for a subset of the sequence.  ``materialize`` allows
+       those backends to request just the slice they need.
+    2. **Combination**: masks can be lazily combined using ``&`` and ``|`` to
+       form conjunctions or disjunctions without immediately materialising the
+       underlying arrays.
+
+    In general it is safe to batch ``AttentionMask`` objects, but all members of
+    a batch must have the same mask structure.
     """
-
-    !!! warning
-        This class is still experimental. I'm not super happy with it yet.
-
-    Represents an attention mask in a structured way to make it easier to optimize attention for particular use cases
-    (causal, prefix, etc.). It is anticipated that this will be extended with new types of masks as needed.
-
-    The abstraction is based on two concepts:
-
-    1) Materialization: An AttentionMask can be materialized for a particular slice of the query and key position axes.
-       Most naively, you can just get the whole mask as a NamedArray. However, in some cases, you might want to
-       only get a particular chunk (e.g. for flash attention).
-    2) Combination: AttentionMasks are represented as an implicit conjunction of multiple masks, each with different
-        kinds of structure. You can combine masks with `&` and `|`. Due to the way jit works, we don't use inheritance
-        or similar to represent different kinds of masks. Instead, we use a single class with different fields.
-
-    In general, it should be safe to batch Attention Masks, but it is important that *all members of a batch have the
-    same set of combined masks*. Otherwise, the batching will not work and you'll get weird errors
-
-    (Perhaps it's ok to use inheritance here? I'm not sure. Splash attention landed on inheritance, so maybe
-    that's a good sign.)
-
-    """
-
-    is_causal: bool = eqx.field(static=True)
-    explicit_mask: Optional[NamedArray] = None
-    segment_ids: Optional[NamedArray] = None
-    # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
-    # TODO: add prefixlm
-    # cf https://github.com/google-research/t5x/blob/51a99bff8696c373cc03918707ada1e98cbca407/t5x/examples/decoder_only/layers.py#L978
 
     def materialize(
         self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
     ) -> Optional[NamedArray]:
-        """
-        Materialize the mask as a NamedArray. This is useful for attention functions that don't support masks,
-        or for the inner loop
-        """
+        raise NotImplementedError
+
+    @property
+    def is_causal(self) -> bool:  # noqa: D401 - simple property
+        """Return ``True`` if this mask enforces causality."""
+        return False
+
+    @property
+    def explicit_mask(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        """Return any explicit mask stored in this mask."""
+        return None
+
+    @property
+    def segment_ids(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        """Return segment ids if present."""
+        return None
+
+    def __and__(self, other: "AttentionMask") -> "AttentionMask":
+        return AndMask(self, other)
+
+    def __or__(self, other: "AttentionMask") -> "AttentionMask":
+        return OrMask(self, other)
+
+    def with_segment_ids(self, segment_ids: NamedArray) -> "AttentionMask":
+        return self & SegmentMask(segment_ids)
+
+    @staticmethod
+    def causal() -> "AttentionMask":
+        return CausalMask()
+
+    @staticmethod
+    def explicit(mask: NamedArray) -> "AttentionMask":
+        return ExplicitMask(mask)
+
+
+@dataclass(frozen=True)
+class CausalMask(AttentionMask):
+    def materialize(
+        self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
+    ) -> Optional[NamedArray]:
         if q_slice is None:
             q_slice = haliax.dslice(0, QPos.size)
         if k_slice is None:
             k_slice = haliax.dslice(0, KPos.size)
 
-        if self.is_causal:
-            causal = causal_mask(QPos.resize(q_slice.size), KPos.resize(k_slice.size), q_slice.start, k_slice.start)
-        else:
-            causal = None
+        return causal_mask(QPos.resize(q_slice.size), KPos.resize(k_slice.size), q_slice.start, k_slice.start)
 
-        if self.explicit_mask is not None:
-            explicit = self.explicit_mask[QPos, q_slice, KPos, k_slice]
-        else:
-            explicit = None
+    @property
+    def is_causal(self) -> bool:  # noqa: D401 - simple property
+        return True
 
-        mask = combine_masks_and(causal, explicit)
 
-        if self.segment_ids is not None:
-            segment_mask = _materialize_segment_mask(self.segment_ids, QPos, KPos, q_slice, k_slice)
-            mask = combine_masks_and(mask, segment_mask)
+@dataclass(frozen=True)
+class ExplicitMask(AttentionMask):
+    mask: NamedArray
 
-        return mask
+    def materialize(
+        self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
+    ) -> Optional[NamedArray]:
+        if q_slice is None and k_slice is None:
+            return self.mask
 
-    @staticmethod
-    def causal() -> "AttentionMask":
-        return AttentionMask(is_causal=True)
+        if q_slice is None:
+            q_slice = haliax.dslice(0, QPos.size)
+        if k_slice is None:
+            k_slice = haliax.dslice(0, KPos.size)
+        return self.mask[QPos, q_slice, KPos, k_slice]
 
-    @staticmethod
-    def explicit(mask: NamedArray) -> "AttentionMask":
-        return AttentionMask(is_causal=False, explicit_mask=mask)
+    @property
+    def explicit_mask(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        return self.mask
 
-    def with_segment_ids(self, segment_ids: NamedArray) -> "AttentionMask":
-        return AttentionMask(is_causal=self.is_causal, explicit_mask=self.explicit_mask, segment_ids=segment_ids)
 
-    def __and__(self, other) -> "AttentionMask":
-        is_causal = self.is_causal or other.is_causal
-        explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
-        segment_ids = self._check_for_same_segment_ids(other)
+@dataclass(frozen=True)
+class SegmentMask(AttentionMask):
+    ids: NamedArray
 
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
+    def materialize(
+        self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
+    ) -> Optional[NamedArray]:
+        return _materialize_segment_mask(self.ids, QPos, KPos, q_slice, k_slice)
 
-    def __or__(self, other) -> "AttentionMask":
-        is_causal = self.is_causal and other.is_causal
-        explicit_mask = combine_masks_or(self.explicit_mask, other.explicit_mask)
-        segment_ids = self._check_for_same_segment_ids(other)
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
+    @property
+    def segment_ids(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        return self.ids
 
-    def _check_for_same_segment_ids(self, other):
-        if self.segment_ids is not None and other.segment_ids is not None:
-            # only one segment mask is allowed
-            # b/c we might do this in jit, we use eqx.error_if
-            # in theory we can do this one by just assigning unique ids to each unique pair...
-            # (but i don't really anticipate needing this)
-            segment_ids = eqx.error_if(
-                self.segment_ids,
-                not haliax.all(self.segment_ids == other.segment_ids),
-                "Only one segment mask is allowed",
-            )
-        elif self.segment_ids is not None:
-            segment_ids = self.segment_ids
-        else:
-            segment_ids = other.segment_ids
-        return segment_ids
+
+@dataclass(frozen=True)
+class AndMask(AttentionMask):
+    left: AttentionMask
+    right: AttentionMask
+
+    def materialize(
+        self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
+    ) -> Optional[NamedArray]:
+        left = self.left.materialize(QPos, KPos, q_slice, k_slice)
+        right = self.right.materialize(QPos, KPos, q_slice, k_slice)
+        return combine_masks_and(left, right)
+
+    @property
+    def is_causal(self) -> bool:  # noqa: D401 - simple property
+        return self.left.is_causal or self.right.is_causal
+
+    @property
+    def explicit_mask(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        return combine_masks_and(self.left.explicit_mask, self.right.explicit_mask)
+
+    @property
+    def segment_ids(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        left_ids = self.left.segment_ids
+        right_ids = self.right.segment_ids
+        if left_ids is not None and right_ids is not None:
+            return eqx.error_if(left_ids, not haliax.all(left_ids == right_ids), "Only one segment mask is allowed")
+        return left_ids if left_ids is not None else right_ids
+
+
+@dataclass(frozen=True)
+class OrMask(AttentionMask):
+    left: AttentionMask
+    right: AttentionMask
+
+    def materialize(
+        self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
+    ) -> Optional[NamedArray]:
+        left = self.left.materialize(QPos, KPos, q_slice, k_slice)
+        right = self.right.materialize(QPos, KPos, q_slice, k_slice)
+        return combine_masks_or(left, right)
+
+    @property
+    def is_causal(self) -> bool:  # noqa: D401 - simple property
+        return self.left.is_causal and self.right.is_causal
+
+    @property
+    def explicit_mask(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        return combine_masks_or(self.left.explicit_mask, self.right.explicit_mask)
+
+    @property
+    def segment_ids(self) -> Optional[NamedArray]:  # noqa: D401 - simple property
+        left_ids = self.left.segment_ids
+        right_ids = self.right.segment_ids
+        if left_ids is not None and right_ids is not None:
+            return eqx.error_if(left_ids, not haliax.all(left_ids == right_ids), "Only one segment mask is allowed")
+        return left_ids if left_ids is not None else right_ids
 
 
 @overload
@@ -773,6 +837,26 @@ def materialize_mask(
 
 # TODO: padding mask
 # TODO: FCM mask?
+
+
+def _mask_to_splash_mask(mask: Optional[NamedArray | AttentionMask], shape: tuple[int, int], num_heads: int):
+    """Convert an :class:`AttentionMask` into a Splash attention mask."""
+    from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+
+    if mask is None:
+        base_mask = splash_attention_mask.FullMask(_shape=shape)
+    elif isinstance(mask, AttentionMask):
+        if mask.explicit_mask is not None:
+            raise NotImplementedError("Explicit masks are not yet supported for splash attention")
+        base_mask = (
+            splash_attention_mask.CausalMask(shape=shape)
+            if mask.is_causal
+            else splash_attention_mask.FullMask(_shape=shape)
+        )
+    else:
+        raise NotImplementedError("NamedArray masks are not yet supported for splash attention")
+
+    return splash_attention_mask.MultiHeadMask(masks=[base_mask for _ in range(num_heads)])
 
 
 def _try_tpu_splash_attention(
@@ -864,7 +948,7 @@ def _tpu_splash_attention(
     scaling_factor: float,
     logits_soft_cap: float | None = None,
 ) -> Optional[NamedArray]:
-    from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
+    from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel
 
     # Splash attention requires BHSD format
     # We need to reshape the input to match this format
@@ -990,23 +1074,7 @@ def _tpu_splash_attention(
             segment_ids = segment_ids.array
             segment_ids = SegmentIds(segment_ids, segment_ids)
 
-        if mask is None:
-            base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
-        elif isinstance(mask, AttentionMask):
-            if mask.is_causal:
-                base_mask = splash_attention_mask.CausalMask(shape=(Sq, Sk))
-            else:
-                base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
-            # This is going to be a pain to support
-            if mask.explicit_mask is not None:
-                raise NotImplementedError("Explicit masks are not yet supported for splash attention")
-
-        elif isinstance(mask, NamedArray):
-            raise NotImplementedError("NamedArray masks are not yet supported for splash attention")
-        else:
-            raise ValueError(f"Unknown mask type: {mask}")
-
-        kernel_mask = splash_attention_mask.MultiHeadMask(masks=[base_mask for _ in range(Hq)])
+        kernel_mask = _mask_to_splash_mask(mask, (Sq, Sk), Hq)
 
         # copied from MaxText
         splash_kernel = splash_attention_kernel.make_splash_mha(
