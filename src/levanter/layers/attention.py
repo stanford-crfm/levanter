@@ -676,7 +676,6 @@ class AttentionMask(eqx.Module):
         return ExplicitMask(mask)
 
 
-@dataclass(frozen=True)
 class CausalMask(AttentionMask):
     def materialize(
         self, QPos: Axis, KPos: Axis, q_slice: Optional[haliax.dslice] = None, k_slice: Optional[haliax.dslice] = None
@@ -693,7 +692,6 @@ class CausalMask(AttentionMask):
         return True
 
 
-@dataclass(frozen=True)
 class ExplicitMask(AttentionMask):
     mask: NamedArray
 
@@ -714,7 +712,6 @@ class ExplicitMask(AttentionMask):
         return self.mask
 
 
-@dataclass(frozen=True)
 class SegmentMask(AttentionMask):
     ids: NamedArray
 
@@ -728,7 +725,6 @@ class SegmentMask(AttentionMask):
         return self.ids
 
 
-@dataclass(frozen=True)
 class AndMask(AttentionMask):
     left: AttentionMask
     right: AttentionMask
@@ -757,7 +753,6 @@ class AndMask(AttentionMask):
         return left_ids if left_ids is not None else right_ids
 
 
-@dataclass(frozen=True)
 class OrMask(AttentionMask):
     left: AttentionMask
     right: AttentionMask
