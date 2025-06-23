@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 class EvalSlidingLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
+    initialize_from_hf: Optional[RepoRef] = None
+    """HF checkpoint to load for evaluation."""
+    use_hf_model_config: bool = False
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     data: SingleDatasetLMConfig | LMMixtureDatasetConfig = field(default_factory=UrlSingleDatasetLMConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
@@ -83,6 +86,13 @@ def main(config: EvalSlidingLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
+    hf_ref = config.hf_checkpoint or config.initialize_from_hf
+
+    if config.checkpoint_path is None and hf_ref is None:
+        raise ValueError("Must specify either checkpoint_path or hf_checkpoint")
+    if config.checkpoint_path is not None and hf_ref is not None:
+        raise ValueError("Must specify either checkpoint_path or hf_checkpoint, not both")
+
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
         key = jax.random.PRNGKey(0)
 
@@ -112,15 +122,16 @@ def main(config: EvalSlidingLmConfig):
                 model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
                 model = load_checkpoint(model, config.checkpoint_path, subpath="model")
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
-        elif config.hf_checkpoint is not None:
+        elif hf_ref is not None:
             model_config = config.model
             if not hasattr(model_config, "hf_checkpoint_converter"):
                 raise ValueError("Model config does not have an HF checkpoint converter.")
             converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
-            converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
-            model = converter.load_pretrained(
-                model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
-            )
+            converter = converter.replaced(reference_checkpoint=hf_ref, tokenizer=tokenizer)
+            if config.use_hf_model_config:
+                config.model = converter.config_from_hf_config(converter.default_hf_config)
+                model_config = config.model
+            model = converter.load_pretrained(model_config.model_type, ref=hf_ref, dtype=mp.compute_dtype)
         else:
             raise ValueError("Must specify checkpoint_path or hf_checkpoint")
 
