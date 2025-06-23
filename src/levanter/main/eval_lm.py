@@ -15,17 +15,19 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
-from levanter.data.text import (
-    LMMixtureDatasetConfig,
-    SingleDatasetLMConfig,
-    UrlSingleDatasetLMConfig,
-)
-from levanter.eval import TaggedEvaluator, eval_model
-from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
-from levanter.trainer import TrainerConfig
-from levanter.utils.jax_utils import use_cpu_device
-from levanter.utils.tree_utils import inference_mode
+    initialize_from_hf: Optional[RepoRef] = None
+    """If set, load the model weights from this HF checkpoint."""
+    use_hf_model_config: bool = False
+    hf_ref = config.hf_checkpoint or config.initialize_from_hf
+
+    if config.checkpoint_path is None and hf_ref is None:
+    if config.checkpoint_path is not None and hf_ref is not None:
+        elif hf_ref is not None:
+            converter = converter.replaced(reference_checkpoint=hf_ref, tokenizer=tokenizer)
+            if config.use_hf_model_config:
+                config.model = converter.config_from_hf_config(converter.default_hf_config)
+                model_config = config.model
+            model = converter.load_pretrained(model_config.model_type, ref=hf_ref, dtype=mp.compute_dtype)
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ class EvalLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    data: SingleDatasetLMConfig | LMMixtureDatasetConfig = field(default_factory=UrlSingleDatasetLMConfig)
+    data: SingleDatasetLMConfigBase | LMMixtureDatasetConfig = field(default_factory=SingleDatasetLMConfigBase)
     model: LmConfig = field(default_factory=Gpt2Config)
 
     eval_on_train: bool = False

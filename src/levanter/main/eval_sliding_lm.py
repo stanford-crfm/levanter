@@ -18,16 +18,22 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
-from levanter.data.text import (
-    LMMixtureDatasetConfig,
-    SingleDatasetLMConfig,
-    UrlSingleDatasetLMConfig,
-)
-from levanter.models.gpt2 import Gpt2Config
-from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
-from levanter.trainer import TrainerConfig
-from levanter.utils.jax_utils import use_cpu_device
+    initialize_from_hf: Optional[RepoRef] = None
+    """HF checkpoint to load for evaluation."""
+    use_hf_model_config: bool = False
+    hf_ref = config.hf_checkpoint or config.initialize_from_hf
 
+    if config.checkpoint_path is None and hf_ref is None:
+        raise ValueError("Must specify either checkpoint_path or hf_checkpoint")
+    if config.checkpoint_path is not None and hf_ref is not None:
+        raise ValueError("Must specify either checkpoint_path or hf_checkpoint, not both")
+
+        elif hf_ref is not None:
+            converter = converter.replaced(reference_checkpoint=hf_ref, tokenizer=tokenizer)
+            if config.use_hf_model_config:
+                config.model = converter.config_from_hf_config(converter.default_hf_config)
+                model_config = config.model
+            model = converter.load_pretrained(model_config.model_type, ref=hf_ref, dtype=mp.compute_dtype)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +43,7 @@ class EvalSlidingLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    data: SingleDatasetLMConfig | LMMixtureDatasetConfig = field(default_factory=UrlSingleDatasetLMConfig)
+    data: SingleDatasetLMConfigBase | LMMixtureDatasetConfig = field(default_factory=SingleDatasetLMConfigBase)
     model: LmConfig = field(default_factory=Gpt2Config)
 
     split: str = "validation"
@@ -100,7 +106,7 @@ def main(config: EvalSlidingLmConfig):
                 lp = log_softmax(logits, axis=model.Vocab)
                 targets = hax.roll(batch.tokens, -1, Pos)
                 lp = hax.take(lp, model.Vocab, targets)
-                mask = 1 - hax.nn.one_hot(-1, Pos, dtype=lp.dtype)
+                mask = (1 - hax.nn.one_hot(-1, Pos, dtype=lp.dtype))
                 if batch.loss_mask is not None:
                     mask = mask * batch.loss_mask
                 return lp * mask
@@ -118,9 +124,7 @@ def main(config: EvalSlidingLmConfig):
                 raise ValueError("Model config does not have an HF checkpoint converter.")
             converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
             converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
-            model = converter.load_pretrained(
-                model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
-            )
+            model = converter.load_pretrained(model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype)
         else:
             raise ValueError("Must specify checkpoint_path or hf_checkpoint")
 
