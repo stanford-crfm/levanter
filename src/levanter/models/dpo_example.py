@@ -46,9 +46,19 @@ class DpoExample(eqx.Module):
         raw_chosen = raw["chosen_ids"]
         raw_rejected = raw["rejected_ids"]
 
-        prompt_len = int(raw.get("prompt_len", min(len(raw_prompt), Pos.size)))
-        chosen_len = min(len(raw_chosen), Response.size)
-        rejected_len = min(len(raw_rejected), Response.size)
+        # prompt_len = int(raw.get("prompt_len", min(len(raw_prompt), Pos.size)))
+        # chosen_len = min(len(raw_chosen), Response.size)
+        # rejected_len = min(len(raw_rejected), Response.size)
+
+        def seq_len(seq):
+            if hasattr(seq, "shape"):
+                return int(seq.shape[-1])
+            else:
+                return len(seq)
+
+        prompt_len = int(raw.get("prompt_len", min(seq_len(raw_prompt), Pos.size)))
+        chosen_len = min(seq_len(raw_chosen), Response.size)
+        rejected_len = min(seq_len(raw_rejected), Response.size)
 
         response_len = int(raw.get("response_len", min(chosen_len, rejected_len)))
 
