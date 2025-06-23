@@ -423,7 +423,8 @@ python -m levanter.main.eval_sliding_lm \
     --checkpoint_path gs://path/to/checkpoint
 ```
 The script masks the prompt portion of each example and plots a heat map of the
-completion probabilities.
+completion probabilities. You can use `config/eval_llama3_sliding.yaml` as a
+starting point for a configuration.
 
 
 ## Huggingface Export
