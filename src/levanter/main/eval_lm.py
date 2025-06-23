@@ -15,7 +15,11 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
-from levanter.data.text import LMMixtureDatasetConfig, SingleDatasetLMConfigBase
+from levanter.data.text import (
+    LMMixtureDatasetConfig,
+    SingleDatasetLMConfig,
+    UrlSingleDatasetLMConfig,
+)
 from levanter.eval import TaggedEvaluator, eval_model
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
@@ -33,7 +37,7 @@ class EvalLmConfig:
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    data: SingleDatasetLMConfigBase | LMMixtureDatasetConfig = field(default_factory=SingleDatasetLMConfigBase)
+    data: SingleDatasetLMConfig | LMMixtureDatasetConfig = field(default_factory=UrlSingleDatasetLMConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
 
     eval_on_train: bool = False
