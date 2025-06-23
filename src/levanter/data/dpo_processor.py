@@ -34,9 +34,9 @@ class DpoProcessor(BatchProcessor[Mapping, DpoExample]):
         pad_id = getattr(self.tokenizer, "pad_token_id", 0)
         import haliax as hax
 
-        prompt = np.zeros((self.Prompt.size,), dtype=np.int32)
-        chosen = np.zeros((self.Response.size,), dtype=np.int32)
-        rejected = np.zeros((self.Response.size,), dtype=np.int32)
+        prompt = np.full((self.Prompt.size,), pad_id, dtype=np.int32)
+        chosen = np.full((self.Response.size,), pad_id, dtype=np.int32)
+        rejected = np.full((self.Response.size,), pad_id, dtype=np.int32)
         return DpoExample(
             prompt_ids=hax.named(prompt, (self.Prompt,)),
             chosen_ids=hax.named(chosen, (self.Response,)),
