@@ -137,8 +137,12 @@ def main(config: EvalSlidingLmConfig):
 
         log_probs = []
         for batch in loader:
-            lp = compute_log_probs(model, batch)
-            log_probs.append(np.array(lp))
+            lp = np.asarray(compute_log_probs(model, batch))
+            if lp.ndim == 0:
+                lp = lp[None]
+            elif lp.ndim == 1:
+                lp = lp[None, :]
+            log_probs.append(lp)
 
         if not log_probs:
             raise ValueError("No data processed")
