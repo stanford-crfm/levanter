@@ -302,8 +302,10 @@ def legacy_mk_dpo_dataset(
 
     if debug:
         print(f"DEBUG: Created {len(examples)} examples total", flush=True)
-    # Wrap in a ListAsyncDataset for async compatibility
-    dataset = ListAsyncDataset(examples)
+    # Wrap in a ListAsyncDataset for async compatibility. The dataset is fully
+    # populated by the time we reach this point, so mark it complete to avoid
+    # requiring a separate finalize() call by the caller.
+    dataset = ListAsyncDataset(examples, is_complete=True)
     return dataset
 
 
