@@ -1,0 +1,70 @@
+# DPO Test Configuration
+# Based on gpt2_small_fast_wiki.yaml but adapted for DPO training
+
+# Model Configuration - using a small model for quick testing
+model:
+  type: gpt2
+  hidden_dim: 768
+  num_heads: 12
+  num_layers: 12
+  seq_len: 1024
+  gradient_checkpointing: true
+  scale_attn_by_inverse_layer_idx: true
+
+# DPO-specific parameters
+beta: 0.1  # DPO KL divergence parameter
+reference_free: true  # Use reference-free DPO (no reference model needed)
+max_prompt_length: 512
+max_response_length: 512
+max_seq_len: 1024
+
+# Model initialization
+initialize_from_hf: false
+model_name_or_path: "gpt2"
+tokenizer_name_or_path: "gpt2"
+
+# DPO Data Configuration
+dpo_data:
+  # Using HuggingFace H4 ultrafeedback_binarized dataset from GCS
+  train_urls:
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00000.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00001.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00002.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00003.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00004.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00005.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00006.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00007.jsonl.gz"
+  
+  # For now, using a subset of training data for validation
+  # You may want to point this to a separate validation set if available
+  validation_urls:
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/test_prefs/shard_00000.jsonl.gz"
+  
+  # Field names in the ultrafeedback_binarized dataset
+  prompt_field: "prompt"
+  chosen_field: "chosen"  
+  rejected_field: "rejected"
+  cache_dir: "gs://levanter-data/tokenized/dpo_ultrafeedback_gpt2"
+  max_prompt_length: 512
+  max_response_length: 512
+  max_seq_len: 1024
+
+# Trainer Configuration
+trainer:
+  tracker:
+    project: "levanter-dpo"
+    tags: ["dpo", "ultrafeedback", "hh-rlhf"]
+
+  mp: p=f32,c=bfloat16
+  model_axis_size: 1
+  per_device_parallelism: -1
+
+  train_batch_size: 32  # Small batch size for testing
+  num_train_steps: 1000  # Increased for actual training
+
+# Optimizer Configuration
+optimizer:
+  learning_rate: 1E-4  # Lower learning rate for DPO
+  weight_decay: 0.1
+  warmup: 0.01 
