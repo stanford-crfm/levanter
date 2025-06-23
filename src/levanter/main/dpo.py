@@ -64,6 +64,8 @@ def compute_dpo_loss(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_fre
     p = ex.prompt_ids
     c = ex.chosen_ids
     r = ex.rejected_ids
+    prompt_len = ex.prompt_len
+    response_len = ex.response_len
 
     # Rename prompt and response axes to model's position axis (e.g., 'position')
     pos_name = model.Pos.name
@@ -82,32 +84,35 @@ def compute_dpo_loss(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_fre
     logits_rj = model(seq_rejected, mask, key=key)
 
     # Determine where responses start (end of prompt)
-    start = p_pos.shape[-1] - 1
-    length = c_pos.shape[-1]
+    start = prompt_len - 1
+    length_c = min(response_len, c_pos.shape[-1])
+    length_r = min(response_len, r_pos.shape[-1])
 
     # Slice out response logits
-    resp_ch = hax.slice(logits_ch, pos_name, start=start, length=length)
-    resp_rj = hax.slice(logits_rj, pos_name, start=start, length=length)
+    resp_ch = hax.slice(logits_ch, pos_name, start=start, length=length_c)
+    resp_rj = hax.slice(logits_rj, pos_name, start=start, length=length_r)
 
     # Log-softmax over vocab
     lp_ch = hax.nn.log_softmax(resp_ch, axis="vocab")
     lp_rj = hax.nn.log_softmax(resp_rj, axis="vocab")
 
     # Sum log probabilities for the actual tokens
-    logp_ch = hax.sum(hax.take(lp_ch, "vocab", c_pos), axis=pos_name)
-    logp_rj = hax.sum(hax.take(lp_rj, "vocab", r_pos), axis=pos_name)
+    c_tokens = hax.slice(c_pos, pos_name, start=0, length=length_c)
+    r_tokens = hax.slice(r_pos, pos_name, start=0, length=length_r)
+    logp_ch = hax.sum(hax.take(lp_ch, "vocab", c_tokens), axis=pos_name)
+    logp_rj = hax.sum(hax.take(lp_rj, "vocab", r_tokens), axis=pos_name)
 
     # Reference model log probabilities if needed
     if not reference_free and hasattr(model, "reference_model"):
         # Use same causal mask for reference model
         logits_ref_ch = model.reference_model(seq_chosen, mask, key=key)
         logits_ref_rj = model.reference_model(seq_rejected, mask, key=key)
-        ref_ch = hax.slice(logits_ref_ch, pos_name, start=start, length=length)
-        ref_rj = hax.slice(logits_ref_rj, pos_name, start=start, length=length)
+        ref_ch = hax.slice(logits_ref_ch, pos_name, start=start, length=length_c)
+        ref_rj = hax.slice(logits_ref_rj, pos_name, start=start, length=length_r)
         lp_ref_ch = hax.nn.log_softmax(ref_ch, axis="vocab")
         lp_ref_rj = hax.nn.log_softmax(ref_rj, axis="vocab")
-        logp_ref_ch = hax.sum(hax.take(lp_ref_ch, "vocab", c_pos), axis=pos_name)
-        logp_ref_rj = hax.sum(hax.take(lp_ref_rj, "vocab", r_pos), axis=pos_name)
+        logp_ref_ch = hax.sum(hax.take(lp_ref_ch, "vocab", c_tokens), axis=pos_name)
+        logp_ref_rj = hax.sum(hax.take(lp_ref_rj, "vocab", r_tokens), axis=pos_name)
     else:
         logp_ref_ch = 0
         logp_ref_rj = 0

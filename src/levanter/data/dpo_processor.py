@@ -41,6 +41,8 @@ class DpoProcessor(BatchProcessor[Mapping, DpoExample]):
             prompt_ids=hax.named(prompt, (self.Prompt,)),
             chosen_ids=hax.named(chosen, (self.Response,)),
             rejected_ids=hax.named(rejected, (self.Response,)),
+            prompt_len=0,
+            response_len=0,
         )
 
     @property
