@@ -414,6 +414,17 @@ python -m levanter.main.eval_lm --config_path gs://path/to/config.yaml --checkpo
 
 You can also use this script to evaluate on other datasets by modifying the config.
 
+For datasets cached with `SingleTurnChatProcessor`, you can compute per-token
+probabilities using `eval_sliding_lm.py`:
+
+```bash
+python -m levanter.main.eval_sliding_lm \
+    --config_path gs://path/to/config.yaml \
+    --checkpoint_path gs://path/to/checkpoint
+```
+The script masks the prompt portion of each example and plots a heat map of the
+completion probabilities.
+
 
 ## Huggingface Export
 
