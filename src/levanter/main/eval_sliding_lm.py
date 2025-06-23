@@ -110,7 +110,7 @@ def main(config: EvalSlidingLmConfig):
                 lp = log_softmax(logits, axis=model.Vocab)
                 targets = hax.roll(batch.tokens, -1, Pos)
                 lp = hax.take(lp, model.Vocab, targets)
-                mask = 1 - hax.nn.one_hot(-1, Pos, dtype=lp.dtype)
+                mask = 1 - hax.nn.one_hot(-1, Pos)
                 if batch.loss_mask is not None:
                     mask = mask * batch.loss_mask
                 return lp * mask
