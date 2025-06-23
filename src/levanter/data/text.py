@@ -261,6 +261,9 @@ def legacy_mk_dpo_dataset(
                 if len(prompt_ids) + len(rejected_ids) > max_seq_len:
                     rejected_ids = rejected_ids[: max_seq_len - len(prompt_ids)]
 
+                prompt_len = len(prompt_ids)
+                response_len = len(chosen_ids)
+
                 # Pad all sequences to max_seq_len for consistent batch shapes
                 # Use tokenizer.pad_token_id if available, otherwise 0
                 pad_token_id = getattr(tokenizer, "pad_token_id", None)
@@ -292,6 +295,8 @@ def legacy_mk_dpo_dataset(
                         "prompt_ids": prompt_named,
                         "chosen_ids": chosen_named,
                         "rejected_ids": rejected_named,
+                        "prompt_len": prompt_len,
+                        "response_len": response_len,
                     }
                 )
 
