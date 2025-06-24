@@ -10,10 +10,7 @@ import haliax.random
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.data.text import (
-    SingleDatasetLMConfig,
-    UrlSingleDatasetLMConfig,
-)
+from levanter.data.text import SingleDatasetLMConfig, UrlSingleDatasetLMConfig
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,
