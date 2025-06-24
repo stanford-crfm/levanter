@@ -9,7 +9,7 @@ from jax import random
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.olmo import Olmo2Attention, Olmo2Config, Olmo2DecoderLayer, Olmo2LMHeadModel
 from levanter.utils.jax_utils import parameter_count
 from test_utils import skip_if_no_torch

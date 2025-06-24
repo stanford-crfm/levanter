@@ -59,7 +59,6 @@ model:  # 8B llama3 class model
   num_layers: 32
   num_heads: 32
   num_kv_heads: 8
-  use_flash_attention: True
   flash_attention_block_size: 512
   use_bias: false
   use_layer_norm_weight: true
@@ -75,32 +74,33 @@ trainer:
     tags: ["dolma", "olmo", "llama", "mixture"]
   wandb:
     project: "marin"
-    name: "tootsie_take2_tulu_seed0_noop"
+    name: "hypnotic_spoonbill_tulu_lr1e-4_seed0_reinit_tokens"
 
   mp: p=f32,c=bfloat16
   train_batch_size: 128
   # Adjust steps based on combined dataset size and desired epochs
-  num_train_steps: 30
+  num_train_steps: 6000
   steps_per_eval: 1000
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
   checkpointer:
-    base_path: "gs://marin-us-central2/checkpoints/tootsie_take2_tulu_noop/seed_0/"
+    base_path: "gs://marin-us-central2/checkpoints/hypnotic_spoonbill_tulu_lr1e-4/seed_0/"
 
 optimizer:
-  learning_rate: 0.0
+  learning_rate: 1e-4
   weight_decay: 0.0
   min_lr_ratio: 0.0
   lr_schedule: "linear"
   warmup: 0.03
 
-hf_save_steps: 11
-hf_save_path: "gs://marin-us-central2/checkpoints/tootsie_take2_tulu_noop/hf/seed_0/"
+hf_save_steps: 1500
+hf_save_path: "gs://marin-us-central2/checkpoints/hypnotic_spoonbill_tulu_lr1e-4/hf/seed_0/"
 
 initialize_from_hf: True
-model_name_or_path: "gs://marin-us-central2/checkpoints/llama-8b-tootsie-cooldown-take-2/hf/step-819999/"
+model_name_or_path: "gs://marin-us-central2/checkpoints/tootsie-8b-hypnotic-spoonbill-2/hf/step-829999/"
 
 messages_field: "messages"
 input_role: "user"
 output_role: "assistant"
+reinit_tokens: True

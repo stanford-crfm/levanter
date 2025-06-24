@@ -12,8 +12,8 @@ The basic steps are:
 1. [Evaluate](#evaluation)
 1. [Export your model to Huggingface](#huggingface-export)
 
-If you're training on data that isn't text (or [audio-to-text](./tutorials/Training-On-Audio-Data.md)), you'll need to
-write a custom cache. See the section on [Direct Cache Construction](#direct-cache-construction).
+If you're training on data that isn't text (or [audio-to-text](./guides/Training-On-Audio-Data.md)), you'll need to
+write a custom cache. See the guide on [Direct Cache Construction](./guides/Direct-Cache-Construction.md).)
 
 ## Environment Setup
 
@@ -35,15 +35,15 @@ Levanter mainly uses [WandB](https://wandb.ai) for logging. Create a WandB accou
 The key ingredient for training an LM is a lot of plain-text data.
 We have two top-level ways of consuming training data: a [**single source**](#single-data-source) and [**mixture of sources**](#mixture-of-sources).
 Single source is simpler and probably closer to what you're used to, while multiple
-source allows you to have multiple evaluation sets or use techniques like [DoReMi](https://arxiv.org/abs/2305.10429).
+source allows you to have multiple evaluation sets or have fine-grained control over the training schedule.
 
 ### Data Sources
 
 In Levanter, a data source can either be a list of training and validation URLs pointing to
 (possibly compressed) JSONL files, or a Huggingface Dataset. In either case,
 we assume there is a single field, by default called `"text"`, that contains the text of the example.
-If you have a sequence-to-sequence task, as of September 2023, you should turn each example into a single text
-by e.g. using a templating mechanism with a prompt (a la Alpaca).
+
+See the [Training Data Guide](./guides/Training-Data-Guide.md) and the [Data Formats Reference](./reference/Data-Formats.md) for more details.
 
 #### Data Format: JSONL
 
@@ -65,7 +65,7 @@ Once you have done so, you can create the `data` section of your training config
 Levanter uses [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) to read data from files,
 so it can transparently handle compressed files and files in cloud storage (like Google Cloud Storage or AWS S3).
 Levanter uses [braceexpand](https://pypi.org/project/braceexpand/) to expand the `{1..32}` syntax.
-You can also use more than one entry if you have urls that don't follow a naming scheme:
+You can also use more than one entry if you have urls that don't follow a naming scheme.
 
 !!! tip
 
@@ -85,9 +85,9 @@ data:
     # name: "subset"
 ```
 
-This will be passed to `datasets.load_dataset`. If the dataset supports streaming, you can use `stream: true` to stream
-the data instead of loading it all into memory. If a streaming dataset is sharded, we will attempt to exploit the
-sharded structure to preprocess more efficiently.
+This will be passed to `datasets.load_dataset`. By default, we use `stream: true` to stream the data, which
+is much more efficient, as it avoids downloading the dataset onto every machine. If a streaming dataset is sharded,
+we will automatically process each shard in parallel.
 
 ### Single Data Source
 
@@ -102,7 +102,6 @@ data:
     cache_dir: "gs://path/to/cache"
     tokenizer: "gpt2"  # any HF tokenizer path, or GCS path to an HF tokenizer
 ```
-
 
 ### Mixture of Sources
 
@@ -184,46 +183,15 @@ python -m levanter.main.cache_dataset \
 
 ### Direct Cache Construction
 
-As a final option, you can directly construct a cache of preprocessed data without using Ray. This is useful if you
-have custom preprocessing logic or Ray isn't working for you for some reason. To do so, you can use [levanter.store.SerialCacheWriter](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/store/cache.py)
-to write batches directly. Here's an example:
+We also support direct cache construction. This is useful if you want to use a custom cache format.
+See our guide on [Direct Cache Construction](./guides/Direct-Cache-Construction.md) for more details.
 
-```python
-import numpy as np
-
-from levanter.store import SerialCacheWriter
-
-exemplar = {
-    "input_ids": np.zeros((0), dtype=np.int32),
-    "attention_mask": np.zeros((0), dtype=np.int32),
-    "labels": np.zeros((0), dtype=np.int32),
-}
-
-with SerialCacheWriter(cache_dir, exemplar) as writer:
-    for batch in process_batches():
-        # batch should be a list of dicts, each with keys "input_ids", "attention_mask", and "labels"
-        writer.write_batch(batch)
-```
-
-In this case, `batch` should be a list of dicts, each with keys `"input_ids"`, `"attention_mask"`, and `"labels"`.
-To work with `train_lm`, it should have an `input_ids` key that is a list of `int`s.
-
-To use a cache like this, you can use the `passthrough` tokenizer:
-
-```yaml
-data:
-  cache_dir: "gs://path/to/cache"
-  tokenizer: "passthrough"
-  vocab_size: 5567
-```
-
-(Basically, you just need to tell Levanter what the vocab size is.)
 
 ## Configuration
 
 Levanter uses [Draccus](https://github.com/dlwh/draccus) to configure training runs. It's a YAML-to-dataclass
 library that also supports argument parsing via argparse. A detailed guide to configuring Levanter is available
-in the [Configuration Guide](./Configuration-Guide.md).
+in the [Configuration Guide](./reference/Configuration.md).
 
 This section will cover the basics of configuring a training run.
 
@@ -286,7 +254,7 @@ Levanter supports starting from an HF pretrained model. To do so, you should set
 ```yaml
 model:
   type: mpt
-initialize_from_hf: "mosaicml/mpt-7b" # can also reference a version, e.g. "mosaicml/mpt-7b@deadbeef"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
 ```
 
@@ -318,7 +286,7 @@ use_hf_model_config: true
 
 ### Checkpointing
 
-See also the [Checkpointing section of the Configuration Guide](./Configuration-Guide.md#checkpointing).
+See also the [Checkpointing section of the Configuration Guide](./reference/Configuration.md#checkpointing-and-initialization).
 
 Levanter supports checkpointing to both local and Google Cloud Storage, backed by [TensorStore](https://google.github.io/tensorstore/).
 If you're using multiple machines, you should probably use cloud storage or NFS.
@@ -407,8 +375,8 @@ env:
     WANDB_ENTITY:
     WANDB_PROJECT:
     HF_TOKEN:
-    TPU_STDERR_LOG_LEVEL: 0
-    TPU_MIN_LOG_LEVEL: 0
+    TPU_STDERR_LOG_LEVEL: 2
+    TPU_MIN_LOG_LEVEL: 2
     LIBTPU_INIT_ARGS: <extra args to libtpu>
 
 docker_repository: levanter

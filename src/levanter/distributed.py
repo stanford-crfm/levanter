@@ -252,7 +252,11 @@ def auto_ray_cluster(
                             logger.info(f"Successfully started ray head on port {ray_port}.")
 
                         # install an atexit handler to kill the head when we exit
-                        atexit.register(lambda: os.system("ray stop -g 10 --force &> /dev/null"))
+                        def kill_ray():
+                            # silence spam from ray stop
+                            os.system("bash -c 'ray stop -g 10 --force &> /dev/null'")
+
+                        atexit.register(kill_ray)
                     elif start_workers:
                         logger.info(
                             f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."

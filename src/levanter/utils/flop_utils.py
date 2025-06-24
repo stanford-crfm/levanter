@@ -13,9 +13,14 @@ def lm_flops_per_token(
     seq_len: int,
     vocab_size: int,
     glu: bool,
+    num_experts: int = 1,
+    num_shared_experts: int = 0,
+    num_experts_per_tok: int = 1,
 ):
     head_dim = hidden_dim / num_heads
-    mlp = 2 * (3 if glu else 2) * hidden_dim * intermediate_dim
+    mlp = 2 * (3 if glu else 2) * hidden_dim * intermediate_dim * (num_experts_per_tok + num_shared_experts)
+    if num_experts > 1:
+        mlp += 2 * hidden_dim * num_experts  # router layer
     qkv_proj = 2 * hidden_dim * (num_heads * head_dim + 2 * num_kv_heads * head_dim)
     dense_proj = 2 * hidden_dim * hidden_dim
     # The following are across the whole sequence
@@ -36,6 +41,20 @@ DEVICE_AVAILABLE_FLOPS = {
     # source: https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet
     # nvidia publishes spec sheet with a 2x sparsity factor
     "h100-sxm": {
+        "fp64": 67e12,
+        "fp32": 67e12,
+        "tf32": 989e12 / 2,
+        "fp16": 1.979e15 / 2,
+        "amp_fp16": 1.979e15 / 2,
+        "bf16": 1.979e15 / 2,
+        "amp_bf16": 1.979e15 / 2,
+        "fp8": 3.958e15 / 2,
+        "amp_fp8": 3.958e15 / 2,
+        "int8": 3.958e15 / 2,
+    },
+    # Source: https://resources.nvidia.com/en-us-gpu-resources/hpc-datasheet-sc23
+    # nvidia publishes spec sheet with a 2x sparsity factor
+    "h200-sxm": {
         "fp64": 67e12,
         "fp32": 67e12,
         "tf32": 989e12 / 2,
@@ -78,6 +97,15 @@ DEVICE_AVAILABLE_FLOPS = {
         "amp_fp16": 125e12,
         "bf16": 125e12,
         "amp_bf16": 125e12,
+    },
+    # source: https://images.nvidia.com/content/Solutions/data-center/a40/nvidia-a40-datasheet.pdf
+    "a40": {
+        "fp32": 37.4e12,
+        "tf32": 74.8e12,
+        "fp16": 149.7e12,
+        "amp_fp16": 149.7e12,
+        "bf16": 149.7e12,
+        "amp_bf16": 149.7e12,
     },
     # source: https://images.nvidia.com/content/technologies/volta/pdf/volta-v100-datasheet-update-us-1165301-r5.pdf
     "v100-sxm": {
@@ -143,7 +171,7 @@ DEVICE_AVAILABLE_FLOPS = {
         "int8": 393e12,
     },
     # Source: https://cloud.google.com/tpu/docs/v5p
-    "tpu v5p": {
+    "tpu v5": {
         "bf16": 459e12,
     },
     # Source: https://cloud.google.com/tpu/docs/v6e

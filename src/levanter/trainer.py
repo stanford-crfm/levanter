@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Proto
 import equinox as eqx
 import fsspec
 import jax
+import jax.numpy as jnp
 import jmp
 import numpy as np
 from draccus import field
@@ -383,15 +384,21 @@ class Trainer:
 
         with capture_time() as step_time:
             if hooks_this_time:
-                loss, new_state, cb_states = self._maybe_save_jaxpr(
+                loss, new_state, metrics, cb_states = self._maybe_save_jaxpr(
                     "train_step", self._jit_train_step_fn, state, batch, batch_kwargs
                 )
                 # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             else:
-                loss, new_state = self._maybe_save_jaxpr(
+                loss, new_state, metrics, _ = self._maybe_save_jaxpr(
                     "train_step_hooks", self._jit_train_step_fn_no_hook, state, batch, batch_kwargs
                 )
             loss = loss.item()  # type: ignore
+
+            if self.config.crash_on_nan and jnp.isnan(loss):
+                raise RuntimeError("Loss is NaN")
+
+            if self.config.crash_on_inf and jnp.isinf(loss):
+                raise RuntimeError("Loss is Inf")
 
             info = StepInfo(new_state, loss, step_time())
 
@@ -400,7 +407,7 @@ class Trainer:
                 if hooks_this_time:
                     self.hooks.run_jit_hooks_outside_step(info, cb_states)
 
-            levanter.tracker.log({"throughput/hook_time": hook_time()}, step=info.step)
+            levanter.tracker.log({**metrics, "throughput/hook_time": hook_time()}, step=info.step)
 
         return info
 
@@ -537,31 +544,32 @@ class Trainer:
 
     def _train_step(
         self, state: S, batch, batch_kwargs, _no_hooks=False
-    ) -> tuple[Scalar, S, Sequence[CBInfo]] | tuple[Scalar, S]:
-        key, new_key = jax.random.split(state.training_key)
-        model = inference_mode(state.model, False)
+    ) -> tuple[Scalar, S, dict[str, Any], Sequence[CBInfo] | None]:
+        with levanter.tracker.defer_tracker_for_jit() as metrics:
+            key, new_key = jax.random.split(state.training_key)
+            model = inference_mode(state.model, False)
 
-        loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
+            loss, grads = self._compute_gradients_microbatched(self.loss_fn, model, *batch, **batch_kwargs, key=key)
 
-        # Sophia needs to be able to access the loss function in the optimizer
-        def obj_fun(trainable_model):
-            model = eqx.combine(trainable_model, state.model)
-            with hax.axis_mapping(self.compute_axis_mapping):
-                model = self.mp.cast_to_compute(model)
-                return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
+            # Sophia needs to be able to access the loss function in the optimizer
+            def obj_fun(trainable_model):
+                model = eqx.combine(trainable_model, state.model)
+                with hax.axis_mapping(self.compute_axis_mapping):
+                    model = self.mp.cast_to_compute(model)
+                    return self._raw_loss_function(model, *batch, **batch_kwargs, key=key).scalar()
 
-        new_state, updates = state.take_step(grads, obj_fun=obj_fun)
-        new_state = hax.shard(new_state, self.parameter_axis_mapping)
+            new_state, updates = state.take_step(grads, obj_fun=obj_fun, loss=loss, key=new_key)
+            new_state = hax.shard(new_state, self.parameter_axis_mapping)
 
-        if not _no_hooks:
-            with hax.axis_mapping(self.parameter_axis_mapping):
-                jit_info: InsideJitInfo = InsideJitInfo(grads=grads, updates=updates)
-                hook_infos = self.hooks.run_jit_hooks(state, jit_info, force=False)
+            if not _no_hooks:
+                with hax.axis_mapping(self.parameter_axis_mapping):
+                    jit_info: InsideJitInfo = InsideJitInfo(grads=grads, updates=updates)
+                    hook_infos = self.hooks.run_jit_hooks(state, jit_info, force=False)
 
         if _no_hooks:
-            return loss, new_state
+            return loss, new_state, metrics, None
         else:
-            return loss, new_state, hook_infos
+            return loss, new_state, metrics, hook_infos
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         Batch = _resolve_axis_in_tree((batch, batch_kwargs), self.config.batch_axis)
@@ -600,7 +608,7 @@ class Trainer:
     def _maybe_save_jaxpr(self, name: str, fn, *args, **kwargs):
         logged = False
         if self.config.log_jaxprs and name not in self._logged_jaxprs:
-            jaxpr = jax.make_jaxpr(fn)(*args, **kwargs)
+            jaxpr, _, _ = eqx.filter_make_jaxpr(fn)(*args, **kwargs)
             pretty = jaxpr.pretty_print(name_stack=True, use_color=False)
             self.write_artifact(f"{name}.jaxpr.txt.gz", pretty, type="jaxpr")
             logged = True
@@ -649,6 +657,10 @@ class TrainerConfig:
     """Whether to log the jaxpr of the training step. This is useful for debugging and understanding the model."""
     log_xla_hlo: bool = True
     """Whether to log the XLA HLO of the training step. This is useful for debugging and understanding the model."""
+
+    # helpful checks
+    crash_on_nan: bool = True
+    crash_on_inf: bool = True
 
     # config related to partitioning
 
@@ -704,6 +716,7 @@ class TrainerConfig:
     jax_config: Mapping[str, JsonAtom] = field(
         default_factory=lambda: copy.deepcopy(DEFAULT_JAX_CONFIG)
     )  # config to pass to jax.config.update
+    jax_compilation_cache_dir: Optional[str] = None
 
     distributed: DistributedConfig = DistributedConfig()
     ray: RayConfig = field(default_factory=RayConfig)
@@ -751,7 +764,7 @@ class TrainerConfig:
         """Initializes jax, logging, setting the run name/id in the process"""
         self._initialize_jax_config()
         # Can't do full logging setup until we've initialized jax b/c we use jax for rank id
-        pylogging.basicConfig(level=pylogging.INFO)
+        pylogging.basicConfig(level=pylogging.WARNING)
         self.distributed.initialize()
         self._validate_and_set_defaults()
 
@@ -856,6 +869,9 @@ class TrainerConfig:
     def _initialize_jax_config(self):
         for key, value in self.jax_config.items():
             jax.config.update(key, value)
+
+        if self.jax_compilation_cache_dir is not None:
+            jax.config.update("jax_compilation_cache_dir", self.jax_compilation_cache_dir)
 
     def _maybe_set_id(self):
         # always do this so we don't get weird hangs if the id isn't set right

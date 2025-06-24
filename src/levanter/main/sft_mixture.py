@@ -8,6 +8,7 @@ from typing import Dict, Iterator, Optional, Union
 
 import jax.random as jrandom
 import transformers
+from lenses import lens
 
 import haliax as hax
 from haliax import Axis
@@ -24,7 +25,7 @@ from levanter.data.packing import PromptCompletion, pack_prompt_completions
 from levanter.data.text import (
     ChatUrlDataSourceConfig,
     SupervisedSourceConfig,
-    mk_cached_sft_dataset,
+    mk_single_turn_cached_sft_dataset,
     mk_supervised_dataset,
 )
 from levanter.models.llama import LlamaConfig
@@ -32,6 +33,7 @@ from levanter.models.lm_model import LmConfig, LmHeadModel, compute_next_token_l
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.background_iterable import BackgroundIterator
+from levanter.utils.hf_utils import HfTokenizer
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,16 @@ class SFTMixtureConfig:
 
     data_seed: Optional[int] = None
 
+    reinit_tokens: list[str] | bool = False
+    """
+    if set, will reinitialize the embeddings for the given tokens. If True, will reinitialize the default tokens
+    for llama3's tokenizer
+    """
+    reinit_lm_head: bool = True
+    """If reinit_tokens is set, will reinitialize the lm_head for those tokens"""
+    reinit_embeddings: bool = True
+    """If reinit_tokens is set, will reinitialize the embeddings for those tokens"""
+
 
 def train(config: SFTMixtureConfig):
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -123,7 +135,7 @@ def train(config: SFTMixtureConfig):
     logger.info(f"Added {num_new_tokens} new tokens")
 
     seed = config.trainer.seed
-    data_key, _, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
+    data_key, reinit_key, model_key, training_key = jrandom.split(jrandom.PRNGKey(seed), 4)
 
     if config.data_seed is not None:
         logger.info(f"Overriding data seed with {config.data_seed}")
@@ -140,7 +152,7 @@ def train(config: SFTMixtureConfig):
             # All configs in supervised_data should have train_urls attribute at runtime
             # The type checking error occurs because SupervisedHfSourceConfig doesn't have this attribute
             # but in practice, when loaded from YAML, all configs will have it
-            train_dataset = mk_cached_sft_dataset(
+            train_dataset = mk_single_turn_cached_sft_dataset(
                 ChatUrlDataSourceConfig(
                     cache_dir=source_config.cache_dir,
                     # Use getattr to silence type checking, as the attribute always exists at runtime
@@ -214,6 +226,32 @@ def train(config: SFTMixtureConfig):
                     prompt_completion_iterator = create_prompt_completion_iterator(train_dataset, Pos)
         else:
             logger.info("Starting SFT from scratch")
+            if config.reinit_tokens:
+                if config.reinit_tokens is True:
+                    # this is hardcoded to llama3 but eh
+                    tokens_to_reinit = [
+                        "<|finetune_right_pad_id|>",
+                        "<|start_header_id|>",
+                        "<|end_header_id|>",
+                        "<|eom_id|>",
+                        "<|eot_id|>",
+                    ]
+                else:
+                    tokens_to_reinit = config.reinit_tokens
+
+                logger.info(f"Reinitializing tokens: {tokens_to_reinit}")
+
+                new_model = reinitialize_some_tokens(
+                    state.model,
+                    tokenizer,
+                    tokens_to_reinit,
+                    reinit_key,  # Use the previously unused key
+                    donate=True,
+                    reinit_lm_head=config.reinit_lm_head,
+                    reinit_embeddings=config.reinit_embeddings,
+                )
+                state = dataclasses.replace(state, model=new_model)
+                del new_model
 
         logger.info("Packing prompt completions")
         packed_iterator = pack_prompt_completions(
@@ -301,6 +339,64 @@ def add_special_tokens(tokenizer, use_unk_instead_of_adding=False):
         special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
 
     return tokenizer.add_special_tokens(special_tokens_dict)
+
+
+def reinitialize_some_tokens(
+    model,
+    tokenizer: HfTokenizer,
+    tokens_to_reinit: list[str],
+    key,
+    donate=False,
+    reinit_lm_head=True,
+    reinit_embeddings=True,
+):
+    """
+    So we (Will, specifically) realized that we were in this situation where we never saw SFT tokens during pretraining,
+    which meant they had much lower norm than tokens that had been seen.
+
+    https://github.com/marin-community/marin/issues/954
+    """
+    ids_to_reinit = [tokenizer.convert_tokens_to_ids(token) for token in tokens_to_reinit]
+    if len(ids_to_reinit) == 0:
+        raise ValueError("No tokens to reinitialize")
+    # obnoxiously, convert_tokens_to_ids does not always return None, if an unk token is set it returns that
+    # but for gpt2, the unk token is eos token so we can't just check eos token
+    elif any(
+        token is None or tokenizer.convert_ids_to_tokens(id) != token
+        for id, token in zip(ids_to_reinit, tokens_to_reinit)
+    ):
+        raise ValueError("One or more tokens are not in the tokenizer vocabulary")
+
+    @hax.named_jit(donate_args=(donate,))
+    def _reinit_tokens(model):
+        Embed = model.embeddings.Embed
+        new_Vocab = model.Vocab.resize(len(ids_to_reinit))
+
+        emb_key, lm_key = jrandom.split(key, 2)
+
+        embeddings_matrix = model.embeddings.token_embeddings.weight
+
+        if reinit_embeddings:
+            new_embeddings = _reinit_embed_vectors(Embed, new_Vocab, embeddings_matrix, ids_to_reinit, emb_key)
+            model = lens.embeddings.token_embeddings.weight.set(new_embeddings)(model)
+
+        if reinit_lm_head:
+            new_lm_head = _reinit_embed_vectors(Embed, new_Vocab, model.lm_head.weight, ids_to_reinit, lm_key)
+            model = lens.lm_head.weight.set(new_lm_head)(model)
+
+        return model
+
+    return _reinit_tokens(model)
+
+
+def _reinit_embed_vectors(Embed, new_Vocab, embeddings_matrix, ids_to_reinit, key):
+    # reinit with same mean and std as the embeddings. Technically this should be the non-reinit tokens
+    # but whatever
+    mu = hax.mean(embeddings_matrix, axis="vocab")
+    std = hax.std(embeddings_matrix, axis="vocab")
+    reinited = hax.random.truncated_normal(key, (new_Vocab, Embed), -3, 3) * std + mu
+    new_weight = embeddings_matrix.at["vocab", ids_to_reinit].set(reinited)
+    return new_weight
 
 
 if __name__ == "__main__":

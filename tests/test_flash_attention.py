@@ -1,4 +1,5 @@
 import functools
+import math
 
 import equinox
 import jax.numpy as jnp
@@ -10,8 +11,8 @@ from chex import assert_trees_all_close
 import haliax as hax
 import haliax.nn as hnn
 
-import levanter.models.attention
-from levanter.models.attention import AttentionMask, simple_attention_with_dropout
+import levanter.layers.attention
+from levanter.layers.attention import AttentionMask, simple_attention_with_dropout
 from levanter.models.flash_attention import flash_attention
 
 
@@ -150,9 +151,15 @@ def test_fa_dropout_does_something():
     assert mean < 1e-2
 
 
-def test_tpu_flash_attention():
+@pytest.mark.parametrize("soft_cap", [True, False])
+def test_tpu_flash_attention(soft_cap):
     if jax.devices()[0].device_kind != "tpu":
         pytest.skip("TPU-only test")
+
+    if soft_cap:
+        cap = 4
+    else:
+        cap = None
 
     Key = hax.Axis("Key", 128)
     QPos = hax.Axis("QPos", BLOCK_SIZE * 4)
@@ -164,10 +171,30 @@ def test_tpu_flash_attention():
         k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Key))
         v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Key))
 
-        flash_out = levanter.models.attention._tpu_splash_attention(
-            QPos, KPos, Key, q, k, v, inference=True, mask=mask, block_size=BLOCK_SIZE
+        flash_out = levanter.layers.attention._tpu_splash_attention(
+            QPos,
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            inference=True,
+            mask=mask,
+            block_size=BLOCK_SIZE,
+            scaling_factor=1 / math.sqrt(Key.size),  # Use the default scaling factor
+            logits_soft_cap=cap,
         )
-        hax_out = hnn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
+        hax_out = simple_attention_with_dropout(
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            mask=mask.materialize(QPos, KPos),
+            dropout=0.0,
+            scaling_factor=1 / math.sqrt(Key.size),
+            logits_soft_cap=cap,
+        )
 
         assert hax_out.axes == flash_out.axes
         assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)

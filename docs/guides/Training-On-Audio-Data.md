@@ -95,7 +95,7 @@ Below is an example which defines the preprocessor using the Whisper pre-process
 
 Levanter uses [Draccus](https://github.com/dlwh/draccus) to configure training runs. It's a YAML-to-dataclass
 library that also supports argument parsing via argparse. A detailed guide to configuring Levanter is available
-in the [Configuration Guide](./Configuration-Guide.md).
+in the [Configuration Guide](../reference/Configuration.md).
 
 This section will cover the basics of configuring a training run.
 
@@ -151,10 +151,10 @@ use_hf_model_config: true
 ```
 
 ### Checkpointing
-Levanter will automatically checkpoint your training run. For more details, see the [Checkpointing section of the Configuration Guide](../Configuration-Guide.md#checkpointing).
+Levanter will automatically checkpoint your training run. For more details, see the [Checkpointing section of the Configuration Guide](../reference/Configuration.md#checkpointing-and-initialization).
 
 ### Hyperparameter Tuning
-The same set of hyperparameters and functionalities that are supported for text-only LLMs, such as [gradient accumulation](../Training-On-Your-Data.md#determining-batch-size), are supported for Audio models! For in-depth walkthrough of this configuration, please see the [Trainer section of the Configuration Guide](../Configuration-Guide.md#trainer-and-trainerconfig).
+The same set of hyperparameters and functionalities that are supported for text-only LLMs, such as [gradient accumulation](../Training-On-Your-Data.md#determining-batch-size), are supported for Audio models! For in-depth walkthrough of this configuration, please see the [Trainer section of the Configuration Guide](../reference/Configuration.md#trainer-and-trainerconfig).
 
 ## Launching Training
 
@@ -196,8 +196,8 @@ env:
     WANDB_ENTITY:
     WANDB_PROJECT:
     HF_TOKEN:
-    TPU_STDERR_LOG_LEVEL: 0
-    TPU_MIN_LOG_LEVEL: 0
+    TPU_STDERR_LOG_LEVEL: 2
+    TPU_MIN_LOG_LEVEL: 2
     LIBTPU_INIT_ARGS: <extra args to libtpu>
 
 docker_repository: levanter

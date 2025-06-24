@@ -6,45 +6,25 @@ cache_options:
 configs:
   dolma/algebraic-stack:
     cache_dir: gs://marin-us-west4/tokenized/dolma/algebraic-stack-cc00cf
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/algebraic-stack-train-{0000..0015}.json.gz
     validation_urls: []
   dolma/arxiv:
     cache_dir: gs://marin-us-west4/tokenized/dolma/arxiv-07a51f
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/arxiv-{0000..0099}.json.gz
     validation_urls: []
   dolma/c4:
     cache_dir: gs://marin-us-west4/tokenized/dolma/c4-e0e5ec
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/c4-{0000..0170}.json.gz
     validation_urls: []
   dolma/cc:
     cache_dir: gs://marin-us-west4/tokenized/dolma/cc-74b017
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/cc_en_head-{0000..0274}.json.gz
     - gs://marin-us-central2/raw/dolma/v1.7/cc_en_middle-{0000..0238}.json.gz
@@ -54,12 +34,7 @@ configs:
     validation_urls: []
   dolma/cc-news:
     cache_dir: gs://marin-us-west4/tokenized/dolma/cc-news-625d3e
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/cc_news_head-{0000..0004}.json.gz
     - gs://marin-us-central2/raw/dolma/v1.7/cc_news_middle-{0000..0002}.json.gz
@@ -67,116 +42,65 @@ configs:
     validation_urls: []
   dolma/falcon:
     cache_dir: gs://marin-us-west4/tokenized/dolma/falcon-da8fd0
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/falcon-{0000..0499}.json.gz
     validation_urls: []
   dolma/flan:
     cache_dir: gs://marin-us-west4/tokenized/dolma/flan-a99cb2
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/tulu_flan-{0000..0065}.json.gz
     validation_urls: []
   dolma/gutenberg:
     cache_dir: gs://marin-us-west4/tokenized/dolma/gutenberg-f9eb99
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/books-{0000..0002}.json.gz
     validation_urls: []
   dolma/megawika:
     cache_dir: gs://marin-us-west4/tokenized/dolma/megawika-34abf2
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/megawika-{0000..0261}.json.gz
     validation_urls: []
   dolma/open-web-math:
     cache_dir: gs://marin-us-west4/tokenized/dolma/open-web-math-79823d
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/open-web-math-train-{0000..0012}.json.gz
     validation_urls: []
   dolma/pes2o:
     cache_dir: gs://marin-us-west4/tokenized/dolma/pes2o-538363
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/pes2o-{0000..0025}.json.gz
     validation_urls: []
   dolma/reddit:
     cache_dir: gs://marin-us-west4/tokenized/dolma/reddit-62a64a
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/reddit-{0000..0077}.json.gz
     validation_urls: []
   dolma/stackexchange:
     cache_dir: gs://marin-us-west4/tokenized/dolma/stackexchange-adfc49
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/stackexchange-{0000..0025}.json.gz
     validation_urls: []
   dolma/starcoder:
     cache_dir: gs://marin-us-west4/tokenized/dolma/starcoder-8b6089
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/starcoder-{0000..0048}.json.gz
     validation_urls: []
   dolma/wiki:
     cache_dir: gs://marin-us-west4/tokenized/dolma/wiki-212315
-    id: null
-    name: null
-    plaintext: false
-    stream: true
     tags: []
-    text_key: text
     train_urls:
     - gs://marin-us-central2/raw/dolma/v1.7/wiki-{0000..0001}.json.gz
     validation_urls: []
 enforce_eos: true
-ignore_token_id: null
 mixture_block_size: 2048
 shuffle: true
 stop_strategy: restart
