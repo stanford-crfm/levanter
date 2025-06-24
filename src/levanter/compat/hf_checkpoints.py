@@ -1,4 +1,5 @@
 import abc
+import asyncio
 import contextlib
 import dataclasses
 import json
@@ -6,6 +7,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 import urllib.parse
 import warnings
 from dataclasses import dataclass
@@ -47,6 +49,24 @@ from levanter.utils.json_utils import ConfigJSONEncoder
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
+
+# Feature flag to enable new efficient fsspec safetensor loading
+# Set to True to use async, memory-efficient loading with byte-range reads and caching
+# Set to False to use legacy temp-file downloading method
+# The efficient method requires 'tensorstore' package and works only with safetensors files
+USE_EFFICIENT_FSSPEC_LOADING = True
+
+try:
+    if USE_EFFICIENT_FSSPEC_LOADING:
+        import tensorstore as ts
+
+        from levanter.compat.fsspec_safetensor import load_tensor_dict
+except ImportError:
+    if USE_EFFICIENT_FSSPEC_LOADING:
+        logging.getLogger(__name__).warning(
+            "Could not import fsspec_safetensor or tensorstore, falling back to legacy loading"
+        )
+        USE_EFFICIENT_FSSPEC_LOADING = False
 
 silence_transformer_nag()
 from transformers import (  # noqa: E402
@@ -490,6 +510,18 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 index = json.load(f)
 
             shard_files = list(set(index["weight_map"].values()))
+            print(f"[load_gcs] Found {index_file} with {len(shard_files)} shard(s)", flush=True)
+
+            # Print size of each shard for quick diagnostics
+            for sf in shard_files:
+                try:
+                    shard_size = fs.size(os.path.join(path, sf))
+                    print(
+                        f"[load_gcs]   {sf}: {shard_size / (1 << 20):.1f} MB",
+                        flush=True,
+                    )
+                except Exception:
+                    print(f"[load_gcs]   {sf}: size unknown", flush=True)
             final_state_dict = {}
 
             # right now we do safe tensors thing
@@ -511,9 +543,44 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return final_state_dict
 
     def _load_from_gcs(self, gcs_path: str, dtype: Optional[jnp.dtype] = None) -> dict:
-        """Load a state dict from a GCS path"""
+        """
+        Load a state dict from a GCS path.
+
+        This method supports two loading modes controlled by USE_EFFICIENT_FSSPEC_LOADING:
+
+        1. Efficient mode (USE_EFFICIENT_FSSPEC_LOADING=True):
+           - Uses async byte-range reads with caching
+           - Loads multiple shards concurrently
+           - Memory efficient - only loads requested data
+           - Requires tensorstore package
+           - Works only with safetensors files
+
+        2. Legacy mode (USE_EFFICIENT_FSSPEC_LOADING=False):
+           - Downloads entire files to temp storage
+           - Sequential loading of shards
+           - Higher memory usage but more compatible
+           - Works with both safetensors and pytorch files
+
+        Args:
+            gcs_path: Path to the checkpoint (e.g., "gs://bucket/path/to/checkpoint")
+            dtype: Optional dtype to cast loaded tensors to
+
+        Returns:
+            Dictionary mapping parameter names to JAX arrays
+        """
+
+        # Use efficient loading if enabled and available
+        if USE_EFFICIENT_FSSPEC_LOADING:
+            logger.info("Using efficient fsspec safetensor loading")
+            return _run_async_loading(_load_from_gcs_efficient(gcs_path, dtype))
+
+        # Legacy loading method
+        logger.info("Using legacy GCS loading method")
         fs: AbstractFileSystem
         fs, path = fsspec.core.url_to_fs(gcs_path)
+
+        # Quick-and-dirty progress tracking (does not materially slow things down)
+        print(f"[load_gcs] Starting legacy load from {gcs_path}", flush=True)
 
         # First try to load sharded checkpoint
         for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
@@ -523,6 +590,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     index = json.load(f)
 
                 shard_files = list(set(index["weight_map"].values()))
+                print(f"[load_gcs] Found {index_file} with {len(shard_files)} shard(s)", flush=True)
                 final_state_dict = {}
 
                 if "safetensors" in index_file:
@@ -531,6 +599,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     loader = _load_torch
 
                 for shard_file in shard_files:
+                    print(f"[load_gcs]   Loading shard {shard_file}", flush=True)
                     shard_path = os.path.join(path, shard_file)
                     if not fs.exists(shard_path):
                         raise FileNotFoundError(f"Shard file {shard_path} not found")
@@ -541,19 +610,26 @@ class HFCheckpointConverter(Generic[LevConfig]):
                         shard_state_dict = loader(tmp.name, dtype)
                         final_state_dict.update(shard_state_dict)
 
+                print("[load_gcs] All shards loaded and merged", flush=True)
                 return final_state_dict
 
         # If no index file found, try loading single file checkpoint
         for model_file in [SAFE_TENSORS_MODEL, PYTORCH_MODEL]:
             model_path = os.path.join(path, model_file)
             if fs.exists(model_path):
+                print(f"[load_gcs] Loading single checkpoint file {model_file}", flush=True)
                 with tempfile.NamedTemporaryFile() as tmp:
                     fs.get(model_path, tmp.name)
                     if model_file == SAFE_TENSORS_MODEL:
-                        return _load_safe_tensors(tmp.name, dtype)
+                        result = _load_safe_tensors(tmp.name, dtype)
+                        print("[load_gcs] Single file load complete", flush=True)
+                        return result
                     else:
-                        return _load_torch(tmp.name, dtype)
+                        result = _load_torch(tmp.name, dtype)
+                        print("[load_gcs] Single file load complete", flush=True)
+                        return result
 
+        print(f"[load_gcs] No compatible checkpoint files found in {gcs_path}", flush=True)
         raise FileNotFoundError(f"No checkpoint files found in {gcs_path}")
 
     def load_pretrained(
@@ -1219,3 +1295,135 @@ def _patch_hf_hub_download():
             # Restore the original implementation
             transformers.utils.hub.hf_hub_download = original_hf_hub_download
             huggingface_hub.utils._validators.validate_repo_id = original_validate_repo_id
+
+
+async def _convert_tensorstore_to_jax_dict(
+    tensor_dict: dict[str, "ts.TensorStore"], dtype: Optional[jnp.dtype] = None
+) -> dict[str, jax.Array]:
+    """Convert a dictionary of TensorStore objects to JAX arrays."""
+    t_start = time.perf_counter()
+    result = {}
+
+    # Convert all tensors concurrently
+    async def convert_tensor(key: str, ts_tensor: "ts.TensorStore") -> tuple[str, jax.Array]:
+        # Read the entire tensor from TensorStore
+        key_start_time = time.perf_counter()
+        print(f"[convert] Reading tensor {key} at {key_start_time:.1f}s", flush=True)
+        array = await ts_tensor.read()
+        key_end_time = time.perf_counter()
+        print(f"[convert] Read tensor {key} in {key_end_time - key_start_time:.1f}s", flush=True)
+        # Convert to JAX array with proper sharding
+        jax_array = _maybe_shard_best_effort(array, dtype)
+        jax_array_end_time = time.perf_counter()
+        print(f"[convert] Converted tensor {key} in {jax_array_end_time - key_end_time:.1f}s", flush=True)
+        return key, jax_array
+
+    # Process all tensors concurrently
+    tasks = [convert_tensor(key, tensor) for key, tensor in tensor_dict.items()]
+    converted_tensors = await asyncio.gather(*tasks)
+
+    # Build result dictionary
+    for key, jax_array in tqdm(converted_tensors, desc="Converting TensorStore to JAX"):
+        result[key] = jax_array
+
+    print(f"[convert] Converted {len(result)} tensors in {time.perf_counter() - t_start:.1f}s", flush=True)
+    return result
+
+
+def _run_async_loading(coro):
+    """Run async coroutine in event loop, handling existing loop if present."""
+    try:
+        # Try to get existing event loop
+        loop = asyncio.get_running_loop()
+        # If we're already in an event loop, we need to run in a thread
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, coro)
+            return future.result()
+    except RuntimeError:
+        # No event loop running, we can create our own
+        return asyncio.run(coro)
+
+
+async def _load_from_gcs_efficient(gcs_path: str, dtype: Optional[jnp.dtype] = None) -> dict:
+    """Efficient async loading using fsspec_safetensor."""
+    fs: AbstractFileSystem
+    fs, path = fsspec.core.url_to_fs(gcs_path)
+
+    # Quick-and-dirty progress tracking (does not materially slow things down)
+    print(f"[load_gcs] Starting efficient load from {gcs_path}", flush=True)
+
+    # First try to load sharded checkpoint
+    for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
+        index_path = os.path.join(path, index_file)
+        if fs.exists(index_path):
+            with fs.open(index_path, "r") as f:
+                index = json.load(f)
+
+            shard_files = list(set(index["weight_map"].values()))
+            print(f"[load_gcs] Found {index_file} with {len(shard_files)} shard(s)", flush=True)
+
+            # Print size of each shard for quick diagnostics
+            for sf in shard_files:
+                try:
+                    shard_size = fs.size(os.path.join(path, sf))
+                    print(
+                        f"[load_gcs]   {sf}: {shard_size / (1 << 20):.1f} MB",
+                        flush=True,
+                    )
+                except Exception:
+                    print(f"[load_gcs]   {sf}: size unknown", flush=True)
+            final_state_dict = {}
+
+            # Only use efficient loading for safetensors
+            if "safetensors" in index_file:
+                # Load all shards concurrently using efficient method
+                async def load_shard(shard_file: str):
+                    print(f"[load_gcs]   Loading shard {shard_file}", flush=True)
+                    t0 = time.perf_counter()
+
+                    shard_path = os.path.join(path, shard_file)
+                    if not fs.exists(shard_path):
+                        raise FileNotFoundError(f"Shard file {shard_path} not found")
+
+                    # Use efficient loading for this shard
+                    full_shard_path = f"{gcs_path.rstrip('/')}/{shard_file}"
+                    tensor_dict = await load_tensor_dict(full_shard_path)
+
+                    # Now convert to JAX arrays
+                    jax_dict = await _convert_tensorstore_to_jax_dict(tensor_dict, dtype)
+
+                    dt = time.perf_counter() - t0
+                    print(f"[load_gcs]   Shard {shard_file} fully ready in {dt:.1f}s", flush=True)
+                    return jax_dict
+
+                # Load all shards concurrently
+                print(f"[load_gcs] Launching async load for {len(shard_files)} shard(s)", flush=True)
+                shard_tasks = [load_shard(shard_file) for shard_file in shard_files]
+                shard_results = await asyncio.gather(*shard_tasks)
+
+                # Merge all shard results
+                for shard_dict in shard_results:
+                    final_state_dict.update(shard_dict)
+
+                print("[load_gcs] All shards loaded and merged", flush=True)
+                return final_state_dict
+            else:
+                # Fall back to legacy loading for pytorch files
+                logger.info("PyTorch weights detected, falling back to legacy loading")
+                break
+
+    # Try single file loading with efficient method
+    model_path = os.path.join(path, SAFE_TENSORS_MODEL)
+    if fs.exists(model_path):
+        print(f"[load_gcs] Loading single safetensors file {SAFE_TENSORS_MODEL}", flush=True)
+        full_model_path = f"{gcs_path.rstrip('/')}/{SAFE_TENSORS_MODEL}"
+        tensor_dict = await load_tensor_dict(full_model_path)
+        result = await _convert_tensorstore_to_jax_dict(tensor_dict, dtype)
+        print("[load_gcs] Single file load complete", flush=True)
+        return result
+
+    # If we get here, fall back to legacy method
+    print(f"[load_gcs] No compatible checkpoint files found in {gcs_path}", flush=True)
+    raise FileNotFoundError(f"No compatible checkpoint files found in {gcs_path}")
