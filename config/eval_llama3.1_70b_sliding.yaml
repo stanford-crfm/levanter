@@ -4,12 +4,12 @@
 # Dataset processed with SingleTurnChatProcessor
 data:
   validation_urls:
-    - "gs://marin-us-central2/documents/books_windowed/great_gatsby-4b0031/matches_row_0/shard_00000.jsonl.gz"
+    - "gs://marin-us-central2/documents/books_token_window/great_gatsby-3097c4/matches_row_0/shard_00000.jsonl.gz"
   format:
     type: "chat"
     single_turn: true
-  tokenizer: stanford-crfm/marin-tokenizer
-  cache_dir: "gs://marin-us-central2/tokenized/marin-tokenizer/great_gatsby_windowed"
+  tokenizer: meta-llama/Llama-3.1-8B
+  cache_dir: "gs://marin-us-central2/tokenized/llama3/great_gatsby_windowed"
   shuffle: false
 
 model:  # 8B llama3 model
