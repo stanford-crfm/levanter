@@ -48,6 +48,7 @@ from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_c
 from levanter.utils.json_utils import ConfigJSONEncoder
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
+from levanter.utils.thread_utils import blocking_wait
 
 
 # Feature flag to enable new efficient fsspec safetensor loading
@@ -572,7 +573,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # Use efficient loading if enabled and available
         if USE_EFFICIENT_FSSPEC_LOADING:
             logger.info("Using efficient fsspec safetensor loading")
-            return _run_async_loading(_load_from_gcs_efficient(gcs_path, dtype))
+            return blocking_wait(_load_from_gcs_efficient(gcs_path, dtype))
 
         # Legacy loading method
         logger.info("Using legacy GCS loading method")
@@ -1328,22 +1329,6 @@ async def _convert_tensorstore_to_jax_dict(
 
     print(f"[convert] Converted {len(result)} tensors in {time.perf_counter() - t_start:.1f}s", flush=True)
     return result
-
-
-def _run_async_loading(coro):
-    """Run async coroutine in event loop, handling existing loop if present."""
-    try:
-        # Try to get existing event loop
-        loop = asyncio.get_running_loop()
-        # If we're already in an event loop, we need to run in a thread
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, coro)
-            return future.result()
-    except RuntimeError:
-        # No event loop running, we can create our own
-        return asyncio.run(coro)
 
 
 async def _load_from_gcs_efficient(gcs_path: str, dtype: Optional[jnp.dtype] = None) -> dict:
