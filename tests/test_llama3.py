@@ -7,7 +7,7 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from test_utils import skip_if_no_torch
 
@@ -133,7 +133,7 @@ def test_llama3_rotary_embedding():
     device = "cpu"
 
     lev_config = LlamaConfig.from_hf_config(llama_config)
-    HeadSize = lev_config.HeadSize
+    HeadSize = lev_config.attention_config().HeadSize
     Pos = lev_config.Pos
     seq_len = Pos.size
 

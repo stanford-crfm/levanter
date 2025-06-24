@@ -24,7 +24,7 @@ Levanter is a framework for training large language models (LLMs) and other foun
 2. **Scalable**: Levanter scales to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
 3. **Reproducible**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
-We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
+We built Levanter with [JAX](https://github.com/jax-ml/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
 
 ## Documentation
 
@@ -54,7 +54,7 @@ You can also find us in the #levanter channel on the unofficial [Jax LLM Discord
 ## Getting Started
 
 Here is a small set of examples to get you started. For more information about the various configuration options,
-please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](docs/Configuration-Guide.md).
+please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](doc./reference/Configuration.md).
 You can also use `--help` or poke around other configs to see all the options available to you.
 
 

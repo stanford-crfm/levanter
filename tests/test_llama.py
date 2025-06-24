@@ -11,10 +11,10 @@ from jax import random
 import haliax as hax
 import haliax.nn as hnn
 
-from levanter.models.attention import AttentionMask
-from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
-from levanter.models.rotary import _rotate_half as levanter_rotate_half
+from levanter.layers.attention import AttentionBackend, AttentionMask
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings
+from levanter.layers.rotary import _rotate_half as levanter_rotate_half
+from levanter.models.llama import Attention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -55,13 +55,22 @@ def test_llama_flops():
     assert ratio < 1.2, f"ratio {ratio} > 1.2"
 
 
+def test_llama_params():
+    # Check that the computed number of trainable params is close to the actual number of params
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
+    llama_config = LlamaConfig.from_hf_config(hf_config)
+    actual_params = 6.738415616e9
+    params = llama_config.total_trainable_params(hf_config.vocab_size)
+    assert np.isclose(actual_params, params, rtol=1e-2)
+
+
 @skip_if_no_torch
 def test_llama_rotary_embedding():
     import torch
     from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     llama_config = _get_llama_config()
-    HeadSize = llama_config.HeadSize
+    HeadSize = llama_config.attention_config().HeadSize
     Pos = llama_config.Pos
     seq_len = Pos.size
     key = random.PRNGKey(0)
@@ -100,8 +109,8 @@ def test_apply_rotary_pos_emb(model_seq_len, test_seq_len):
     llama_config = _get_llama_config(seq_len=model_seq_len)
 
     Pos = llama_config.Pos.resize(test_seq_len)
-    Heads = llama_config.Heads
-    HeadSize = llama_config.HeadSize
+    Heads = llama_config.attention_config().Heads
+    HeadSize = llama_config.attention_config().HeadSize
     Batch = hax.Axis("batch", 2)
 
     # note here we switch Heads and Pos for the shape of the output tensors
@@ -147,7 +156,8 @@ def test_llama_attention(use_flash, num_kv_heads):
 
     config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))  # type: ignore
+    attention_config = config.attention_config()
+    attention = Attention.init(config=attention_config, key=random.PRNGKey(0))  # type: ignore
 
     state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
@@ -340,7 +350,7 @@ def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConf
         num_heads=4,
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
-        use_flash_attention=use_flash,
+        attn_backend=AttentionBackend.DEFAULT if use_flash else AttentionBackend.VANILLA,
         flash_attention_block_size=8 if use_flash else None,
     )
 
@@ -374,7 +384,6 @@ def test_pass_different_length_seq(num_kv_heads):
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
-        use_flash_attention=True,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
 

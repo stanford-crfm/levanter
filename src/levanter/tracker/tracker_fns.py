@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import logging
 import os
@@ -15,18 +16,20 @@ from levanter.tracker import CompositeTracker, Tracker
 from levanter.tracker.helpers import hparams_to_dict
 from levanter.tracker.histogram import Histogram
 from levanter.tracker.tensorboard import TensorboardTracker
+from levanter.tracker.tracker import DictTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
 
 
 logger = logging.getLogger(__name__)
 
+_should_use_callback = True
 _global_tracker: Optional["Tracker"] = None
 
-LoggableValues: typing.TypeAlias = Scalar | jax.Array | str | dict | Histogram
+LoggableValue: typing.TypeAlias = Scalar | jax.Array | str | dict | Histogram
 
 
-def log(metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[int], commit: Optional[bool] = None):
+def log(metrics: typing.Mapping[str, LoggableValue | Any], *, step: Optional[int], commit: Optional[bool] = None):
     """
     Log metrics to the global tracker.
 
@@ -52,7 +55,7 @@ def log(metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[in
 
 # deprecated in favor of log()
 def log_metrics(
-    metrics: typing.Mapping[str, LoggableValues | Any], *, step: Optional[int], commit: Optional[bool] = None
+    metrics: typing.Mapping[str, LoggableValue | Any], *, step: Optional[int], commit: Optional[bool] = None
 ):
     """
     Deprecated. Use log instead.
@@ -72,11 +75,70 @@ def _do_jit_log(metrics, *, step=None):
 
 
 def jit_log(metrics, *, step=None):
-    """uses jax effect callback to log to wandb from the host"""
-    # This doesn't work reliably on TPU, so we disable it for now
-    jax.debug.callback(_do_jit_log, metrics, step=step)
-    # global _jit_log_dict
-    # _jit_log_dict.update(metrics)
+    """
+    JAX doesn't allow tracers to escape the jit boundary, so we have to be clever about how we log metrics.
+    In Levanter, we enable tracking inside jit with two mechanisms.
+
+    * The first, most performant way, is to use the levanter.tracker.defer_tracker_for_jit context manager,
+      which will cause logging to go to a dictionary (that is returned by capture_logging). You can
+      then return this dictionary from the JIT function and log it outside of the JIT.
+    * The second way is to just use an effect callback to log the metrics to the host.
+
+    We strongly recommend using the first method, as it is much more performant.
+    """
+    if _global_tracker is None:
+        warnings.warn("No global tracker set")
+        return
+    if not _should_use_callback:
+        # we're not using the callback, so we assume we're inside a defer_tracker_for_jit context manager
+        # and we just return the metrics dictionary
+        _global_tracker.log(metrics, step=step, commit=False)
+    else:
+        jax.experimental.io_callback(_do_jit_log, None, metrics=metrics, step=step)
+
+
+@contextlib.contextmanager
+def defer_tracker_for_jit():
+    """
+    Context manager to defer capturing the tracker until the end of the context.
+    This is useful when you want to log metrics that are computed inside JIT (i.e. usually),
+    but you want to defer the actual logging until after the JIT has completed for performance reasons.
+
+    The usual pattern is like this:
+
+    ```python
+        @equinox.filter_jit
+        def my_jit_function():
+            with defer_tracker_for_jit() as metrics:
+                levanter.tracker.jit_log({ "foo": 1 })
+                ...
+
+                # do some JIT work
+                result = ...
+
+            return result, metrics
+
+        result, metrics = my_jit_function()
+        levanter.tracker.log(metrics, step=0)
+    ```
+
+    Returns:
+        A context manager that defers capturing the tracker until the end of the context.
+        The context manager yields the metrics dictionary that metrics are logged into.
+        You can log this dictionary directly to the global tracker after the context manager exits.
+    """
+    global _global_tracker, _should_use_callback
+    old_tracker = _global_tracker
+    old_should_use_callback = _should_use_callback
+    _should_use_callback = False
+    local_tracker = DictTracker()
+    _global_tracker = local_tracker
+
+    try:
+        yield local_tracker.metrics
+    finally:
+        _global_tracker = old_tracker
+        _should_use_callback = old_should_use_callback
 
 
 def log_summary(metrics: dict[str, Any]):
@@ -128,10 +190,13 @@ def log_configuration(hparams: Any, config_name: Optional[str] = None):
     if dataclasses.is_dataclass(hparams):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = os.path.join(tmpdir, "config.yaml")
-            with open(config_path, "w") as f:
-                draccus.dump(hparams, f, encoding="utf-8")
-                name = config_name or "config.yaml"
-                _global_tracker.log_artifact(config_path, name=name, type="config")
+            try:
+                with open(config_path, "w") as f:
+                    draccus.dump(hparams, f, encoding="utf-8")
+                    name = config_name or "config.yaml"
+                    _global_tracker.log_artifact(config_path, name=name, type="config")
+            except Exception:  # noqa
+                logger.warning("Failed to dump config to yaml. Skipping logging as artifact.")
 
 
 def set_global_tracker(tracker: Tracker):

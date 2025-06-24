@@ -11,7 +11,7 @@ data:
     owt: 0.6
     wikitext: 0.4
   tokenizer: gpt2
-  cache_dir: "gs://levanter-data/tokenized/data_mix"
+  cache_dir: "gs://marin-us-central2/scratch/dlwh/gpt2_small_fast_mix"
 model:
   type: gpt2
   hidden_dim: 768

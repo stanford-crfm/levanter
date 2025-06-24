@@ -9,173 +9,180 @@ import pytest
 from levanter.store.jagged_array import JaggedArrayStore, PreparedBatch
 
 
-class TestJaggedArrayStore:
-    @pytest.mark.parametrize("cache_metadata", [True, False])
-    def test_append_and_get(self, cache_metadata):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
+@pytest.mark.parametrize("cache_metadata", [True, False])
+def test_append_and_get(cache_metadata):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
-            data2 = jnp.array([[5.0]])
+        data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+        data2 = jnp.array([[5.0]])
 
-            builder.append(data1)
-            builder.append(data2)
+        builder.append(data1)
+        builder.append(data2)
 
-            assert len(builder) == 2
+        assert len(builder) == 2
 
-            result1 = builder[0]
-            assert jnp.all(result1 == data1)
+        result1 = builder[0]
+        assert jnp.all(result1 == data1)
 
-            result2 = builder[1]
-            assert jnp.all(result2 == data2)
+        result2 = builder[1]
+        assert jnp.all(result2 == data2)
 
-            # result_slice = builder[0:2]
-            # assert isinstance(result_slice, JaggedArray)
+        # result_slice = builder[0:2]
+        # assert isinstance(result_slice, JaggedArray)
 
-    @pytest.mark.parametrize("cache_metadata", [True, False])
-    def test_extend_with_multiple(self, cache_metadata):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
-            data2 = jnp.array([[5.0]])
+@pytest.mark.parametrize("cache_metadata", [True, False])
+def test_extend_with_multiple(cache_metadata):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            builder.extend([data1, data2])
+        data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+        data2 = jnp.array([[5.0]])
 
-            assert len(builder) == 2
+        builder.extend([data1, data2])
 
-            result1 = builder[0]
-            assert jnp.all(result1 == data1)
+        assert len(builder) == 2
 
-            result2 = builder[1]
-            assert jnp.all(result2 == data2)
+        result1 = builder[0]
+        assert jnp.all(result1 == data1)
 
-    @pytest.mark.parametrize("cache_metadata", [True, False])
-    def test_extend_with_prepared_batch(self, cache_metadata):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
+        result2 = builder[1]
+        assert jnp.all(result2 == data2)
 
-            data1 = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
-            data2 = np.array([[5.0]], dtype=jnp.float32)
-            prepared = PreparedBatch.from_batch([data1, data2])
 
-            builder.extend(prepared)
+@pytest.mark.parametrize("cache_metadata", [True, False])
+def test_extend_with_prepared_batch(cache_metadata):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            assert len(builder) == 2
+        data1 = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+        data2 = np.array([[5.0]], dtype=jnp.float32)
+        prepared = PreparedBatch.from_batch([data1, data2])
 
-            result1 = builder[0]
-            assert jnp.all(result1 == data1)
+        builder.extend(prepared)
 
-            result2 = builder[1]
-            assert jnp.all(result2 == data2)
+        assert len(builder) == 2
 
-            # extendd with more data
-            data3 = jnp.array([[6.0, 7.0], [8.0, 9.0]])
-            data4 = jnp.array([[10.0]])
-            prepared2 = PreparedBatch.from_batch([data3, data4])
+        result1 = builder[0]
+        assert jnp.all(result1 == data1)
 
-            builder.extend(prepared2)
+        result2 = builder[1]
+        assert jnp.all(result2 == data2)
 
-            assert len(builder) == 4
+        # extendd with more data
+        data3 = jnp.array([[6.0, 7.0], [8.0, 9.0]])
+        data4 = jnp.array([[10.0]])
+        prepared2 = PreparedBatch.from_batch([data3, data4])
 
-            result3 = builder[2]
-            assert jnp.all(result3 == data3)
+        builder.extend(prepared2)
 
-            result4 = builder[3]
-            assert jnp.all(result4 == data4)
+        assert len(builder) == 4
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("cache_metadata", [True, False])
-    async def test_extend_with_prepared_batch_async(self, cache_metadata):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
+        result3 = builder[2]
+        assert jnp.all(result3 == data3)
 
-            data1 = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
-            data2 = np.array([[5.0]], dtype=jnp.float32)
-            prepared = PreparedBatch.from_batch([data1, data2])
+        result4 = builder[3]
+        assert jnp.all(result4 == data4)
 
-            await builder.extend_async(prepared)
 
-            assert len(builder) == 2
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_metadata", [True, False])
+async def test_extend_with_prepared_batch_async(cache_metadata):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            result1 = builder[0]
-            assert jnp.all(result1 == data1)
+        data1 = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+        data2 = np.array([[5.0]], dtype=jnp.float32)
+        prepared = PreparedBatch.from_batch([data1, data2])
 
-            result2 = builder[1]
-            assert jnp.all(result2 == data2)
+        await builder.extend_async(prepared)
 
-            # extendd with more data
-            data3 = jnp.array([[6.0, 7.0], [8.0, 9.0]])
-            data4 = jnp.array([[10.0]])
-            prepared2 = PreparedBatch.from_batch([data3, data4])
+        assert len(builder) == 2
 
-            await builder.extend_async(prepared2)
+        result1 = builder[0]
+        assert jnp.all(result1 == data1)
 
-            assert len(builder) == 4
+        result2 = builder[1]
+        assert jnp.all(result2 == data2)
 
-            result3 = builder[2]
-            assert jnp.all(result3 == data3)
+        # extendd with more data
+        data3 = jnp.array([[6.0, 7.0], [8.0, 9.0]])
+        data4 = jnp.array([[10.0]])
+        prepared2 = PreparedBatch.from_batch([data3, data4])
 
-            result4 = builder[3]
-            assert jnp.all(result4 == data4)
+        await builder.extend_async(prepared2)
 
-    def test_append_error(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.float32)
-            with pytest.raises(ValueError):
-                builder.append(jnp.array([[1.0, 2.0]]))
+        assert len(builder) == 4
 
-    @pytest.mark.parametrize("cache_metadata", [True, False])
-    def test_append_single_rank(self, cache_metadata):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.float32, cache_metadata=cache_metadata)
+        result3 = builder[2]
+        assert jnp.all(result3 == data3)
 
-            data = jnp.array([1.0, 2.0, 3.0])
-            builder.append(data)
+        result4 = builder[3]
+        assert jnp.all(result4 == data4)
 
-            assert len(builder) == 1
 
-            result = builder[0]
-            assert jnp.all(result == data)
+def test_append_error():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.float32)
+        with pytest.raises(ValueError):
+            builder.append(jnp.array([[1.0, 2.0]]))
 
-    @pytest.mark.parametrize("cache_metadata", [True, False])
-    def test_append_multi_rank(self, cache_metadata):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
-            data2 = jnp.array([[5.0, 6.0], [7.0, 8.0]])
+@pytest.mark.parametrize("cache_metadata", [True, False])
+def test_append_single_rank(cache_metadata):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=1, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            builder.append(data1)
-            builder.append(data2)
+        data = jnp.array([1.0, 2.0, 3.0])
+        builder.append(data)
 
-            assert len(builder) == 2
+        assert len(builder) == 1
 
-            result1 = builder[0]
-            assert jnp.all(result1 == data1)
+        result = builder[0]
+        assert jnp.all(result == data)
 
-            result2 = builder[1]
-            assert jnp.all(result2 == data2)
 
-    def test_getitem_out_of_bounds(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
+@pytest.mark.parametrize("cache_metadata", [True, False])
+def test_append_multi_rank(cache_metadata):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32, cache_metadata=cache_metadata)
 
-            data = jnp.array([[1.0, 2.0], [3.0, 4.0]])
-            builder.append(data)
+        data1 = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+        data2 = jnp.array([[5.0, 6.0], [7.0, 8.0]])
 
-            with pytest.raises(IndexError):
-                builder[2]
+        builder.append(data1)
+        builder.append(data2)
 
-    def test_step_slicing(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
+        assert len(builder) == 2
 
-            data = jnp.array([[1.0, 2.0], [3.0, 4.0]])
-            builder.append(data)
+        result1 = builder[0]
+        assert jnp.all(result1 == data1)
 
-            # with pytest.raises(ValueError):
-            #     builder[::2]
+        result2 = builder[1]
+        assert jnp.all(result2 == data2)
+
+
+def test_getitem_out_of_bounds():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
+
+        data = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+        builder.append(data)
+
+        with pytest.raises(IndexError):
+            builder[2]
+
+
+def test_step_slicing():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        builder = JaggedArrayStore.open(tmpdir, item_rank=2, dtype=jnp.float32)
+
+        data = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+        builder.append(data)
+
+        # with pytest.raises(ValueError):
+        #     builder[::2]
 
 
 async def create_builder_with_data(

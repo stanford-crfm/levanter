@@ -7,7 +7,7 @@ from jax.random import PRNGKey
 import haliax as hax
 from haliax import Axis
 
-from levanter.models.attention import AttentionBackend, AttentionMask
+from levanter.layers.attention import AttentionBackend, AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs
 

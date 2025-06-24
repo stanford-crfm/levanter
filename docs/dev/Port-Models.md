@@ -98,7 +98,7 @@ We follow the same breakdown in the implementation of Llama in Levanter.
 - Each class will have its key layers and components defined as attributes and be initialized with a static method `init()`.
 - Each class will be extended from Equinox's `Module` class, except for classes with custom serialization logic, which instead inherit
 from [haliax.state_dict.ModuleWithStateDictSerialization][].
-- [hax.nn.Linear][] modules can have "articulated" input or output axes, where PyTorch and other libraries typically require
+- [haliax.nn.Linear][] modules can have "articulated" input or output axes, where PyTorch and other libraries typically require
 a single input and output axis. For instance, attention modules in Levanter typically have a `Linear`  from `Embed` to `(Heads, HeadSize)`.
 When serializing these linear modules to state dicts (see the next section), Haliax will automatically flatten them. You should
 ensure that `out_first=True` is set on Linear modules if they're going to be loaded as PyTorch Linear modules.
@@ -297,7 +297,7 @@ model:
   num_layers: 2
 ```
 
-For more details on the training configuration, please refer to [Configuration Guide](../Configuration-Guide.md).
+For more details on the training configuration, please refer to [Configuration Guide](../reference/Configuration.md).
 
 ### Launch Training Job
 Once you have your training configuration ready and your training environment set up, you can launch a training job with the following command:

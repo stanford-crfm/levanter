@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax as hax
@@ -19,7 +20,7 @@ import levanter.eval_harness
 from levanter import callbacks
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig, SupervisedSourceConfig, mk_supervised_datasets
+from levanter.data.text import LMMixtureDatasetConfig, SingleDatasetLMConfig, UrlSingleDatasetLMConfig
 from levanter.eval_harness import LmEvalHarnessConfig
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
@@ -33,8 +34,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainLmConfig:
-    data: Union[LMDatasetConfig, LMMixtureDatasetConfig] = field(default_factory=LMDatasetConfig)
-    supervised_data: Optional[SupervisedSourceConfig | dict[str, SupervisedSourceConfig]] = None
+    data: Union[SingleDatasetLMConfig, LMMixtureDatasetConfig] = field(default_factory=UrlSingleDatasetLMConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=Gpt2Config)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -52,6 +52,7 @@ class TrainLmConfig:
     hf_save_path: Optional[str] = None
     hf_upload: Optional[str] = None
     hf_save_steps: int = 10000
+    hf_save_dtype: Optional[str] = None
 
     data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
     initialize_from_checkpoint_path: Optional[str] = None
@@ -145,10 +146,8 @@ def main(config: TrainLmConfig):
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
-        seek_dataloader = True
         if int(state.step) == 0 and config.initialize_from_checkpoint_path is not None:
             state = load_checkpoint(state, config.initialize_from_checkpoint_path)
-            seek_dataloader = False
 
         if int(state.step) == 0:
             # TODO: I don't love that we init the model twice, but it's not a big deal i think?
@@ -192,24 +191,6 @@ def main(config: TrainLmConfig):
             )
             trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
-        if config.supervised_data is not None:
-            logger.info("Using supervised data for evals")
-            supervised_eval = mk_supervised_datasets(config.supervised_data, "validation", tokenizer, Pos)
-
-            evals = list(supervised_eval.values())
-
-            cb = levanter.eval.cb_tagged_lm_evaluate(
-                EvalBatch,
-                evals,
-                tokenizer,
-                trainer.device_mesh,
-                compute_axis_mapping,
-                max_eval_examples_per_ds,
-                prefix="internal_eval",
-                mp=config.trainer.mp,
-            )
-            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
-
         flops_per_token = config.model.flops_per_token(vocab_size)
         flops_per_example = 3 * flops_per_token * Pos.size if flops_per_token is not None else None
         trainer.add_hook(
@@ -224,8 +205,17 @@ def main(config: TrainLmConfig):
             else:
                 full_save_path = config.hf_save_path
 
+            save_dtype: Optional[jnp.dtype] = None
+            if config.hf_save_dtype is not None:
+                try:
+                    save_dtype = jnp.dtype(config.hf_save_dtype)
+                except TypeError:
+                    logger.warning(f"Invalid hf_save_dtype: {config.hf_save_dtype}. Defaulting to None.")
+
             trainer.add_hook(
-                save_hf_checkpoint_callback(full_save_path, converter, upload_to_hf=config.hf_upload or False),
+                save_hf_checkpoint_callback(
+                    full_save_path, converter, upload_to_hf=config.hf_upload or False, save_dtype=save_dtype
+                ),
                 every=config.hf_save_steps,
             )
 
@@ -265,11 +255,11 @@ def main(config: TrainLmConfig):
                 )
 
         train_loader = trainer.data_loader(train_dataset)
-        if seek_dataloader:
+        if state.step > 0:
+            logger.info(f"Resuming training from step {state.step}")
             train_loader = train_loader.iter_from_step(state.step)
         else:
-            logger.warn("Not seeking dataloader")
-            train_loader = iter(train_loader)
+            train_loader = train_loader.iter_from_step(0)
 
         ## OK, actually run training!
         last_info = trainer.train(state, train_loader)

@@ -20,7 +20,7 @@ PreTrainedTokenizer and PreTrainedTokenizerFast. grumble grumble.
 """
 
 
-def num_cpus_used_by_tokenizer(tokenizer) -> int:
+def num_cpus_used_by_tokenizer(tokenizer: HfTokenizer) -> int:
     if getattr(tokenizer, "is_fast", False):
         if os.getenv("TOKENIZERS_PARALLELISM", "true").lower() in _HF_TOKENIZER_OFF_VALUES:
             return 1
@@ -28,7 +28,7 @@ def num_cpus_used_by_tokenizer(tokenizer) -> int:
             # This is a bit hacky, but HF's fast tokenizers are parallelized under the hood.
             # we reserve a couple of cores just so Ray has somewhere to run the coordinator.
             # Empirically it doesn't usually exceed 16-20, and it's useful to have some slack
-            return min(max(1, logical_cpu_core_count() - 2), 12)
+            return min(max(1, logical_cpu_core_count() - 4), 12)
     else:
         return 1
 

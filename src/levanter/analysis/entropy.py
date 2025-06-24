@@ -1,4 +1,5 @@
 """Functions for computing and visualizing token-level entropy."""
+
 import logging
 from typing import Callable, TypeVar
 
@@ -47,9 +48,15 @@ def top2_gap_from_logits(logits: hax.NamedArray, axis: hax.AxisSelector) -> hax.
         A NamedArray with the same shape as logits minus `axis`, containing the top-2 gaps.
     """
 
-    sorted_logits = hax.top_k(logits, axis, 2, "top")[0]
-    top1 = sorted_logits["top", 0]
-    top2 = sorted_logits["top", 1]
+    # this uses a ton of memory for no particularly good reason. So we do it in two passes:
+    # sorted_logits = hax.top_k(logits, axis, 2, "top")[0]
+    # top1 = sorted_logits["top", 0]
+    # top2 = sorted_logits["top", 1]
+
+    argmax = hax.argmax(logits, axis=axis)
+    top1 = hax.take(logits, axis, argmax)
+    argmax2 = hax.argmax(hax.where(argmax, -jnp.inf, logits), axis=axis)
+    top2 = hax.take(logits, axis, argmax2)
     return top1 - top2
 
 
@@ -65,7 +72,7 @@ def compute_entropy_histogram(
     Compute entropy histograms for a given model and dataset.
 
     Returns:
-        Tuple of two Histogram objects: (entropy_histogram, top2_gap_histogram)
+        Histogram: A Histogram object containing the entropy values.
     """
 
     entropies_list: list[jnp.ndarray] = []
@@ -103,7 +110,7 @@ def cb_compute_entropies(
     prefix: str | None,
     batch_size: int,
     mapping: hax.partitioning.ResourceMapping,
-    num_tokens: int = 1024 * 1024,
+    num_tokens: int = 10 * 1024 * 1024,
 ):
     """
     Callback to compute entropy distribution and log it to the tracker.
@@ -145,3 +152,68 @@ def cb_compute_entropies(
         levanter.tracker.log({f"{prefix}/entropy": entropy_hist}, step=step.step)
 
     return compute_entropy
+
+
+def compute_top2_gap_histogram(
+    model,
+    Vocab: hax.AxisSelector,
+    logit_fn: Callable[[PyTree, B], hax.NamedArray],
+    test_data,
+    max_tokens: int = 1024 * 1024,
+    num_bins: int = 64,
+) -> Histogram:
+    gaps = []
+    total_tokens = 0
+    for batch in test_data:
+        gaps.append(_compute_top2_gap_on_device(logit_fn, model, batch, Vocab))
+        total_tokens += gaps[-1].size
+        if total_tokens >= max_tokens:
+            break
+
+    gaps_array = jnp.concatenate(gaps)
+    if not gaps_array.size:
+        raise ValueError("No tokens processed")
+    return Histogram.from_array(gaps_array, num_bins=num_bins)
+
+
+@eqx.filter_jit
+def _compute_top2_gap_on_device(logit_fn, model, batch: B, Vocab) -> jnp.ndarray:
+    with jax.named_scope("logits"):
+        logits = logit_fn(model, batch)
+    gaps = top2_gap_from_logits(logits, axis=Vocab)
+    return gaps.flatten("token").array
+
+
+def cb_compute_top2_gap(
+    logit_fn,
+    Vocab: hax.AxisSelector,
+    test_data,
+    prefix: str | None,
+    batch_size: int,
+    mapping: hax.partitioning.ResourceMapping,
+    num_tokens: int = 10 * 1024 * 1024,
+):
+    if prefix is None:
+        prefix = "analysis"
+
+    def compute_top2_gap(step: StepInfo):
+        data_loader = DataLoader(test_data, batch_size=batch_size, pad_final_batch=False, axis_resources=mapping)
+        model = step.eval_model
+        try:
+            top2_gap_hist = compute_top2_gap_histogram(
+                model=model,
+                Vocab=Vocab,
+                logit_fn=logit_fn,
+                test_data=data_loader,
+                max_tokens=num_tokens,
+            )
+            levanter.tracker.log({f"{prefix}/top2_gap": top2_gap_hist}, step=step.step)
+            return top2_gap_hist
+        except ValueError as e:
+            if "No tokens processed" in str(e):
+                logger.warning(f"{prefix} is too small to compute top2_gap with batch size {batch_size}")
+                return
+            logger.exception(f"Error computing top2_gap for {prefix}")
+            raise
+
+    return compute_top2_gap
