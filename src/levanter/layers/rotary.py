@@ -43,7 +43,7 @@ class DefaultRotaryEmbeddings(RotaryEmbeddings):
         return q_embed
 
 
-@dataclass
+@dataclass(frozen=True)
 class RotaryEmbeddingsConfig(abc.ABC, draccus.ChoiceRegistry):
     theta: float = 10000.0
 
@@ -69,7 +69,7 @@ class RotaryEmbeddingsConfig(abc.ABC, draccus.ChoiceRegistry):
         pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class DefaultRotaryEmbeddingsConfig(RotaryEmbeddingsConfig):
     theta: float = 10000
     factor: float = 1.0  # this should have been called scale_factor, but for hf compat
@@ -133,7 +133,7 @@ class Llama3RotaryEmbeddings(RotaryEmbeddings):
         return inv_freq_llama
 
 
-@dataclass
+@dataclass(frozen=True)
 class Llama3RotaryEmbeddingsConfig(RotaryEmbeddingsConfig):
     """
     To match this from HF:

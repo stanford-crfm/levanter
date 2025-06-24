@@ -78,7 +78,7 @@ def test_llama_rotary_embedding():
     x = random.normal(key, (1, seq_len))
     x_torch = torch.from_numpy(np.array(x))
 
-    levanter_emb = DefaultRotaryEmbeddingsConfig().build(HeadSize=HeadSize, Pos=Pos)
+    levanter_emb = DefaultRotaryEmbeddingsConfig().build(HeadSize=HeadSize)
     levanter_output = (levanter_emb.cos, levanter_emb.sin)
 
     hf_rope = HFLlamaRotaryEmbedding(config=llama_config.to_hf_config(32000), device=device)

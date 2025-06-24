@@ -1147,7 +1147,7 @@ class Attention(eqx.Module):
         use_bias = config.use_bias
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=(config.Embed),
+            In=config.Embed,
             Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize),
             key=k_q,
             use_bias=use_bias,
