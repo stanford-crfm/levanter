@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 import math
 import warnings
@@ -7,8 +8,8 @@ from typing import Optional, Union, overload
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jrandom
+from jax import numpy as jnp
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
@@ -472,6 +473,11 @@ def _te_materialize_mask(KPos, QPos, batch_size, mask):
         )
     elif isinstance(mask, AttentionMask):
         if mask.causal_offset is not None:
+            if mask.causal_offset != 0:
+                raise NotImplementedError(
+                    "Causal offset is not supported for NVTE fused attention. Please use the JAX reference"
+                    " implementation."
+                )
             attn_mask_type = AttnMaskType.CAUSAL_MASK
 
             fused_attn_mask = mask.materialize(QPos, KPos)
@@ -615,15 +621,13 @@ def _materialize_segment_mask(
         if len(segment_ids) != 2:
             raise ValueError("segment_ids must be a tuple of two NamedArrays")
         q_segment_ids, kv_segment_ids = segment_ids
-        kv_segment_ids = kv_segment_ids.rename({QPos: KPos})[KPos, k_slice]
-        q_segment_ids = q_segment_ids.rename({QPos: QPos})[QPos]
+        kv_segment_ids = kv_segment_ids.rename({QPos.name: KPos.name})[KPos.name, k_slice]
+        q_segment_ids = q_segment_ids.rename({QPos.name: QPos})[QPos.name, q_slice]
     else:
-        kv_segment_ids = segment_ids.rename({QPos: KPos})[KPos, k_slice]
-        q_segment_ids = segment_ids[QPos, q_slice]
+        kv_segment_ids = segment_ids.rename({QPos.name: KPos.name})[KPos.name, k_slice]
+        q_segment_ids = segment_ids[QPos.name, q_slice]
 
-    sub_KPos = kv_segment_ids.resolve_axis(KPos.name)
-
-    return q_segment_ids.broadcast_axis(sub_KPos) == kv_segment_ids
+    return q_segment_ids.broadcast_axis(kv_segment_ids.axes) == kv_segment_ids
 
 
 class AttentionMask(eqx.Module):
@@ -658,7 +662,7 @@ class AttentionMask(eqx.Module):
     #
     # Note: ``causal_offset==0`` is equivalent to a standard causal mask; ``None`` means no
     # causal masking at all.
-    causal_offset: int | None = eqx.field(static=True, default=None)
+    causal_offset: int | None | NamedArray = eqx.field(static=True, default=None)
     explicit_mask: Optional[NamedArray] = None
     segment_ids: NamedArray | tuple[NamedArray, NamedArray] = None
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
@@ -679,12 +683,21 @@ class AttentionMask(eqx.Module):
 
         if self.causal_offset is not None:
             shifted_k_start = k_slice.start - self.causal_offset
-            causal = causal_mask(
-                QPos.resize(q_slice.size),
-                KPos.resize(k_slice.size),
-                q_slice.start,
-                shifted_k_start,
-            )
+            if isinstance(shifted_k_start, NamedArray):
+                # need to vmap
+                causal = hax.vmap(causal_mask, shifted_k_start.axes)(
+                    QPos.resize(q_slice.size),
+                    KPos.resize(k_slice.size),
+                    q_slice.start,
+                    shifted_k_start,  # type: ignore
+                )
+            else:
+                causal = causal_mask(
+                    QPos.resize(q_slice.size),
+                    KPos.resize(k_slice.size),
+                    q_slice.start,
+                    shifted_k_start,
+                )
         else:
             causal = None
 
@@ -709,7 +722,7 @@ class AttentionMask(eqx.Module):
     # Static constructors --------------------------------------------------
 
     @staticmethod
-    def causal(offset: int = 0) -> "AttentionMask":
+    def causal(offset: int | NamedArray = 0) -> "AttentionMask":
         """Build a causal mask with an optional *offset*.
 
         For ``offset == 0`` this is identical to the old ``AttentionMask.causal()``
@@ -722,13 +735,17 @@ class AttentionMask(eqx.Module):
     def explicit(mask: NamedArray) -> "AttentionMask":
         return AttentionMask(causal_offset=None, explicit_mask=mask)
 
-    def with_segment_ids(self, segment_ids: NamedArray) -> "AttentionMask":
-        return AttentionMask(causal_offset=self.causal_offset, explicit_mask=self.explicit_mask, segment_ids=segment_ids)
+    def with_segment_ids(self, segment_ids: NamedArray, kv_segment_ids: NamedArray | None = None) -> "AttentionMask":
+        if kv_segment_ids is None:
+            kv_segment_ids = segment_ids
+        return dataclasses.replace(self, segment_ids=(segment_ids, kv_segment_ids))
 
     def __and__(self, other) -> "AttentionMask":
         # Merge causal offsets – if both masks are causal we require they agree
         if self.causal_offset is not None and other.causal_offset is not None:
-            eqx.error_if(self, self.causal_offset != other.causal_offset, "Mismatched causal offsets cannot be combined with &")
+            eqx.error_if(
+                self, self.causal_offset != other.causal_offset, "Mismatched causal offsets cannot be combined with &"
+            )
             causal_offset = self.causal_offset
         else:
             causal_offset = self.causal_offset if self.causal_offset is not None else other.causal_offset
@@ -739,7 +756,11 @@ class AttentionMask(eqx.Module):
 
     def __or__(self, other) -> "AttentionMask":
         # Union: keep causal only if both have the *same* causal offset
-        if self.causal_offset is not None and other.causal_offset is not None and self.causal_offset == other.causal_offset:
+        if (
+            self.causal_offset is not None
+            and other.causal_offset is not None
+            and self.causal_offset == other.causal_offset
+        ):
             causal_offset = self.causal_offset
         else:
             causal_offset = None
@@ -991,6 +1012,8 @@ def _tpu_splash_attention(
 
     # segment_ids
     segment_ids = mask.segment_ids if isinstance(mask, AttentionMask) else None
+    if isinstance(segment_ids, tuple):
+        segment_ids = segment_ids[0]
     physical_axes_segments = pspec_for_axis(segment_ids.axes) if segment_ids is not None else None
     # do we have a batch axis in segment_ids? (needed for vmap below)
     if segment_ids is not None:
@@ -1048,11 +1071,13 @@ def _tpu_splash_attention(
         if mask is None:
             base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
         elif isinstance(mask, AttentionMask):
+            if isinstance(mask.causal_offset, NamedArray):
+                raise NotImplementedError(
+                    "NamedArray causal offsets are not supported for splash attention. Please use a constant causal"
+                    " offset."
+                )
             if mask.causal_offset is not None:
-                base_mask = splash_attention_mask.CausalMask(shape=(Sq, Sk))
-                if mask.causal_offset != 0:
-                    # Splash Attention's causal mask supports an `offset` method.
-                    base_mask = base_mask.offset(mask.causal_offset)
+                base_mask = splash_attention_mask.CausalMask((Sq, Sk), mask.causal_offset)
             else:
                 base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
 
@@ -1126,7 +1151,6 @@ def _find_batch_axis_for_segment_ids(Pos, segment_ids) -> Optional[int]:
         segment_batch_axis = None
 
     return segment_batch_axis
-
 
 
 @dataclass(frozen=True)
@@ -1269,6 +1293,11 @@ class Attention(eqx.Module):
         # Shared computation of q, k, v
         q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
 
+        # Reshape for attention kernels (convert embed → heads/head_size)
+        q = q.rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
+        k = k.rearrange((..., "kv_heads", "position", "head_size"))
+        v = v.rearrange((..., "kv_heads", "position", "head_size"))
+
         # Distinguish key sequence axis for attention
         k = k.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
@@ -1311,6 +1340,12 @@ class Attention(eqx.Module):
 
         This method is intended for autoregressive decoding and prefill.
 
+        Note that for decode, we only support causal masks.
+
+        Also note that segment ids are inferred from the position ids:
+        For the q segments, any >= 0 position id is in one segment, and any < 0 position id is in a different segment.
+        For the kv segments, the first kv_cache.lengths position ids are in one segment, and the rest are in a different segment.
+
         """
 
         key_proj, key_o = maybe_rng_split(key, 2)
@@ -1318,14 +1353,22 @@ class Attention(eqx.Module):
         q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
 
         # Determine how many new, non-padded tokens we are adding for each batch element
-        new_tokens_per_batch = _new_tokens_for_mask(pos_ids)
+        new_tokens_per_batch = hax.sum(pos_ids >= 0, axis="position", dtype=jnp.int32)
 
         kv_cache = kv_cache.extend(k, v, lengths=new_tokens_per_batch)
 
         k = kv_cache.keys.rename({"position": "key_position"})
         v = kv_cache.values.rename({"position": "key_position"})
 
-        mask = AttentionMask.causal(offset=kv_cache.lengths)
+        # TODO: for now we only support causal masks in this mode
+        mask = AttentionMask.causal(offset=pos_ids["position", 0])
+        q_segment_ids = pos_ids >= 0
+        # TODO: really should just allow auto-broadcasting
+        kv_segment_ids = (
+            hax.arange(kv_cache.keys.resolve_axis("position")).broadcast_axis(kv_cache.lengths.axes) < kv_cache.lengths
+        )
+
+        mask = mask.with_segment_ids(q_segment_ids, kv_segment_ids)
 
         # Apply attention
         attn_output = dot_product_attention(
@@ -1337,12 +1380,12 @@ class Attention(eqx.Module):
             v,
             mask,
             attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            attn_backend=self.config.attn_backend,
             flash_block_size=self.config.flash_attention_block_size,
             scaling_factor=self.config.scaling_factor,
             logits_soft_cap=self.config.logits_soft_cap,
             inference=True,
             prng=key,
+            attn_backend=AttentionBackend("vanilla"),  # TODO: support faster kernels here
         )
 
         # Flatten heads and apply output projection
@@ -1352,7 +1395,6 @@ class Attention(eqx.Module):
 
         return attn_output, kv_cache
 
-
     def _compute_qkv(
         self,
         x: NamedArray,
@@ -1360,8 +1402,7 @@ class Attention(eqx.Module):
         key,
         pos_ids: NamedArray | None = None,
     ) -> tuple[NamedArray, NamedArray, NamedArray]:
-        """Project *x* to Q, K and V and apply all per-head processing.
-        """
+        """Project *x* to Q, K and V and apply all per-head processing."""
 
         # Split the projection key into three – one for each of Q, K, V
         key_q, key_k, key_v = maybe_rng_split(key, 3)
@@ -1376,32 +1417,15 @@ class Attention(eqx.Module):
             q = self.q_norm(q)  # type: ignore[misc]
             k = self.k_norm(k)  # type: ignore[misc]
 
-        # Reshape for attention kernels (convert embed → heads/head_size)
-        q = q.rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = k.rearrange((..., "kv_heads", "position", "head_size"))
-        v = v.rearrange((..., "kv_heads", "position", "head_size"))
-
         # Apply rotary embeddings if configured
         if self.config.rope is not None:
-            pos_ids = pos_ids or hax.arange(x.resolve_axis("position"))
+            if pos_ids is None:
+                pos_ids = hax.arange(x.resolve_axis("position"))
             rot_embs = self.config.rope.build(self.config.HeadSize)
             q = rot_embs(q, pos_ids)
             k = rot_embs(k, pos_ids)
 
         return q, k, v
-
-
-def _new_tokens_for_mask(segment_ids: NamedArray | None | tuple[NamedArray, NamedArray]) -> NamedArray:
-    """
-    By convention, for kv_cache, segment_ids is 1 for valid tokens and 0 for padding
-    """
-    if isinstance(segment_ids, tuple):
-        segment_ids = segment_ids[0]
-
-    if segment_ids is None:
-        raise ValueError("segment_ids must be provided for kv_cache")
-
-    return hax.sum(segment_ids, axis="position", dtype=jnp.int32)
 
 
 class KvCache(eqx.Module):
@@ -1411,7 +1435,6 @@ class KvCache(eqx.Module):
         keys:   [batch, position, kv_heads, head_size]
         values: [batch, position, kv_heads, head_size]
         lengths: int32[Batch] - current sequence lengths
-        num_seqs: int32 - currently unused, placeholder for paged caches
 
     `extend` appends a single time-step worth of key/value vectors to the cache and
     returns an updated cache instance
@@ -1420,7 +1443,6 @@ class KvCache(eqx.Module):
     keys: NamedArray
     values: NamedArray
     lengths: NamedArray
-    num_seqs: jnp.ndarray
 
     def extend_one_position(self, keys: NamedArray, values: NamedArray):
         """Append one position worth of `keys` / `values` to the cache.
@@ -1430,36 +1452,153 @@ class KvCache(eqx.Module):
         dimension.
         """
 
-        return self.extend(keys, values, lengths=hax.named(1, ()), num_seqs=self.num_seqs)
+        return self.extend(keys, values, lengths=hax.named(1, ()))
 
-    def extend(self, keys: NamedArray, values: NamedArray, lengths: NamedArray, num_seqs: jnp.ndarray | None = None):
+    def extend(self, keys: NamedArray, values: NamedArray, lengths: NamedArray):
         """Prefill or ar-extend the cache with keys and values for multiple sequences."""
         keys = keys.astype(self.keys.dtype)
         values = values.astype(self.values.dtype)
 
-        new_keys = self.keys.updated_slice({"position": self.lengths}, keys)
-        new_values = self.values.updated_slice({"position": self.lengths}, values)
-        new_lengths = self.lengths + lengths
-        if num_seqs is not None:
-            new_num_seqs = num_seqs
-        else:
-            new_num_seqs = self.num_seqs
+        if not lengths.shape:
+            lengths = lengths.broadcast_axis(keys.resolve_axis("batch"))
+
+        new_k, new_v, new_len = append_to_kv_cache(
+            self.keys.array,
+            self.values.array,
+            self.lengths.array,
+            keys.array,
+            values.array,
+            lengths.array,
+        )
+        new_keys = hax.named(new_k, self.keys.axes)
+        new_values = hax.named(new_v, self.values.axes)
+        new_lengths = hax.named(new_len, self.lengths.axes)
 
         # Sanity: don't overflow maximum length
         from jax.experimental import checkify
 
         checkify.debug_check(
-            jnp.all(new_lengths <= new_keys.shape["position"]),
+            hax.all(new_lengths <= new_keys.shape["position"]).scalar(),
             "Cache length exceeds maximum position length",
         )
 
-        return KvCache(new_keys, new_values, new_lengths, new_num_seqs)
+        return KvCache(new_keys, new_values, new_lengths)
 
     @staticmethod
-    def init(num_seqs: int, Batch: Axis, Pos: Axis, KVHeads: Axis, HeadDim: Axis, dtype) -> "KvCache":
+    def init(Batch: Axis, Pos: Axis, KVHeads: Axis, HeadDim: Axis, dtype) -> "KvCache":
         assert Pos.name == "position", "Pos axis must be named 'position'"
         keys = hax.zeros((Batch, Pos, KVHeads, HeadDim), dtype=dtype)
         values = hax.zeros((Batch, Pos, KVHeads, HeadDim), dtype=dtype)
         lengths = hax.zeros((Batch,), dtype=jnp.int32)
-        num_seqs = jnp.full((), num_seqs, dtype=jnp.int32)
-        return KvCache(keys, values, lengths, num_seqs)
+        return KvCache(keys, values, lengths)
+
+
+@jax.jit
+def append_to_kv_cache(
+    keys: jax.Array,  # Shape: [batch, max_len, kv_heads, head_size]
+    values: jax.Array,  # Shape: [batch, max_len, kv_heads, head_size]
+    lengths: jax.Array,  # Shape: [batch]
+    new_keys: jax.Array,  # Shape: [batch, max_new_tokens, kv_heads, head_size]
+    new_values: jax.Array,  # Shape: [batch, max_new_tokens, kv_heads, head_size]
+    new_lengths: jax.Array,  # Shape: [batch]
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """
+    Appends a variable number of new keys and values to a KV cache.
+
+    This function includes a specialized, high-performance path for the common
+    autoregressive decoding case where all new token lengths are 1 or 0,
+    which it dispatches to using `jax.lax.cond`.
+
+    Args:
+        keys: The current key cache.
+        values: The current value cache.
+        lengths: The current length of each sequence in the batch.
+        new_keys: The new keys to append.
+        new_values: The new values to append.
+        new_lengths: The number of new tokens for each sequence.
+        max_len: The maximum sequence length capacity of the cache.
+        max_new_tokens: The maximum number of new tokens that can be added.
+
+    Returns:
+        A tuple containing:
+        - updated_keys: The key cache with new keys appended.
+        - updated_values: The value cache with new values appended.
+        - updated_lengths: The new lengths of the sequences.
+    """
+    max_new_tokens = new_values.shape[1]
+    max_len: int = keys.shape[1]
+
+    # Define the two computational paths. `lax.cond` requires them to be functions.
+    # The operands are passed as a tuple.
+    operands = (keys, values, lengths, new_keys, new_values, new_lengths)
+
+    def specialized_path(ops):
+        """
+        Simple path for the common case where new_lengths are all 0 or 1.
+        Uses a direct indexed update.
+        """
+        k, v, l, nk, nv, nl = ops
+        batch_size = k.shape[0]
+        batch_idx = jnp.arange(batch_size)
+
+        # The update positions are simply the current lengths.
+        pos_idx = l
+
+        # We only care about the first new token for each sequence.
+        update_vals_k = nk[:, 0]
+        update_vals_v = nv[:, 0]
+
+        # For sequences where new_length is 0, we don't want to update.
+        # We can achieve this by preparing the values to write: if the new_length is 1,
+        # use the new value; if it's 0, use the existing value at that position.
+        should_update = (nl == 1)[:, None, None]  # Broadcast for where
+
+        # Get the original values at the target positions for the no-op case.
+        original_vals_k = k[batch_idx, pos_idx]
+        original_vals_v = v[batch_idx, pos_idx]
+
+        vals_to_set_k = jnp.where(should_update, update_vals_k, original_vals_k)
+        vals_to_set_v = jnp.where(should_update, update_vals_v, original_vals_v)
+
+        # Perform the update. For rows where new_length was 0, this writes the
+        # original value back into the cache, effectively a no-op.
+        updated_k = k.at[batch_idx, pos_idx].set(vals_to_set_k)
+        updated_v = v.at[batch_idx, pos_idx].set(vals_to_set_v)
+
+        return updated_k, updated_v
+
+    def general_path(ops):
+        """
+        Robust general path for any combination of new_lengths.
+        Constructs the cache using coordinate grids and `where`.
+        """
+        k, v, l, nk, nv, nl = ops
+        batch_size, _, kv_heads, head_size = k.shape
+        b_coords, p_coords = jnp.indices((batch_size, max_len))
+        lengths_b = l[:, None]
+        new_lengths_b = nl[:, None]
+
+        update_mask = (p_coords >= lengths_b) & (p_coords < lengths_b + new_lengths_b)
+        source_indices = p_coords - lengths_b
+        clipped_source_indices = jnp.clip(source_indices, 0, max_new_tokens - 1)
+
+        values_to_write_k = nk[b_coords, clipped_source_indices]
+        values_to_write_v = nv[b_coords, clipped_source_indices]
+
+        broadcast_mask = update_mask[:, :, None, None]
+
+        updated_k = jnp.where(broadcast_mask, values_to_write_k, k)
+        updated_v = jnp.where(broadcast_mask, values_to_write_v, v)
+
+        return updated_k, updated_v
+
+    # Define the predicate for `lax.cond`
+    is_special_case = jnp.all(new_lengths <= 1)
+
+    # Dispatch to the appropriate path based on the predicate.
+    updated_keys, updated_values = jax.lax.cond(is_special_case, specialized_path, general_path, operands)
+
+    # The length update is the same for both paths.
+    updated_lengths = lengths + new_lengths
+
+    return updated_keys, updated_values, updated_lengths
