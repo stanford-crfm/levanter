@@ -348,7 +348,8 @@ class Gpt2LMHeadModel(LmWithHfSerializationMixin[Gpt2Config]):
         pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         k_embed, k_transformer = haliax.jax_utils.maybe_rng_split(key, 2)
-        pos_ids = pos_ids or hax.arange(input_ids.resolve_axis("position"), dtype=jnp.int32)
+        if pos_ids is None:
+            pos_ids = hax.arange(input_ids.resolve_axis("position"), dtype=jnp.int32)
         x = self.embeddings.embed(input_ids, pos_ids=pos_ids, key=k_embed)
         x = self.transformer(x, attn_mask, key=k_transformer)
 

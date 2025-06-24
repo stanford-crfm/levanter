@@ -25,7 +25,7 @@ from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
 
 from .normalization import LayerNormConfigBase
-from .rotary import RotaryEmbeddingsConfig
+from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
 
 
 class AttentionBackend(Enum):
@@ -1140,6 +1140,7 @@ class Attention(eqx.Module):
     o_proj: hnn.Linear
     q_norm: Optional[LayerNormBase] = None
     k_norm: Optional[LayerNormBase] = None
+    rot_embs: Optional[RotaryEmbeddings] = eqx.field(default=None)
 
     @staticmethod
     def init(config: AttentionConfig, *, key) -> "Attention":
@@ -1168,7 +1169,10 @@ class Attention(eqx.Module):
             q_norm = config.qk_norm.build(config.HeadSize)
             k_norm = config.qk_norm.build(config.HeadSize)
 
-        return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
+        # Build rotary embeddings once during initialization if configured
+        rot_embs = config.rope.build(config.HeadSize) if config.rope is not None else None
+
+        return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm, rot_embs)
 
     @named_call
     def __call__(
@@ -1195,11 +1199,11 @@ class Attention(eqx.Module):
         v = v.rearrange((..., "kv_heads", "position", "head_size"))
 
         # Apply rotary position embeddings if configured
-        if self.config.rope is not None:
-            pos_ids = pos_ids or hax.arange(x.resolve_axis("position"))
-            rot_embs = self.config.rope.build(self.config.HeadSize)
-            q = rot_embs(q, pos_ids)
-            k = rot_embs(k, pos_ids)
+        if self.rot_embs is not None:
+            if pos_ids is None:
+                pos_ids = hax.arange(x.resolve_axis("position"), dtype=jnp.int32)
+            q = self.rot_embs(q, pos_ids)
+            k = self.rot_embs(k, pos_ids)
 
         # Rename position axis for attention
         k = k.rename({"position": "key_position"})

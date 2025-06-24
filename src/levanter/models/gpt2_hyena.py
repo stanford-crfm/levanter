@@ -168,7 +168,8 @@ class Gpt2HyenaModel(LmHeadModel[Gpt2HyenaConfig]):
     ) -> NamedArray:
         # NOTE: attn_mask not used since we use the Hyena operator instead of attention.
         k_embed, k_backbone = haliax.jax_utils.maybe_rng_split(key, 2)
-        pos_ids = pos_ids or hax.arange(input_ids.resolve_axis("position"), dtype=jax.numpy.int32)
+        if pos_ids is None:
+            pos_ids = hax.arange(input_ids.resolve_axis("position"), dtype=jax.numpy.int32)
         x = self.embeddings.embed(input_ids, pos_ids=pos_ids, key=k_embed)
 
         x = self.backbone(x, key=k_backbone)
