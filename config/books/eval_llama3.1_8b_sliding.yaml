@@ -39,5 +39,5 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
 
-initialize_from_hf: "meta-llama/Llama-3.1-8B" #"gs://marin-us-central2/checkpoints/tootsie-8b-hypnotic-spoonbill-2/hf/step-829999/"
+initialize_from_hf: "gs://marin-us-central2/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"
 use_hf_model_config: False # Use the model config defined above
