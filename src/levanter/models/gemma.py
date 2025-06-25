@@ -309,12 +309,14 @@ class GemmaDecoderLayer(ModuleWithStateDictSerialization):
         return GemmaDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: NamedArray | AttentionMask | None, *, key=None) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, mask: NamedArray | AttentionMask | None, *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
         # self attention and skip connection
         residual = x
         x = self.input_layernorm(x)
-        attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
+        attn_output = self.self_attn(x=x, mask=mask, key=k_attn, pos_ids=pos_ids)
         x = residual + attn_output
 
         # MLP and skip connection
@@ -347,9 +349,11 @@ class GemmaTransformer(ModuleWithStateDictSerialization):
         return GemmaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: NamedArray | AttentionMask | None, *, key) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, attn_mask: NamedArray | AttentionMask | None, *, key, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, mask=attn_mask, key=keys)
+        x = self.layers.fold(x, mask=attn_mask, key=keys, pos_ids=pos_ids)
         x = self.norm(x)
 
         return x
@@ -399,6 +403,7 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
         attn_mask: NamedArray | AttentionMask | None = None,
         *,
         key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         """
         Args:
@@ -411,7 +416,7 @@ class GemmaLMHeadModel(LmHeadModel[GemmaConfig], ModuleWithStateDictSerializatio
         x = self.embeddings.embed(input_ids)
         normalizer = jnp.sqrt(self.config.hidden_dim).astype(x.dtype)
         x = x * normalizer
-        x = self.transformer(x, attn_mask=attn_mask, key=key)
+        x = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
         return x
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[GemmaConfig]":
@@ -632,13 +637,15 @@ class Gemma2DecoderLayer(ModuleWithStateDictSerialization):
         )
 
     @named_call
-    def __call__(self, x: NamedArray, mask: NamedArray | AttentionMask | None, *, key=None) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, mask: NamedArray | AttentionMask | None, *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
 
         # Attention block
         residual = x
         x = self.input_layernorm(x)
-        x = self.self_attn(x=x, mask=mask, key=k_attn)
+        x = self.self_attn(x=x, mask=mask, key=k_attn, pos_ids=pos_ids)
         x = self.post_attention_layernorm(x)
         x = residual + x
 
@@ -676,9 +683,11 @@ class Gemma2Transformer(ModuleWithStateDictSerialization):
         return Gemma2Transformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: NamedArray | AttentionMask | None, *, key):
+    def __call__(
+        self, x: NamedArray, attn_mask: NamedArray | AttentionMask | None, *, key, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, mask=attn_mask, key=keys)
+        x = self.layers.fold(x, mask=attn_mask, key=keys, pos_ids=pos_ids)
         x = self.norm(x)
         return x
 
@@ -730,11 +739,12 @@ class Gemma2LMHeadModel(LmHeadModel[Gemma2Config], ModuleWithStateDictSerializat
         attn_mask: NamedArray | AttentionMask | None = None,
         *,
         key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         x = self.embeddings.embed(input_ids)
         normalizer = jnp.sqrt(self.config.hidden_dim).astype(x.dtype)
         x = x * normalizer
-        x = self.transformer(x, attn_mask=attn_mask, key=key)
+        x = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
         return x
 
     def resize_vocab(self, new_size: int, key=None):  # type: ignore[override]
@@ -950,11 +960,12 @@ class Gemma3LMHeadModel(LmHeadModel[Gemma3Config], ModuleWithStateDictSerializat
         attn_mask: NamedArray | AttentionMask | None = None,
         *,
         key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         x = self.embeddings.embed(input_ids)
         normalizer = jnp.sqrt(self.config.hidden_dim).astype(x.dtype)
         x = x * normalizer
-        x = self.transformer(x, attn_mask=attn_mask, key=key)
+        x = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
         return x
 
     def resize_vocab(self, new_size: int, key=None):  # type: ignore[override]
