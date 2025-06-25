@@ -1279,6 +1279,11 @@ class Attention(eqx.Module):
 
         return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
 
+
+    def empty_cache(self, Batch: Axis, MaxLen: Axis, *, dtype):
+        return self.config.empty_kv_cache(Batch, MaxLen, dtype=dtype)
+
+
     @named_call
     def __call__(
         self,
@@ -1592,13 +1597,9 @@ def append_to_kv_cache(
 
         return updated_k, updated_v
 
-    # Define the predicate for `lax.cond`
     is_special_case = jnp.all(new_lengths <= 1)
 
-    # Dispatch to the appropriate path based on the predicate.
     updated_keys, updated_values = jax.lax.cond(is_special_case, specialized_path, general_path, operands)
-
-    # The length update is the same for both paths.
     updated_lengths = lengths + new_lengths
 
     return updated_keys, updated_values, updated_lengths
