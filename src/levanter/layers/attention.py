@@ -26,7 +26,7 @@ from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
 
 from .normalization import LayerNormConfigBase
-from .rotary import RotaryEmbeddingsConfig
+from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
 
 
 class AttentionBackend(Enum):
@@ -1249,13 +1249,14 @@ class Attention(eqx.Module):
     o_proj: hnn.Linear
     q_norm: Optional[LayerNormBase] = None
     k_norm: Optional[LayerNormBase] = None
+    rot_embs: Optional[RotaryEmbeddings] = None
 
     @staticmethod
     def init(config: AttentionConfig, *, key) -> "Attention":
         use_bias = config.use_bias
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=(config.Embed),
+            In=config.Embed,
             Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize),
             key=k_q,
             use_bias=use_bias,
@@ -1277,12 +1278,13 @@ class Attention(eqx.Module):
             q_norm = config.qk_norm.build(config.HeadSize)
             k_norm = config.qk_norm.build(config.HeadSize)
 
-        return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
+        # Build rotary embeddings once during initialization if configured
+        rot_embs = config.rope.build(config.HeadSize) if config.rope is not None else None
 
+        return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm, rot_embs)
 
     def empty_cache(self, Batch: Axis, MaxLen: Axis, *, dtype):
         return self.config.empty_kv_cache(Batch, MaxLen, dtype=dtype)
-
 
     @named_call
     def __call__(
@@ -1423,12 +1425,11 @@ class Attention(eqx.Module):
             k = self.k_norm(k)  # type: ignore[misc]
 
         # Apply rotary embeddings if configured
-        if self.config.rope is not None:
+        if self.rot_embs is not None:
             if pos_ids is None:
                 pos_ids = hax.arange(x.resolve_axis("position"))
-            rot_embs = self.config.rope.build(self.config.HeadSize)
-            q = rot_embs(q, pos_ids)
-            k = rot_embs(k, pos_ids)
+            q = self.rot_embs(q, pos_ids)
+            k = self.rot_embs(k, pos_ids)
 
         return q, k, v
 

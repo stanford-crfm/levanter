@@ -29,9 +29,10 @@ class DefaultRotaryEmbeddings(RotaryEmbeddings):
     config: "DefaultRotaryEmbeddingsConfig"
 
     def __call__(self, q: NamedArray, position_ids: NamedArray) -> NamedArray:
-        HeadHalfSize = self.HeadDim.resize(self.HeadDim.size // 2)
-        inv_freq: NamedArray = 1.0 / (self.config.theta ** (hax.arange(HeadHalfSize, step=2) / self.HeadDim.size))
-        inv_freq = inv_freq / self.config.factor
+        with jax.ensure_compile_time_eval():
+            HeadHalfSize = self.HeadDim.resize(self.HeadDim.size // 2)
+            inv_freq: NamedArray = 1.0 / (self.config.theta ** (hax.arange(HeadHalfSize, step=2) / self.HeadDim.size))
+            inv_freq = inv_freq / self.config.factor
 
         freqs = inv_freq.broadcast_axis(position_ids.axes) * position_ids
         emb = hax.concatenate(self.HeadDim, (freqs, freqs))
@@ -42,7 +43,7 @@ class DefaultRotaryEmbeddings(RotaryEmbeddings):
         return q_embed
 
 
-@dataclass
+@dataclass(frozen=True)
 class RotaryEmbeddingsConfig(abc.ABC, draccus.ChoiceRegistry):
     theta: float = 10000.0
 
@@ -68,7 +69,7 @@ class RotaryEmbeddingsConfig(abc.ABC, draccus.ChoiceRegistry):
         pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class DefaultRotaryEmbeddingsConfig(RotaryEmbeddingsConfig):
     theta: float = 10000
     factor: float = 1.0  # this should have been called scale_factor, but for hf compat
@@ -95,6 +96,20 @@ class Llama3RotaryEmbeddings(RotaryEmbeddings):
     config: "Llama3RotaryEmbeddingsConfig"
 
     def __call__(self, q: NamedArray, position_ids: NamedArray) -> NamedArray:
+        inv_freq_llama = self._compute_inv_freq_llama()
+        freqs = position_ids * inv_freq_llama.broadcast_axis(position_ids.axes)
+        emb = hax.concatenate(self.HeadDim, (freqs, freqs))
+        cos = hax.cos(emb)
+        sin = hax.sin(emb)
+
+        q_embed = q * cos + _rotate_half(q, self.HeadDim) * sin
+        return q_embed
+
+    @staticmethod
+    def init(HeadDim, config):
+        return Llama3RotaryEmbeddings(HeadDim, config)
+
+    def _compute_inv_freq_llama(self):
         with jax.ensure_compile_time_eval():
             # This is the Llama3 implementation of rotary embeddings.
             # It uses a different scaling factor and frequency calculation.
@@ -115,17 +130,10 @@ class Llama3RotaryEmbeddings(RotaryEmbeddings):
             ) * inv_freq_llama / self.config.factor + smooth_factor * inv_freq_llama
             is_medium_freq = ~(wavelen < high_freq_wavelen) * ~(wavelen > low_freq_wavelen)
             inv_freq_llama = hax.where(is_medium_freq, smoothed_inv_freq, inv_freq_llama)
-
-        freqs = position_ids * inv_freq_llama.broadcast_axis(position_ids.axes)
-        emb = hax.concatenate(self.HeadDim, (freqs, freqs))
-        cos = hax.cos(emb)
-        sin = hax.sin(emb)
-
-        q_embed = q * cos + _rotate_half(q, self.HeadDim) * sin
-        return q_embed
+        return inv_freq_llama
 
 
-@dataclass
+@dataclass(frozen=True)
 class Llama3RotaryEmbeddingsConfig(RotaryEmbeddingsConfig):
     """
     To match this from HF:
@@ -147,7 +155,7 @@ class Llama3RotaryEmbeddingsConfig(RotaryEmbeddingsConfig):
     def build(self, HeadSize: Axis) -> RotaryEmbeddings:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py#L307
         # Porting that to JAX/Haliax:
-        return Llama3RotaryEmbeddings(HeadSize, self)
+        return Llama3RotaryEmbeddings.init(HeadSize, self)
 
     @classmethod
     def make_from_hf_config(cls, rope_theta: float, config: dict) -> "RotaryEmbeddingsConfig":

@@ -17,7 +17,7 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.layers import RmsNormConfig
 from levanter.layers.attention import AttentionBackend, AttentionConfig, AttentionMask, dot_product_attention
-from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddings, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
@@ -287,6 +287,7 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
     o_proj: hnn.Linear  # projection from Heads to output
     q_norm: hnn.RmsNorm  # normalization for query
     k_norm: hnn.RmsNorm  # normalization for key
+    rot_embs: Optional[RotaryEmbeddings] = eqx.field(default=None)
 
     @staticmethod
     def init(config: Olmo2Config, *, key) -> "Olmo2Attention":
@@ -308,7 +309,10 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         q_norm = config.mk_LayerNorm((config.KVHeads, QHeadsPerGroup, HeadSize))
         k_norm = config.mk_LayerNorm((config.KVHeads, HeadSize))
 
-        return Olmo2Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
+        # Build rotary embeddings once during initialization if configured
+        rot_embs = config.rope.build(config.HeadSize) if config.rope is not None else None
+
+        return Olmo2Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm, rot_embs)
 
     @named_call
     def __call__(
@@ -332,13 +336,12 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         k = k.rearrange((..., "kv_heads", "position", "head_size"))
         v = v.rearrange((..., "kv_heads", "position", "head_size"))
 
-        # Apply rotary position embeddings
-        if pos_ids is None:
-            pos_ids = hax.arange(x.resolve_axis("position"))
-
-        rot_embs = self.config.rope.build(self.config.HeadSize)
-        q = rot_embs(q, pos_ids)
-        k = rot_embs(k, pos_ids)
+        # Apply rotary position embeddings if configured
+        if self.rot_embs is not None:
+            if pos_ids is None:
+                pos_ids = hax.arange(x.resolve_axis("position"))
+            q = self.rot_embs(q, pos_ids)
+            k = self.rot_embs(k, pos_ids)
 
         # Rename position axis for attention
         k = k.rename({"position": "key_position"})
