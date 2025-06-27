@@ -1,5 +1,6 @@
 import itertools
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -25,7 +26,7 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-import math
+
 
 # Visualization tweak flags (set to True/False as desired)
 WIDE_LINES: bool = False  # If True, draw thicker vertical bars in the plot
@@ -46,8 +47,8 @@ DEBUG_BATCH_SIZE: int = 16
 
 logger = logging.getLogger(__name__)
 
-prefix_singleton = "It was dark now, and as we dipped under a little bridge I put my arm around Jordan's golden shoulder and drew her toward me and asked her to dinner. Suddenly I wasn't thinking of Daisy and Gatsby any more, but"
-suffix_singleton = " of this clean, hard, limited person, who dealt in universal scepticism, and who leaned back jauntily just within the circle of my arm. A phrase began to beat in my ears with a sort of heady excitement"
+prefix_singleton = "They were careless people, Tom and Daisy – they smashed up"
+suffix_singleton = " things and creatures and then retreated"
 
 
 @dataclass
@@ -190,7 +191,9 @@ def main(config: EvalSlidingLmConfig):
             # Ensure debug batch size is compatible with the compiled sharding: it must be a multiple of
             # the total size of the ('replica','data') mesh axes.
             mesh_batch_granularity = config.trainer.data_axis_size * config.trainer.replica_axis_size
-            adjusted_batch_size = max(mesh_batch_granularity, math.ceil(DEBUG_BATCH_SIZE / mesh_batch_granularity) * mesh_batch_granularity)
+            adjusted_batch_size = max(
+                mesh_batch_granularity, math.ceil(DEBUG_BATCH_SIZE / mesh_batch_granularity) * mesh_batch_granularity
+            )
 
             BatchDebug = Axis(config.trainer.batch_axis, adjusted_batch_size)
 
@@ -229,9 +232,12 @@ def main(config: EvalSlidingLmConfig):
             tokens_np = jax.device_get(batch_example.tokens.array)[0]
             lp_np = jax.device_get(lp_tokens.array)[0]
             logits_np = jax.device_get(logits.array)[0]
+            targets_np = jax.device_get(targets.array)[0]
 
-            # Build a numpy version of the loss mask (includes prompt filtering and excludes last token)
-            suffix_mask_np = jax.device_get(lossmask_trunc.array)[0].astype(bool)
+            # Build a numpy version of the mask: include positions >= prompt_len-1 except the very last
+            positions_np = np.arange(short_seq_len)
+            suffix_mask_np = positions_np >= (prompt_len - 1)
+            suffix_mask_np[-1] = False  # never predict after the final token
 
             # Pretty print tokens and diagnostics
             print("PREFIX TOKENS:", tokens_np[:prompt_len].tolist(), flush=True)
@@ -239,11 +245,14 @@ def main(config: EvalSlidingLmConfig):
             print("==== Per-token details (first replica) ====", flush=True)
 
             # Header similar to compar.py
-            print(f"{'Pos':<4} {'Token ID':<10} {'Token Text':<20} {'Mask':<5} {'Logit':<12} {'Log Prob':<12} {'Prob':<12}")
+            print(
+                f"{'Pos':<4} {'Token ID':<10} {'Token Text':<20} {'Mask':<5} {'Logit':<12} {'Log Prob':<12} {'Prob':<12}"
+            )
             print(f"{'-'*4} {'-'*10} {'-'*20} {'-'*5} {'-'*12} {'-'*12} {'-'*12}")
 
             for i in range(short_seq_len):
-                token_id = int(tokens_np[i])
+                # lp_np[i] corresponds to probability assigned to targets_np[i]
+                token_id = int(targets_np[i])
                 # Decode token for readability (skip_special_tokens avoids showing <bos> etc.)
                 token_text = tokenizer.decode([token_id], skip_special_tokens=True)
                 if not token_text.strip():
@@ -255,15 +264,21 @@ def main(config: EvalSlidingLmConfig):
 
                 masked_flag = "NO" if suffix_mask_np[i] else "YES"
 
-                print(f"{i:<4} {token_id:<10} {token_text:<20} {masked_flag:<5} {logit_val:<12.4f} {log_prob_val:<12.6f} {prob_val:<12.6f}", flush=True)
+                print(
+                    f"{i:<4} {token_id:<10} {token_text:<20} {masked_flag:<5} {logit_val:<12.4f} {log_prob_val:<12.6f} {prob_val:<12.6f}",
+                    flush=True,
+                )
 
             # Re-compute total log-prob locally (avoid compute_sequence_log_prob which assumes full sharding)
             lp_tokens_masked = lp_tokens * suffix_mask_np.astype(lp_tokens.dtype)
-            total_lp = float(lp_tokens_masked.sum())
-            suffix_prob = np.exp(total_lp)
+            total_lp_first = float(hax.sum(lp_tokens_masked, axis=TruncPos).array[0])
+            suffix_prob_first = np.exp(total_lp_first)
             print("==== Summary ====", flush=True)
-            print(f"Total log probability of suffix: {total_lp:+.6f}", flush=True)
-            print(f"Probability of suffix: {suffix_prob:.6f}", flush=True)
+            print(f"Total log probability of suffix (first replica): {total_lp_first:+.6f}", flush=True)
+            if suffix_prob_first < 1e-6:
+                print(f"Probability of suffix: {suffix_prob_first:.3e}", flush=True)
+            else:
+                print(f"Probability of suffix: {suffix_prob_first:.6f}", flush=True)
 
             # We are done with debug mode; skip the rest of the normal evaluation path
             levanter.tracker.current_tracker().finish()
