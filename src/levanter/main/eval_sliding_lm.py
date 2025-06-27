@@ -30,7 +30,7 @@ from levanter.utils.jax_utils import use_cpu_device
 
 
 # switch *all* dot_general calls (even ones outside of Haliax) to use HIGH precision
-jax.config.update("jax_default_matmul_precision", lax.Precision.HIGHEST)
+jax.config.update("jax_default_matmul_precision", "highest")
 
 
 # Visualization tweak flags (set to True/False as desired)
