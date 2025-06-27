@@ -1604,3 +1604,149 @@ def append_to_kv_cache(
     updated_lengths = lengths + new_lengths
 
     return updated_keys, updated_values, updated_lengths
+
+
+class PageCache(eqx.Module):
+    """A paged KV cache suitable for ragged paged attention."""
+
+    kv_pages: NamedArray  # [MaxPage, Slot, 2 * KvHeads, HeadDim]
+    kv_lens: NamedArray  # [Seq]
+    page_indices: NamedArray  # [Seq, Page]
+    num_seqs: jax.Array  # scalar int32
+
+    def extend(
+        self,
+        new_k: NamedArray,  # [Tok, KvHeads, HeadDim]
+        new_v: NamedArray,  # [Tok, KvHeads, HeadDim]
+        new_cu_lens: jax.Array,  # i32[Seq + 1]
+        new_page_assignments: jax.Array,  # i32[NumNewPages]
+        new_num_seqs: int,
+    ) -> "PageCache":
+        """Append keys and values to the paged cache."""
+
+        (
+            pages,
+            lens,
+            page_idxs,
+            num_seqs,
+        ) = append_to_page_cache(
+            self.kv_pages.array,
+            self.kv_lens.array,
+            self.page_indices.array,
+            self.num_seqs,
+            new_k.array,
+            new_v.array,
+            new_cu_lens,
+            new_page_assignments,
+            jnp.array(new_num_seqs, dtype=jnp.int32),
+        )
+
+        return PageCache(
+            hax.named(pages, self.kv_pages.axes),
+            hax.named(lens, self.kv_lens.axes),
+            hax.named(page_idxs, self.page_indices.axes),
+            num_seqs,
+        )
+
+    @staticmethod
+    def init(
+        Seq: Axis,
+        Page: Axis,
+        Slot: Axis,
+        KVHeads: Axis,
+        HeadDim: Axis,
+        MaxPage: Axis,
+        dtype,
+    ) -> "PageCache":
+        Combined = KVHeads.resize(KVHeads.size * 2)
+        kv_pages = hax.zeros((MaxPage, Slot, Combined, HeadDim), dtype=dtype)
+        kv_lens = hax.zeros((Seq,), dtype=jnp.int32)
+        page_indices = hax.full((Seq, Page), -1, dtype=jnp.int32)
+        num_seqs = jnp.array(0, dtype=jnp.int32)
+        return PageCache(kv_pages, kv_lens, page_indices, num_seqs)
+
+
+def append_to_page_cache(
+    kv_pages: jax.Array,  # [MaxPage, Slot, 2 * KvHeads, HeadDim]
+    kv_lens: jax.Array,  # [Seq]
+    page_indices: jax.Array,  # [Seq, Page]
+    num_seqs: jax.Array,  # []
+    new_k: jax.Array,  # [Tok, KvHeads, HeadDim]
+    new_v: jax.Array,  # [Tok, KvHeads, HeadDim]
+    new_cu_lens: jax.Array,  # i32[Seq + 1]
+    new_page_assignments: jax.Array,  # i32[NumNewPages]
+    new_num_seqs: jax.Array,  # []
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Extend a paged key/value cache.
+
+    Args:
+        kv_pages: ``[MaxPage, Slot, 2 * KvHeads, HeadDim]`` array holding the cache.
+        kv_lens: ``[Seq]`` array of current sequence lengths.
+        page_indices: ``[Seq, Page]`` array mapping sequence and page to page id.
+        num_seqs: ``[]`` scalar giving the number of sequences currently in the cache.
+        new_k: ``[Tok, KvHeads, HeadDim]`` new keys.
+        new_v: ``[Tok, KvHeads, HeadDim]`` new values.
+        new_cu_lens: ``[Seq+1]`` cumulative lengths for the appended tokens.
+        new_page_assignments: ``[NumNewPages]`` mapping page allocations.
+        new_num_seqs: ``[]`` scalar giving the new number of sequences.
+    """
+
+    # Determine per-page capacity and head dimension
+    page_size = kv_pages.shape[1]
+    kv_heads = new_k.shape[1]
+
+    # Iterate over each sequence and append its tokens page by page
+    def seq_body(seq, carry):
+        """Append tokens for a single sequence."""
+        pages, lens, page_idxs, pa_ptr = carry
+
+        start = new_cu_lens[seq]
+        end = new_cu_lens[seq + 1]
+        length = lens[seq]
+
+        # start/end offsets of tokens for this sequence in the input arrays
+        start = new_cu_lens[seq]
+        end = new_cu_lens[seq + 1]
+        length = lens[seq]
+
+        def tok_body(t, inner_carry):
+            """Write a single token to the next slot in the current page."""
+            pages, page_idxs, pa_ptr, length = inner_carry
+            page_no = length // page_size
+            slot_no = length % page_size
+            page_idx = page_idxs[seq, page_no]
+
+            def alloc_page(idx_state):
+                pages, page_idxs, pa_ptr, length = idx_state
+                page_idx = new_page_assignments[pa_ptr]
+                page_idxs = page_idxs.at[seq, page_no].set(page_idx)
+                return pages, page_idxs, pa_ptr + 1, length, page_idx
+
+            def keep_page(idx_state):
+                pages, page_idxs, pa_ptr, length = idx_state
+                return pages, page_idxs, pa_ptr, length, page_idx
+
+            # allocate a new page when we reach a fresh page boundary
+            pages, page_idxs, pa_ptr, length, page_idx = jax.lax.cond(
+                page_idx < 0,
+                alloc_page,
+                keep_page,
+                operand=(pages, page_idxs, pa_ptr, length),
+            )
+
+            pages = pages.at[page_idx, slot_no, :kv_heads].set(new_k[t])
+            pages = pages.at[page_idx, slot_no, kv_heads:].set(new_v[t])
+            length = length + 1
+            return pages, page_idxs, pa_ptr, length
+
+        pages, page_idxs, pa_ptr, length = jax.lax.fori_loop(
+            start, end, tok_body, (pages, page_idxs, pa_ptr, length)
+        )
+        lens = lens.at[seq].set(length)
+        return pages, lens, page_idxs, pa_ptr
+
+    pages, lens, page_idxs, _ = jax.lax.fori_loop(
+        0, new_num_seqs, seq_body, (kv_pages, kv_lens, page_indices, 0)
+    )
+
+    return pages, lens, page_idxs, new_num_seqs
