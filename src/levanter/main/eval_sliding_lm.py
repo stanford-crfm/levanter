@@ -10,6 +10,7 @@ import jmp
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
+from jax import lax
 from jax.experimental.multihost_utils import process_allgather
 
 import haliax as hax
@@ -26,6 +27,10 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+
+
+# switch *all* dot_general calls (even ones outside of Haliax) to use HIGH precision
+jax.config.update("jax_default_matmul_precision", lax.Precision.HIGHEST)
 
 
 # Visualization tweak flags (set to True/False as desired)
@@ -284,97 +289,98 @@ def main(config: EvalSlidingLmConfig):
             levanter.tracker.current_tracker().finish()
             return
 
-        # ================================
-        # NORMAL BATCHED EVALUATION BELOW
-        # ================================
-        all_probs = []
-        # helper stats if verification is enabled
-        if VERIFY_PROMPT_RESP_LEN:
-            checked_batches = 0  # we only want to dump a couple of batches, not the whole run
-
-        for batch in loader:
-            if VERIFY_PROMPT_RESP_LEN and checked_batches < 1:  # print the first few batches only
-                # prompt length ≈ (# tokens where loss_mask == 0) + 1 (because first suffix token is predicted at last prompt token)
-                # Use haliax operations first, then convert to numpy
-                prompt_lens_hax = hax.sum(1.0 - batch.loss_mask, axis=Pos) + 1
-
-                # For suffix length, exclude padding tokens
-                non_padding_mask = (batch.tokens != pad_id).astype(np.float32)
-                suffix_lens_hax = hax.sum(batch.loss_mask * non_padding_mask, axis=Pos)
-
-                # Convert to numpy arrays using process_allgather to handle distributed arrays
-                prompt_lens = process_allgather(prompt_lens_hax.array)
-                suffix_lens = process_allgather(suffix_lens_hax.array)
-
-                print("==== Dataset length check ====", flush=True)
-                print("Prompt lengths:", prompt_lens.astype(int).tolist(), flush=True)
-                print("Suffix lengths:", suffix_lens.astype(int).tolist(), flush=True)
-
-                if np.all(prompt_lens == EXPECTED_PROMPT_TOKENS):
-                    print("All prompts have expected length", flush=True)
-                else:
-                    print("⚠️  Mismatch in prompt lengths!", flush=True)
-
-                if np.all(suffix_lens == EXPECTED_RESPONSE_TOKENS):
-                    print("All responses have expected length", flush=True)
-                else:
-                    print("⚠️  Mismatch in response lengths!", flush=True)
-
-                checked_batches += 1
-
-            log_probs = compute_sequence_log_prob(model, batch).array
-            log_probs = process_allgather(log_probs)
-
-            probs = np.exp(log_probs)
-            all_probs.append(probs)
-
-        if not all_probs:
-            raise ValueError("No data processed")
-
-        prob_dist = np.concatenate(all_probs, axis=0)
-
-        # Print the largest probability observed across all examples (helpful for quick sanity-checks)
-        max_prob = float(np.max(prob_dist))
-        mean_prob = float(np.mean(prob_dist))
-        median_prob = float(np.median(prob_dist))
-        print(f"Max suffix probability: {max_prob:.6f}", flush=True)
-        print(f"Mean suffix probability: {mean_prob:.6f}", flush=True)
-        print(f"Median suffix probability: {median_prob:.6f}", flush=True)
-
-        fig, ax = plt.subplots(figsize=(10, 4))  # Adjusted for a barcode-like plot
-        example_indices = np.arange(len(prob_dist))
-
-        # Create a colormap where high probability is dark (black) and low is light (white)
-        if RESCALE_COLORMAP:
-            norm = mcolors.Normalize(vmin=float(prob_dist.min()), vmax=float(prob_dist.max()))
         else:
-            norm = mcolors.Normalize(vmin=0, vmax=1.0)
-        cmap = plt.get_cmap("Greys")
+            # ================================
+            # NORMAL BATCHED EVALUATION BELOW
+            # ================================
+            all_probs = []
+            # helper stats if verification is enabled
+            if VERIFY_PROMPT_RESP_LEN:
+                checked_batches = 0  # we only want to dump a couple of batches, not the whole run
 
-        # Choose line width based on flag
-        line_width = 1.5 if WIDE_LINES else 0.5
+            for batch in loader:
+                if VERIFY_PROMPT_RESP_LEN and checked_batches < 1:  # print the first few batches only
+                    # prompt length ≈ (# tokens where loss_mask == 0) + 1 (because first suffix token is predicted at last prompt token)
+                    # Use haliax operations first, then convert to numpy
+                    prompt_lens_hax = hax.sum(1.0 - batch.loss_mask, axis=Pos) + 1
 
-        # Plot the vertical lines, all with the same height (spanning 0 to 1)
-        # The color of each line is determined by its probability
-        ax.vlines(example_indices, 0, 1, colors=cmap(norm(prob_dist)), alpha=0.75, linewidth=line_width)
+                    # For suffix length, exclude padding tokens
+                    non_padding_mask = (batch.tokens != pad_id).astype(np.float32)
+                    suffix_lens_hax = hax.sum(batch.loss_mask * non_padding_mask, axis=Pos)
 
-        # Add a colorbar to serve as a legend for the probabilities
-        mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-        cbar = fig.colorbar(mappable, ax=ax)
-        cbar.set_label("Probability of Suffix")
+                    # Convert to numpy arrays using process_allgather to handle distributed arrays
+                    prompt_lens = process_allgather(prompt_lens_hax.array)
+                    suffix_lens = process_allgather(suffix_lens_hax.array)
 
-        ax.set_xlabel("Example Index")
-        ax.set_yticks([])  # Remove y-axis ticks as the height is constant
-        ax.set_ylabel("")  # Remove y-axis label
-        ax.set_title("Likelihood of Suffix per Example")
-        ax.set_ylim(0, 1)
-        ax.set_xlim(0, len(prob_dist))
-        plt.tight_layout()
-        path = "suffix_likelihood_barcode-v3.png"
-        fig.savefig(path)
-        levanter.tracker.current_tracker().log_artifact(path, name=path, type="plot")
+                    print("==== Dataset length check ====", flush=True)
+                    print("Prompt lengths:", prompt_lens.astype(int).tolist(), flush=True)
+                    print("Suffix lengths:", suffix_lens.astype(int).tolist(), flush=True)
 
-    levanter.tracker.current_tracker().finish()
+                    if np.all(prompt_lens == EXPECTED_PROMPT_TOKENS):
+                        print("All prompts have expected length", flush=True)
+                    else:
+                        print("⚠️  Mismatch in prompt lengths!", flush=True)
+
+                    if np.all(suffix_lens == EXPECTED_RESPONSE_TOKENS):
+                        print("All responses have expected length", flush=True)
+                    else:
+                        print("⚠️  Mismatch in response lengths!", flush=True)
+
+                    checked_batches += 1
+
+                log_probs = compute_sequence_log_prob(model, batch).array
+                log_probs = process_allgather(log_probs)
+
+                probs = np.exp(log_probs)
+                all_probs.append(probs)
+
+            if not all_probs:
+                raise ValueError("No data processed")
+
+            prob_dist = np.concatenate(all_probs, axis=0)
+
+            # Print the largest probability observed across all examples (helpful for quick sanity-checks)
+            max_prob = float(np.max(prob_dist))
+            mean_prob = float(np.mean(prob_dist))
+            median_prob = float(np.median(prob_dist))
+            print(f"Max suffix probability: {max_prob:.6f}", flush=True)
+            print(f"Mean suffix probability: {mean_prob:.6f}", flush=True)
+            print(f"Median suffix probability: {median_prob:.6f}", flush=True)
+
+            fig, ax = plt.subplots(figsize=(10, 4))  # Adjusted for a barcode-like plot
+            example_indices = np.arange(len(prob_dist))
+
+            # Create a colormap where high probability is dark (black) and low is light (white)
+            if RESCALE_COLORMAP:
+                norm = mcolors.Normalize(vmin=float(prob_dist.min()), vmax=float(prob_dist.max()))
+            else:
+                norm = mcolors.Normalize(vmin=0, vmax=1.0)
+            cmap = plt.get_cmap("Greys")
+
+            # Choose line width based on flag
+            line_width = 1.5 if WIDE_LINES else 0.5
+
+            # Plot the vertical lines, all with the same height (spanning 0 to 1)
+            # The color of each line is determined by its probability
+            ax.vlines(example_indices, 0, 1, colors=cmap(norm(prob_dist)), alpha=0.75, linewidth=line_width)
+
+            # Add a colorbar to serve as a legend for the probabilities
+            mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+            cbar = fig.colorbar(mappable, ax=ax)
+            cbar.set_label("Probability of Suffix")
+
+            ax.set_xlabel("Example Index")
+            ax.set_yticks([])  # Remove y-axis ticks as the height is constant
+            ax.set_ylabel("")  # Remove y-axis label
+            ax.set_title("Likelihood of Suffix per Example")
+            ax.set_ylim(0, 1)
+            ax.set_xlim(0, len(prob_dist))
+            plt.tight_layout()
+            path = "suffix_likelihood_barcode-v3.png"
+            fig.savefig(path)
+            levanter.tracker.current_tracker().log_artifact(path, name=path, type="plot")
+
+        levanter.tracker.current_tracker().finish()
 
 
 if __name__ == "__main__":
