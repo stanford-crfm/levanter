@@ -15,10 +15,10 @@ data:
 model:  # 8B llama3 model
   type: llama
   seq_len: 4096
-  hidden_dim: 4096
-  intermediate_dim: 14336
-  num_layers: 32
-  num_heads: 32
+  hidden_dim: 8192
+  intermediate_dim: 28672
+  num_layers: 80
+  num_heads: 64
   num_kv_heads: 8
   flash_attention_block_size: 512
   use_bias: false
@@ -39,5 +39,5 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
 
-initialize_from_hf: "gs://marin-us-central2/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"
+initialize_from_hf: "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"
 use_hf_model_config: False # Use the model config defined above
