@@ -25,7 +25,7 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-
+import math
 
 # Visualization tweak flags (set to True/False as desired)
 WIDE_LINES: bool = False  # If True, draw thicker vertical bars in the plot
@@ -41,19 +41,13 @@ EXPECTED_RESPONSE_TOKENS = 50
 # Debugging flag – when True, the script will run **one** example replicated to
 # a full batch of 64 and print detailed per-token diagnostics.
 # -----------------------------------------------------------------------------
-DEBUG_SINGLE: bool = False  # set to True to enable single-example debug mode
-DEBUG_BATCH_SIZE: int = 64
+DEBUG_SINGLE: bool = True  # set to True to enable single-example debug mode
+DEBUG_BATCH_SIZE: int = 16
 
 logger = logging.getLogger(__name__)
 
-prefix_singleton = (
-    "It was dark now, and as we dipped under a little bridge I put my arm around Jordan's golden shoulder and drew her"
-    " toward me and asked her to dinner. Suddenly I wasn't thinking of Daisy and Gatsby any more, but"
-)
-suffix_singleton = (
-    " of this clean, hard, limited person, who dealt in universal scepticism, and who leaned back jauntily just within"
-    " the circle of my arm. A phrase began to beat in my ears with a sort of heady excitement"
-)
+prefix_singleton = "It was dark now, and as we dipped under a little bridge I put my arm around Jordan's golden shoulder and drew her toward me and asked her to dinner. Suddenly I wasn't thinking of Daisy and Gatsby any more, but"
+suffix_singleton = " of this clean, hard, limited person, who dealt in universal scepticism, and who leaned back jauntily just within the circle of my arm. A phrase began to beat in my ears with a sort of heady excitement"
 
 
 @dataclass
@@ -127,70 +121,8 @@ def main(config: EvalSlidingLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
-        # ================================
-        # DEBUG SINGLE-EXAMPLE EVALUATION
-        # ================================
-        if DEBUG_SINGLE:
-            # Grab the first raw row from the cache and turn it into an LmExample
-            first_raw_row = next(iter(cache))
-            example_single = _to_example(first_raw_row)
-
-            # Replicate the single example across a batch of size DEBUG_BATCH_SIZE so that
-            # partitioning logic expecting a full batch still works.
-            BatchDebug = Axis(config.trainer.batch_axis, DEBUG_BATCH_SIZE)
-            tokens_batched = example_single.tokens.broadcast_axis(BatchDebug)
-            loss_mask_batched = example_single.loss_mask.broadcast_axis(BatchDebug)
-
-            batch_example = LmExample(
-                tokens=tokens_batched,
-                loss_mask=loss_mask_batched,
-                attn_mask=example_single.attn_mask,
-            )
-
-            # Run the model and collect logits & log-probs
-            with hax.axis_mapping(compute_axis_mapping):
-                logits = model(batch_example.tokens, attn_mask=batch_example.attn_mask)
-                lp_full = log_softmax(logits, axis=model.Vocab)
-                targets = hax.roll(batch_example.tokens, -1, Pos)
-                lp_tokens = hax.take(lp_full, model.Vocab, targets)
-
-            # Work on host numpy arrays for easy printing
-            tokens_np = jax.device_get(batch_example.tokens.array)[0]
-            lp_np = jax.device_get(lp_tokens.array)[0]
-            logits_np = jax.device_get(logits.array)[0]
-
-            prompt_len = int(first_raw_row["sources_len"])
-            positions = np.arange(Pos.size)
-            suffix_mask_np = positions >= (prompt_len - 1)
-
-            # Pretty print tokens and diagnostics
-            print("PREFIX TOKENS:", tokens_np[:prompt_len].tolist(), flush=True)
-            print("SUFFIX TOKENS:", tokens_np[prompt_len:].tolist(), flush=True)
-            print("==== Per-token details (first replica) ====", flush=True)
-            for i in range(Pos.size):
-                token_id = int(tokens_np[i])
-                log_prob_val = float(lp_np[i])
-                logit_val = float(logits_np[i, token_id])
-                masked_flag = "NO" if suffix_mask_np[i] else "YES"
-                print(
-                    f"Pos {i:3d} | Token {token_id:6d} | Masked {masked_flag} | LogProb {log_prob_val:+.6f} | Logit"
-                    f" {logit_val:+.6f}",
-                    flush=True,
-                )
-
-            # Use the existing helper to compute total log-prob of the suffix
-            total_lp = float(jax.device_get(compute_sequence_log_prob(model, batch_example).array)[0])
-            suffix_prob = np.exp(total_lp)
-            print("==== Summary ====", flush=True)
-            print(f"Total log probability of suffix: {total_lp:+.6f}", flush=True)
-            print(f"Probability of suffix: {suffix_prob:.6f}", flush=True)
-            # We are done with debug mode; skip the rest of the normal evaluation path
-            levanter.tracker.current_tracker().finish()
-            return
-
-        # ================================
-        # NORMAL BATCHED EVALUATION BELOW
-        # ================================
+        # We define compute_sequence_log_prob prior to model loading so that it can be reused both
+        # in debug mode and in normal evaluation.
         def compute_sequence_log_prob(model: LmHeadModel, batch: LmExample):
             """
             Computes the log probability of the suffix of each example in the batch.
@@ -203,23 +135,13 @@ def main(config: EvalSlidingLmConfig):
                 lp = hax.take(lp, model.Vocab, targets)
 
                 # 1. The loss_mask, which masks out the prefix (prompt)
-                # 2. A mask for the last token, which we can't predict
-                # 3. A mask for padding tokens
-
-                # The loss_mask from the batch is for training, which is slightly off for our purposes.
-                # We want to score the logprob of each token in the suffix, including the first and last.
-                # The prediction for the first token of the suffix occurs at the last token of the prompt.
-                prompt_lengths = hax.sum(1.0 - batch.loss_mask, axis=Pos)
-                positions = hax.arange(Pos)
-
-                # True for positions where we are predicting a suffix token.
-                # We have to explicitly broadcast prompt_lengths to have the Pos axis for the comparison.
-                suffix_mask = positions >= (prompt_lengths - 1).broadcast_axis(Pos)
+                # 2. The loss_mask already excludes the last token (no next-token prediction)
+                # 3. A mask for padding tokens (targets that are pad)
 
                 padding_mask = (targets != pad_id).astype(np.float32)
-                mask = suffix_mask * padding_mask
+                # loss_mask produced by LmExample has zeros for prompt tokens and for the very last token.
+                mask = batch.loss_mask * padding_mask
 
-                # apply the mask and sum over the sequence positions to get total logprob per example
                 masked_lp = lp * mask
                 total_log_prob = hax.sum(masked_lp, axis=Pos)
 
@@ -245,6 +167,111 @@ def main(config: EvalSlidingLmConfig):
         else:
             raise ValueError("Must specify checkpoint_path or hf_checkpoint")
 
+        # ================================
+        # DEBUG SINGLE-EXAMPLE EVALUATION
+        # (executed *after* model & helper fn are set up)
+        # ================================
+        if DEBUG_SINGLE:
+            # Build a synthetic single-turn example from the hard-coded prefix and suffix strings
+            prefix_ids = tokenizer(prefix_singleton, add_special_tokens=False)["input_ids"]
+            suffix_ids = tokenizer(suffix_singleton, add_special_tokens=False)["input_ids"]
+
+            ids = prefix_ids + suffix_ids
+            if len(ids) > Pos.size:
+                ids = ids[: Pos.size]
+            else:
+                ids = ids + [pad_id] * (Pos.size - len(ids))
+
+            tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
+            example_single = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=len(prefix_ids))
+
+            prompt_len = len(prefix_ids)
+
+            # Ensure debug batch size is compatible with the compiled sharding: it must be a multiple of
+            # the total size of the ('replica','data') mesh axes.
+            mesh_batch_granularity = config.trainer.data_axis_size * config.trainer.replica_axis_size
+            adjusted_batch_size = max(mesh_batch_granularity, math.ceil(DEBUG_BATCH_SIZE / mesh_batch_granularity) * mesh_batch_granularity)
+
+            BatchDebug = Axis(config.trainer.batch_axis, adjusted_batch_size)
+
+            # Determine a short sequence length (prompt + suffix) to keep memory down.
+            short_seq_len = min(prompt_len + len(suffix_ids), Pos.size)  # safety
+            TruncPos = Pos.resize(short_seq_len)
+
+            # Slice the tokens down to the first `short_seq_len` positions and broadcast batch axis
+            tokens_trunc = hax.slice(example_single.tokens, Pos, new_axis=TruncPos, start=0, length=short_seq_len)
+            lossmask_trunc = hax.slice(example_single.loss_mask, Pos, new_axis=TruncPos, start=0, length=short_seq_len)
+
+            tokens_batched = tokens_trunc.broadcast_axis(BatchDebug)
+            loss_mask_batched = lossmask_trunc.broadcast_axis(BatchDebug)
+
+            batch_example = LmExample(
+                tokens=tokens_batched,
+                loss_mask=loss_mask_batched,
+                attn_mask=example_single.attn_mask,
+            )
+
+            # Cast model to compute precision (e.g., bf16) to avoid excessive memory, then
+            # run it and collect logits & log-probs
+            model_compute = mp.cast_to_compute(model)
+
+            # For debug-sized batches that don't match the training mesh, drop the mapping for the batch axis so
+            # that JAX doesn't attempt to shard it across ('replica', 'data').
+            debug_mapping = {k: v for k, v in compute_axis_mapping.items() if k != config.trainer.batch_axis}
+
+            with hax.axis_mapping(debug_mapping):
+                logits = model_compute(batch_example.tokens, attn_mask=batch_example.attn_mask)
+                lp_full = log_softmax(logits, axis=model.Vocab)
+                targets = hax.roll(batch_example.tokens, -1, TruncPos)
+                lp_tokens = hax.take(lp_full, model.Vocab, targets)
+
+            # Work on host numpy arrays for easy printing
+            tokens_np = jax.device_get(batch_example.tokens.array)[0]
+            lp_np = jax.device_get(lp_tokens.array)[0]
+            logits_np = jax.device_get(logits.array)[0]
+
+            # Build a numpy version of the loss mask (includes prompt filtering and excludes last token)
+            suffix_mask_np = jax.device_get(lossmask_trunc.array)[0].astype(bool)
+
+            # Pretty print tokens and diagnostics
+            print("PREFIX TOKENS:", tokens_np[:prompt_len].tolist(), flush=True)
+            print("SUFFIX TOKENS:", tokens_np[prompt_len:].tolist(), flush=True)
+            print("==== Per-token details (first replica) ====", flush=True)
+
+            # Header similar to compar.py
+            print(f"{'Pos':<4} {'Token ID':<10} {'Token Text':<20} {'Mask':<5} {'Logit':<12} {'Log Prob':<12} {'Prob':<12}")
+            print(f"{'-'*4} {'-'*10} {'-'*20} {'-'*5} {'-'*12} {'-'*12} {'-'*12}")
+
+            for i in range(short_seq_len):
+                token_id = int(tokens_np[i])
+                # Decode token for readability (skip_special_tokens avoids showing <bos> etc.)
+                token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+                if not token_text.strip():
+                    token_text = repr(token_text)  # make whitespace explicit
+
+                log_prob_val = float(lp_np[i])
+                logit_val = float(logits_np[i, token_id])
+                prob_val = float(np.exp(log_prob_val))
+
+                masked_flag = "NO" if suffix_mask_np[i] else "YES"
+
+                print(f"{i:<4} {token_id:<10} {token_text:<20} {masked_flag:<5} {logit_val:<12.4f} {log_prob_val:<12.6f} {prob_val:<12.6f}", flush=True)
+
+            # Re-compute total log-prob locally (avoid compute_sequence_log_prob which assumes full sharding)
+            lp_tokens_masked = lp_tokens * suffix_mask_np.astype(lp_tokens.dtype)
+            total_lp = float(lp_tokens_masked.sum())
+            suffix_prob = np.exp(total_lp)
+            print("==== Summary ====", flush=True)
+            print(f"Total log probability of suffix: {total_lp:+.6f}", flush=True)
+            print(f"Probability of suffix: {suffix_prob:.6f}", flush=True)
+
+            # We are done with debug mode; skip the rest of the normal evaluation path
+            levanter.tracker.current_tracker().finish()
+            return
+
+        # ================================
+        # NORMAL BATCHED EVALUATION BELOW
+        # ================================
         all_probs = []
         # helper stats if verification is enabled
         if VERIFY_PROMPT_RESP_LEN:
