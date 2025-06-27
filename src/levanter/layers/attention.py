@@ -1700,6 +1700,10 @@ def append_to_page_cache(
         """Append tokens for a single sequence."""
         pages, lens, page_idxs, pa_ptr = carry
 
+        start = new_cu_lens[seq]
+        end = new_cu_lens[seq + 1]
+        length = lens[seq]
+
         # start/end offsets of tokens for this sequence in the input arrays
         start = new_cu_lens[seq]
         end = new_cu_lens[seq + 1]
