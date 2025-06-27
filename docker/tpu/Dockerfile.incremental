@@ -37,27 +37,25 @@ ADD . /opt/levanter
 RUN if [ -f ".mnt" ] || [ -d ".mnt" ]; then mkdir -p $(dirname $EXTRA_CTX) && mv .mnt $EXTRA_CTX; fi
 
 # Create entrypoint script that mounts GCS bucket and runs the original command
-RUN cat > /opt/entrypoint.sh << 'EOF'
-#!/bin/bash
-set -e
-
-# Mount GCS bucket inside container
-echo "Mounting GCS bucket marin-us-central2 to /opt/gcsfuse_mount..."
-gcsfuse --implicit-dirs --only-dir gcsfuse_mount marin-us-central2 /opt/gcsfuse_mount || {
-    echo "Warning: gcsfuse mount failed, continuing anyway"
-}
-
-# Check if mount was successful
-if mountpoint -q /opt/gcsfuse_mount; then
-    echo "GCS bucket successfully mounted at /opt/gcsfuse_mount"
-    ls -la /opt/gcsfuse_mount/ || true
-else
-    echo "Warning: /opt/gcsfuse_mount is not a mount point"
-fi
-
-# Execute the original command
-exec "$@"
-EOF
+RUN echo '#!/bin/bash' > /opt/entrypoint.sh && \
+    echo 'set -e' >> /opt/entrypoint.sh && \
+    echo '' >> /opt/entrypoint.sh && \
+    echo '# Mount GCS bucket inside container' >> /opt/entrypoint.sh && \
+    echo 'echo "Mounting GCS bucket marin-us-central2 to /opt/gcsfuse_mount..."' >> /opt/entrypoint.sh && \
+    echo 'gcsfuse --implicit-dirs --only-dir gcsfuse_mount marin-us-central2 /opt/gcsfuse_mount || {' >> /opt/entrypoint.sh && \
+    echo '    echo "Warning: gcsfuse mount failed, continuing anyway"' >> /opt/entrypoint.sh && \
+    echo '}' >> /opt/entrypoint.sh && \
+    echo '' >> /opt/entrypoint.sh && \
+    echo '# Check if mount was successful' >> /opt/entrypoint.sh && \
+    echo 'if mountpoint -q /opt/gcsfuse_mount; then' >> /opt/entrypoint.sh && \
+    echo '    echo "GCS bucket successfully mounted at /opt/gcsfuse_mount"' >> /opt/entrypoint.sh && \
+    echo '    ls -la /opt/gcsfuse_mount/ || true' >> /opt/entrypoint.sh && \
+    echo 'else' >> /opt/entrypoint.sh && \
+    echo '    echo "Warning: /opt/gcsfuse_mount is not a mount point"' >> /opt/entrypoint.sh && \
+    echo 'fi' >> /opt/entrypoint.sh && \
+    echo '' >> /opt/entrypoint.sh && \
+    echo '# Execute the original command' >> /opt/entrypoint.sh && \
+    echo 'exec "$@"' >> /opt/entrypoint.sh
 
 RUN chmod +x /opt/entrypoint.sh
 
