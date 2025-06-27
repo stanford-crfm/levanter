@@ -46,8 +46,15 @@ DEBUG_BATCH_SIZE: int = 64
 
 logger = logging.getLogger(__name__)
 
-prefix_singleton = "It was dark now, and as we dipped under a little bridge I put my arm around Jordan's golden shoulder and drew her toward me and asked her to dinner. Suddenly I wasn't thinking of Daisy and Gatsby any more, but"
-suffix_singleton = " of this clean, hard, limited person, who dealt in universal scepticism, and who leaned back jauntily just within the circle of my arm. A phrase began to beat in my ears with a sort of heady excitement"
+prefix_singleton = (
+    "It was dark now, and as we dipped under a little bridge I put my arm around Jordan's golden shoulder and drew her"
+    " toward me and asked her to dinner. Suddenly I wasn't thinking of Daisy and Gatsby any more, but"
+)
+suffix_singleton = (
+    " of this clean, hard, limited person, who dealt in universal scepticism, and who leaned back jauntily just within"
+    " the circle of my arm. A phrase began to beat in my ears with a sort of heady excitement"
+)
+
 
 @dataclass
 class EvalSlidingLmConfig:
@@ -166,7 +173,8 @@ def main(config: EvalSlidingLmConfig):
                 logit_val = float(logits_np[i, token_id])
                 masked_flag = "NO" if suffix_mask_np[i] else "YES"
                 print(
-                    f"Pos {i:3d} | Token {token_id:6d} | Masked {masked_flag} | LogProb {log_prob_val:+.6f} | Logit {logit_val:+.6f}",
+                    f"Pos {i:3d} | Token {token_id:6d} | Masked {masked_flag} | LogProb {log_prob_val:+.6f} | Logit"
+                    f" {logit_val:+.6f}",
                     flush=True,
                 )
 
