@@ -6,6 +6,16 @@ FROM ${IMAGE}:${TAG}
 # This usually is a config directory so users can have their own config directory outside the repo.
 ARG EXTRA_CTX=/config
 
+# Install gcsfuse
+RUN apt-get update && apt-get install -y lsb-release curl
+RUN export GCSFUSE_REPO=gcsfuse-$(lsb_release -c -s) && \
+    echo "deb https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | tee /etc/apt/sources.list.d/gcsfuse.list
+RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+RUN apt-get update && apt-get install -y fuse gcsfuse
+
+# Create gcsfuse mount directory
+RUN mkdir -p /opt/gcsfuse_mount && chmod 755 /opt/gcsfuse_mount
+
 ENV TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60\
     TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=1024\
     RAY_USAGE_STATS_ENABLED=0\
@@ -25,3 +35,30 @@ ADD . /opt/levanter
 # Add $EXTRA_CTX to the same location as in local machine.
 # it's already in the image, so we don't need to copy it. just move it if we set EXTRA_CTX
 RUN if [ -f ".mnt" ] || [ -d ".mnt" ]; then mkdir -p $(dirname $EXTRA_CTX) && mv .mnt $EXTRA_CTX; fi
+
+# Create entrypoint script that mounts GCS bucket and runs the original command
+RUN cat > /opt/entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Mount GCS bucket inside container
+echo "Mounting GCS bucket marin-us-central2 to /opt/gcsfuse_mount..."
+gcsfuse --implicit-dirs --only-dir gcsfuse_mount marin-us-central2 /opt/gcsfuse_mount || {
+    echo "Warning: gcsfuse mount failed, continuing anyway"
+}
+
+# Check if mount was successful
+if mountpoint -q /opt/gcsfuse_mount; then
+    echo "GCS bucket successfully mounted at /opt/gcsfuse_mount"
+    ls -la /opt/gcsfuse_mount/ || true
+else
+    echo "Warning: /opt/gcsfuse_mount is not a mount point"
+fi
+
+# Execute the original command
+exec "$@"
+EOF
+
+RUN chmod +x /opt/entrypoint.sh
+
+ENTRYPOINT ["/opt/entrypoint.sh"]
