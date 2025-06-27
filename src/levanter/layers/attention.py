@@ -1624,12 +1624,7 @@ class PageCache(eqx.Module):
     ) -> "PageCache":
         """Append keys and values to the paged cache."""
 
-        (
-            pages,
-            lens,
-            page_idxs,
-            num_seqs,
-        ) = append_to_page_cache(
+        (pages, lens, page_idxs, num_seqs,) = append_to_page_cache(
             self.kv_pages.array,
             self.kv_lens.array,
             self.page_indices.array,
@@ -1700,10 +1695,6 @@ def append_to_page_cache(
         """Append tokens for a single sequence."""
         pages, lens, page_idxs, pa_ptr = carry
 
-        start = new_cu_lens[seq]
-        end = new_cu_lens[seq + 1]
-        length = lens[seq]
-
         # start/end offsets of tokens for this sequence in the input arrays
         start = new_cu_lens[seq]
         end = new_cu_lens[seq + 1]
@@ -1739,14 +1730,10 @@ def append_to_page_cache(
             length = length + 1
             return pages, page_idxs, pa_ptr, length
 
-        pages, page_idxs, pa_ptr, length = jax.lax.fori_loop(
-            start, end, tok_body, (pages, page_idxs, pa_ptr, length)
-        )
+        pages, page_idxs, pa_ptr, length = jax.lax.fori_loop(start, end, tok_body, (pages, page_idxs, pa_ptr, length))
         lens = lens.at[seq].set(length)
         return pages, lens, page_idxs, pa_ptr
 
-    pages, lens, page_idxs, _ = jax.lax.fori_loop(
-        0, new_num_seqs, seq_body, (kv_pages, kv_lens, page_indices, 0)
-    )
+    pages, lens, page_idxs, _ = jax.lax.fori_loop(0, new_num_seqs, seq_body, (kv_pages, kv_lens, page_indices, 0))
 
     return pages, lens, page_idxs, new_num_seqs

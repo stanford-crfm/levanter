@@ -27,7 +27,7 @@ classifiers = [
 dependencies = [
     "haliax>=1.4.dev351",
     "equinox>=0.11.7,!=0.12.0",
-    "jax==0.5.1",
+    "jax>=0.5.1",
     "jaxtyping>=0.2.34",
     "tokenizers>=0.15.2",
     "transformers>=4.49.0,<5.0",
@@ -114,6 +114,10 @@ test = [
     "soundfile",
     "librosa",
     "tensorboardX>=2.6",
+]
+
+tpu = [
+    "jax[tpu]"
 ]
 
 [tool.setuptools.packages.find]

@@ -3,7 +3,7 @@
 ## References
 
 * [JAX LLM Example](https://github.com/jax-ml/jax-llm-examples/blob/b282713880943cebe7183815918fb7dd60922b14/llama3/llama3_jax/model.py) <-- pretty basic kv cache, but easy to follow
- 
+
 ### MaxText
 
 * [Page Manager](https://github.com/AI-Hypercomputer/maxtext/blob/eac885edb371e6141a2bb784f9060f816ce17b23/MaxText/inference/page_manager.py)
@@ -11,7 +11,7 @@
 * [Jetstream](https://github.com/AI-Hypercomputer/JetStream) <-- session management and such
 * [MaxEngine](https://github.com/AI-Hypercomputer/maxtext/blob/main/MaxText/maxengine.py) <-- maxtext impl of jetstream protocol
 
-### EasyDel 
+### EasyDel
 
 * [VSurge](https://github.com/erfanzar/EasyDeL/tree/main/easydel/inference/vsurge)
 
@@ -26,7 +26,7 @@ torch, not much interesting here given jetstream. focused on batch inference I t
 * https://github.com/GeeeekExplorer/nano-vllm/
 
 
-## Tasks 
+## Tasks
 
 - [ ] Attention: do prefill for a batch of inputs
 - [ ] Attention: do decode for a batch of inputs
