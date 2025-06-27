@@ -11,6 +11,10 @@ import jax
 import jax.random as jrandom
 from jax import numpy as jnp
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
+from jax.experimental.pallas.ops.tpu.ragged_paged_attention import (
+    ragged_paged_attention as tpu_ragged_paged_attention,
+    ref_ragged_paged_attention,
+)
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
@@ -1402,6 +1406,171 @@ class Attention(eqx.Module):
 
         return attn_output, kv_cache
 
+    @named_call
+    def paged_decode(
+        self,
+        x: NamedArray,
+        pos_ids: NamedArray,
+        *,
+        key=None,
+        page_cache: "PageCache",
+    ) -> tuple[NamedArray, "PageCache"]:
+        """Decode-time forward pass using a paged KV cache."""
+
+        key_proj, key_o = maybe_rng_split(key, 2)
+
+        Batch = x.resolve_axis("batch")
+        Pos = x.resolve_axis("position")
+
+        if not pos_ids.has_axis(Batch.name):
+            pos_ids = pos_ids.broadcast_axis(Batch)
+
+        q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
+
+        mask = pos_ids >= 0
+        new_tokens_per_batch = hax.sum(mask, axis="position", dtype=jnp.int32)
+
+        Batch = x.resolve_axis("batch")
+        Pos = x.resolve_axis("position")
+
+        q = q.rearrange(("batch", "position", "kv_heads", "q_heads_per_group", "head_size"))
+        k = k.rearrange(("batch", "position", "kv_heads", "head_size"))
+        v = v.rearrange(("batch", "position", "kv_heads", "head_size"))
+
+        num_heads = self.config.Heads.size
+        q_flat = q.array.reshape(Batch.size * Pos.size, num_heads, self.config.HeadSize.size)
+        k_flat = k.array.reshape(Batch.size * Pos.size, self.config.KVHeads.size, self.config.HeadSize.size)
+        v_flat = v.array.reshape(Batch.size * Pos.size, self.config.KVHeads.size, self.config.HeadSize.size)
+
+        mask_flat = mask.array.reshape(Batch.size * Pos.size)
+        indices = jnp.arange(Batch.size * Pos.size, dtype=jnp.int32)
+        keys = jnp.where(mask_flat, 0, 1)
+        sorted_indices = jax.lax.sort_key_val(keys, indices)[1]
+
+        q_sorted = q_flat[sorted_indices]
+        k_sorted = k_flat[sorted_indices]
+        v_sorted = v_flat[sorted_indices]
+
+        num_tokens = jnp.sum(mask_flat, dtype=jnp.int32)
+
+        cu_q_lens = jnp.concatenate(
+            [jnp.array([0], dtype=jnp.int32), jnp.cumsum(new_tokens_per_batch.array, dtype=jnp.int32)]
+        )
+
+        max_page = jnp.max(
+            jnp.where(page_cache.page_indices.array >= 0, page_cache.page_indices.array, -1)
+        ) + 1
+
+        Tok = Axis("tok", q_sorted.shape[0])
+        new_k = hax.named(k_sorted, (Tok, self.config.KVHeads, self.config.HeadSize))
+        new_v = hax.named(v_sorted, (Tok, self.config.KVHeads, self.config.HeadSize))
+
+        page_cache = page_cache.extend(new_k, new_v, cu_q_lens, max_page, Batch.size)
+
+        sm_scale = (
+            self.config.scaling_factor
+            if self.config.scaling_factor is not None
+            else 1.0 / math.sqrt(self.config.HeadSize.size)
+        )
+
+        if jax.default_backend() == "tpu":
+            attn_tokens = _ragged_paged_attention(
+                q_sorted,
+                page_cache.kv_pages.array,
+                page_cache.kv_lens.array,
+                page_cache.page_indices.array,
+                cu_q_lens,
+                jnp.array([Batch.size], dtype=jnp.int32),
+                sm_scale=sm_scale,
+                soft_cap=self.config.logits_soft_cap,
+            )
+        else:
+            def _kv_from_cache(pc, seq):
+                kv_pages = pc.kv_pages.array
+                kv_heads = kv_pages.shape[2] // 2
+                length = int(pc.kv_lens.array[seq])
+                pages = pc.page_indices.array[seq]
+                k_list = []
+                v_list = []
+                for p in pages:
+                    if p < 0:
+                        break
+                    k_list.append(kv_pages[p, :, :kv_heads])
+                    v_list.append(kv_pages[p, :, kv_heads:])
+                if not k_list:
+                    return jnp.zeros((0, kv_heads, kv_pages.shape[3]), kv_pages.dtype), jnp.zeros((0, kv_heads, kv_pages.shape[3]), kv_pages.dtype)
+                k_arr = jnp.concatenate(k_list, axis=0)[:length]
+                v_arr = jnp.concatenate(v_list, axis=0)[:length]
+                return k_arr, v_arr
+
+            out = jnp.zeros_like(q_flat)
+            for b in range(Batch.size):
+                n_new = int(new_tokens_per_batch.array[b])
+                if n_new == 0:
+                    continue
+                mask_b = mask.array[b]
+                idx = jnp.nonzero(mask_b, size=n_new)[0]
+                q_seq = q.array[b, idx]
+                k_seq, v_seq = _kv_from_cache(page_cache, b)
+                k_len = k_seq.shape[0]
+                q_pos = Axis("q_pos", n_new)
+                k_pos = Axis("k_pos", k_len)
+                q_named = hax.named(
+                    q_seq,
+                    (q_pos, self.config.KVHeads, self.config.QHeadsPerGroup, self.config.HeadSize),
+                )
+                k_named = hax.named(k_seq, (k_pos, self.config.KVHeads, self.config.HeadSize))
+                v_named = hax.named(v_seq, (k_pos, self.config.KVHeads, self.config.HeadSize))
+                mask_obj = AttentionMask.causal(offset=k_len - n_new)
+                seq_out = dot_product_attention(
+                    q_pos,
+                    k_pos,
+                    "head_size",
+                    q_named,
+                    k_named,
+                    v_named,
+                    mask_obj,
+                    attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
+                    flash_block_size=self.config.flash_attention_block_size,
+                    scaling_factor=sm_scale,
+                    logits_soft_cap=self.config.logits_soft_cap,
+                    inference=True,
+                    prng=key,
+                    attn_backend=AttentionBackend.VANILLA,
+                )
+                seq_out = seq_out.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+                out = out.at[b * Pos.size + idx].set(seq_out.array)
+            attn_tokens = out[sorted_indices[:num_tokens]]
+
+        valid_indices = sorted_indices[:num_tokens]
+        valid_out = attn_tokens[:num_tokens]
+        out_flat = jnp.zeros_like(q_flat)
+        out_flat = out_flat.at[valid_indices].set(valid_out)
+        out = out_flat.reshape(Batch.size, Pos.size, num_heads, self.config.HeadSize.size)
+
+        attn_output = hax.named(
+            out.reshape(
+                Batch.size,
+                Pos.size,
+                self.config.KVHeads.size,
+                self.config.QHeadsPerGroup.size,
+                self.config.HeadSize.size,
+            ),
+            (
+                Batch,
+                Pos,
+                self.config.KVHeads,
+                self.config.QHeadsPerGroup,
+                self.config.HeadSize,
+            ),
+        )
+
+        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_output.astype(x.dtype)
+        attn_output = self.o_proj(attn_output, key=key_o)
+
+        return attn_output, page_cache
+
     def _compute_qkv(
         self,
         x: NamedArray,
@@ -1619,7 +1788,7 @@ class PageCache(eqx.Module):
         new_k: NamedArray,  # [Tok, KvHeads, HeadDim]
         new_v: NamedArray,  # [Tok, KvHeads, HeadDim]
         new_cu_lens: jax.Array,  # i32[Seq + 1]
-        new_page_assignments: jax.Array,  # i32[NumNewPages]
+        start_page: jax.Array,  # [] i32
         new_num_seqs: int,
     ) -> "PageCache":
         """Append keys and values to the paged cache."""
@@ -1632,7 +1801,7 @@ class PageCache(eqx.Module):
             new_k.array,
             new_v.array,
             new_cu_lens,
-            new_page_assignments,
+            start_page,
             jnp.array(new_num_seqs, dtype=jnp.int32),
         )
 
@@ -1669,7 +1838,7 @@ def append_to_page_cache(
     new_k: jax.Array,  # [Tok, KvHeads, HeadDim]
     new_v: jax.Array,  # [Tok, KvHeads, HeadDim]
     new_cu_lens: jax.Array,  # i32[Seq + 1]
-    new_page_assignments: jax.Array,  # i32[NumNewPages]
+    start_page: jax.Array,  # [] i32
     new_num_seqs: jax.Array,  # []
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Extend a paged key/value cache.
@@ -1682,7 +1851,7 @@ def append_to_page_cache(
         new_k: ``[Tok, KvHeads, HeadDim]`` new keys.
         new_v: ``[Tok, KvHeads, HeadDim]`` new values.
         new_cu_lens: ``[Seq+1]`` cumulative lengths for the appended tokens.
-        new_page_assignments: ``[NumNewPages]`` mapping page allocations.
+        start_page: ``[]`` scalar giving the first page index to allocate from.
         new_num_seqs: ``[]`` scalar giving the new number of sequences.
     """
 
@@ -1709,7 +1878,7 @@ def append_to_page_cache(
 
             def alloc_page(idx_state):
                 pages, page_idxs, pa_ptr, length = idx_state
-                page_idx = new_page_assignments[pa_ptr]
+                page_idx = start_page + pa_ptr
                 page_idxs = page_idxs.at[seq, page_no].set(page_idx)
                 return pages, page_idxs, pa_ptr + 1, length, page_idx
 
@@ -1737,3 +1906,22 @@ def append_to_page_cache(
     pages, lens, page_idxs, _ = jax.lax.fori_loop(0, new_num_seqs, seq_body, (kv_pages, kv_lens, page_indices, 0))
 
     return pages, lens, page_idxs, new_num_seqs
+
+
+def _ragged_paged_attention(
+    q: jax.Array,
+    kv_pages: jax.Array,
+    kv_lens: jax.Array,
+    page_indices: jax.Array,
+    cu_q_lens: jax.Array,
+    num_seqs: jax.Array,
+    **kwargs,
+):
+    if jax.default_backend() == "tpu":
+        return tpu_ragged_paged_attention(
+            q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, **kwargs
+        )
+    else:
+        return ref_ragged_paged_attention(
+            q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, **kwargs
+        )
