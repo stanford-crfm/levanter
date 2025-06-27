@@ -17,6 +17,7 @@ from levanter.layers.attention import (
     AttentionBackend,
     AttentionConfig,
     AttentionMask,
+    PageCache,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
@@ -419,6 +420,17 @@ def _jit_decode(attn, x, pos_ids, cache):
     )
 
 
+def _jit_paged_decode(attn, x, pos_ids, cache):
+    def _decode(a, b, c, d):
+        return a.paged_decode(b, pos_ids=c, key=jrandom.PRNGKey(2), page_cache=d)
+
+    if jax.default_backend() == "tpu":
+        _decode_jit = equinox.filter_jit(_decode)
+        return _decode_jit(attn, x, pos_ids, cache)
+    else:
+        return _decode(attn, x, pos_ids, cache)
+
+
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
 @pytest.mark.parametrize("chunk_size", [1, 2, 3])
 def test_attention_decode_prefill_in_chunks(prefix_size, chunk_size):
@@ -519,4 +531,135 @@ def test_attention_decode_ragged_fill_in_chunks():
     decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
 
     # Assert equality (within numerical tolerance)
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
+
+
+def _build_page_cache(cfg, B: Axis, Pos: Axis, page_size: int = 2) -> PageCache:
+    pages_per_seq = (Pos.size + page_size - 1) // page_size
+    Seq = Axis("seq", B.size)
+    Page = Axis("page", pages_per_seq)
+    MaxPage = Axis("max_page", pages_per_seq * B.size)
+    Slot = Axis("slot", page_size)
+    return PageCache.init(Seq, Page, Slot, cfg.KVHeads, cfg.HeadSize, MaxPage, dtype=jnp.float32)
+
+
+def test_attention_paged_decode_matches_full_ar():
+    B = Axis("batch", 1)
+    Pos = Axis("position", 4)
+    Embed = Axis("embed", 8)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    cache = _build_page_cache(cfg, B, Pos)
+    out_chunks = []
+    for i in range(Pos.size):
+        x_tok = x[Pos, hax.dslice(i, 1)]
+        sub_pos = x_tok.resolve_axis("position")
+        pos_ids_tok = hax.arange(sub_pos, start=i)
+        out_tok, cache = _jit_paged_decode(attn, x_tok, pos_ids_tok, cache)
+        out_chunks.append(out_tok.array)
+
+    decoded_arr = jnp.concatenate(out_chunks, axis=1)
+    assert_trees_all_close(full_out.array, decoded_arr, atol=1e-4, rtol=1e-4)
+
+
+def test_attention_paged_decode_matches_full_prefill():
+    B = Axis("batch", 2)
+    Pos = Axis("position", 4)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    cache = _build_page_cache(cfg, B, Pos)
+    pos_ids = hax.arange(Pos, dtype=jnp.int32)
+    decode_out, _ = _jit_paged_decode(attn, x, pos_ids, cache)
+
+    assert_trees_all_close(full_out.array, decode_out.array, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("prefix_size", [1, 2, 3])
+@pytest.mark.parametrize("chunk_size", [1, 2, 3])
+def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
+    B = Axis("batch", 2)
+    Pos = Axis("position", prefix_size + 4 * chunk_size)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    cache = _build_page_cache(cfg, B, Pos)
+    prefix = x[Pos, 0:prefix_size]
+    prefill_chunk, cache = _jit_paged_decode(
+        attn, prefix, pos_ids=hax.arange(Pos.resize(prefix_size), dtype=jnp.int32), cache=cache
+    )
+
+    out_chunks = [prefill_chunk]
+    for i in range(prefix_size, Pos.size, chunk_size):
+        x_tok = x[Pos, hax.dslice(i, chunk_size)]
+        sub_pos = x_tok.resolve_axis("position")
+        pos_ids_tok = hax.arange(sub_pos, dtype=jnp.int32, start=i)
+        out_tok, cache = _jit_paged_decode(attn, x_tok, pos_ids_tok, cache)
+        out_chunks.append(out_tok)
+
+    decoded_arr = hax.concatenate("position", out_chunks)
+    assert_trees_all_close(full_out, decoded_arr, atol=1e-4, rtol=1e-4)
+
+
+def test_attention_paged_decode_ragged_fill_in_chunks():
+    B = Axis("batch", 2)
+    Pos = Axis("position", 8)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    def padded(start, stop):
+        pos = hax.arange(Pos, dtype=jnp.int32, start=start)
+        return hax.where(pos >= stop, -1, pos)
+
+    cache = _build_page_cache(cfg, B, Pos)
+
+    chunk_sizes = [[4, 2], [0, 1], [0, 1], [2, 1], [1, 2], [1, 1]]
+    off0 = off1 = 0
+    outputs0 = []
+    outputs1 = []
+    for step0, step1 in chunk_sizes:
+        pos_ids = hax.stack("batch", [padded(off0, off0 + step0), padded(off1, off1 + step1)])
+
+        x0 = x[B, 0, "position", off0 : off0 + step0]
+        x1 = x[B, 1, "position", off1 : off1 + step1]
+
+        x_q = hax.full((B, Pos, Embed), 100, dtype=x.dtype)
+        x_q = x_q.at[B, 0, "position", 0:step0].set(x0)
+        x_q = x_q.at[B, 1, "position", 0:step1].set(x1)
+
+        output, cache = _jit_paged_decode(attn, x_q, pos_ids=pos_ids, cache=cache)
+        outputs0.append(output[B, 0, "position", hax.dslice(0, step0)])
+        outputs1.append(output[B, 1, "position", hax.dslice(0, step1)])
+        off0 += step0
+        off1 += step1
+
+    outputs0_cat = hax.concatenate("position", outputs0)
+    outputs1_cat = hax.concatenate("position", outputs1)
+
+    assert_trees_all_close(full_out[B, 0].array, outputs0_cat.array, atol=1e-4, rtol=1e-4)
+    assert_trees_all_close(full_out[B, 1].array, outputs1_cat.array, atol=1e-4, rtol=1e-4)
+
+    decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
     assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
