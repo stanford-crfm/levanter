@@ -284,7 +284,7 @@ class SliceActor:
         num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()
         tpe = TPUAcceleratorManager._get_current_node_tpu_pod_type()
         # there seems to be a bug with some version of ray here
-        if tpe.startswith("v4"):
+        if tpe.startswith("v4") or tpe.startswith("v5"):
             num_cores = int(tpe.split("-")[1])
             num_tpus_per_host = 4
             num_hosts = num_cores // 8
