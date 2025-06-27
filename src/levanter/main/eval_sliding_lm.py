@@ -37,8 +37,17 @@ VERIFY_PROMPT_RESP_LEN: bool = False
 EXPECTED_PROMPT_TOKENS = 50
 EXPECTED_RESPONSE_TOKENS = 50
 
+# -----------------------------------------------------------------------------
+# Debugging flag – when True, the script will run **one** example replicated to
+# a full batch of 64 and print detailed per-token diagnostics.
+# -----------------------------------------------------------------------------
+DEBUG_SINGLE: bool = False  # set to True to enable single-example debug mode
+DEBUG_BATCH_SIZE: int = 64
+
 logger = logging.getLogger(__name__)
 
+prefix_singleton = "It was dark now, and as we dipped under a little bridge I put my arm around Jordan's golden shoulder and drew her toward me and asked her to dinner. Suddenly I wasn't thinking of Daisy and Gatsby any more, but"
+suffix_singleton = " of this clean, hard, limited person, who dealt in universal scepticism, and who leaned back jauntily just within the circle of my arm. A phrase began to beat in my ears with a sort of heady excitement"
 
 @dataclass
 class EvalSlidingLmConfig:
@@ -111,6 +120,69 @@ def main(config: EvalSlidingLmConfig):
 
         mp: jmp.Policy = config.trainer.mp
 
+        # ================================
+        # DEBUG SINGLE-EXAMPLE EVALUATION
+        # ================================
+        if DEBUG_SINGLE:
+            # Grab the first raw row from the cache and turn it into an LmExample
+            first_raw_row = next(iter(cache))
+            example_single = _to_example(first_raw_row)
+
+            # Replicate the single example across a batch of size DEBUG_BATCH_SIZE so that
+            # partitioning logic expecting a full batch still works.
+            BatchDebug = Axis(config.trainer.batch_axis, DEBUG_BATCH_SIZE)
+            tokens_batched = example_single.tokens.broadcast_axis(BatchDebug)
+            loss_mask_batched = example_single.loss_mask.broadcast_axis(BatchDebug)
+
+            batch_example = LmExample(
+                tokens=tokens_batched,
+                loss_mask=loss_mask_batched,
+                attn_mask=example_single.attn_mask,
+            )
+
+            # Run the model and collect logits & log-probs
+            with hax.axis_mapping(compute_axis_mapping):
+                logits = model(batch_example.tokens, attn_mask=batch_example.attn_mask)
+                lp_full = log_softmax(logits, axis=model.Vocab)
+                targets = hax.roll(batch_example.tokens, -1, Pos)
+                lp_tokens = hax.take(lp_full, model.Vocab, targets)
+
+            # Work on host numpy arrays for easy printing
+            tokens_np = jax.device_get(batch_example.tokens.array)[0]
+            lp_np = jax.device_get(lp_tokens.array)[0]
+            logits_np = jax.device_get(logits.array)[0]
+
+            prompt_len = int(first_raw_row["sources_len"])
+            positions = np.arange(Pos.size)
+            suffix_mask_np = positions >= (prompt_len - 1)
+
+            # Pretty print tokens and diagnostics
+            print("PREFIX TOKENS:", tokens_np[:prompt_len].tolist(), flush=True)
+            print("SUFFIX TOKENS:", tokens_np[prompt_len:].tolist(), flush=True)
+            print("==== Per-token details (first replica) ====", flush=True)
+            for i in range(Pos.size):
+                token_id = int(tokens_np[i])
+                log_prob_val = float(lp_np[i])
+                logit_val = float(logits_np[i, token_id])
+                masked_flag = "NO" if suffix_mask_np[i] else "YES"
+                print(
+                    f"Pos {i:3d} | Token {token_id:6d} | Masked {masked_flag} | LogProb {log_prob_val:+.6f} | Logit {logit_val:+.6f}",
+                    flush=True,
+                )
+
+            # Use the existing helper to compute total log-prob of the suffix
+            total_lp = float(jax.device_get(compute_sequence_log_prob(model, batch_example).array)[0])
+            suffix_prob = np.exp(total_lp)
+            print("==== Summary ====", flush=True)
+            print(f"Total log probability of suffix: {total_lp:+.6f}", flush=True)
+            print(f"Probability of suffix: {suffix_prob:.6f}", flush=True)
+            # We are done with debug mode; skip the rest of the normal evaluation path
+            levanter.tracker.current_tracker().finish()
+            return
+
+        # ================================
+        # NORMAL BATCHED EVALUATION BELOW
+        # ================================
         def compute_sequence_log_prob(model: LmHeadModel, batch: LmExample):
             """
             Computes the log probability of the suffix of each example in the batch.
