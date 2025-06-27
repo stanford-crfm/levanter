@@ -10,11 +10,9 @@ import equinox as eqx
 import jax
 import jax.random as jrandom
 from jax import numpy as jnp
+from jax.experimental.pallas.ops.tpu.ragged_paged_attention import ragged_paged_attention as tpu_ragged_paged_attention
+from jax.experimental.pallas.ops.tpu.ragged_paged_attention import ref_ragged_paged_attention
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
-from jax.experimental.pallas.ops.tpu.ragged_paged_attention import (
-    ragged_paged_attention as tpu_ragged_paged_attention,
-    ref_ragged_paged_attention,
-)
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
@@ -1457,9 +1455,7 @@ class Attention(eqx.Module):
             [jnp.array([0], dtype=jnp.int32), jnp.cumsum(new_tokens_per_batch.array, dtype=jnp.int32)]
         )
 
-        max_page = jnp.max(
-            jnp.where(page_cache.page_indices.array >= 0, page_cache.page_indices.array, -1)
-        ) + 1
+        max_page = jnp.max(jnp.where(page_cache.page_indices.array >= 0, page_cache.page_indices.array, -1)) + 1
 
         Tok = Axis("tok", q_sorted.shape[0])
         new_k = hax.named(k_sorted, (Tok, self.config.KVHeads, self.config.HeadSize))
@@ -1485,6 +1481,7 @@ class Attention(eqx.Module):
                 soft_cap=self.config.logits_soft_cap,
             )
         else:
+
             def _kv_from_cache(pc, seq):
                 kv_pages = pc.kv_pages.array
                 kv_heads = kv_pages.shape[2] // 2
@@ -1498,7 +1495,9 @@ class Attention(eqx.Module):
                     k_list.append(kv_pages[p, :, :kv_heads])
                     v_list.append(kv_pages[p, :, kv_heads:])
                 if not k_list:
-                    return jnp.zeros((0, kv_heads, kv_pages.shape[3]), kv_pages.dtype), jnp.zeros((0, kv_heads, kv_pages.shape[3]), kv_pages.dtype)
+                    return jnp.zeros((0, kv_heads, kv_pages.shape[3]), kv_pages.dtype), jnp.zeros(
+                        (0, kv_heads, kv_pages.shape[3]), kv_pages.dtype
+                    )
                 k_arr = jnp.concatenate(k_list, axis=0)[:length]
                 v_arr = jnp.concatenate(v_list, axis=0)[:length]
                 return k_arr, v_arr
@@ -1918,10 +1917,6 @@ def _ragged_paged_attention(
     **kwargs,
 ):
     if jax.default_backend() == "tpu":
-        return tpu_ragged_paged_attention(
-            q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, **kwargs
-        )
+        return tpu_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, **kwargs)
     else:
-        return ref_ragged_paged_attention(
-            q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, **kwargs
-        )
+        return ref_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, **kwargs)
