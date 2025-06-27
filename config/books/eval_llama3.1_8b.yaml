@@ -39,5 +39,5 @@ trainer:
   fsdp_axis: "embed"
   batch_axis: "batch"
 
-initialize_from_hf: "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-70B"
+initialize_from_hf: "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"
 use_hf_model_config: False # Use the model config defined above
