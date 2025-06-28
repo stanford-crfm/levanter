@@ -273,6 +273,9 @@ def test_llama_prefix_intermediates_close():
 
     hf_hidden = _collect_hf_hidden_states(hf_model, input_ids_torch)
 
+    for i, hs in enumerate(hf_hidden):
+        print(f"HF layer {i} shape {hs.shape}", flush=True)
+
     # ------------------------------------------------------------------
     # Prepare Levanter model & JAX input
     # ------------------------------------------------------------------
@@ -294,8 +297,8 @@ def test_llama_prefix_intermediates_close():
 
     lev_hidden = _collect_levanter_hidden_states(lev_model, input_ids_named, causal_mask)
 
-    # Ensure same number of checkpoints
-    assert len(lev_hidden) == len(hf_hidden), f"Mismatch in hidden-state count: {len(lev_hidden)} vs {len(hf_hidden)}"
+    # Ensure same number of hidden layers
+    assert len(lev_hidden) == len(hf_hidden), f"Mismatch in layer count: {len(lev_hidden)} vs {len(hf_hidden)}"
 
     # ------------------------------------------------------------------
     # Compare layer-wise (slice Levanter tensors to actual prompt length)
@@ -315,8 +318,8 @@ def test_llama_prefix_intermediates_close():
         # *where* the largest discrepancies are in terms of token position and
         # attention head within the 4096-d hidden state.
         # ------------------------------------------------------------------
-        rtol = 1e-3
-        atol = 1e-3
+        rtol = 1e-4
+        atol = 1e-4
 
         try:
             chex.assert_trees_all_close(
@@ -545,5 +548,67 @@ def test_llama_last_block_and_logprobs():
 
     # Compare per-token log-probs as well (HF helper gives suffix-only tokens)
     np.testing.assert_allclose(np.array(lev_token_lp, dtype=np.float32), np.array(token_lp_hf, dtype=np.float32), rtol=1e-3, atol=1e-3)
+
+
+@skip_if_no_torch
+@skip_if_hf_model_not_accessible(MODEL_ID)
+@skip_in_ci("Large 8B model – skipped in CI.")
+
+def test_final_activation_comparison():
+    """Compare the final hidden activations (after the last layer norm, before the LM head)
+    of Levanter vs HuggingFace Llama-3-8B on the same prompt.
+    """
+
+    # ---------------- Tokenisation ----------------
+    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    ids_list = _tokenize_example(tokenizer)
+    prompt_len = len(ids_list)
+
+    # Hugging Face tensors
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    input_ids_torch = torch.tensor(ids_list, dtype=torch.long).unsqueeze(0).to(device)
+
+    # ---------------- Load HF model ----------------
+    hf_model = transformers.AutoModelForCausalLM.from_pretrained(
+        MODEL_ID, torch_dtype=torch.float32, device_map={"": device}
+    )
+    hf_model.eval()
+
+    with torch.no_grad():
+        hf_outputs = hf_model(
+            input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True
+        )
+    hf_final_activations = hf_outputs.hidden_states[-1].cpu().float().numpy()  # (1, P, E)
+
+    # ---------------- Levanter side ----------------
+    vocab_size = hf_model.config.vocab_size
+    lev_model = _build_levanter_model(prompt_len, vocab_size)
+
+    Batch = Axis("batch", 1)
+    Pos = lev_model.config.Pos  # may be >= prompt_len
+
+    pad_len = Pos.size - prompt_len
+    ids_padded = ids_list + [tokenizer.pad_token_id] * pad_len
+    input_ids_np = np.array([ids_padded], dtype=np.int32)
+    lev_input_named = hax.named(input_ids_np, (Batch, Pos))
+    causal_mask = AttentionMask.causal()
+
+    lev_activations_named = lev_model.activations(lev_input_named, attn_mask=causal_mask)
+    lev_activations = lev_activations_named.array[:, :prompt_len, :]  # slice to prompt length
+
+    # ---------------- Comparison ----------------
+    assert lev_activations.shape == hf_final_activations.shape, (
+        f"Shape mismatch: {lev_activations.shape} vs {hf_final_activations.shape}"
+    )
+
+    chex.assert_trees_all_close(
+        lev_activations.astype(np.float32),
+        hf_final_activations.astype(np.float32),
+        rtol=1e-4,
+        atol=1e-4,
+    )
 
     
