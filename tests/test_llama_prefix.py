@@ -25,6 +25,7 @@ import torch.nn.functional as F
 # Additional rotary config import for llama-3 behaviour
 from levanter.layers.rotary import Llama3RotaryEmbeddingsConfig
 
+from haliax.nn import log_softmax
 # -----------------------------------------------------------------------------
 # Hard-coded prompt pieces. These are the same strings used in eval_sliding_lm.py
 # -----------------------------------------------------------------------------
@@ -469,6 +470,8 @@ def test_llama_last_block_and_logprobs():
         .numpy()
     )
     ln1_lev_slice = ln1_lev.array[:, :prompt_len, :]
+    max_diff_ln1 = float(np.max(np.abs(ln1_lev_slice.astype(np.float32) - ln1_hf_t.astype(np.float32))))
+    print(f"Max |Δ| after input LN: {max_diff_ln1:.6e}", flush=True)
     chex.assert_trees_all_close(ln1_lev_slice.astype(np.float32), ln1_hf_t.astype(np.float32), rtol=1e-3, atol=1e-3)
 
     # 2. Attention output (no residual yet)
@@ -495,6 +498,8 @@ def test_llama_last_block_and_logprobs():
             cache_position=None,
         )
     attn_out_hf = attn_out_hf_t.detach().cpu().numpy()
+    max_diff_attn = float(np.max(np.abs(attn_out_lev.astype(np.float32) - attn_out_hf.astype(np.float32))))
+    print(f"Max |Δ| after attention: {max_diff_attn:.6e}", flush=True)
     chex.assert_trees_all_close(attn_out_lev.astype(np.float32), attn_out_hf.astype(np.float32), rtol=1e-3, atol=1e-3)
 
     # 3. Residual add after attention
@@ -512,6 +517,8 @@ def test_llama_last_block_and_logprobs():
         .cpu()
         .numpy()
     )
+    max_diff_ln2 = float(np.max(np.abs(ln2_lev.astype(np.float32) - ln2_hf_t.astype(np.float32))))
+    print(f"Max |Δ| after post-attention LN: {max_diff_ln2:.6e}", flush=True)
     chex.assert_trees_all_close(ln2_lev.astype(np.float32), ln2_hf_t.astype(np.float32), rtol=1e-3, atol=1e-3)
 
     # 5. MLP output
@@ -519,11 +526,15 @@ def test_llama_last_block_and_logprobs():
     mlp_out_lev = mlp_out_lev_full.array[:, :prompt_len, :]
     mlp_out_hf_t = hf_model.model.layers[-1].mlp(torch.from_numpy(ln2_hf_t).to(device))
     mlp_out_hf = mlp_out_hf_t.detach().cpu().numpy()
+    max_diff_mlp = float(np.max(np.abs(mlp_out_lev.astype(np.float32) - mlp_out_hf.astype(np.float32))))
+    print(f"Max |Δ| after MLP: {max_diff_mlp:.6e}", flush=True)
     chex.assert_trees_all_close(mlp_out_lev.astype(np.float32), mlp_out_hf.astype(np.float32), rtol=1e-3, atol=1e-3)
 
     # 6. Final residual add after MLP — this should reproduce full layer output
     last_out_lev = x_mid_lev + mlp_out_lev
     last_out_hf = (x_mid_hf + mlp_out_hf)[:, :prompt_len, :]
+    max_diff_last = float(np.max(np.abs(last_out_lev.astype(np.float32) - last_out_hf.astype(np.float32))))
+    print(f"Max |Δ| after full last block: {max_diff_last:.6e}", flush=True)
     chex.assert_trees_all_close(last_out_lev.astype(np.float32), last_out_hf.astype(np.float32), rtol=1e-3, atol=1e-3)
 
     # ---------------- Log-probability comparison ------------------------
@@ -539,8 +550,13 @@ def test_llama_last_block_and_logprobs():
     input_np = np.array([tokens_full], dtype=np.int32)
     Pos_short = Axis("position", len(tokens_full))
     lev_input_named = hax.named(input_np, (Batch, Pos_short))
-    lev_logits = lev_model(lev_input_named, attn_mask=AttentionMask.causal()).array  # (1, P, Vocab)
+    lev_logits_named = lev_model(lev_input_named, attn_mask=AttentionMask.causal())  # (1, P, Vocab)
+    lev_logits = lev_logits_named.array
+    lev_lp_named = log_softmax(lev_logits_named, axis=lev_model.Vocab)
     lev_lp = jax.nn.log_softmax(lev_logits, axis=-1)
+
+    # compare results from named tensor to using jax.nn.log_softmax
+    chex.assert_trees_all_close(lev_lp_named.array, lev_lp, rtol=1e-4, atol=1e-4)
 
     suffix_ids = tokenizer(suffix_singleton, add_special_tokens=False)["input_ids"]
     suffix_len = len(suffix_ids)
@@ -556,11 +572,46 @@ def test_llama_last_block_and_logprobs():
 
     print(f"HF log_p_z: {log_p_z_hf:.6f}  Lev log_p_z: {log_p_z_lev:.6f}", flush=True)
 
-    # Compare total log-probability
-    np.testing.assert_allclose(log_p_z_lev, log_p_z_hf, rtol=1e-3, atol=1e-3)
+    # --- Logits divergence diagnostic ---
+    hf_logits = hf_outputs.logits.cpu().float().numpy()
+    # slice Levanter logits to same seq_len (no padding)
+    lev_logits_np = lev_logits[:, :hf_logits.shape[1], :]
+    max_diff_logits = float(np.max(np.abs(lev_logits_np.astype(np.float32) - hf_logits.astype(np.float32))))
+    print(f"Max |Δ| in raw logits over full sequence: {max_diff_logits:.6e}", flush=True)
+
+
+    # ---------------- Per-token diagnostic table -------------------
+    hf_logits_np = hf_outputs.logits.cpu().float().numpy()
+    hf_log_probs_np = F.log_softmax(torch.from_numpy(hf_logits_np), dim=-1).numpy()
+
+    print("\nToken | ID | String | Lev Logit | Lev LogP | Lev P |  HF Logit |  HF LogP |  HF P | |Δ LogP|", flush=True)
+    print("----- |----|--------|-----------|----------|-------|-----------|----------|-------|---------", flush=True)
+
+    for i, tok in enumerate(suffix_ids):
+        time_idx = prefix_len + i - 1
+        tok_str = tokenizer.decode([tok]).replace("\n", "\\n")
+
+        lev_logit = float(lev_logits[0, time_idx, tok])
+        lev_logp = float(lev_lp[0, time_idx, tok])
+        lev_p = float(np.exp(lev_logp))
+
+        hf_logit = float(hf_logits_np[0, time_idx, tok])
+        hf_logp = float(hf_log_probs_np[0, time_idx, tok])
+        hf_p = float(np.exp(hf_logp))
+
+        delta_logp = lev_logp - hf_logp
+
+        print(
+            f"{i:>4} | {tok:>5} | {tok_str[:8]:<8} | {lev_logit:+.4f} | {lev_logp:+.5f} | {lev_p:.5f} "
+            f"| {hf_logit:+.4f} | {hf_logp:+.5f} | {hf_p:.5f} | {delta_logp:+.2e}",
+            flush=True,
+        )
 
     # Compare per-token log-probs as well (HF helper gives suffix-only tokens)
     np.testing.assert_allclose(np.array(lev_token_lp, dtype=np.float32), np.array(token_lp_hf, dtype=np.float32), rtol=1e-3, atol=1e-3)
+
+    # Compare total log-probability
+    np.testing.assert_allclose(log_p_z_lev, log_p_z_hf, rtol=1e-3, atol=1e-3)
 
 
 @skip_if_no_torch
