@@ -463,7 +463,7 @@ class AdamConfig(OptimizerConfig):
             if self.weight_decay > 0:
                 if self.adamc_weight_decay:
                     max_lr = self.learning_rate
-                    weight_decay = self.weight_decay * (lr / max_lr)
+                    weight_decay = self.weight_decay * (learning_rate / max_lr)
                 else:
                     weight_decay = self.weight_decay
                 components.append(optax.add_decayed_weights(weight_decay, self.build_weight_decay_mask()))
