@@ -52,6 +52,7 @@ from levanter.store.cache import CacheMetadata, CacheOptions, TreeCache
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.store.tree_store import TreeStore
 from levanter.utils import fsspec_utils
+from levanter.utils.fsspec_utils import expand_glob
 from levanter.utils.hf_utils import HfTokenizer, num_cpus_used_by_tokenizer
 
 # intercept the logging nonsense here
@@ -83,6 +84,230 @@ logger = logging.getLogger("levanter.data.text")
 # TASKS:
 # TODO: consider adding indexing a la Map-style datasets
 # TODO: support seeking/serialization/restore in the dataset
+
+
+def legacy_mk_dpo_dataset(
+    urls: Sequence[str],
+    tokenizer: PreTrainedTokenizerBase,
+    prompt_field: str = "prompt",
+    chosen_field: str = "chosen",
+    rejected_field: str = "rejected",
+    max_prompt_length: int = 512,
+    max_response_length: int = 1536,
+    max_seq_len: int = 2048,
+    debug: bool = False,
+) -> "AsyncDataset[dict]":
+    """
+    Loads a DPO/preference dataset from JSONL files. Each line should have prompt, chosen, and rejected fields.
+    Tokenizes each field and yields dicts with prompt_ids, chosen_ids, rejected_ids.
+    """
+    import fsspec
+    import numpy as np
+
+    from levanter.data.dataset import ListAsyncDataset
+
+    if debug:
+        print(f"DEBUG: mk_dpo_dataset called with urls={urls}", flush=True)
+        print(
+            f"DEBUG: Looking for fields: prompt='{prompt_field}', chosen='{chosen_field}',"
+            f" rejected='{rejected_field}'",
+            flush=True,
+        )
+
+    # Expand globs
+    expanded_urls = []
+    for url in urls:
+        if any(c in url for c in "*?[]"):
+            expanded_urls.extend(expand_glob(url))
+        else:
+            expanded_urls.append(url)
+
+    if debug:
+        print(f"DEBUG: Expanded URLs: {expanded_urls}", flush=True)
+
+    examples = []
+    for url_idx, url in enumerate(expanded_urls):
+        if debug:
+            print(f"DEBUG: Processing URL {url_idx+1}/{len(expanded_urls)}: {url}", flush=True)
+        with fsspec.open(url, "r", compression="infer") as f:
+            for line_idx, line in enumerate(f):
+                data = json.loads(line)
+                if debug:
+                    print(f"DEBUG: Line {line_idx}, keys in data: {list(data.keys())}", flush=True)
+
+                # Check if fields exist
+                if prompt_field not in data:
+                    if debug:
+                        print(f"DEBUG: ERROR - Missing prompt field '{prompt_field}' in data", flush=True)
+                    continue
+                if chosen_field not in data:
+                    if debug:
+                        print(f"DEBUG: ERROR - Missing chosen field '{chosen_field}' in data", flush=True)
+                    continue
+                if rejected_field not in data:
+                    if debug:
+                        print(f"DEBUG: ERROR - Missing rejected field '{rejected_field}' in data", flush=True)
+                    continue
+
+                prompt = data[prompt_field]
+                chosen_raw = data[chosen_field]
+                rejected_raw = data[rejected_field]
+
+                if debug:
+                    print(
+                        f"DEBUG: Line {line_idx}, prompt type: {type(prompt)}, chosen type: {type(chosen_raw)},"
+                        f" rejected type: {type(rejected_raw)}",
+                        flush=True,
+                    )
+                    print(
+                        f"DEBUG: Line {line_idx}, prompt preview:"
+                        f" {repr(prompt[:100] if isinstance(prompt, str) else prompt)}",
+                        flush=True,
+                    )
+
+                # Extract assistant responses from chat lists
+                if isinstance(chosen_raw, list):
+                    # Find the assistant's response in chosen
+                    chosen = None
+                    for msg in chosen_raw:
+                        if isinstance(msg, dict) and msg.get("role") == "assistant":
+                            chosen = msg.get("content", "")
+                            break
+                    if chosen is None:
+                        if debug:
+                            print(f"DEBUG: ERROR - No assistant response found in chosen messages", flush=True)
+                        continue
+                    if debug:
+                        print(f"DEBUG: Line {line_idx}, extracted chosen: {repr(chosen[:100])}", flush=True)
+                elif isinstance(chosen_raw, str):
+                    chosen = chosen_raw
+                else:
+                    if debug:
+                        print(f"DEBUG: ERROR - chosen is neither string nor list: {type(chosen_raw)}", flush=True)
+                    continue
+
+                if isinstance(rejected_raw, list):
+                    # Find the assistant's response in rejected
+                    rejected = None
+                    for msg in rejected_raw:
+                        if isinstance(msg, dict) and msg.get("role") == "assistant":
+                            rejected = msg.get("content", "")
+                            break
+                    if rejected is None:
+                        if debug:
+                            print(f"DEBUG: ERROR - No assistant response found in rejected messages", flush=True)
+                        continue
+                    if debug:
+                        print(f"DEBUG: Line {line_idx}, extracted rejected: {repr(rejected[:100])}", flush=True)
+                elif isinstance(rejected_raw, str):
+                    rejected = rejected_raw
+                else:
+                    if debug:
+                        print(f"DEBUG: ERROR - rejected is neither string nor list: {type(rejected_raw)}", flush=True)
+                    continue
+
+                # Validate final extracted strings
+                if not isinstance(prompt, str):
+                    if debug:
+                        print(f"DEBUG: ERROR - prompt is not a string: {type(prompt)}", flush=True)
+                    continue
+                if not isinstance(chosen, str):
+                    if debug:
+                        print(f"DEBUG: ERROR - extracted chosen is not a string: {type(chosen)}", flush=True)
+                    continue
+                if not isinstance(rejected, str):
+                    if debug:
+                        print(f"DEBUG: ERROR - extracted rejected is not a string: {type(rejected)}", flush=True)
+                    continue
+
+                # Tokenize
+                if debug:
+                    print(f"DEBUG: Line {line_idx}, tokenizing prompt...", flush=True)
+                prompt_ids = tokenizer(
+                    prompt,
+                    truncation=True,
+                    max_length=max_prompt_length,
+                    add_special_tokens=False,
+                )["input_ids"]
+
+                if debug:
+                    print(f"DEBUG: Line {line_idx}, tokenizing chosen...", flush=True)
+                chosen_ids = tokenizer(
+                    chosen,
+                    truncation=True,
+                    max_length=max_response_length,
+                    add_special_tokens=False,
+                )["input_ids"]
+
+                if debug:
+                    print(f"DEBUG: Line {line_idx}, tokenizing rejected...", flush=True)
+                rejected_ids = tokenizer(
+                    rejected,
+                    truncation=True,
+                    max_length=max_response_length,
+                    add_special_tokens=False,
+                )["input_ids"]
+
+                if debug:
+                    print(
+                        f"DEBUG: Line {line_idx}, tokenization successful - prompt_len={len(prompt_ids)},"
+                        f" chosen_len={len(chosen_ids)}, rejected_len={len(rejected_ids)}",
+                        flush=True,
+                    )
+
+                # Truncate to max_seq_len if needed
+                if len(prompt_ids) + len(chosen_ids) > max_seq_len:
+                    chosen_ids = chosen_ids[: max_seq_len - len(prompt_ids)]
+                if len(prompt_ids) + len(rejected_ids) > max_seq_len:
+                    rejected_ids = rejected_ids[: max_seq_len - len(prompt_ids)]
+
+                prompt_len = len(prompt_ids)
+                response_len = len(chosen_ids)
+
+                # Pad all sequences to max_seq_len for consistent batch shapes
+                # Use tokenizer.pad_token_id if available, otherwise 0
+                pad_token_id = getattr(tokenizer, "pad_token_id", None)
+                if pad_token_id is None:
+                    pad_token_id = 0
+
+                def pad_to_length(seq, target_length):
+                    if len(seq) >= target_length:
+                        return seq[:target_length]
+                    else:
+                        return seq + [pad_token_id] * (target_length - len(seq))
+
+                prompt_ids_padded = pad_to_length(prompt_ids, max_prompt_length)
+                chosen_ids_padded = pad_to_length(chosen_ids, max_response_length)
+                rejected_ids_padded = pad_to_length(rejected_ids, max_response_length)
+
+                # Wrap in NamedArray for Haliax so batch axis can be resolved
+                from haliax import Axis
+
+                PromptAxis = Axis("prompt", max_prompt_length)
+                ResponseAxis = Axis("response", max_response_length)
+                prompt_named = hax.named(np.array(prompt_ids_padded, dtype=np.int32), PromptAxis)
+                chosen_named = hax.named(np.array(chosen_ids_padded, dtype=np.int32), ResponseAxis)
+                rejected_named = hax.named(np.array(rejected_ids_padded, dtype=np.int32), ResponseAxis)
+
+                # Store as NamedArray leaves for batching
+                examples.append(
+                    {
+                        "prompt_ids": prompt_named,
+                        "chosen_ids": chosen_named,
+                        "rejected_ids": rejected_named,
+                        "prompt_len": prompt_len,
+                        "response_len": response_len,
+                    }
+                )
+
+    if debug:
+        print(f"DEBUG: Created {len(examples)} examples total", flush=True)
+    # Wrap in a ListAsyncDataset for async compatibility. The dataset is fully
+    # populated by the time we reach this point, so mark it complete to avoid
+    # requiring a separate finalize() call by the caller.
+    dataset = ListAsyncDataset(examples, is_complete=True)
+    return dataset
+
 
 LEDGER_FILE = "ledger.json"
 
@@ -692,6 +917,45 @@ SupervisedSourceConfig: TypeAlias = Union[SupervisedHfSourceConfig, SupervisedUr
 
 # for compatibility with old configs
 LMSupervisedDatasetConfig: TypeAlias = SupervisedUrlSourceConfig
+
+
+@dataclass(frozen=True)
+class DpoSourceConfig:
+    """
+    Config for DPO/preference data loading, similar to SupervisedSourceConfig for SFT.
+    """
+
+    train_urls: list[str] = dataclasses.field(default_factory=list)
+    validation_urls: list[str] = dataclasses.field(default_factory=list)
+    prompt_field: str = "prompt"
+    chosen_field: str = "chosen"
+    rejected_field: str = "rejected"
+    cache_dir: str = "cache/"
+    tags: Optional[list[str]] = None
+    max_prompt_length: int = 512
+    max_response_length: int = 1536
+    max_seq_len: int = 2048
+
+    def get_urls(self, split: str) -> list[str]:
+        if split == "train":
+            return self.train_urls
+        elif split == "validation":
+            return self.validation_urls
+        else:
+            raise ValueError(f"Unknown split: {split}")
+
+    def mk_dataset(self, tokenizer, split: str = "train", debug: bool = False):
+        return legacy_mk_dpo_dataset(
+            urls=self.get_urls(split),
+            tokenizer=tokenizer,
+            prompt_field=self.prompt_field,
+            chosen_field=self.chosen_field,
+            rejected_field=self.rejected_field,
+            max_prompt_length=self.max_prompt_length,
+            max_response_length=self.max_response_length,
+            max_seq_len=self.max_seq_len,
+            debug=debug,
+        )
 
 
 def _preprocess_supervised_example(
