@@ -201,9 +201,8 @@ def _collect_levanter_hidden_states(
     """Runs the input through each layer, capturing outputs after embeddings and after every layer."""
     hidden: List[np.ndarray] = []
 
-    # Embeddings output
+    # Initial embeddings output (input to the first transformer layer)
     x = model.embeddings.embed(input_ids)
-    hidden.append(np.array(jax.device_get(x.array)))  # shape (B, P, E)
 
     # Determine how to iterate over the per-layer modules inside the Stacked/BlockSeq container.
     container = model.transformer.layers
@@ -222,12 +221,26 @@ def _collect_levanter_hidden_states(
             # Last resort: index by number of layers
             layers_iter = [container[i] for i in range(model.config.num_layers)]  # type: ignore[index]
 
-    # Run through layers sequentially, recording the output of each full layer (after residual add)
-    for layer in layers_iter:
-        x = layer(x, mask)
-        hidden.append(np.array(jax.device_get(x.array)))
+    # Mirror HF semantics:
+    #   • Append the hidden state *before* each decoder layer.
+    #   • After the loop, append the output of the final global RMSNorm.
 
-    return hidden  # length = num_layers + 1 (embeddings + every layer)
+    for layer in layers_iter:
+        # Capture current hidden state (input to this layer)
+        hidden.append(np.array(jax.device_get(x.array)))
+        # Forward through the layer
+        x = layer(x, mask)
+
+    # After all layers, apply the transformer-level RMSNorm and record it.
+    x_norm = model.transformer.norm(x)
+    hidden.append(np.array(jax.device_get(x_norm.array)))
+
+    # Resulting list layout (matches HF):
+    #   index 0            : embeddings (input to layer 0)
+    #   index 1..num_layers-1 : inputs to layers 1..(num_layers-1)
+    #   index num_layers    : final transformer.norm output
+    # Therefore length = num_layers + 1
+    return hidden
 
 
 def _collect_hf_hidden_states(
@@ -604,11 +617,144 @@ def test_final_activation_comparison():
         f"Shape mismatch: {lev_activations.shape} vs {hf_final_activations.shape}"
     )
 
+    # Use stricter tolerances here, and emit diagnostics on failure
+    rtol = 1e-4
+    atol = 1e-4
+
+    try:
+        chex.assert_trees_all_close(
+            lev_activations.astype(np.float32),
+            hf_final_activations.astype(np.float32),
+            rtol=rtol,
+            atol=atol,
+        )
+    except AssertionError:
+        diff = np.abs(lev_activations.astype(np.float32) - hf_final_activations.astype(np.float32))
+        tol = atol + rtol * np.abs(hf_final_activations.astype(np.float32))
+        mismatches = diff > tol
+
+        num_mismatch = int(np.count_nonzero(mismatches))
+        total = diff.size
+        max_diff = float(diff.max())
+
+        print(
+            f"\n❌  Final activations: {num_mismatch}/{total} elements exceed tolerance. Max |Δ| = {max_diff:.6f}",
+            flush=True,
+        )
+
+        if num_mismatch > 0:
+            mismatch_coords = np.column_stack(np.where(mismatches))
+            diff_values = diff[mismatches]
+            TOP_K = 20
+            topk_idx = np.argsort(diff_values)[-TOP_K:][::-1]
+
+            head_dim = lev_model.config.hidden_dim // lev_model.config.num_heads
+
+            print("Rank | Batch | Pos | Hidden | Head | Dim-in-Head |   Lev   |    HF    |  |Δ|", flush=True)
+            print("-----|-------|-----|--------|------|-------------|---------|----------|------", flush=True)
+
+            for rank, idx_flat in enumerate(topk_idx, start=1):
+                b, p, d = mismatch_coords[idx_flat]
+                head = d // head_dim
+                dim_in_head = d % head_dim
+                lev_val = float(lev_activations[b, p, d])
+                hf_val = float(hf_final_activations[b, p, d])
+                delta = float(diff[b, p, d])
+                print(
+                    f"{rank:>4} | {b:>5} | {p:>3} | {d:>6} | {head:>4} | {dim_in_head:>11} "
+                    f"| {lev_val:+.6f} | {hf_val:+.6f} | {delta:.6f}",
+                    flush=True,
+                )
+
+        # Re-raise to ensure the test still fails if tolerance exceeded
+        raise
+
+
+@skip_if_no_torch
+@skip_if_hf_model_not_accessible(MODEL_ID)
+@skip_in_ci("Large 8B model – skipped in CI.")
+
+def test_rmsnorm_equivalence_detailed():
+    """Diagnostic test that compares the final RMSNorm layer between HuggingFace and Levanter.
+
+    It checks:
+      1. ε (variance_epsilon) values.
+      2. Weight vectors.
+      3. Functional behaviour on identical pre-norm activations.
+      4. End-to-end equality of post-norm activations.
+    Prints detailed stats so discrepancies can be pinpointed easily.
+    """
+
+    # ---------------- Tokenisation ----------------
+    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    ids_list = _tokenize_example(tokenizer)
+    prompt_len = len(ids_list)
+
+    # ---------------- HuggingFace model ----------------
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    hf_model = transformers.AutoModelForCausalLM.from_pretrained(
+        MODEL_ID, torch_dtype=torch.float32, device_map={"": device}
+    )
+    hf_model.eval()
+
+    input_ids_torch = torch.tensor(ids_list, dtype=torch.long).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        hf_outputs = hf_model(
+            input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True
+        )
+    hf_hidden = [hs.cpu().float().numpy() for hs in hf_outputs.hidden_states]
+
+    pre_norm_hf = hf_hidden[-2]  # before global RMSNorm
+    post_norm_hf = hf_hidden[-1]  # after global RMSNorm
+
+    # ---------------- Levanter model ----------------
+    vocab_size = hf_model.config.vocab_size
+    lev_model = _build_levanter_model(prompt_len, vocab_size)
+
+    Batch = Axis("batch", 1)
+    Pos_full = lev_model.config.Pos
+    pad_len = Pos_full.size - prompt_len
+    ids_padded = ids_list + [tokenizer.pad_token_id] * pad_len
+    input_ids_np = np.array([ids_padded], dtype=np.int32)
+    lev_input_named = hax.named(input_ids_np, (Batch, Pos_full))
+    causal_mask = AttentionMask.causal()
+
+    lev_hidden = _collect_levanter_hidden_states(lev_model, lev_input_named, causal_mask)
+    pre_norm_lev = lev_hidden[-2][:, :prompt_len, :]
+    post_norm_lev = lev_hidden[-1][:, :prompt_len, :]
+
+    # ---------------- Config / parameter checks ----------------
+    hf_eps = float(hf_model.model.norm.variance_epsilon)
+    lev_eps = float(lev_model.transformer.norm.eps)
+    print(f"ε  HF={hf_eps}   Levanter={lev_eps}")
+
+    hf_w = hf_model.model.norm.weight.detach().cpu().numpy()
+    lev_w = lev_model.transformer.norm.weight.array
+    print("RMSNorm weight max |Δ|:", float(np.max(np.abs(hf_w - lev_w))))
+    print("RMSNorm weight mean |Δ|:", float(np.mean(np.abs(hf_w - lev_w))))
+
+    # ---------------- Functional comparison on identical input ----------------
+    # Pass the same pre-norm activations through each implementation
+    with torch.no_grad():
+        out_hf_ident = hf_model.model.norm(torch.from_numpy(pre_norm_hf).to(device)).cpu().numpy()
+
+    Pos_short = Axis("position", prompt_len)
+    x_named = hax.named(pre_norm_hf.astype(np.float32), (Batch, Pos_short, lev_model.config.Embed))
+    out_lev_ident = lev_model.transformer.norm(x_named).array
+
+    diff_ident = np.max(np.abs(out_hf_ident - out_lev_ident))
+    print("Functional diff (identical input) max |Δ|:", float(diff_ident))
+
+    # ---------------- Assertions ----------------
     chex.assert_trees_all_close(
-        lev_activations.astype(np.float32),
-        hf_final_activations.astype(np.float32),
-        rtol=1e-4,
-        atol=1e-4,
+        out_hf_ident.astype(np.float32), out_lev_ident.astype(np.float32), rtol=1e-4, atol=1e-4
+    )
+    chex.assert_trees_all_close(
+        post_norm_hf.astype(np.float32), post_norm_lev.astype(np.float32), rtol=1e-4, atol=1e-4
     )
 
     
