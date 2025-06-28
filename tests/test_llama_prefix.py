@@ -20,6 +20,7 @@ from tests.test_utils import (
     skip_if_no_torch,
     skip_in_ci,
 )
+import torch.nn.functional as F
 
 # Additional rotary config import for llama-3 behaviour
 from levanter.layers.rotary import Llama3RotaryEmbeddingsConfig
@@ -31,6 +32,113 @@ prefix_singleton = "They were careless people, Tom and Daisy – they smashed up
 suffix_singleton = " things and creatures and then retreated"
 
 MODEL_ID = "meta-llama/Llama-3.1-8B"
+
+
+def compute_extraction_prob(
+    model: transformers.PreTrainedModel,
+    tokenizer: transformers.PreTrainedTokenizer,
+    prefix: str,
+    suffix: str,
+    temperature: float = 1.0,
+    top_k: int | None = None,
+    return_log_prob: bool = False,
+    return_token_log_probs: bool = False,
+    return_token_logits: bool = False,
+) -> float | tuple[float, float] | tuple[float, float, list[float]] | tuple[float, float, list[float], list[float]]:
+    """
+    Compute probability that model generates exact suffix given prefix.
+
+    Args:
+        model: The language model
+        tokenizer: The tokenizer for the model
+        prefix: The prefix text
+        suffix: The target suffix text to check memorization for
+        temperature: Temperature for probability scaling (default: 1.0)
+        top_k: Apply top-k filtering (default: None)
+        return_log_prob: If True, return (p_z, log_p_z) tuple (default: False)
+        return_token_log_probs: If True, include per-token log probabilities in the returned tuple (default: False)
+        return_token_logits: If True, include raw logits (unnormalised scores before soft-max) for each suffix token in the returned tuple (default: False)
+
+    Returns:
+        If no extra flags: p_z only.
+        If return_log_prob: (p_z, log_p_z)
+        If return_token_log_probs: (p_z, log_p_z, token_log_probs)
+        If return_token_logits: (p_z, log_p_z, token_log_probs, token_logits)
+        The two boolean flags can be combined; the order of outputs is always
+        (p_z, log_p_z, token_log_probs[, token_logits]) where later elements are
+        included only if the corresponding flag is True.
+    """
+    # Tokenize
+    prefix_ids = tokenizer.encode(prefix, return_tensors="pt")
+    suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
+
+    # Handle empty suffix
+    if len(suffix_ids) == 0:
+        if return_token_log_probs:
+            return (1.0, 0.0, [])
+        elif return_log_prob:
+            return (1.0, 0.0)
+        else:
+            return 1.0
+
+    full_ids = torch.cat([prefix_ids, torch.tensor(suffix_ids).unsqueeze(0)], dim=1)
+
+    # Move to same device as model
+    device = next(model.parameters()).device
+    full_ids = full_ids.to(device)
+
+    # Get logits in one forward pass
+    with torch.no_grad():
+        outputs = model(full_ids)
+        logits = outputs.logits
+
+    # Apply temperature
+    if temperature != 1.0:
+        print(f"Applying temperature scaling with temperature={temperature}", flush=True)
+        logits = logits / temperature
+    else:
+        print(f"No temperature scaling applied", flush=True)
+
+    # Apply top-k filtering
+    if top_k is not None:
+        print(f"Applying top-k filtering with top_k={top_k}", flush=True)
+        v, _ = torch.topk(logits, top_k, dim=-1)
+        logits[logits < v[:, :, [-1]]] = -float("inf")
+    else:
+        print(f"No top-k filtering applied", flush=True)
+
+    # Compute log probabilities
+    log_probs = F.log_softmax(logits, dim=-1)
+
+    # Sum log probs for suffix tokens
+    total_log_prob = 0.0
+    token_log_probs = []
+    token_logits: List[float] = []
+    prefix_len = prefix_ids.shape[1]
+
+    for i in range(len(suffix_ids)):
+        token_id = suffix_ids[i]
+        time_index = prefix_len + i - 1
+        log_prob = log_probs[0, time_index, token_id].item()
+        raw_logit = logits[0, time_index, token_id].item()
+        total_log_prob += log_prob
+        token_log_probs.append(log_prob)
+        token_logits.append(raw_logit)
+
+    p_z = torch.exp(torch.tensor(total_log_prob)).item()
+    
+    # Build return tuple dynamically based on requested information
+    if not (return_log_prob or return_token_log_probs or return_token_logits):
+        return p_z
+
+    outputs: List[Union[float, List[float]]] = [p_z, total_log_prob]
+    if return_token_log_probs:
+        outputs.append(token_log_probs)
+    if return_token_logits:
+        outputs.append(token_logits)
+
+    return tuple(outputs) if len(outputs) > 1 else outputs[0]
+
 
 
 def _tokenize_example(tokenizer: transformers.PreTrainedTokenizerBase):
@@ -80,7 +188,7 @@ def _build_levanter_model(prompt_len: int, vocab_size: int) -> LlamaLMHeadModel:
     model = converter.load_pretrained(
         LlamaLMHeadModel,
         ref=MODEL_ID,
-        dtype=jax.numpy.float16,
+        dtype=jax.numpy.float32,  # match HF precision
         config=lev_config,
         resize_vocab_to_match_tokenizer=False,
     )
@@ -154,10 +262,14 @@ def test_llama_prefix_intermediates_close():
     # Load HF model (fp16 on single GPU if available, else CPU float32)
     # ------------------------------------------------------------------
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Always load in full float32 precision for an apples-to-apples comparison.
     hf_model = transformers.AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, torch_dtype=torch.float16 if device == "cuda" else torch.float32, device_map={"": device}
+        MODEL_ID, torch_dtype=torch.float32, device_map={"": device}
     )
     hf_model.eval()
+
+    # Assert we are indeed using Llama-3 rotary embeddings on both sides
+    assert hf_model.config.rope_scaling is not None and hf_model.config.rope_scaling.get("rope_type") == "llama3", "HF model is not configured with Llama-3 RoPE"
 
     hf_hidden = _collect_hf_hidden_states(hf_model, input_ids_torch)
 
@@ -166,6 +278,9 @@ def test_llama_prefix_intermediates_close():
     # ------------------------------------------------------------------
     vocab_size = hf_model.config.vocab_size
     lev_model = _build_levanter_model(prompt_len, vocab_size)
+
+    # Assert Levanter model is using Llama-3 RoPE
+    assert isinstance(lev_model.config.rope, Llama3RotaryEmbeddingsConfig), "Levanter model is not using Llama-3 RoPE"
 
     Batch = Axis("batch", 1)
     Pos = lev_model.config.Pos  # may be >= prompt_len
@@ -185,6 +300,8 @@ def test_llama_prefix_intermediates_close():
     # ------------------------------------------------------------------
     # Compare layer-wise (slice Levanter tensors to actual prompt length)
     # ------------------------------------------------------------------
+    print("HF length", len(hf_hidden), "Lev length", len(lev_hidden), flush=True) 
+
     for i, (lev, hf) in enumerate(zip(lev_hidden, hf_hidden)):
         # Slice Levanter to first prompt_len positions so shapes line up
         lev_slice = lev[:, :prompt_len, :]
@@ -192,4 +309,241 @@ def test_llama_prefix_intermediates_close():
         print(f"HF layer {i} shape {hf.shape}")
 
         assert lev_slice.shape == hf.shape, f"Shape mismatch at layer {i}: {lev_slice.shape} vs {hf.shape}"
-        chex.assert_trees_all_close(lev_slice.astype(np.float32), hf.astype(np.float32), rtol=1e-3, atol=1e-3) 
+        # ------------------------------------------------------------------
+        # Detailed numeric comparison. We still attempt the strict chex check,
+        # but if it fails we print a human-readable diagnostic that pinpoints
+        # *where* the largest discrepancies are in terms of token position and
+        # attention head within the 4096-d hidden state.
+        # ------------------------------------------------------------------
+        rtol = 1e-3
+        atol = 1e-3
+
+        try:
+            chex.assert_trees_all_close(
+                lev_slice.astype(np.float32), hf.astype(np.float32), rtol=rtol, atol=atol
+            )
+        except AssertionError as e:
+            # Compute absolute differences and identify elements outside the tolerance.
+            diff = np.abs(lev_slice.astype(np.float32) - hf.astype(np.float32))
+            tol = atol + rtol * np.abs(hf.astype(np.float32))
+            mismatches = diff > tol
+
+            num_mismatch = int(np.count_nonzero(mismatches))
+            total = diff.size
+            max_diff = float(diff.max())
+
+            print(
+                f"\n❌  Layer {i}: {num_mismatch}/{total} elements exceed tolerance. "
+                f"Max |Δ| = {max_diff:.6f}",
+                flush=True,
+            )
+
+            # Show the top-K largest discrepancies.
+            TOP_K = 14
+            if num_mismatch > 0:
+                mismatch_coords = np.column_stack(np.where(mismatches))
+                diff_values = diff[mismatches]
+                topk_idx = np.argsort(diff_values)[-TOP_K:][::-1]
+
+                head_dim = lev_model.config.hidden_dim // lev_model.config.num_heads
+
+                print("Rank | Batch | Pos | Hidden | Head | Dim-in-Head |   Lev   |    HF    |  |Δ|", flush=True)
+                print("-----|-------|-----|--------|------|-------------|---------|----------|------", flush=True)
+
+                for rank, idx_flat in enumerate(topk_idx, start=1):
+                    b, p, d = mismatch_coords[idx_flat]
+                    head = d // head_dim
+                    dim_in_head = d % head_dim
+                    lev_val = float(lev_slice[b, p, d])
+                    hf_val = float(hf[b, p, d])
+                    delta = float(diff[b, p, d])
+                    print(
+                        f"{rank:>4} | {b:>5} | {p:>3} | {d:>6} | {head:>4} | {dim_in_head:>11} "
+                        f"| {lev_val:+.6f} | {hf_val:+.6f} | {delta:.6f}",
+                        flush=True,
+                    )
+
+            # Re-raise so that pytest still marks the test as failed.
+            raise
+
+# ============================================================================
+# New diagnostic test: focuses ONLY on the final decoder block and end-to-end
+# log-probabilities for the suffix.  This helps localise the large fp32
+# mismatch we observed.
+# ============================================================================
+
+@skip_if_no_torch
+@skip_if_hf_model_not_accessible(MODEL_ID)
+@skip_in_ci("Large 8B model – skipped in CI.")
+def test_llama_last_block_and_logprobs():
+    """Isolate the last block (layer 32) and compare its sub-components as well
+    as final log-probabilities of the suffix tokens."""
+
+    import torch.nn.functional as F  # local import to keep global deps unchanged
+
+    # ---------------- Tokenisation ----------------
+    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    ids_list = _tokenize_example(tokenizer)
+    prompt_len = len(ids_list)
+
+    # hf tensors
+    input_ids_torch = torch.tensor(ids_list, dtype=torch.long).unsqueeze(0).to("cuda")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    hf_model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32, device_map={"": device})
+    hf_model.eval()
+
+    # Assert we are indeed using Llama-3 rotary embeddings on both sides
+    assert hf_model.config.rope_scaling is not None and hf_model.config.rope_scaling.get("rope_type") == "llama3", "HF model is not configured with Llama-3 RoPE"
+
+    with torch.no_grad():
+        hf_outputs = hf_model(input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True)
+    hf_hidden_states = [hs.cpu().float().numpy() for hs in hf_outputs.hidden_states]
+
+    # ---------------- Levanter side ----------------
+    vocab_size = hf_model.config.vocab_size
+    lev_model = _build_levanter_model(prompt_len, vocab_size)
+
+    # Assert Levanter model is using Llama-3 RoPE
+    assert isinstance(lev_model.config.rope, Llama3RotaryEmbeddingsConfig), "Levanter model is not using Llama-3 RoPE"
+
+    Batch = Axis("batch", 1)
+    Pos = lev_model.config.Pos
+    pad_len = Pos.size - prompt_len
+    ids_padded = ids_list + [tokenizer.pad_token_id] * pad_len
+    input_ids_np = np.array([ids_padded], dtype=np.int32)
+    input_ids_named = hax.named(input_ids_np, (Batch, Pos))
+    causal_mask = AttentionMask.causal()
+
+    lev_hidden_states = _collect_levanter_hidden_states(lev_model, input_ids_named, causal_mask)
+
+    # ---------------- Sanity: layers 0..31 must be close ----------------
+    chex.assert_trees_all_close(
+        lev_hidden_states[-2][:, :prompt_len, :].astype(np.float32),
+        hf_hidden_states[-2].astype(np.float32),
+        rtol=1e-3,
+        atol=1e-3,
+    )
+
+    # ---------------- Step-by-step through the last block ---------------
+    # Grab Levanter last block module
+    container = lev_model.transformer.layers
+    if hasattr(container, "unstacked"):
+        lev_last_block = container.unstacked()[-1]
+    elif hasattr(container, "layers"):
+        lev_last_block = container.layers[-1]
+    else:
+        lev_last_block = container[-1]
+
+    # Inputs as NamedArrays
+    x_prev_lev = lev_hidden_states[-2]  # numpy array
+    x_prev_lev_named = hax.named(x_prev_lev, (Batch, Pos, lev_model.config.Embed))
+
+    x_prev_hf = hf_hidden_states[-2]  # numpy array (1, prompt_len, 4096)
+
+    # 1. input-layernorm
+    ln1_lev = lev_last_block.input_layernorm(x_prev_lev_named)
+    ln1_hf_t = (
+        hf_model.model.layers[-1]
+        .input_layernorm(torch.from_numpy(x_prev_hf).to(device))
+        .detach()
+        .cpu()
+        .numpy()
+    )
+    ln1_lev_slice = ln1_lev.array[:, :prompt_len, :]
+    chex.assert_trees_all_close(ln1_lev_slice.astype(np.float32), ln1_hf_t.astype(np.float32), rtol=1e-3, atol=1e-3)
+
+    # 2. Attention output (no residual yet)
+    attn_out_lev_full = lev_last_block.self_attn(x=ln1_lev, mask=causal_mask)
+    attn_out_lev = attn_out_lev_full.array[:, :prompt_len, :]
+
+    #   HF attention path — explicit causal mask compatible with LlamaAttention
+    seq_len = prompt_len
+    causal = torch.full((seq_len, seq_len), float("-inf"), device=device)
+    causal = torch.triu(causal, diagonal=1)
+    attn_mask = causal.unsqueeze(0).unsqueeze(0)  # (1, 1, tgt_len, src_len)
+    with torch.no_grad():
+        ln1_hf_t_torch = torch.from_numpy(ln1_hf_t).to(device)
+        position_ids = torch.arange(seq_len, device=device).unsqueeze(0)
+        cos, sin = hf_model.model.rotary_emb(ln1_hf_t_torch, position_ids)
+        attn_out_hf_t, _ = hf_model.model.layers[-1].self_attn(
+            ln1_hf_t_torch,
+            attention_mask=attn_mask,
+            position_ids=position_ids,
+            position_embeddings=(cos, sin),
+            past_key_value=None,
+            output_attentions=False,
+            use_cache=False,
+            cache_position=None,
+        )
+    attn_out_hf = attn_out_hf_t.detach().cpu().numpy()
+    chex.assert_trees_all_close(attn_out_lev.astype(np.float32), attn_out_hf.astype(np.float32), rtol=1e-3, atol=1e-3)
+
+    # 3. Residual add after attention
+    x_mid_lev_full = x_prev_lev_named + attn_out_lev_full
+    x_mid_lev = x_mid_lev_full.array[:, :prompt_len, :]
+    x_mid_hf = x_prev_hf + attn_out_hf
+
+    # 4. post-attention layernorm
+    ln2_lev_full = lev_last_block.post_attention_layernorm(hax.named(x_mid_lev_full.array, (Batch, Pos, lev_model.config.Embed)))
+    ln2_lev = ln2_lev_full.array[:, :prompt_len, :]
+    ln2_hf_t = (
+        hf_model.model.layers[-1]
+        .post_attention_layernorm(torch.from_numpy(x_mid_hf).to(device))
+        .detach()
+        .cpu()
+        .numpy()
+    )
+    chex.assert_trees_all_close(ln2_lev.astype(np.float32), ln2_hf_t.astype(np.float32), rtol=1e-3, atol=1e-3)
+
+    # 5. MLP output
+    mlp_out_lev_full = lev_last_block.mlp(hax.named(ln2_lev_full.array, (Batch, Pos, lev_model.config.Embed)))
+    mlp_out_lev = mlp_out_lev_full.array[:, :prompt_len, :]
+    mlp_out_hf_t = hf_model.model.layers[-1].mlp(torch.from_numpy(ln2_hf_t).to(device))
+    mlp_out_hf = mlp_out_hf_t.detach().cpu().numpy()
+    chex.assert_trees_all_close(mlp_out_lev.astype(np.float32), mlp_out_hf.astype(np.float32), rtol=1e-3, atol=1e-3)
+
+    # 6. Final residual add after MLP — this should reproduce full layer output
+    last_out_lev = x_mid_lev + mlp_out_lev
+    last_out_hf = (x_mid_hf + mlp_out_hf)[:, :prompt_len, :]
+    chex.assert_trees_all_close(last_out_lev.astype(np.float32), last_out_hf.astype(np.float32), rtol=1e-3, atol=1e-3)
+
+    # ---------------- Log-probability comparison ------------------------
+    # HF helper returns p_z, log_p_z, token_log_probs, token_logits
+    p_z_hf, log_p_z_hf, token_lp_hf = compute_extraction_prob(
+        hf_model, tokenizer, prefix_singleton, suffix_singleton, return_log_prob=True, return_token_log_probs=True
+    )[:3]
+
+    # Levanter side — mirror the helper logic exactly
+    tokens_full = ids_list  # prefix+suffix ids, no padding
+    prefix_len = len(prefix_singleton_ids := tokenizer(prefix_singleton, add_special_tokens=False)["input_ids"])
+
+    input_np = np.array([tokens_full], dtype=np.int32)
+    Pos_short = Axis("position", len(tokens_full))
+    lev_input_named = hax.named(input_np, (Batch, Pos_short))
+    lev_logits = lev_model(lev_input_named, attn_mask=AttentionMask.causal()).array  # (1, P, Vocab)
+    lev_lp = jax.nn.log_softmax(lev_logits, axis=-1)
+
+    suffix_ids = tokenizer(suffix_singleton, add_special_tokens=False)["input_ids"]
+    suffix_len = len(suffix_ids)
+
+    lev_token_lp = []
+    for i, tok in enumerate(suffix_ids):
+        time_idx = prefix_len + i - 1  # same as HF helper
+        lp_val = float(lev_lp[0, time_idx, tok])
+        lev_token_lp.append(lp_val)
+
+    log_p_z_lev = float(sum(lev_token_lp))
+    p_z_lev = float(np.exp(log_p_z_lev))
+
+    print(f"HF log_p_z: {log_p_z_hf:.6f}  Lev log_p_z: {log_p_z_lev:.6f}", flush=True)
+
+    # Compare total log-probability
+    np.testing.assert_allclose(log_p_z_lev, log_p_z_hf, rtol=1e-3, atol=1e-3)
+
+    # Compare per-token log-probs as well (HF helper gives suffix-only tokens)
+    np.testing.assert_allclose(np.array(lev_token_lp, dtype=np.float32), np.array(token_lp_hf, dtype=np.float32), rtol=1e-3, atol=1e-3)
+
+    
