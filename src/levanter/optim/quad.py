@@ -1053,7 +1053,7 @@ def _init_Q_exprs(
 def _norm_lower_bound(A: jax.Array):
     max_abs = jnp.max(jnp.abs(A))
 
-    def calc(A):
+    def calc():
         A = A / max_abs
         aa = A * A
         row_norms_sq = jnp.sum(aa, axis=0)
@@ -1064,7 +1064,7 @@ def _norm_lower_bound(A: jax.Array):
         u_r = A @ v_r
         return max_abs * jnp.linalg.norm(u_r)
 
-    return jnp.where(max_abs > 0, calc(A), max_abs)
+    return jnp.where(max_abs > 0, calc(), max_abs)
 
 
 def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
