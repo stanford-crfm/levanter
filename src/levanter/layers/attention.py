@@ -1893,8 +1893,7 @@ class PageTable(eqx.Module):
     def free_pages(self, seq_id: int) -> "PageTable":
         # find all pages owned by this seq
 
-        pages_owned = self.page_owners == seq_id
-        new_page_owners = self.page_owners.at["page", pages_owned].set(-1)
+        new_page_owners = hax.where(self.page_owners == seq_id, -1, self.page_owners)
         new_page_indices = self.page_indices.at["seq", seq_id].set(-1)
         new_seq_lens = self.seq_lens.at["seq", seq_id].set(-1)
 
