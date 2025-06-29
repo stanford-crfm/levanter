@@ -77,7 +77,7 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     preconditioner_init_scale: float = 1.0
     mu_dtype: Optional[Union[str, jnp.dtype]] = None
     precond_dtype: Optional[Union[str, jnp.dtype]] = None
-    lax_map_scanned_layers: bool = True
+    lax_map_scanned_layers: bool = False
     lax_map_batch_size: int = 8
     merge_small_dims: bool = True
     target_merged_dim_size: int = 8192
@@ -153,7 +153,7 @@ def scale_by_quad(
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
     scanned_layers: Optional[base.Params] = None,
-    lax_map_scanned_layers: bool = True,
+    lax_map_scanned_layers: bool = False,
     lax_map_batch_size: int = 8,
     merge_small_dims: bool = True,
     target_merged_dim_size: int = 8192,
@@ -812,7 +812,7 @@ def quad(
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
     scanned_layers: Optional[base.Params] = None,
-    lax_map_scanned_layers: bool = True,
+    lax_map_scanned_layers: bool = False,
     lax_map_batch_size: int = 8,
     merge_small_dims: bool = True,
     target_merged_dim_size: int = 8192,
@@ -933,14 +933,12 @@ def get_opt_state_partition_specs(params: base.Params, scale_by_quad_only: bool 
 def _get_preconditioner_types(
     shape: Tuple[int, ...], max_size: int, max_skew: float
 ) -> List[bool]:
-    """Determine which dimensions should use diagonal vs dense preconditioners."""
     if len(shape) == 0:
         return [True]
     
     total_numel = np.prod(shape)
     dim_diag = []
     for i, size in enumerate(shape):
-        # Use diagonal if dimension is too large or has too much skew
         if size == 1 or len(shape) == 1 or size > max_size or size**2 > max_skew * total_numel:
             dim_diag.append(True)
         else:
@@ -1040,11 +1038,8 @@ def _init_Q_exprs(
             sub2 = ''.join(letters[i + 26] if j == i else letters[j] for j in range(len(t_shape)))
             exprGs.append(f"{sub1},{sub2}->{b}{c}")
 
-    # build einsum expression strings for tensor case
     exprP = ",".join(piece1P) + "," + ",".join(piece2P) + "," + piece3P + "->" + piece4P
     exprGs = tuple(exprGs)
-
-    # finalize returns for both scalar and tensor cases
     if existing_Q is not None:
         return (exprP, exprGs), sharding_out
     return Q, L, (exprP, exprGs), sharding_out
@@ -1054,6 +1049,7 @@ def _norm_lower_bound(A: jax.Array):
     max_abs = jnp.max(jnp.abs(A))
 
     def calc():
+        # a little faster than xilin's but still pretty accurate
         A = A / max_abs
         aa = A * A
         row_norms_sq = jnp.sum(aa, axis=0)
@@ -1071,32 +1067,22 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
     """Update Q using QUAD method and return preconditioned gradient."""
     exprP, exprGs = exprs
 
-    # Apply preconditioner to gradient
     Pg = jnp.einsum(exprP, *[jnp.conj(q) for q in Q], *Q, G)
     
-    # Get total number of elements for normalization
     total_numel = G.size
-    
-    # Hardcoded betaL
     betaL = 0.95
-
     def _update_single_q_l(i, q, l):
         term1 = jnp.einsum(exprGs[i], Pg, jnp.conj(Pg))
         
         if q.ndim < 2:
-            # Diagonal or scalar Q
-            term2 = total_numel / q.size  # times I
+            term2 = total_numel / q.size
             ell = jnp.max(jnp.real(term1)) + term2
-            # Update Lipschitz constant with momentum
             l_new = jnp.maximum(betaL * l + (1 - betaL) * ell, ell)
-            # QUAD update for diagonal
             gain = 1 - precond_lr / 2 / l_new * (term1 - term2)
             q_new = q * gain * gain
         else:
-            # Matrix Q
             if qs_sharding is not None:
                 sharding = qs_sharding[i]
-                # transpose q sharding for terms
                 if len(sharding) < 2:
                     sharding = PartitionSpec(*((None,) + sharding))
                 else:
@@ -1106,12 +1092,9 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
             
             term2 = total_numel / q.shape[0]  # times I
             ell = _norm_lower_bound(term1) + term2
-            # Update Lipschitz constant with momentum
             l_new = jnp.maximum(betaL * l + (1 - betaL) * ell, ell)
-            # QUAD update for matrix
             p = q - precond_lr / 2 / l_new * (term1 @ q - term2 * q)
             p = p - precond_lr / 2 / l_new * (p @ term1 - p * term2)
-            # Ensure symmetry/Hermitian
             q_new = (p + jnp.conj(p.T)) / 2
             
         return q_new, l_new
@@ -1124,41 +1107,25 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
 
 
 def _safe_sharding_constraint(x, sharding):
-    """Apply with_sharding_constraint but first ensure spec rank <= array rank.
-
-    jax requires the PartitionSpec length (i.e., number of axes described) to be
-    no greater than the rank of the corresponding array.  During quad's
-    bookkeeping we sometimes prepend `None` axes (e.g., for stacked/scan dims),
-    which can outlive later reshapes, leaving us with specs that are longer
-    than the array rank.  This helper trims extra leading axes so the spec
-    matches array rank before calling `with_sharding_constraint`.
-    """
-
     if sharding is None:
         return x
 
-    # handle the pytree case recursively so each leaf spec matches its array
     def _trim(spec, arr):
         if spec is None:
             return None
-        # if spec isn't a PartitionSpec (e.g. list/tuple of specs) drop sharding
         if not isinstance(spec, PartitionSpec):
             return None
-        # if arr is not an ndarray type, skip sharding for this leaf
         if not hasattr(arr, "ndim"):
             return None
         if len(spec) <= arr.ndim:
             return spec
-        # keep the trailing axes (they correspond to the physical array dims)
         return PartitionSpec(*spec[-arr.ndim:])
 
-    # align tree; if structures mismatch, fall back to no constraint
     try:
         new_sharding = jax.tree.map(_trim, sharding, x)
     except ValueError:
         return x
 
-    # if leaf spec still not PartitionSpec, skip constraint on that leaf via map
     def _apply(arr, spec):
         if spec is None or not isinstance(spec, PartitionSpec):
             return arr
