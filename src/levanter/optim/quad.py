@@ -43,6 +43,8 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
             otherwise dense.
         max_skew_dense: Dimensions with skew larger than this compared to the other
             dimension will have diagonal preconditioners, otherwise dense.
+        n_iters: Number of iterations for preconditioner updates. Defaults to 1. On first
+            step, 10 iterations are always used for better initialization.
         preconditioner_lr: Learning rate for preconditioner.
         preconditioner_init_scale: Scale for preconditioner initialization.
         mu_dtype: Dtype of the momentum buffer. Defaults to same dtype as parameters.
@@ -70,6 +72,7 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     normalize_grads: bool = False
     max_size_dense: int = 8192
     max_skew_dense: float = 1.0
+    n_iters: int = 1
     preconditioner_lr: float = 0.9
     preconditioner_init_scale: float = 1.0
     mu_dtype: Optional[Union[str, jnp.dtype]] = None
@@ -99,6 +102,7 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
                     normalize_grads=self.normalize_grads,
                     max_size_dense=self.max_size_dense,
                     max_skew_dense=self.max_skew_dense,
+                    n_iters=self.n_iters,
                     preconditioner_lr=self.preconditioner_lr,
                     preconditioner_init_scale=self.preconditioner_init_scale,
                     mu_dtype=self.mu_dtype,
@@ -143,7 +147,8 @@ def scale_by_quad(
     normalize_grads: bool = False,
     max_size_dense: int = 8192,
     max_skew_dense: float = 1.0,
-    preconditioner_lr: float = 0.75,
+    n_iters: int = 1,
+    preconditioner_lr: float = 0.9,
     preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
@@ -152,7 +157,7 @@ def scale_by_quad(
     lax_map_batch_size: int = 8,
     merge_small_dims: bool = True,
     target_merged_dim_size: int = 8192,
-    partition_grads_into_blocks: bool = True,
+    partition_grads_into_blocks: bool = False,
     block_size: int = 512,
     params_sharding: Optional[PartitionSpecTree] = None,
     preconditioner_sharding: Optional[tuple[str | None, str | None]] = None,
@@ -170,6 +175,8 @@ def scale_by_quad(
             otherwise dense.
         max_skew_dense: float, dimensions with skew larger than this compared to the other
             dimension will have diagonal preconditioners, otherwise dense.
+        n_iters: int, number of iterations for preconditioner updates. Defaults to 1. On first
+            step, 10 iterations are always used for better initialization.
         preconditioner_lr: float, learning rate for preconditioner.
         preconditioner_init_scale: float, scale for preconditioner initialization.
         mu_dtype: optional str or jnp.dtype, dtype of the momentum buffer. Defaults to
@@ -485,7 +492,7 @@ def scale_by_quad(
 
         # normalize grads
         def norm_grads(g):
-            return g / (jnp.linalg.norm(g) + 1e-16)
+            return g / (jnp.linalg.norm(g) + 1e-6)
 
         if normalize_grads:
             updates = jax.tree.map(norm_grads, updates)
@@ -658,66 +665,71 @@ def scale_by_quad(
                 scanned_dim_sharding,
             )
 
-        # balance preconditioners about every 100 updates
-        def balance_Qs(Qs_to_bal):
-            def _balance_Q(Q):
-                norms = jnp.array([jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32)
-                gmean = jnp.exp(jnp.mean(jnp.log(norms)))
-                to_mul = gmean / norms
-                return [q * x.astype(q.dtype) for q, x in zip(Q, to_mul)]
+        def precond_update(i, carry):
+            new_Qs, new_Ls, _ = carry
 
-            return jax.tree.map(
-                lambda _, Q, nm: _map_fn(False, 0, nm, _balance_Q, Q),
-                dummy_updates_tree,
-                Qs_to_bal,
-                n_dims_to_map,
-            )
+            # balance preconditioners about every 100 updates
+            def balance_Qs(Qs_to_bal):
+                def _balance_Q(Q):
+                    norms = jnp.array([jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32)
+                    gmean = jnp.exp(jnp.mean(jnp.log(norms)))
+                    to_mul = gmean / norms
+                    return [q * x.astype(q.dtype) for q, x in zip(Q, to_mul)]
 
-        do_balances = count_inc % 100 == 0
-        Qs = jax.lax.cond(do_balances, balance_Qs, lambda qs: qs, Qs)
-        if have_qs_sharding:
-            Qs = _safe_sharding_constraint(Qs, Qs_sharding)
+                return jax.tree.map(
+                    lambda _, Q, nm: _map_fn(False, 0, nm, _balance_Q, Q),
+                    dummy_updates_tree,
+                    Qs_to_bal,
+                    n_dims_to_map,
+                )
 
-        # update Qs and constrain sharding
-        new_Qs_Ls_Pg = jax.tree.map(
-            lambda g, Q, L, expr, nm, qss, sh: _map_fn(
-                lax_map,
-                bs,
-                nm,
-                partial(
-                    _update_precond,
-                    exprs=expr,
-                    precond_lr=preconditioner_lr,
-                    qs_sharding=qss,
-                    params_sharding=sh,
+            new_Qs = jax.lax.cond(count_inc % 100 == 0, balance_Qs, lambda qs: qs, new_Qs)
+            if have_qs_sharding:
+                new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
+
+            # update Qs and constrain sharding
+            new_Qs_Ls_Pg = jax.tree.map(
+                lambda g, Q, L, expr, nm, qss, sh: _map_fn(
+                    lax_map,
+                    bs,
+                    nm,
+                    partial(
+                        _update_precond,
+                        exprs=expr,
+                        precond_lr=preconditioner_lr,
+                        qs_sharding=qss,
+                        params_sharding=sh,
+                    ),
+                    Q,
+                    L,
+                    g,
                 ),
-                Q,
-                L,
-                g,
-            ),
-            momentum_updates,
-            Qs,
-            Ls,
-            exprs,
-            n_dims_to_map,
-            Qs_sharding_no_leading_dims if have_qs_sharding else nones,
-            sharding_without_scan if have_params_sharding else nones,
-        )
-        new_Qs = jax.tree_util.tree_map(lambda qlp: qlp[0], new_Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
-        new_Ls = jax.tree_util.tree_map(lambda qlp: qlp[1], new_Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
-        precond_gs = jax.tree.map(lambda qlp: qlp[2], new_Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
-        
-        if have_qs_sharding:
-            new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
+                momentum_updates,
+                new_Qs,
+                new_Ls,
+                exprs,
+                n_dims_to_map,
+                Qs_sharding_no_leading_dims if have_qs_sharding else nones,
+                sharding_without_scan if have_params_sharding else nones,
+            )
+            new_Qs, new_Ls, Pg = [
+                jax.tree_util.tree_map(lambda qlp: qlp[i], new_Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
+                for i in range(3)
+            ]
+            
+            if have_qs_sharding:
+                new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
+            if have_params_sharding:
+                Pg = _safe_sharding_constraint(Pg, partitioned_sharding)
 
-        Qs = otu.tree_cast(new_Qs, precond_dtype)
-        Ls = new_Ls
+            new_Qs = otu.tree_cast(new_Qs, precond_dtype)
+            return new_Qs, new_Ls, Pg
         
-        if have_qs_sharding:
-            Qs = _safe_sharding_constraint(Qs, Qs_sharding)
-        # only constrain with partitioned_sharding while gradients are still partitioned
-        if have_params_sharding and partition_grads_into_blocks:
-            precond_gs = _safe_sharding_constraint(precond_gs, partitioned_sharding)
+        Qs, Ls, precond_gs = jax.lax.cond(
+            lambda: count_inc == 1,
+            lambda: jax.lax.fori_loop(0, 10, precond_update, (Qs, Ls, momentum_updates)),
+            lambda: jax.lax.fori_loop(0, n_iters, precond_update, (Qs, Ls, momentum_updates)),
+        )
 
         # unpartition grads
         if partition_grads_into_blocks:
@@ -787,14 +799,15 @@ def scale_by_quad(
 
 
 def quad(
-    learning_rate: Union[float, Callable[[int], float]] = 0.0003,
+    learning_rate: Union[float, Callable[[int], float]] = 0.0005,
     b1: float = 0.95,
-    weight_decay: float = 0.0,
+    weight_decay: float = 0.3,
     weight_decay_mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
     normalize_grads: bool = False,
     max_size_dense: int = 8192,
     max_skew_dense: float = 1.0,
-    preconditioner_lr: float = 0.75,
+    n_iters: int = 1,
+    preconditioner_lr: float = 0.9,
     preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
@@ -803,7 +816,7 @@ def quad(
     lax_map_batch_size: int = 8,
     merge_small_dims: bool = True,
     target_merged_dim_size: int = 8192,
-    partition_grads_into_blocks: bool = True,
+    partition_grads_into_blocks: bool = False,
     block_size: int = 512,
     params_sharding: Optional[PartitionSpecTree] = None,
     preconditioner_sharding: Optional[tuple[str | None, str | None]] = None,
@@ -825,6 +838,8 @@ def quad(
             otherwise dense.
         max_skew_dense: float, dimensions with skew larger than this compared to the other
             dimension will have diagonal preconditioners, otherwise dense.
+        n_iters: int, number of iterations for preconditioner updates. Defaults to 1. On first
+            step, 10 iterations are always used for better initialization.
         preconditioner_lr: float, learning rate for preconditioner.
         preconditioner_init_scale: float, scale for preconditioner initialization.
         mu_dtype: optional str or jnp.dtype, dtype of the momentum buffer. Defaults to
@@ -860,6 +875,7 @@ def quad(
             normalize_grads=normalize_grads,
             max_size_dense=max_size_dense,
             max_skew_dense=max_skew_dense,
+            n_iters=n_iters,
             preconditioner_lr=preconditioner_lr,
             preconditioner_init_scale=preconditioner_init_scale,
             mu_dtype=mu_dtype,
@@ -1164,8 +1180,6 @@ def _map_fn(lax_map, bs, n_maps, fn, *args):
         return vmap(mapped_fn)(*args)
 
 
-
-
 class BlockPartitioner:
     """Partitions a tensor into smaller tensors.
 
@@ -1282,7 +1296,10 @@ def _merge_small_dims(
             d = np.prod([shape_to_merge[i] for i in group])
             loss += dim2loss(d)
             merged.append(group)
-
+        # skip partitions that would merge everything into a single dimension
+        # when we started with 2 or more dimensions
+        if len(shape_to_merge) >= 2 and len(merged) == 1:
+            continue
         if loss < best_loss:
             best_loss = loss
             best_partition = merged
