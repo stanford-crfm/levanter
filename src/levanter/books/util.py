@@ -1,0 +1,228 @@
+"""
+levanter.books.util
+===================
+Utility helpers originally sketched in ``careless.py`` but generalized so
+other Levanter scripts (e.g. ``eval_careless_lm.py``) can import them
+without pulling in PyTorch-specific baggage.
+
+Two groups of helpers live here:
+
+1.  **Extraction-rate metrics** – `(n,p)` discoverability calculations that
+    operate purely in NumPy.
+2.  **Sliding-window text processing** – functions that replicate the
+    logic of `chunk_text_to_sliding_window_token_chunks` from
+    ``careless.py`` but yield structures convenient for Levanter/Haliax
+    evaluation.
+"""
+from __future__ import annotations
+
+from typing import Iterable, List, Sequence, Tuple, Dict, Generator, Any
+
+import numpy as np
+import logging
+from tqdm import tqdm
+import haliax as hax
+from levanter.models.lm_model import LmExample
+
+__all__ = [
+    "compute_extraction_rates",
+    "compute_max_extraction_rates",
+    "compute_n_for_pz_and_p",
+    "compute_n_values_for_pz_and_p_list",
+    "compute_greedy_extraction_rate",
+    "chunk_text_to_sliding_window_token_chunks",
+    "sliding_lm_examples",
+]
+
+
+# -----------------------------------------------------------------------------
+# Core metric helpers ---------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+def compute_extraction_rates(
+    pz_list: Sequence[float] | np.ndarray,
+    n_list: Sequence[int] | np.ndarray | None = None,
+    p_list: Sequence[float] | np.ndarray | None = None,
+):
+    """Return matrix of (n, p)-discoverable extraction rates.
+
+    Args
+    ----
+    pz_list: 1-D iterable of suffix probabilities for each example.
+    n_list:  Iterable of *n* values (number of draws).  Defaults to
+             ``range(1, 10_001, 10)``.
+    p_list:  Iterable of target probabilities *p* we want the extraction
+             probability to exceed.  Defaults to ``[0.1, 0.5, 0.9, 0.99,
+             0.999]``.
+
+    Returns
+    -------
+    List[List[tuple]]
+        ``outer list`` iterates over *p*; ``inner list`` is ``[(rate, p,
+        n), ...]`` for every *n*.
+    """
+
+    if n_list is None:
+        n_list = list(range(1, 10_001, 10))
+    if p_list is None:
+        p_list = [0.1, 0.5, 0.9, 0.99, 0.999]
+
+    pz = np.asarray(pz_list, dtype=np.float64)
+    n = np.asarray(n_list, dtype=np.int64)
+
+    # Broadcast: shape (examples, n)
+    prob_matrix = 1 - np.power(1 - pz[:, None], n[None, :])
+
+    results: list[list[tuple[float, float, int]]] = []
+    for p in tqdm(p_list, desc="extract-rate p loop"):
+        meets = prob_matrix >= p
+        rates = meets.mean(axis=0)  # proportion of examples where P≥p
+        results.append([(float(rate), float(p), int(nn)) for rate, nn in zip(rates, n)])
+    return results
+
+
+def compute_max_extraction_rates(
+    pz_list: Sequence[float] | np.ndarray,
+    n_list: Sequence[int] | np.ndarray | None = None,
+    p_list: Sequence[float] | np.ndarray | None = None,
+):
+    """Wrapper with exponentially-spaced *n* to find global max rates."""
+    if n_list is None:
+        n_list = [2**x for x in range(70)]
+    return compute_extraction_rates(pz_list, n_list=n_list, p_list=p_list)
+
+
+# -----------------------------------------------------------------------------
+# Analytical helpers ----------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+def compute_n_for_pz_and_p(pz_list: Sequence[float], p: float):
+    """For each pᶻ in *pz_list* find *n* s.t. 1 – (1 – pᶻ)ⁿ ≥ *p*.
+
+    Returns an ``np.ndarray`` of integers (ceil).  If the input array has
+    only one finite entry, a scalar int is returned for convenience.
+    """
+    pz = np.asarray(pz_list, dtype=np.float64)
+    valid = (pz > 0) & (pz < 1)
+    pz = pz[valid]
+    log1m_p = np.log(1 - p)
+    log1m_pz = np.log(1 - pz)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        n_vals = np.ceil(log1m_p / log1m_pz)
+    n_vals = n_vals[np.isfinite(n_vals)].astype(int)
+    if n_vals.size == 1:
+        return int(n_vals[0])
+    return n_vals
+
+
+def compute_n_values_for_pz_and_p_list(pz: float, p_list: Sequence[float] | None = None):
+    """Return arrays (p_array, n_array) for a single pᶻ over many p thresholds."""
+    if p_list is None:
+        p_list = np.arange(0.01, 1.0, 0.01)
+    p_arr = np.asarray(p_list, dtype=np.float64)
+    log1m_p = np.log(1 - p_arr)
+    log1m_pz = np.log(1 - pz)
+    n_vals = np.ceil(log1m_p / log1m_pz).astype(int)
+
+    valid = np.isfinite(n_vals)
+    return p_arr[valid], n_vals[valid]
+
+
+def compute_greedy_extraction_rate(pz_list: Sequence[float]):
+    """Special-case extraction rate when decoding is deterministic greedy."""
+    return float(np.sum(pz_list)) / len(pz_list)
+
+
+# -----------------------------------------------------------------------------
+# Sliding-window helpers (adapted from careless.py) ----------------------------
+# -----------------------------------------------------------------------------
+
+def chunk_text_to_sliding_window_token_chunks(
+    text: str,
+    tokenizer,
+    *,
+    chunk_size: int = 100,
+    slice_length: int = 2000,
+    cursor_inc: int = 10,
+) -> list[Dict[str, Any]]:
+    """Tokenise *text* into overlapping `chunk_size`-token windows.
+
+    Replicates the logic in ``careless.py`` almost verbatim but drops the
+    torch-specific bits.  Returns a list of dictionaries with keys:
+
+    ``input_ids``          – *list[int]* of length ``chunk_size``
+    ``start_idx``          – start character index in *text*
+    ``end_idx``            – end character index (inclusive) in *text*
+    ``text``               – decoded chunk text (useful for debugging)
+    ``attention_mask``     – list[int] same length as ``input_ids``
+    ``text_len``           – length of decoded text in characters
+    """
+
+    all_chunks: list[Dict[str, Any]] = []
+    text_cursor = 0
+    text_len = len(text)
+
+    progress_markers = {i for i in range(10, 101, 10)}
+
+    while text_cursor < text_len:
+        start_idx = text_cursor
+        end_idx_plus_one = min(text_cursor + slice_length, text_len)
+        text_slice = text[start_idx:end_idx_plus_one]
+
+        enc = tokenizer(text_slice, add_special_tokens=False, return_attention_mask=True)
+        input_ids: list[int] = enc["input_ids"][:chunk_size]
+        attention_mask: list[int] = enc.get("attention_mask", [1] * len(input_ids))[:chunk_size]
+
+        if len(input_ids) == chunk_size:
+            decoded_chunk = tokenizer.decode(input_ids, skip_special_tokens=True)
+            decoded_len = len(decoded_chunk)
+            all_chunks.append(
+                {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "start_idx": start_idx,
+                    "end_idx": start_idx + decoded_len - 1,
+                    "text_len": decoded_len,
+                    "text": decoded_chunk,
+                }
+            )
+
+        text_cursor += cursor_inc
+        pct_complete = int(100 * text_cursor / text_len)
+        if pct_complete in progress_markers:
+            logging.getLogger(__name__).info("Sliding-window progress: %s%%", pct_complete)
+            progress_markers.remove(pct_complete)
+
+    return all_chunks
+
+
+def sliding_lm_examples(
+    text: str,
+    tokenizer,
+    Pos: hax.Axis,
+    pad_id: int,
+    *,
+    chunk_size: int = 100,
+    slice_length: int = 2000,
+    cursor_inc: int = 10,
+) -> Generator[Tuple[LmExample, Tuple[int, int]], None, None]:
+    """Yield ``(LmExample, (char_start, char_end))`` pairs for training/eval.
+
+    The first *half* (50 tokens when ``chunk_size=100``) serve as the
+    *prompt*, the second half as the *suffix* whose probability will be
+    evaluated.
+    """
+    half = chunk_size // 2
+    for chunk in chunk_text_to_sliding_window_token_chunks(
+        text,
+        tokenizer,
+        chunk_size=chunk_size,
+        slice_length=slice_length,
+        cursor_inc=cursor_inc,
+    ):
+        ids = chunk["input_ids"]
+        if len(ids) < Pos.size:
+            ids = ids + [pad_id] * (Pos.size - len(ids))
+        tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
+        example = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=half)
+        yield example, (chunk["start_idx"], chunk["end_idx"])

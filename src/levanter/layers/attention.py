@@ -41,7 +41,7 @@ def default_attention_type() -> AttentionBackend:
     if accelerator_type == "gpu":
         return AttentionBackend.NVTE
     elif accelerator_type == "tpu":
-        return AttentionBackend.SPLASH
+        return AttentionBackend.JAX_FLASH
     else:
         return AttentionBackend.JAX_FLASH
 
