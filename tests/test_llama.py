@@ -21,7 +21,7 @@ from test_utils import check_load_config, check_model_works_with_seqlen, paramet
 @skip_if_no_torch
 def test_llama_config():
     # load HF config and convert to levanter config
-    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
     llama_config = LlamaConfig.from_hf_config(hf_config)
 
     # convert back to HF config
@@ -46,7 +46,7 @@ def test_llama_config():
 
 def test_llama_flops():
     # Check that the forward flops is within 10% of the naive calculation
-    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
     llama_config = LlamaConfig.from_hf_config(hf_config)
     n_params = 6.738415616e9
     ratio = llama_config.flops_per_token(hf_config.vocab_size) / (2 * n_params)
@@ -56,7 +56,7 @@ def test_llama_flops():
 
 def test_llama_params():
     # Check that the computed number of trainable params is close to the actual number of params
-    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
     llama_config = LlamaConfig.from_hf_config(hf_config)
     actual_params = 6.738415616e9
     params = llama_config.total_trainable_params(hf_config.vocab_size)
