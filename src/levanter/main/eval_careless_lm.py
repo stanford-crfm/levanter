@@ -10,11 +10,6 @@ Compared with ``eval_sliding_lm.py`` this script:
 
 It also calls ``levanter.books.util.compute_max_extraction_rates`` to
 print the (n, p) discoverability statistics used in memorisation studies.
-
-NOTE:  For simplicity the mapping from *token positions* back to
-*character positions* is approximate; refining this (e.g. using
-``tokenizer.encode_plus(return_offsets_mapping=True)``) is left as an
-exercise.
 """
 # NOTE: Do *not* enable postponed evaluation of annotations here because
 # levanter.config.main relies on `inspect.getfullargspec(fn).annotations`
@@ -44,6 +39,7 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+import math
 
 # Helpers -----------------------------------------------------------------
 from levanter.books.util import compute_max_extraction_rates, sliding_lm_examples
@@ -85,6 +81,7 @@ class EvalCarelessLmConfig:
 # -----------------------------------------------------------------------------------------
 # Main ------------------------------------------------------------------------------------
 # -----------------------------------------------------------------------------------------
+
 
 def main(cfg: EvalCarelessLmConfig):
     levanter.initialize(cfg)
@@ -145,15 +142,39 @@ def main(cfg: EvalCarelessLmConfig):
     # Data stream ---------------------------------------------------------------
     raw_text = pathlib.Path(cfg.txt_path).read_text()
 
-    examples_iter = sliding_lm_examples(
+    # Build chunk list once to know total work.
+    from levanter.books.util import chunk_text_to_sliding_window_token_chunks
+
+    chunks = chunk_text_to_sliding_window_token_chunks(
         raw_text,
         tokenizer,
-        Pos,
-        pad_id,
         chunk_size=100,
         slice_length=2000,
         cursor_inc=cfg.cursor_inc_chars,
     )
+
+    total_chunks = len(chunks)
+    print(f"Total sliding windows: {total_chunks}", flush=True)
+
+    def iter_examples():
+        for ch in chunks:
+            yield from sliding_lm_examples(
+                ch[
+                    "text"
+                ],  # incorrect: we need original text slice? actually sliding_lm_examples expects full text not single chunk.
+            )
+
+    # Instead, reuse chunks list directly
+    def chunk_to_example(chunk):
+        ids = chunk["input_ids"]
+        if len(ids) < Pos.size:
+            ids = ids + [pad_id] * (Pos.size - len(ids))
+        tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
+        half = 50
+        ex = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=half)
+        return ex, (chunk["start_idx"], chunk["end_idx"])
+
+    examples_iter = map(chunk_to_example, chunks)
 
     batch_size = cfg.eval_batch_size if (cfg.eval_batch_size and cfg.eval_batch_size > 0) else 32
 
@@ -177,6 +198,8 @@ def main(cfg: EvalCarelessLmConfig):
     pz_list: List[float] = []
     char_ranges: List[Tuple[int, int]] = []
 
+    total_batches = math.ceil(total_chunks / batch_size)
+
     for idx, (batch_ex, ranges) in enumerate(batches(examples_iter)):
         if cfg.max_examples and idx * batch_size >= cfg.max_examples:
             break
@@ -185,7 +208,9 @@ def main(cfg: EvalCarelessLmConfig):
         pz = np.exp(lp)
         pz_list.extend(pz.tolist())
         char_ranges.extend(ranges)
-        logger.info("Batch %d processed, total examples=%d", idx, len(pz_list))
+        done = min((idx + 1) * batch_size, total_chunks)
+        pct = 100 * done / total_chunks
+        print(f"Batch {idx+1}/{total_batches} – {done}/{total_chunks} windows ({pct:.1f} %)", flush=True)
 
     # Extraction statistics -----------------------------------------------------
     stats = compute_max_extraction_rates(pz_list)
@@ -214,4 +239,4 @@ def main(cfg: EvalCarelessLmConfig):
 
 
 if __name__ == "__main__":
-    levanter.config.main(main)() 
+    levanter.config.main(main)()

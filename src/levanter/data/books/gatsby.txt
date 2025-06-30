@@ -1,4 +1,4 @@
- 
+
 # The Great Gatsby
 
 ## F. Scott Fitzgerald
@@ -35,12 +35,12 @@
 
 #### Epigraph
 
-Then wear the gold hat, if that will move her;  
-If you can bounce high, bounce for her too,  
-Till she cry "Lover, gold-hatted, high-bouncing lover,  
+Then wear the gold hat, if that will move her;
+If you can bounce high, bounce for her too,
+Till she cry "Lover, gold-hatted, high-bouncing lover,
 I must have you!"
 
-—THOMAS PARKE D'INVILLIERS 
+—THOMAS PARKE D'INVILLIERS
 
 #### Chapter 1
 
@@ -1250,9 +1250,9 @@ Well, about six weeks ago, she heard the name Gatsby for the first time in years
 
 When Jordan Baker had finished telling all this we had left the Plaza for half an hour and were driving in a victoria through Central Park. The sun had gone down behind the tall apartments of the movie stars in the West Fifties, and the clear voices of girls, already gathered like crickets on the grass, rose through the hot twilight:
 
-"I'm the Sheik of Araby.  
-Your love belongs to me.  
-At night when you're are asleep  
+"I'm the Sheik of Araby.
+Your love belongs to me.
+At night when you're are asleep
 Into your tent I'll creep—"
 
 "It was a strange coincidence," I said.
@@ -1593,15 +1593,15 @@ When Klipspringer had played _The Love Nest_. He turned around on the bench and 
 
 "Don't talk so much, old sport," commanded Gatsby. "Play!"
 
-" _In the morning_ ,  
-In the evening,  
+" _In the morning_ ,
+In the evening,
 Ain't we got fun—"
 
 Outside the wind was loud and there was a faint flow of thunder along the Sound. All the lights were going on in West Egg now; the electric trains, men-carrying, were plunging home through the rain from New York. It was the hour of a profound human change, and excitement was generating on the air.
 
-"One thing's sure and nothing's surer  
-The rich get richer and the poor get—children.  
-In the meantime,  
+"One thing's sure and nothing's surer
+The rich get richer and the poor get—children.
+In the meantime,
 In between time—"
 
 As I went over to say goodbye I saw that the expression of bewilderment had come back into Gatsby's face, as though a faint doubt had occurred to him as to the quality of his present happiness. Almost five years! There must have been moments even that afternoon whe Daisy tumbled short of his dreams—not through her own fault, but because of the colossal vitality of his illusion. It had gone beyond her, beyond everything. He had thrown himself into it with a creative passion, adding to it all the time, decking it out with every bright feather that drifted his way. No amount of fire or freshness can challenge what a man will store up in his ghostly heart.
@@ -2976,7 +2976,7 @@ Next morning I sent the butler to New York with a letter to Wolfsheim, which ask
 
 DEAR MR. CARRAWAY. This has been one of the most terrible shocks of my life to me I hardly can believe it that it is true at all. Such a mad act as that man did should make us all think. I cannot come down now as I am tied up in some very important business and cannot get mixed up in this thing now. If there is anything I can do a little later let me know in a letter by Edgar. I hardly know where I am when I hear about a thing like this and am completely knocked down and out.
 
-Yours truly   
+Yours truly
 MEYER WOLFSHIEM
 
 and then hasty addenda beneath:
@@ -3145,20 +3145,20 @@ It was a photograph of the house, cracked in the corners and dirty with many han
 
 He opened it at the back cover and turned it around for me to see. On the last fly-leaf was printed the word SCHEDULE, and the date September 12, 1906. And underneath:
 
-Rise from bed: 6.00 A.M.  
-Dumbbell exercise and wall-scaling: 6.15–6.30 A.M  
-Study electricity, etc.: 7.15–8.15 A.M.  
-Work: 8.30–4.30 P.M.  
-Baseball and sports: 4.30–5.00 P.M.  
-Practice elocution, poise and how to attain it: 5.00–6.00 P.M.  
+Rise from bed: 6.00 A.M.
+Dumbbell exercise and wall-scaling: 6.15–6.30 A.M
+Study electricity, etc.: 7.15–8.15 A.M.
+Work: 8.30–4.30 P.M.
+Baseball and sports: 4.30–5.00 P.M.
+Practice elocution, poise and how to attain it: 5.00–6.00 P.M.
 Study needed inventions: 7.00–9.00 P.M.
 
-GENERAL RESOLVES  
-No wasting time at Shafters or [ _a name, indecipherable_ ].  
-No more smokeing or chewing.  
-Bath every other day.  
-Read one improving book or magazine per week.  
-Save $5.00 {crossed out} $3.00 per week.  
+GENERAL RESOLVES
+No wasting time at Shafters or [ _a name, indecipherable_ ].
+No more smokeing or chewing.
+Bath every other day.
+Read one improving book or magazine per week.
+Save $5.00 {crossed out} $3.00 per week.
 Be better to parents.
 
 "I come across this book by accident," said the old man. "It just shows you, don't it?"
@@ -3261,9 +3261,9 @@ Harper _Perennial_ Classics brings great works of literature to life in digital 
 
 Harper _Perennial_ Classics
 
-An imprint of HarperCollins Publishers Ltd.  
-2 Bloor Street East, 20th Floor  
-Toronto, Ontario, Canada  
+An imprint of HarperCollins Publishers Ltd.
+2 Bloor Street East, 20th Floor
+Toronto, Ontario, Canada
 M4W 1A8
 
 _www.harpercollins.ca_
@@ -3276,30 +3276,30 @@ This title is in Canada's public domain and is not subject to any licence or cop
 
 **HarperCollins Publishers (Australia) Pty. Ltd.**
 
-Level 13, 201 Elizabeth Street  
-Sydney, NSW 2000, Australia  
+Level 13, 201 Elizabeth Street
+Sydney, NSW 2000, Australia
 <http://www.harpercollins.com.au> ****
 
 **HarperCollins Publishers (Canada) Ltd.**
 
-2 Bloor Street East - 20th Floor  
-Toronto, ON, M4W 1A8, Canada  
+2 Bloor Street East - 20th Floor
+Toronto, ON, M4W 1A8, Canada
 <http://www.harpercollins.ca> ****
 
 **HarperCollins Publishers (New Zealand) Limited**
 
-P.O. Box 1  
-Auckland, New Zealand  
+P.O. Box 1
+Auckland, New Zealand
 <http://www.harpercollins.co.nz> ****
 
 **HarperCollins Publishers Ltd.**
 
-77-85 Fulham Palace Road  
-London, W6 8JB, UK  
+77-85 Fulham Palace Road
+London, W6 8JB, UK
 <http://www.harpercollins.co.uk> ****
 
 **HarperCollins Publishers Inc.**
 
-10 East 53rd Street  
-New York, NY 10022  
+10 East 53rd Street
+New York, NY 10022
 <http://www.harpercollins.com>
