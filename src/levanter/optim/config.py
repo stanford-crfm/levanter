@@ -434,7 +434,7 @@ class AdamConfig(OptimizerConfig):
 
     adamc_weight_decay: bool = False
     """
-    If set, uses the AdamC correctted weight decay which keeps
+    If set, use the AdamC corrected weight decay, which keeps
     ``weight_decay / lr`` constant across training.
 
     This follows Defazio, *On the Correct Treatment of Weight Decay in Adam*
