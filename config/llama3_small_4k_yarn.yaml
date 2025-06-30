@@ -13,7 +13,7 @@ model:
   num_kv_heads: 12
   num_layers: 12
   seq_len: 4096
-  gradient_checkpointing: true  
+  gradient_checkpointing: true
   rope:
     type: yarn
     factor: 1.0

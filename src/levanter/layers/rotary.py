@@ -186,15 +186,21 @@ class YarnRotaryEmbeddings(RotaryEmbeddings):
 
     def __call__(self, q: NamedArray, position_ids: NamedArray) -> NamedArray:
         import math
+
         with jax.ensure_compile_time_eval():
             half_dim = self.HeadDim.size // 2
             head_dim = self.HeadDim.size
             HeadHalfSize = self.HeadDim.resize(self.HeadDim.size // 2)
-            inv_freq: NamedArray = 1.0 / (self.config.theta ** (hax.arange(HeadHalfSize, step=2, dtype=jnp.float32) / head_dim))
+            inv_freq: NamedArray = 1.0 / (
+                self.config.theta ** (hax.arange(HeadHalfSize, step=2, dtype=jnp.float32) / head_dim)
+            )
 
             # YaRN β-ramp
             def _find_dim(n_rot: float):
-                return (half_dim * math.log(self.config.original_max_position_embeddings / (n_rot * 2 * math.pi))) / (2 * math.log(self.config.theta))
+                return (half_dim * math.log(self.config.original_max_position_embeddings / (n_rot * 2 * math.pi))) / (
+                    2 * math.log(self.config.theta)
+                )
+
             low = int(math.floor(_find_dim(self.config.beta_fast)))
             high = int(math.ceil(_find_dim(self.config.beta_slow)))
             low, high = max(low, 0), min(high, half_dim - 1)
@@ -206,13 +212,13 @@ class YarnRotaryEmbeddings(RotaryEmbeddings):
 
         freqs = position_ids_scaled * inv_freq.broadcast_axis(position_ids.axes)
         emb = hax.concatenate(self.HeadDim, (freqs, freqs))
-        
+
         # temperature scaling
         if self.config.factor < 1.0:
             temperature = 1.0
         else:
             temperature = math.sqrt(0.1 * self.config.mscale * math.log(self.config.factor) + 1.0)
-        
+
         cos = hax.cos(emb) * temperature
         sin = hax.sin(emb) * temperature
 
