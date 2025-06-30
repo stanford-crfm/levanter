@@ -71,7 +71,7 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     max_grad_norm: Optional[float] = 1.0
     normalize_grads: bool = False
     max_size_dense: int = 8192
-    max_skew_dense: float = 1.0
+    max_skew_dense: float = 1e9
     n_iters: int = 1
     preconditioner_lr: float = 0.9
     preconditioner_init_scale: float = 1.0
@@ -146,7 +146,7 @@ def scale_by_quad(
     b1: float = 0.95,
     normalize_grads: bool = False,
     max_size_dense: int = 8192,
-    max_skew_dense: float = 1.0,
+    max_skew_dense: float = 1e9,
     n_iters: int = 1,
     preconditioner_lr: float = 0.9,
     preconditioner_init_scale: float = 1.0,
@@ -665,71 +665,72 @@ def scale_by_quad(
                 scanned_dim_sharding,
             )
 
-        def precond_update(i, carry):
-            new_Qs, new_Ls, _ = carry
+        def body_fn(carry):
+            with jax.default_matmul_precision("high"):
+                new_Qs, new_Ls, _, i = carry
 
-            # balance preconditioners about every 100 updates
-            def balance_Qs(Qs_to_bal):
-                def _balance_Q(Q):
-                    norms = jnp.array([jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32)
-                    gmean = jnp.exp(jnp.mean(jnp.log(norms)))
-                    to_mul = gmean / norms
-                    return [q * x.astype(q.dtype) for q, x in zip(Q, to_mul)]
+                # balance preconditioners about every 100 updates
+                def balance_Qs(Qs_to_bal):
+                    def _balance_Q(Q):
+                        norms = jnp.array([jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32)
+                        gmean = jnp.exp(jnp.mean(jnp.log(norms)))
+                        to_mul = gmean / norms
+                        return [q * x.astype(q.dtype) for q, x in zip(Q, to_mul)]
 
-                return jax.tree.map(
-                    lambda _, Q, nm: _map_fn(False, 0, nm, _balance_Q, Q),
-                    dummy_updates_tree,
-                    Qs_to_bal,
-                    n_dims_to_map,
-                )
+                    return jax.tree.map(
+                        lambda _, Q, nm: _map_fn(False, 0, nm, _balance_Q, Q),
+                        dummy_updates_tree,
+                        Qs_to_bal,
+                        n_dims_to_map,
+                    )
 
-            new_Qs = jax.lax.cond(count_inc % 100 == 0, balance_Qs, lambda qs: qs, new_Qs)
-            if have_qs_sharding:
-                new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
+                new_Qs = jax.lax.cond(count_inc % 100 == 0, balance_Qs, lambda qs: qs, new_Qs)
+                if have_qs_sharding:
+                    new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
 
-            # update Qs and constrain sharding
-            new_Qs_Ls_Pg = jax.tree.map(
-                lambda g, Q, L, expr, nm, qss, sh: _map_fn(
-                    lax_map,
-                    bs,
-                    nm,
-                    partial(
-                        _update_precond,
-                        exprs=expr,
-                        precond_lr=preconditioner_lr,
-                        qs_sharding=qss,
-                        params_sharding=sh,
+                # update Qs and constrain sharding
+                new_Qs_Ls_Pg = jax.tree.map(
+                    lambda g, Q, L, expr, nm, qss, sh: _map_fn(
+                        lax_map,
+                        bs,
+                        nm,
+                        partial(
+                            _update_precond,
+                            exprs=expr,
+                            precond_lr=preconditioner_lr,
+                            qs_sharding=qss,
+                            params_sharding=sh,
+                        ),
+                        Q,
+                        L,
+                        g,
                     ),
-                    Q,
-                    L,
-                    g,
-                ),
-                momentum_updates,
-                new_Qs,
-                new_Ls,
-                exprs,
-                n_dims_to_map,
-                Qs_sharding_no_leading_dims if have_qs_sharding else nones,
-                sharding_without_scan if have_params_sharding else nones,
-            )
-            new_Qs, new_Ls, Pg = [
-                jax.tree_util.tree_map(lambda qlp: qlp[i], new_Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
-                for i in range(3)
-            ]
-            
-            if have_qs_sharding:
-                new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
-            if have_params_sharding:
-                Pg = _safe_sharding_constraint(Pg, partitioned_sharding)
+                    momentum_updates,
+                    new_Qs,
+                    new_Ls,
+                    exprs,
+                    n_dims_to_map,
+                    Qs_sharding_no_leading_dims if have_qs_sharding else nones,
+                    sharding_without_scan if have_params_sharding else nones,
+                )
+                new_Qs, new_Ls, Pg = [
+                    jax.tree_util.tree_map(lambda qlp: qlp[i], new_Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
+                    for i in range(3)
+                ]
+                
+                if have_qs_sharding:
+                    new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
+                if have_params_sharding:
+                    Pg = _safe_sharding_constraint(Pg, partitioned_sharding)
 
-            new_Qs = otu.tree_cast(new_Qs, precond_dtype)
-            return new_Qs, new_Ls, Pg
+                new_Qs = otu.tree_cast(new_Qs, precond_dtype)
+                return new_Qs, new_Ls, Pg, i + 1
+
+        def cond_fn(carry):
+            return carry[-1] < jnp.where(count_inc == 1, 10, n_iters)
         
-        Qs, Ls, precond_gs = jax.lax.cond(
-            lambda: count_inc == 1,
-            lambda: jax.lax.fori_loop(0, 10, precond_update, (Qs, Ls, momentum_updates)),
-            lambda: jax.lax.fori_loop(0, n_iters, precond_update, (Qs, Ls, momentum_updates)),
-        )
+        init_val = (Qs, Ls, momentum_updates, jnp.zeros([], dtype=jnp.int32))
+        Qs, Ls, precond_gs, _ = jax.lax.while_loop(cond_fn, body_fn, init_val)
 
         # unpartition grads
         if partition_grads_into_blocks:
@@ -805,7 +806,7 @@ def quad(
     weight_decay_mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
     normalize_grads: bool = False,
     max_size_dense: int = 8192,
-    max_skew_dense: float = 1.0,
+    max_skew_dense: float = 1e9,
     n_iters: int = 1,
     preconditioner_lr: float = 0.9,
     preconditioner_init_scale: float = 1.0,
@@ -1048,7 +1049,7 @@ def _init_Q_exprs(
 def _norm_lower_bound(A: jax.Array):
     max_abs = jnp.max(jnp.abs(A))
 
-    def calc():
+    def calc(A):
         # a little faster than xilin's but still pretty accurate
         A = A / max_abs
         aa = A * A
@@ -1060,7 +1061,7 @@ def _norm_lower_bound(A: jax.Array):
         u_r = A @ v_r
         return max_abs * jnp.linalg.norm(u_r)
 
-    return jnp.where(max_abs > 0, calc(), max_abs)
+    return jnp.where(max_abs > 0, calc(A), max_abs)
 
 
 def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
@@ -1109,29 +1110,8 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
 def _safe_sharding_constraint(x, sharding):
     if sharding is None:
         return x
-
-    def _trim(spec, arr):
-        if spec is None:
-            return None
-        if not isinstance(spec, PartitionSpec):
-            return None
-        if not hasattr(arr, "ndim"):
-            return None
-        if len(spec) <= arr.ndim:
-            return spec
-        return PartitionSpec(*spec[-arr.ndim:])
-
-    try:
-        new_sharding = jax.tree.map(_trim, sharding, x)
-    except ValueError:
-        return x
-
-    def _apply(arr, spec):
-        if spec is None or not isinstance(spec, PartitionSpec):
-            return arr
-        return with_sharding_constraint(arr, spec)
-
-    return jax.tree.map(_apply, x, new_sharding)
+    else:
+        return with_sharding_constraint(x, sharding)
 
 
 def _map_fn(lax_map, bs, n_maps, fn, *args):
