@@ -6,7 +6,7 @@ supervised_data:
   cache_dir: "gs://marin-us-central2/tokenized/tulu_3_sft_mixture_llama3_instruct_tokenizer-8f8ba3"
 
 max_seq_len: 4096
-tokenizer: "NousResearch/NousResearch-3.1-8B"
+tokenizer: "meta-llama/meta-llama-3.1-8B"
 model:  # 8B llama3 class model
   type: llama
   seq_len: 4096
@@ -54,5 +54,5 @@ hf_save_steps: 500
 hf_save_path: "gs://marin-us-central2/checkpoints/llama_3.1_tulusft/hf/seed_0/"
 
 initialize_from_hf: True
-model_name_or_path: "NousResearch/Llama-3.1-8B"
+model_name_or_path: "meta-llama/Llama-3.1-8B"
 epoch: 0

@@ -254,7 +254,7 @@ Levanter supports starting from an HF pretrained model. To do so, you should set
 ```yaml
 model:
   type: mpt
-initialize_from_hf: "NousResearch/Llama-2-7b-hf"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
 ```
 
@@ -264,7 +264,7 @@ You should probably reduce the learning rate by a factor of 10 or so. TODO: figu
 
 For Llama 2 specifically (or other gated models), you'll need a few extra steps:
 
-If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/NousResearch/Llama-2-7b-hf) and request access to the model.
+If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
 
 Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token.
 Then, pass in the token as an environment variable:
@@ -280,7 +280,7 @@ Then, you can use the model like so:
 ```yaml
 model:
   type: llama
-initialize_from_hf: "NousResearch/Llama-2-7b-hf"
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"
 use_hf_model_config: true
 ```
 
