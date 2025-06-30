@@ -100,7 +100,7 @@ def test_yarn_rotary_embedding():
     assert q_rotated.axes == q.axes
 
     # Test that the output is different from input (rotary embeddings should modify the input)
-    assert not hax.allclose(q, q_rotated, rtol=1e-6, atol=1e-6)
+    assert not hax.all(hax.isclose(q, q_rotated, rtol=1e-6, atol=1e-6))
 
     # Test HF config conversion
     theta, config = yarn_config.to_hf_config()
