@@ -32,11 +32,11 @@ eval_harness:
 ##    - task: squadv2  # reading comprehension benchmark
 #      num_fewshot: 10
   max_eval_length: 4096
-tokenizer: meta-llama/meta-llama-3-8B
+tokenizer: meta-llama/Meta-Llama-3-8B
 model:
   type: llama
 #checkpoint_path: gs://marin-us-central2/checkpoints/dclm_baseline_1b_1x_replication_nov12_3404462497seed-b68241/hf/step-54930
-checkpoint_path: meta-llama/meta-llama-3-8B
+checkpoint_path: meta-llama/Meta-Llama-3-8B
 checkpoint_is_hf: true
 trainer:
   mp: f32
