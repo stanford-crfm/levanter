@@ -21,9 +21,9 @@ if TYPE_CHECKING:  # pragma: no cover -- typing helpers
 
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig as _DefaultRotaryEmbeddingsConfig
 from levanter.layers.rotary import Llama3RotaryEmbeddingsConfig as _Llama3RotaryEmbeddingsConfig
-from levanter.layers.rotary import YarnRotaryEmbeddingsConfig as _YarnRotaryEmbeddingsConfig
 from levanter.layers.rotary import RotaryEmbeddings as _RotaryEmbeddings
 from levanter.layers.rotary import RotaryEmbeddingsConfig as _RotaryEmbeddingsConfig
+from levanter.layers.rotary import YarnRotaryEmbeddingsConfig as _YarnRotaryEmbeddingsConfig
 from levanter.layers.rotary import rotary_pos_emb as _rotary_pos_emb
 
 

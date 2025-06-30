@@ -159,8 +159,8 @@ class LlamaConfig(HFCompatConfig):
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
             **config_overrides,
-        }
-        
+        )
+
         # Only add rope_scaling if it's not None
         if rope_scaling is not None:
             config_kwargs["rope_scaling"] = rope_scaling
