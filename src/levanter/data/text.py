@@ -62,7 +62,7 @@ silence_transformer_nag()  # noqa
 from transformers import BatchEncoding, PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast  # noqa
 
 from levanter.compat.hf_checkpoints import load_tokenizer  # noqa
-from levanter.data._preprocessor import BatchProcessor, U, dict_from_record_batch  # noqa
+from levanter.data._preprocessor import BatchProcessor, IdentityProcessor, U, dict_from_record_batch  # noqa
 from levanter.data.metrics_monitor import LoggerMetricsMonitor, LoggingMetricsMonitor, MetricsMonitor  # noqa
 from levanter.data.sharded_datasource import (  # noqa
     JsonlDataSource,
@@ -447,6 +447,14 @@ class LmDatasetSourceConfigBase(abc.ABC):
     @abc.abstractmethod
     def get_shard_source(self, split) -> Optional[ShardedDataSource[dict]]:
         raise NotImplementedError
+
+    def load_cache(
+        self, split, tokenizer: HfTokenizer, override_cache_dir: str | None = None, enforce_eos=True
+    ) -> TreeCache[dict]:
+        base_cache = override_cache_dir if override_cache_dir is not None else self.cache_dir
+        if base_cache is None:
+            raise ValueError("cache_dir must be set or override_cache_dir must be provided")
+        return load_lm_dataset_cache(os.path.join(base_cache, split), self.format, tokenizer, enforce_eos=enforce_eos)
 
 
 @dataclass
@@ -924,6 +932,7 @@ def load_lm_dataset_cache(
     enforce_eos=True,
 ) -> TreeCache[dict]:
     """Similar to build_lm_dataset_cache, but just loads the cache. Raises an error if the cache doesn't exist."""
+
     processor = preprocessor_for_format(format, tokenizer, enforce_bos=True, enforce_eos=enforce_eos)
     cache = TreeCache.load(
         cache_dir,
@@ -1128,9 +1137,8 @@ class LMMixtureDatasetConfig(LMTaskConfig):
     max_train_batches: Optional[Dict[str, int]] = None
     """ Maximum number of batches to use from each dataset for training (using the initial batch size)"""
 
-    validation_batch_size: int = 1024
-    num_validation_batches: Optional[Dict[str, int]] = None
-    """ Number of validation batches to sample from the training set for each dataset"""
+    num_validation_sequences: Optional[Dict[str, int]] = None
+    """ Number of validation sequences to sample from the training set for each dataset"""
 
     def __post_init__(self):
         if len(self.configs) == 0:
@@ -1150,10 +1158,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         else:
             raise ValueError(f"Invalid train_weights type: {type(self.train_weights)}")
 
-        if self.max_train_batches is not None or self.num_validation_batches is not None:
+        if self.max_train_batches is not None or self.num_validation_sequences is not None:
             assert (
                 self.experiment_budget is None and self.target_budget is None
-            ), "max_train_batches and num_validation_batches and simulated data budget cannot all be set"
+            ), "max_train_batches and num_validation_sequences and simulated data budget cannot all be set"
 
     def build_token_datasets(self, caches: Mapping[str, TreeCache[dict]], Pos: Axis):
         token_datasets = {
@@ -1256,14 +1264,10 @@ class LMMixtureDatasetConfig(LMTaskConfig):
                 sliced_datasets[name] = ds.slice_dataset(end_index=simulated_length_of_dataset)
             datasets = sliced_datasets
 
-        if self.num_validation_batches is not None:
-            assert (
-                initial_batch_size is not None
-            ), "initial_batch_size must be provided if num_validation_batches is provided"
-
+        if self.num_validation_sequences is not None:
             for name, ds in datasets.items():
-                if name in self.num_validation_batches:
-                    num_sequences = self.num_validation_batches[name] * self.validation_batch_size
+                if name in self.num_validation_sequences:
+                    num_sequences = self.num_validation_sequences[name]
                     len_dataset = len(ds.as_sync_dataset())
                     # Reserve the last N sequences for validation and use the rest for training
                     logger.info(
@@ -1295,12 +1299,11 @@ class LMMixtureDatasetConfig(LMTaskConfig):
         doc_caches = self.build_caches("validation", monitors=monitors)
         validation_datasets = self.build_token_datasets(doc_caches, Pos)
 
-        if self.num_validation_batches is not None:
+        if self.num_validation_sequences is not None:
             train_doc_caches = self.build_caches("train", monitors=monitors)
             train_datasets = self.build_token_datasets(train_doc_caches, Pos)
 
-            for name, num_batches in self.num_validation_batches.items():
-                num_sequences = num_batches * self.validation_batch_size
+            for name, num_sequences in self.num_validation_sequences.items():
                 len_dataset = len(train_datasets[name].as_sync_dataset())
                 logger.info(
                     f"Selecting {num_sequences} sequences from {name} training set of size {len_dataset} for"
@@ -1348,7 +1351,16 @@ class LMMixtureDatasetConfig(LMTaskConfig):
 
             # drop the data source and corresponding weight if the cache is not built
             if source is None:
-                logger.warning(f"Skipping {name} for split {split} because no source was provided")
+                try:
+                    caches[name] = load_lm_dataset_cache(
+                        os.path.join(cache_dir, split),
+                        source_config.format,
+                        self.the_tokenizer,
+                        self.enforce_eos,
+                    )
+                except FileNotFoundError:
+                    logger.warning(f"No source for {name} in {split} split and no cache either, skipping")
+                    continue
             else:
                 caches[name] = build_lm_dataset_cache(
                     os.path.join(cache_dir, split),

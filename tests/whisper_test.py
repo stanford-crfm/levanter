@@ -16,7 +16,7 @@ from haliax import Axis
 
 from levanter.compat.hf_checkpoints import RepoRef
 from levanter.data.audio import AudioTextExample
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.whisper import WhisperASRModel, WhisperConfig, WhisperModel
 from levanter.utils.tree_utils import inference_mode
 from test_utils import skip_if_no_soundlibs, skip_if_no_torch

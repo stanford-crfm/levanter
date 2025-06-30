@@ -599,7 +599,7 @@ class SerialCacheWriter(AbstractContextManager):
         self._tree_store.extend(cbatch)
 
 
-def _serialize_json_and_commit(path, obj):
+def _serialize_json_and_commit(path: str, obj):
     # just to be paranoid, we write to a temp file and then rename it
     # TODO: probably we could do better here
     fs: AbstractFileSystem = fsspec.core.url_to_fs(path)[0]
@@ -1222,7 +1222,7 @@ def _copy_cache_data(dest_path, source_path, processor, data_offset_tree, rows_s
 
 
 @ray.remote(
-    num_cpus=2,
+    num_cpus=0.5,
     memory=1 * 1024 * 1024 * 1024,
     runtime_env=RuntimeEnv(env_vars={"JAX_PLATFORMS": "cpu"}),
 )

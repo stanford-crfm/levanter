@@ -9,7 +9,7 @@ import haliax as hax
 from haliax import Axis, NamedArray
 from haliax.nn import cross_entropy_loss
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.lm_model import LmConfig
 
 

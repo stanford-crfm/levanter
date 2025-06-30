@@ -29,7 +29,6 @@ model:
   type: llama
   upcast_attn: false
   use_bias: false
-  use_flash_attention: true
   use_layer_norm_weight: true
 optimizer:
   beta1: 0.9
