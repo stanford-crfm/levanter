@@ -15,11 +15,13 @@ if TYPE_CHECKING:  # pragma: no cover -- typing helpers
         RotaryEmbeddingsConfig,
         DefaultRotaryEmbeddingsConfig,
         Llama3RotaryEmbeddingsConfig,
+        YarnRotaryEmbeddingsConfig,
         rotary_pos_emb,
     )
 
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig as _DefaultRotaryEmbeddingsConfig
 from levanter.layers.rotary import Llama3RotaryEmbeddingsConfig as _Llama3RotaryEmbeddingsConfig
+from levanter.layers.rotary import YarnRotaryEmbeddingsConfig as _YarnRotaryEmbeddingsConfig
 from levanter.layers.rotary import RotaryEmbeddings as _RotaryEmbeddings
 from levanter.layers.rotary import RotaryEmbeddingsConfig as _RotaryEmbeddingsConfig
 from levanter.layers.rotary import rotary_pos_emb as _rotary_pos_emb
@@ -30,6 +32,7 @@ __all__ = [
     "RotaryEmbeddingsConfig",
     "DefaultRotaryEmbeddingsConfig",
     "Llama3RotaryEmbeddingsConfig",
+    "YarnRotaryEmbeddingsConfig",
     "rotary_pos_emb",
 ]
 
@@ -39,6 +42,7 @@ _mapping = {
     "RotaryEmbeddingsConfig": _RotaryEmbeddingsConfig,
     "DefaultRotaryEmbeddingsConfig": _DefaultRotaryEmbeddingsConfig,
     "Llama3RotaryEmbeddingsConfig": _Llama3RotaryEmbeddingsConfig,
+    "YarnRotaryEmbeddingsConfig": _YarnRotaryEmbeddingsConfig,
     "rotary_pos_emb": _rotary_pos_emb,
 }
 
