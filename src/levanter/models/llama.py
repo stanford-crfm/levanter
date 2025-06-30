@@ -105,7 +105,7 @@ class LlamaConfig(HFCompatConfig):
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
         rope_theta = hf_config.rope_theta
-        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, getattr(hf_config, "rope_scaling", None))
         return LlamaConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
@@ -146,23 +146,28 @@ class LlamaConfig(HFCompatConfig):
 
         rope_theta, rope_scaling = self.rope.to_hf_config()
 
-        return HfLlamaConfig(
-            max_position_embeddings=self.seq_len,
-            hidden_size=self.hidden_dim,
-            intermediate_size=self.intermediate_dim,
-            num_hidden_layers=self.num_layers,
-            num_attention_heads=self.num_heads,
-            num_key_value_heads=self.num_kv_heads,
-            hidden_act=self.activation_function.name,
-            initializer_range=self.initializer_range,
-            rms_norm_eps=self.layer_norm_epsilon,
-            tie_word_embeddings=self.tie_word_embeddings,
-            # rope_scaling=self.rope_scaling,
-            vocab_size=vocab_size,
-            rope_theta=rope_theta,
-            rope_scaling=rope_scaling,
+        # Build the config kwargs, only including rope_scaling if it's not None
+        config_kwargs = {
+            "max_position_embeddings": self.seq_len,
+            "hidden_size": self.hidden_dim,
+            "intermediate_size": self.intermediate_dim,
+            "num_hidden_layers": self.num_layers,
+            "num_attention_heads": self.num_heads,
+            "num_key_value_heads": self.num_kv_heads,
+            "hidden_act": self.activation_function.name,
+            "initializer_range": self.initializer_range,
+            "rms_norm_eps": self.layer_norm_epsilon,
+            "tie_word_embeddings": self.tie_word_embeddings,
+            "vocab_size": vocab_size,
+            "rope_theta": rope_theta,
             **config_overrides,
-        )
+        }
+        
+        # Only add rope_scaling if it's not None
+        if rope_scaling is not None:
+            config_kwargs["rope_scaling"] = rope_scaling
+
+        return HfLlamaConfig(**config_kwargs)
 
     @property
     def model_type(self) -> Type["LlamaLMHeadModel"]:
