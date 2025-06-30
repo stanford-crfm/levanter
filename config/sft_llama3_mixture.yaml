@@ -50,7 +50,7 @@ mixture_block_size: 2048
 stop_strategy: restart
 
 max_seq_len: 4096
-tokenizer: "meta-llama/Llama-3.1-8B-Instruct"
+tokenizer: "NousResearch/Llama-3.1-8B-Instruct"
 model:  # 8B llama3 class model
   type: llama
   seq_len: 4096
@@ -99,7 +99,7 @@ hf_save_steps: 1000
 hf_save_path: "gs://marin-us-central2/checkpoints/llama_3.1_mixture_total/hf/seed_0/"
 
 initialize_from_hf: True
-model_name_or_path: "meta-llama/Llama-3.1-8B"
+model_name_or_path: "NousResearch/Llama-3.1-8B"
 
 messages_field: "messages"
 input_role: "user"
