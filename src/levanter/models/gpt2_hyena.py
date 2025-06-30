@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Type
 
 import equinox as eqx
+import jax
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
 
@@ -16,7 +17,7 @@ from haliax.jax_utils import named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Embeddings, Gpt2Mlp
 from levanter.models.hyena import HyenaConfig, HyenaOperator
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -158,11 +159,18 @@ class Gpt2HyenaModel(LmHeadModel[Gpt2HyenaConfig]):
         return Gpt2HyenaModel(backbone, embeddings)
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         # NOTE: attn_mask not used since we use the Hyena operator instead of attention.
         k_embed, k_backbone = haliax.jax_utils.maybe_rng_split(key, 2)
-        x = self.embeddings.embed(input_ids, key=k_embed)
+        if pos_ids is None:
+            pos_ids = hax.arange(input_ids.resolve_axis("position"), dtype=jax.numpy.int32)
+        x = self.embeddings.embed(input_ids, pos_ids=pos_ids, key=k_embed)
 
         x = self.backbone(x, key=k_backbone)
 

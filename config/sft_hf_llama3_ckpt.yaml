@@ -7,7 +7,6 @@ model:
   num_layers: 32
   num_heads: 32
   num_kv_heads: 8
-  use_flash_attention: true
   flash_attention_block_size: 512
   use_bias: false
   use_layer_norm_weight: true

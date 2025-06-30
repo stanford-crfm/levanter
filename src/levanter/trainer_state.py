@@ -6,6 +6,7 @@ import equinox as eqx
 import jax
 import jmp
 from jax import numpy as jnp
+from jax._src.random import PRNGKey
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
@@ -130,7 +131,14 @@ class TrainerState(eqx.Module, Generic[M]):
             **kwargs,
         )
 
-    def take_step(self: S, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> tuple[S, M]:
+    def take_step(
+        self: S,
+        grads: PyTree,
+        *,
+        obj_fun: Callable[[M], Scalar] | None = None,
+        loss: float | None = None,
+        key: PRNGKey,
+    ) -> tuple[S, M]:
         assert isinstance(self, TrainerState)  # make mypy happy
         model, opt_state, updates = take_train_step(
             self.optimizer,
@@ -138,6 +146,7 @@ class TrainerState(eqx.Module, Generic[M]):
             self.opt_state,
             grads,
             obj_fun=obj_fun,
+            loss=loss,
             is_trainable=self.is_trainable,
         )
 
@@ -147,7 +156,9 @@ class TrainerState(eqx.Module, Generic[M]):
             ma = None
 
         return (
-            dataclasses.replace(self, model=model, opt_state=opt_state, model_averaging=ma, step=self.step + 1),
+            dataclasses.replace(
+                self, model=model, opt_state=opt_state, model_averaging=ma, step=self.step + 1, training_key=key
+            ),
             updates,
         )
 
@@ -233,6 +244,7 @@ def take_train_step(
     grads,
     *,
     obj_fun: Optional[Callable[[M], Scalar]] = None,
+    loss: Optional[float] = None,
     is_trainable: FilterTree = True,
 ) -> tuple[M, OptState, M]:
     """
@@ -254,7 +266,7 @@ def take_train_step(
     trainable_model = trainables_only(model, is_trainable)
     _, trainable_model = partition_for_grad_overwrite(trainable_model)
 
-    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun, loss=loss)
     model = apply_updates(model, updates, overwrites)
 
     return model, opt_state, updates

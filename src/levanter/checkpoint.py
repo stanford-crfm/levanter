@@ -213,13 +213,30 @@ class Checkpointer:
             destination = f"step-{step}"
 
             if not save_permanent_ckpt:
-                self._last_temporary_checkpoint = destination
+                self._last_temporary_checkpoint = os.path.join(self.base_path, destination)
             else:
                 self._last_temporary_checkpoint = None
 
             def callback():
                 if last_checkpoint is not None:
-                    self._rm_checkpoint(last_checkpoint)
+                    # check if we still want to delete it. Sometimes we like to replace the metadata of the last
+                    # checkpoint. It'd be nice if the process weren't manual, but this is a good compromise
+                    try:
+                        last_metadata = _load_metadata(last_checkpoint)
+                        if last_metadata.get("is_temporary", False):
+                            logger.info(
+                                f"Deleting old temporary checkpoint {last_checkpoint} after saving new checkpoint."
+                            )
+                            # we can delete the last temporary checkpoint now
+                            self._rm_checkpoint(last_checkpoint)
+                        else:
+                            logger.info(
+                                f"Not deleting old temporary checkpoint {last_checkpoint} because it is no longer"
+                                " temporary."
+                            )
+                    except FileNotFoundError:
+                        logger.warning(f"Could not load metadata for last temporary checkpoint {last_checkpoint}.")
+                        # if we can't load the metadata, we can't delete it, so just log a warning
 
             self.save_checkpoint(info, destination, commit_callback=callback, is_temporary=not save_permanent_ckpt)
 
@@ -642,7 +659,27 @@ def is_checkpoint_path(path: str) -> bool:
     Check if a given path is a checkpoint path.
     """
     try:
-        return fsspec_utils.exists(path)
+        if not fsspec_utils.exists(path):
+            return False
+        # Sometimes we have incomplete checkpoints due to preemption or other issues.
+        # try to find a metadata file in the path
+        fs, plain_path = _get_fs_and_plain_path(path)
+        metadata_path = os.path.join(plain_path, "metadata.json")
+        if fs.exists(metadata_path):
+            return True
+        # glob
+        # if we don't find a metadata file, we can check if the path has any subdirectories
+        metadata_files = fs.glob(os.path.join(plain_path, "*", "metadata.json"))
+        if len(metadata_files) > 0:
+            return True
+        else:
+            logger.warning(
+                f"While checkpoint path {path} exists, it does not contain a metadata.json file or subdirectories with"
+                " metadata files. Most likely, this path has other data or incomplete checkpoints. Acting as if it is"
+                " not a checkpoint path."
+            )
+            return False
+
     except Exception:  # noqa
         logger.exception(f"Error checking if {path} is a checkpoint path")
         raise

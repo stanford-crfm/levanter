@@ -1,6 +1,6 @@
 import numpy as np
 
-from levanter.optim import AdamConfig
+from levanter.optim.config import AdamConfig
 
 
 def test_no_stable_weirdness():
