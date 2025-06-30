@@ -223,8 +223,8 @@ def dot_product_attention(
 
 
 def simple_attention_with_dropout(
-    QPos: Axis,
-    KPos: Axis,
+    QPos: AxisSelector,
+    KPos: AxisSelector,
     Key: Axis,
     query: NamedArray,
     key: NamedArray,
@@ -1893,7 +1893,8 @@ class PageTable(eqx.Module):
     def free_pages(self, seq_id: int) -> "PageTable":
         # find all pages owned by this seq
 
-        new_page_owners = hax.where(self.page_owners == seq_id, -1, self.page_owners)
+        # pages_owned = self.page_owners == seq_id
+        new_page_owners = self.page_owners.at["page", pages_owned].set(-1)
         new_page_indices = self.page_indices.at["seq", seq_id].set(-1)
         new_seq_lens = self.seq_lens.at["seq", seq_id].set(-1)
 
@@ -2006,8 +2007,8 @@ def default_ragged_paged_attention(
     page_indices: NamedArray,  # i32[Seq, PagePerSeq]
     cu_q_lens: jnp.ndarray,  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
     num_seqs: jnp.ndarray,  # scalar int32
-    sm_scale: float = 1.0,
-    soft_cap: float = 100.0,
+    sm_scale: float,
+    soft_cap: float | None = None,
 ) -> NamedArray:
     """Default implementation of ragged paged attention.
     This implementation is not optimized for performance and is intended for testing purposes.
@@ -2015,8 +2016,8 @@ def default_ragged_paged_attention(
     It does each sequence independently
     """
 
-    Q_BS = 4
-    KV_BS = 32
+    Q_BS = min(4, q.axis_size("tok"))  # block size for query
+    KV_BS = min(32, page_indices.axis_size("page"))  # block size for key-value
     Q_B = hax.Axis("tok", Q_BS)
 
     H = q.resolve_axis("kv_heads")
@@ -2027,6 +2028,15 @@ def default_ragged_paged_attention(
     page_size = kv_pages.array.shape[1]
 
     q = q * sm_scale
+
+    padding_amount = (Q_BS - q.axis_size("tok") % Q_BS) % Q_BS
+    padded_q = hax.concatenate(
+        "tok",
+        [q, hax.zeros_like(q["tok", hax.ds(0, padding_amount)])],
+    )
+
+    q_orig = q
+    q = padded_q
 
     output = hax.zeros_like(q)
 
@@ -2040,12 +2050,14 @@ def default_ragged_paged_attention(
             o = carry
             q_start = cu_q_lens[seq_id] + q_block_id * Q_BS
             q_block = q["tok", hax.ds(q_start, Q_B)]
-            kv_len = kv_lens["seq", seq_id]
+            kv_len = kv_lens["seq", seq_id].scalar()
 
             q_pos_id_start = kv_len - q_len + q_start
             q_tok = hax.arange(q_block.resolve_axis("tok"), start=q_pos_id_start)
 
-            num_kv_blocks = (kv_len + KV_BS - 1) // KV_BS
+            kv_pos_per_block = page_size * KV_BS  # how many tokens per kv block
+
+            num_kv_blocks = (kv_len + kv_pos_per_block - 1) // kv_pos_per_block
 
             def _compute_attention_for_kv_block(kv_block_id, carry):
                 o_b, sum_exp_b, max_b = carry
@@ -2055,7 +2067,10 @@ def default_ragged_paged_attention(
 
                 kv_pos_start = kv_page_start * page_size
 
-                kv_block = kv_pages["page", block_page_idx, "slot", :].flatten_axes(("page", "slot"), "kv_tok")
+                slots = kv_pages["page", block_page_idx, "slot", :]
+                kv_block = slots.flatten_axes(("page", "slot"), "kv_tok")
+
+                kv_tok = hax.arange(kv_block.resolve_axis("kv_tok"), start=kv_pos_start)
                 k_block = kv_block["kv_heads", 0 : H.size]
                 v_block = kv_block["kv_heads", H.size :]
 
@@ -2064,7 +2079,6 @@ def default_ragged_paged_attention(
                 if soft_cap is not None:
                     attn_b = hax.tanh(attn_b / soft_cap) * soft_cap
 
-                kv_tok = hax.arange(kv_block.resolve_axis("kv_tok"), start=kv_pos_start)
                 attn_mask = kv_tok.broadcast_axis(q_tok.axes) <= q_tok  # causal
                 attn_mask = attn_mask & (kv_tok < kv_len)  # stay within bounds
 
@@ -2072,6 +2086,7 @@ def default_ragged_paged_attention(
 
                 new_max_b = hax.maximum(max_b, hax.max(attn_b, "kv_tok"))
                 P_ij = hax.exp(attn_b - new_max_b)
+                P_ij = hax.where(attn_mask, P_ij, 0.0)
 
                 exp_diff = hax.exp(max_b - new_max_b)
                 sum_exp_b = exp_diff * sum_exp_b + hax.sum(P_ij, axis="kv_tok")
@@ -2092,7 +2107,7 @@ def default_ragged_paged_attention(
             # Normalize
             sum_exp_b = hax.maximum(sum_exp_b, 1e-10)
             o_b = o_b / sum_exp_b
-            o = o.at["tok", hax.ds(q_start, Q_BS)].set(o_b)
+            o = o.at["tok", hax.ds(q_start, Q_BS)].set(o_b, mode="drop")
             return o
 
         o = jax.lax.fori_loop(0, num_q_blocks, _compute_attention_for_q_block, o)
@@ -2100,5 +2115,6 @@ def default_ragged_paged_attention(
         return o
 
     output = jax.lax.fori_loop(0, num_seqs, _compute_attention_for_seq, output)
+    output = output["tok", 0 : q_orig.axis_size("tok")]
 
     return output

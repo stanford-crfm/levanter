@@ -7,16 +7,15 @@ import numpy as np
 from chex import assert_trees_all_close
 
 import haliax as hax
-import haliax.nn as hnn
 
-from levanter.layers.attention import AttentionMask, default_ragged_paged_attention
+from levanter.layers.attention import AttentionMask, default_ragged_paged_attention, simple_attention_with_dropout
 
 
-PAGE = hax.Axis("page", 128)  # plenty of slack
+PAGE = hax.Axis("page", 64)  # plenty of slack
 SLOT = hax.Axis("slot", 4)  # page size
-KV_HEADS = hax.Axis("kv_heads", 4)
+KV_HEADS = hax.Axis("kv_heads", 2)
 QH = hax.Axis("q_heads_per_group", 1)
-D = hax.Axis("head_size", 32)
+D = hax.Axis("head_size", 4)
 
 
 KV_BS = 32  # must match constant inside kernel
@@ -58,7 +57,7 @@ def _build_random_case(rng, seq_lens):
     # random queries for whole token axis
     total_tokens = tok_offsets[-1]
     this_TOK = hax.Axis("tok", int(total_tokens))
-    q = hax.random.normal(rng, (this_TOK, KV_HEADS, QH, D)) * SM_SCALE
+    q = hax.random.normal(rng, (this_TOK, KV_HEADS, QH, D))
 
     kv_lens = jnp.asarray(seq_lens, dtype=jnp.int32)
     kv_lens = hax.named(kv_lens, "seq")
@@ -75,26 +74,26 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
         # slice query tokens for this sequence
         start = int(cu_q_lens[sid])
         q_seq = q["tok", hax.ds(start, qlen)]
-        TOK_S = hax.Axis("Tok_s", qlen)
+        TOK_S = hax.Axis("tok", qlen)
 
         # gather kv for the sequence
-        n_pages = (kv_lens[sid] + SLOT.size - 1) // SLOT.size
-        pages = page_indices[sid, :n_pages]
-        kv_flat = kv_pages["page", pages, "slot", :].flatten("kv_tok")
-        kv_flat = kv_flat["kv_tok", hax.ds(0, kv_lens[sid])]
+        n_pages = (kv_lens["seq", sid] + SLOT.size - 1) // SLOT.size
+        pages = page_indices["seq", sid, "page", : n_pages.scalar()]
+        kv_flat = kv_pages["page", pages, "slot", :].flatten_axes(("page", "slot"), "kv_tok")
+        kv_flat = kv_flat["kv_tok", hax.ds(0, kv_lens["seq", sid].scalar())]
 
         k_seq = kv_flat["kv_heads", : KV_HEADS.size]
         v_seq = kv_flat["kv_heads", KV_HEADS.size :]
 
         # rename axes so they line up with dot_product_attention sig
-        q_seq = q_seq.rename_axis("tok", TOK_S.name)
-        k_seq = k_seq.rename_axis("kv_tok", TOK_S.name)
-        v_seq = v_seq.rename_axis("kv_tok", TOK_S.name)
+        q_seq = q_seq.rename({"tok": TOK_S.name})
 
-        mask = AttentionMask.causal().materialize(TOK_S, TOK_S)
-        ref = hnn.attention.dot_product_attention(TOK_S, D, q_seq, k_seq, v_seq, mask=mask)
+        mask = AttentionMask.causal()
+        ref = simple_attention_with_dropout(
+            "tok", "kv_tok", D, q_seq, k_seq, v_seq, mask=mask, scaling_factor=SM_SCALE
+        )
 
-        out_chunks.append(ref.rename({TOK_S.name: "tok"}))
+        out_chunks.append(ref)
 
     return hax.concatenate("tok", out_chunks)
 
@@ -106,13 +105,15 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
 
 def test_ragged_paged_attention_single_seq():
     rng = jr.PRNGKey(0)
-    seq_lens = [45]  # one ragged sequence
+    seq_lens = [46]  # one sequence
     q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
 
     ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
     assert ragged.axes == ref.axes
+    assert_trees_all_close(ragged.array[:-1], ref.array[:-1], atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(ragged.array[-1], ref.array[-1], atol=1e-3, rtol=1e-3)
     assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
 
 
