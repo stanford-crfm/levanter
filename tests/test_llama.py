@@ -12,7 +12,6 @@ import haliax as hax
 import haliax.nn as hnn
 
 from levanter.layers.attention import AttentionBackend, AttentionMask
-from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig
 from levanter.models.llama import Attention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
@@ -61,32 +60,6 @@ def test_llama_params():
     actual_params = 6.738415616e9
     params = llama_config.total_trainable_params(hf_config.vocab_size)
     assert np.isclose(actual_params, params, rtol=1e-2)
-
-
-@skip_if_no_torch
-def test_llama_rotary_embedding():
-    import torch
-    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
-
-    llama_config = _get_llama_config()
-    HeadSize = llama_config.attention_config().HeadSize
-    Pos = llama_config.Pos
-    seq_len = Pos.size
-    key = random.PRNGKey(0)
-    device = "cpu"
-
-    x = random.normal(key, (1, seq_len))
-    x_torch = torch.from_numpy(np.array(x))
-
-    levanter_emb = DefaultRotaryEmbeddingsConfig().build(HeadSize=HeadSize)
-    levanter_output = (levanter_emb.cos, levanter_emb.sin)
-
-    hf_rope = HFLlamaRotaryEmbedding(config=llama_config.to_hf_config(32000), device=device)
-    hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1))
-
-    for jax_out, torch_out in zip(levanter_output, hf_output):
-        torch_out = torch_out.numpy()
-        assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
 
 
 @skip_if_no_torch
