@@ -161,12 +161,6 @@ class LlamaConfig(HFCompatConfig):
             **config_overrides,
         )
 
-        # Only add rope_scaling if it's not None
-        if rope_scaling is not None:
-            config_kwargs["rope_scaling"] = rope_scaling
-
-        return HfLlamaConfig(**config_kwargs)
-
     @property
     def model_type(self) -> Type["LlamaLMHeadModel"]:
         return LlamaLMHeadModel
