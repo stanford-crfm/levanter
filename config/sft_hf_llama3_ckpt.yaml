@@ -15,4 +15,4 @@ model:
     type: "llama3"
 
 # need to set this!
-tokenizer: "NousResearch/NousResearch-3.1-8B"
+tokenizer: "meta-llama/meta-llama-3.1-8B"

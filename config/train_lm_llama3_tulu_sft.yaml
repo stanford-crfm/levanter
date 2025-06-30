@@ -59,7 +59,7 @@ optimizer:
   warmup: 0.03
 
 # Initialization from the specific HF checkpoint used in sft_tootsie_mixture.yaml
-initialize_from_hf: "NousResearch/Llama-3.1-8B" #"gs://marin-us-central2/checkpoints/tootsie-8b-hypnotic-spoonbill-2/hf/step-829999/"
+initialize_from_hf: "meta-llama/Llama-3.1-8B" #"gs://marin-us-central2/checkpoints/tootsie-8b-hypnotic-spoonbill-2/hf/step-829999/"
 use_hf_model_config: False # Use the model config defined above
 
 # HF Saving config from sft_tootsie_mixture.yaml

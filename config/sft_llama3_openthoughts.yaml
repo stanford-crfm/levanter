@@ -7,7 +7,7 @@ supervised_data:
   #cache_dir: "gs://marin-us-central2/tokenized/tulu_sft_v3_llama3_tokenizer_retrypack-bca8bd/"
 
 max_seq_len: 4096
-tokenizer: "NousResearch/NousResearch-3.1-8B"
+tokenizer: "meta-llama/meta-llama-3.1-8B"
 model:  # 8B  llama3 class model
   type: llama
   seq_len: 4096

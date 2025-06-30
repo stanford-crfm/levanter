@@ -19,7 +19,7 @@ model:
     factor: 1.0
     beta_fast: 32.0
     beta_slow: 1.0
-    original_max_position_embeddings: 2048
+    original_max_position_embeddings: 256 # this is unreasonable just for testing
     mscale: 1.0
 trainer:
   tracker:
