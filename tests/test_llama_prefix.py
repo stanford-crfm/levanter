@@ -26,6 +26,7 @@ import torch.nn.functional as F
 from levanter.layers.rotary import Llama3RotaryEmbeddingsConfig
 
 from haliax.nn import log_softmax
+
 # -----------------------------------------------------------------------------
 # Hard-coded prompt pieces. These are the same strings used in eval_sliding_lm.py
 # -----------------------------------------------------------------------------
@@ -127,7 +128,7 @@ def compute_extraction_prob(
         token_logits.append(raw_logit)
 
     p_z = torch.exp(torch.tensor(total_log_prob)).item()
-    
+
     # Build return tuple dynamically based on requested information
     if not (return_log_prob or return_token_log_probs or return_token_logits):
         return p_z
@@ -139,7 +140,6 @@ def compute_extraction_prob(
         outputs.append(token_logits)
 
     return tuple(outputs) if len(outputs) > 1 else outputs[0]
-
 
 
 def _tokenize_example(tokenizer: transformers.PreTrainedTokenizerBase):
@@ -244,9 +244,7 @@ def _collect_levanter_hidden_states(
     return hidden
 
 
-def _collect_hf_hidden_states(
-    model: transformers.PreTrainedModel, input_ids: torch.Tensor
-) -> List[np.ndarray]:
+def _collect_hf_hidden_states(model: transformers.PreTrainedModel, input_ids: torch.Tensor) -> List[np.ndarray]:
     with torch.no_grad():
         out = model(input_ids, use_cache=False, output_hidden_states=True, return_dict=True)
     # HF returns a tuple (embed_out, layer1_out, ... layerN_out)
@@ -283,7 +281,9 @@ def test_llama_prefix_intermediates_close():
     hf_model.eval()
 
     # Assert we are indeed using Llama-3 rotary embeddings on both sides
-    assert hf_model.config.rope_scaling is not None and hf_model.config.rope_scaling.get("rope_type") == "llama3", "HF model is not configured with Llama-3 RoPE"
+    assert (
+        hf_model.config.rope_scaling is not None and hf_model.config.rope_scaling.get("rope_type") == "llama3"
+    ), "HF model is not configured with Llama-3 RoPE"
 
     hf_hidden = _collect_hf_hidden_states(hf_model, input_ids_torch)
 
@@ -317,7 +317,7 @@ def test_llama_prefix_intermediates_close():
     # ------------------------------------------------------------------
     # Compare layer-wise (slice Levanter tensors to actual prompt length)
     # ------------------------------------------------------------------
-    print("HF length", len(hf_hidden), "Lev length", len(lev_hidden), flush=True) 
+    print("HF length", len(hf_hidden), "Lev length", len(lev_hidden), flush=True)
 
     for i, (lev, hf) in enumerate(zip(lev_hidden, hf_hidden)):
         # Slice Levanter to first prompt_len positions so shapes line up
@@ -336,9 +336,7 @@ def test_llama_prefix_intermediates_close():
         atol = 1e-4
 
         try:
-            chex.assert_trees_all_close(
-                lev_slice.astype(np.float32), hf.astype(np.float32), rtol=rtol, atol=atol
-            )
+            chex.assert_trees_all_close(lev_slice.astype(np.float32), hf.astype(np.float32), rtol=rtol, atol=atol)
         except AssertionError as e:
             # Compute absolute differences and identify elements outside the tolerance.
             diff = np.abs(lev_slice.astype(np.float32) - hf.astype(np.float32))
@@ -350,8 +348,7 @@ def test_llama_prefix_intermediates_close():
             max_diff = float(diff.max())
 
             print(
-                f"\n❌  Layer {i}: {num_mismatch}/{total} elements exceed tolerance. "
-                f"Max |Δ| = {max_diff:.6f}",
+                f"\n❌  Layer {i}: {num_mismatch}/{total} elements exceed tolerance. Max |Δ| = {max_diff:.6f}",
                 flush=True,
             )
 
@@ -383,11 +380,13 @@ def test_llama_prefix_intermediates_close():
             # Re-raise so that pytest still marks the test as failed.
             raise
 
+
 # ============================================================================
 # New diagnostic test: focuses ONLY on the final decoder block and end-to-end
 # log-probabilities for the suffix.  This helps localise the large fp32
 # mismatch we observed.
 # ============================================================================
+
 
 @skip_if_no_torch
 @skip_if_hf_model_not_accessible(MODEL_ID)
@@ -409,11 +408,15 @@ def test_llama_last_block_and_logprobs():
     # hf tensors
     input_ids_torch = torch.tensor(ids_list, dtype=torch.long).unsqueeze(0).to("cuda")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    hf_model = transformers.AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32, device_map={"": device})
+    hf_model = transformers.AutoModelForCausalLM.from_pretrained(
+        MODEL_ID, torch_dtype=torch.float32, device_map={"": device}
+    )
     hf_model.eval()
 
     # Assert we are indeed using Llama-3 rotary embeddings on both sides
-    assert hf_model.config.rope_scaling is not None and hf_model.config.rope_scaling.get("rope_type") == "llama3", "HF model is not configured with Llama-3 RoPE"
+    assert (
+        hf_model.config.rope_scaling is not None and hf_model.config.rope_scaling.get("rope_type") == "llama3"
+    ), "HF model is not configured with Llama-3 RoPE"
 
     with torch.no_grad():
         hf_outputs = hf_model(input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True)
@@ -462,13 +465,7 @@ def test_llama_last_block_and_logprobs():
 
     # 1. input-layernorm
     ln1_lev = lev_last_block.input_layernorm(x_prev_lev_named)
-    ln1_hf_t = (
-        hf_model.model.layers[-1]
-        .input_layernorm(torch.from_numpy(x_prev_hf).to(device))
-        .detach()
-        .cpu()
-        .numpy()
-    )
+    ln1_hf_t = hf_model.model.layers[-1].input_layernorm(torch.from_numpy(x_prev_hf).to(device)).detach().cpu().numpy()
     ln1_lev_slice = ln1_lev.array[:, :prompt_len, :]
     max_diff_ln1 = float(np.max(np.abs(ln1_lev_slice.astype(np.float32) - ln1_hf_t.astype(np.float32))))
     print(f"Max |Δ| after input LN: {max_diff_ln1:.6e}", flush=True)
@@ -508,7 +505,9 @@ def test_llama_last_block_and_logprobs():
     x_mid_hf = x_prev_hf + attn_out_hf
 
     # 4. post-attention layernorm
-    ln2_lev_full = lev_last_block.post_attention_layernorm(hax.named(x_mid_lev_full.array, (Batch, Pos, lev_model.config.Embed)))
+    ln2_lev_full = lev_last_block.post_attention_layernorm(
+        hax.named(x_mid_lev_full.array, (Batch, Pos, lev_model.config.Embed))
+    )
     ln2_lev = ln2_lev_full.array[:, :prompt_len, :]
     ln2_hf_t = (
         hf_model.model.layers[-1]
@@ -575,10 +574,9 @@ def test_llama_last_block_and_logprobs():
     # --- Logits divergence diagnostic ---
     hf_logits = hf_outputs.logits.cpu().float().numpy()
     # slice Levanter logits to same seq_len (no padding)
-    lev_logits_np = lev_logits[:, :hf_logits.shape[1], :]
+    lev_logits_np = lev_logits[:, : hf_logits.shape[1], :]
     max_diff_logits = float(np.max(np.abs(lev_logits_np.astype(np.float32) - hf_logits.astype(np.float32))))
     print(f"Max |Δ| in raw logits over full sequence: {max_diff_logits:.6e}", flush=True)
-
 
     # ---------------- Per-token diagnostic table -------------------
     hf_logits_np = hf_outputs.logits.cpu().float().numpy()
@@ -608,7 +606,9 @@ def test_llama_last_block_and_logprobs():
         )
 
     # Compare per-token log-probs as well (HF helper gives suffix-only tokens)
-    np.testing.assert_allclose(np.array(lev_token_lp, dtype=np.float32), np.array(token_lp_hf, dtype=np.float32), rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(
+        np.array(lev_token_lp, dtype=np.float32), np.array(token_lp_hf, dtype=np.float32), rtol=1e-3, atol=1e-3
+    )
 
     # Compare total log-probability
     np.testing.assert_allclose(log_p_z_lev, log_p_z_hf, rtol=1e-3, atol=1e-3)
@@ -617,7 +617,6 @@ def test_llama_last_block_and_logprobs():
 @skip_if_no_torch
 @skip_if_hf_model_not_accessible(MODEL_ID)
 @skip_in_ci("Large 8B model – skipped in CI.")
-
 def test_final_activation_comparison():
     """Compare the final hidden activations (after the last layer norm, before the LM head)
     of Levanter vs HuggingFace Llama-3-8B on the same prompt.
@@ -642,9 +641,7 @@ def test_final_activation_comparison():
     hf_model.eval()
 
     with torch.no_grad():
-        hf_outputs = hf_model(
-            input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True
-        )
+        hf_outputs = hf_model(input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True)
     hf_final_activations = hf_outputs.hidden_states[-1].cpu().float().numpy()  # (1, P, E)
 
     # ---------------- Levanter side ----------------
@@ -664,9 +661,9 @@ def test_final_activation_comparison():
     lev_activations = lev_activations_named.array[:, :prompt_len, :]  # slice to prompt length
 
     # ---------------- Comparison ----------------
-    assert lev_activations.shape == hf_final_activations.shape, (
-        f"Shape mismatch: {lev_activations.shape} vs {hf_final_activations.shape}"
-    )
+    assert (
+        lev_activations.shape == hf_final_activations.shape
+    ), f"Shape mismatch: {lev_activations.shape} vs {hf_final_activations.shape}"
 
     # Use stricter tolerances here, and emit diagnostics on failure
     rtol = 1e-4
@@ -724,7 +721,6 @@ def test_final_activation_comparison():
 @skip_if_no_torch
 @skip_if_hf_model_not_accessible(MODEL_ID)
 @skip_in_ci("Large 8B model – skipped in CI.")
-
 def test_rmsnorm_equivalence_detailed():
     """Diagnostic test that compares the final RMSNorm layer between HuggingFace and Levanter.
 
@@ -754,9 +750,7 @@ def test_rmsnorm_equivalence_detailed():
     input_ids_torch = torch.tensor(ids_list, dtype=torch.long).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        hf_outputs = hf_model(
-            input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True
-        )
+        hf_outputs = hf_model(input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True)
     hf_hidden = [hs.cpu().float().numpy() for hs in hf_outputs.hidden_states]
 
     pre_norm_hf = hf_hidden[-2]  # before global RMSNorm
@@ -807,5 +801,3 @@ def test_rmsnorm_equivalence_detailed():
     chex.assert_trees_all_close(
         post_norm_hf.astype(np.float32), post_norm_lev.astype(np.float32), rtol=1e-4, atol=1e-4
     )
-
-    
