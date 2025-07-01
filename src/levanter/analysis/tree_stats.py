@@ -3,6 +3,7 @@ from typing import Any
 import jax
 import optax
 
+import haliax
 import haliax.nn
 from haliax import NamedArray, is_named_array
 from haliax.jax_utils import is_jax_array_like
@@ -97,3 +98,47 @@ def summary_statistics_for_tree(
         to_log[f"{prefix}/hist/{key}"] = hist
 
     return to_log
+
+
+def nu_dead_neuron_histograms(prefix: str, tree: Any, split_scan_layers: bool) -> dict[str, Histogram]:
+    """Compute histograms of per-row and per-column gradient flow for Linear layers.
+
+    This looks at the optimizer second-moment (``nu``) values and sums over the
+    input and output dimensions of each Linear layer. If either sum is nearly
+    zero, the corresponding row or column is effectively a dead neuron.
+
+    Args:
+        prefix: Prefix to use when constructing log keys.
+        tree: PyTree containing ``nu`` values structured like the model.
+        split_scan_layers: Whether to split ``Stacked`` layers into individual
+            histograms.
+
+    Returns:
+        A mapping from key names to histograms.
+    """
+
+    hists: dict[str, Histogram] = {}
+
+    def _rec(path_prefix: str | None, subtree: Any):
+        is_leaf = lambda n: isinstance(n, haliax.nn.Linear) or isinstance(n, haliax.nn.Stacked)
+        leaf_key_paths = jax_utils.leaf_key_paths(subtree, prefix=path_prefix, is_leaf=is_leaf)
+
+        for key_path, node in zip(
+            jax.tree.leaves(leaf_key_paths, is_leaf=is_leaf),
+            jax.tree.leaves(subtree, is_leaf=is_leaf),
+            strict=True,
+        ):
+            if isinstance(node, haliax.nn.Stacked) and split_scan_layers:
+                for idx, sub in enumerate(node.unstacked()):
+                    _rec(f"{key_path}.{idx}", sub)
+            elif isinstance(node, haliax.nn.Linear):
+                if node.weight is None:
+                    continue
+                row_flow = haliax.ones(node.Out).dot(node.weight, axis=node.Out)
+                col_flow = node.weight.dot(haliax.ones(node.In), axis=node.In)
+                hists[f"{key_path}.row"] = Histogram.from_named_array(row_flow)
+                hists[f"{key_path}.col"] = Histogram.from_named_array(col_flow)
+
+    _rec(None, tree)
+
+    return {f"{prefix}/hist/{k}": v for k, v in hists.items()}
