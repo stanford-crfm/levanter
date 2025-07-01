@@ -33,6 +33,14 @@ PartitionSpecTree = TypeVar(
 class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     """Configuration for PSGD-QUAD optimizer.
 
+    Notes:
+        - LR is usually 3x smaller than adam, weight decay at least 3x larger.
+        - use with ~100 steps of LR warmup.
+        - max_skew_dense default is 1.0 making larger dimensions have diagonal preconditioners, but this 
+          can be set to float('inf') to make all preconditioners dense (more memory use but might be more stable).
+          For example, for layer shape (256, 128) default preconditioners will be (256,) and (128, 128), but if 
+          max_skew_dense is set to float('inf'), then preconditioners will be (256, 256) and (128, 128).
+
     Attributes:
         beta1: Momentum parameter. 0.9 or 0.95 are common values.
         weight_decay: Weight decay coefficient.
@@ -43,8 +51,6 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
             otherwise dense.
         max_skew_dense: Dimensions with skew larger than this compared to the other
             dimension will have diagonal preconditioners, otherwise dense.
-        n_iters: Number of iterations for preconditioner updates. Defaults to 1. On first
-            step, 10 iterations are always used for better initialization.
         preconditioner_lr: Learning rate for preconditioner.
         preconditioner_init_scale: Scale for preconditioner initialization.
         mu_dtype: Dtype of the momentum buffer. Defaults to same dtype as parameters.
@@ -71,8 +77,7 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     max_grad_norm: Optional[float] = 1.0
     normalize_grads: bool = False
     max_size_dense: int = 8192
-    max_skew_dense: float = 1e9
-    n_iters: int = 1
+    max_skew_dense: float = 1.0
     preconditioner_lr: float = 0.9
     preconditioner_init_scale: float = 1.0
     mu_dtype: Optional[Union[str, jnp.dtype]] = None
@@ -102,7 +107,6 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
                     normalize_grads=self.normalize_grads,
                     max_size_dense=self.max_size_dense,
                     max_skew_dense=self.max_skew_dense,
-                    n_iters=self.n_iters,
                     preconditioner_lr=self.preconditioner_lr,
                     preconditioner_init_scale=self.preconditioner_init_scale,
                     mu_dtype=self.mu_dtype,
@@ -117,7 +121,6 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
                     preconditioner_sharding=precond_partition_spec,
                 )
             )
-            components.append(optax.clip_by_block_rms(1.1))
             if self.weight_decay > 0:
                 components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
             components.append(optax.scale_by_learning_rate(learning_rate))
@@ -146,8 +149,7 @@ def scale_by_quad(
     b1: float = 0.95,
     normalize_grads: bool = False,
     max_size_dense: int = 8192,
-    max_skew_dense: float = 1e9,
-    n_iters: int = 1,
+    max_skew_dense: float = 1.0,
     preconditioner_lr: float = 0.9,
     preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
@@ -175,8 +177,6 @@ def scale_by_quad(
             otherwise dense.
         max_skew_dense: float, dimensions with skew larger than this compared to the other
             dimension will have diagonal preconditioners, otherwise dense.
-        n_iters: int, number of iterations for preconditioner updates. Defaults to 1. On first
-            step, 10 iterations are always used for better initialization.
         preconditioner_lr: float, learning rate for preconditioner.
         preconditioner_init_scale: float, scale for preconditioner initialization.
         mu_dtype: optional str or jnp.dtype, dtype of the momentum buffer. Defaults to
@@ -665,72 +665,60 @@ def scale_by_quad(
                 scanned_dim_sharding,
             )
 
-        def body_fn(carry):
-            with jax.default_matmul_precision("high"):
-                new_Qs, new_Ls, _, i = carry
+        # balance preconditioners about every 100 updates
+        def balance_Qs(Qs_to_bal):
+            def _balance_Q(Q):
+                norms = jnp.array([jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32)
+                gmean = jnp.exp(jnp.mean(jnp.log(norms)))
+                to_mul = gmean / norms
+                return [q * x.astype(q.dtype) for q, x in zip(Q, to_mul)]
 
-                # balance preconditioners about every 100 updates
-                def balance_Qs(Qs_to_bal):
-                    def _balance_Q(Q):
-                        norms = jnp.array([jnp.max(jnp.abs(q)) for q in Q], dtype=jnp.float32)
-                        gmean = jnp.exp(jnp.mean(jnp.log(norms)))
-                        to_mul = gmean / norms
-                        return [q * x.astype(q.dtype) for q, x in zip(Q, to_mul)]
+            return jax.tree.map(
+                lambda _, Q, nm: _map_fn(False, 0, nm, _balance_Q, Q),
+                dummy_updates_tree,
+                Qs_to_bal,
+                n_dims_to_map,
+            )
 
-                    return jax.tree.map(
-                        lambda _, Q, nm: _map_fn(False, 0, nm, _balance_Q, Q),
-                        dummy_updates_tree,
-                        Qs_to_bal,
-                        n_dims_to_map,
-                    )
+        Qs = jax.lax.cond(count_inc % 100 == 0, balance_Qs, lambda qs: qs, Qs)
+        if have_qs_sharding:
+            Qs = _safe_sharding_constraint(Qs, Qs_sharding)
 
-                new_Qs = jax.lax.cond(count_inc % 100 == 0, balance_Qs, lambda qs: qs, new_Qs)
-                if have_qs_sharding:
-                    new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
-
-                # update Qs and constrain sharding
-                new_Qs_Ls_Pg = jax.tree.map(
-                    lambda g, Q, L, expr, nm, qss, sh: _map_fn(
-                        lax_map,
-                        bs,
-                        nm,
-                        partial(
-                            _update_precond,
-                            exprs=expr,
-                            precond_lr=preconditioner_lr,
-                            qs_sharding=qss,
-                            params_sharding=sh,
-                        ),
-                        Q,
-                        L,
-                        g,
+            # update Qs and constrain sharding
+        with jax.default_matmul_precision("high"):
+            Qs_Ls_Pg = jax.tree.map(
+                lambda g, Q, L, expr, nm, qss, sh: _map_fn(
+                    lax_map,
+                    bs,
+                    nm,
+                    partial(
+                        _update_precond,
+                        exprs=expr,
+                        precond_lr=preconditioner_lr,
+                        qs_sharding=qss,
+                        params_sharding=sh,
                     ),
-                    momentum_updates,
-                    new_Qs,
-                    new_Ls,
-                    exprs,
-                    n_dims_to_map,
-                    Qs_sharding_no_leading_dims if have_qs_sharding else nones,
-                    sharding_without_scan if have_params_sharding else nones,
-                )
-                new_Qs, new_Ls, Pg = [
-                    jax.tree_util.tree_map(lambda qlp: qlp[i], new_Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
-                    for i in range(3)
-                ]
-                
-                if have_qs_sharding:
-                    new_Qs = _safe_sharding_constraint(new_Qs, Qs_sharding)
-                if have_params_sharding:
-                    Pg = _safe_sharding_constraint(Pg, partitioned_sharding)
-
-                new_Qs = otu.tree_cast(new_Qs, precond_dtype)
-                return new_Qs, new_Ls, Pg, i + 1
-
-        def cond_fn(carry):
-            return carry[-1] < jnp.where(count_inc == 1, 10, n_iters)
-        
-        init_val = (Qs, Ls, momentum_updates, jnp.zeros([], dtype=jnp.int32))
-        Qs, Ls, precond_gs, _ = jax.lax.while_loop(cond_fn, body_fn, init_val)
+                    Q,
+                    L,
+                    g,
+                ),
+                momentum_updates,
+                Qs,
+                Ls,
+                exprs,
+                n_dims_to_map,
+                Qs_sharding_no_leading_dims if have_qs_sharding else nones,
+                sharding_without_scan if have_params_sharding else nones,
+            )
+        Qs, Ls, precond_gs = [
+            jax.tree_util.tree_map(lambda qlp: qlp[i], Qs_Ls_Pg, is_leaf=lambda x: isinstance(x, tuple))
+            for i in range(3)
+        ]
+        if have_qs_sharding:
+            Qs = _safe_sharding_constraint(Qs, Qs_sharding)
+        if have_params_sharding:
+            precond_gs = _safe_sharding_constraint(precond_gs, partitioned_sharding)
+        Qs = otu.tree_cast(Qs, precond_dtype)
 
         # unpartition grads
         if partition_grads_into_blocks:
@@ -800,14 +788,13 @@ def scale_by_quad(
 
 
 def quad(
-    learning_rate: Union[float, Callable[[int], float]] = 0.0005,
+    learning_rate: Union[float, Callable[[int], float]] = 0.0003,
     b1: float = 0.95,
     weight_decay: float = 0.3,
     weight_decay_mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
     normalize_grads: bool = False,
     max_size_dense: int = 8192,
-    max_skew_dense: float = 1e9,
-    n_iters: int = 1,
+    max_skew_dense: float = 1.0,
     preconditioner_lr: float = 0.9,
     preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
@@ -839,8 +826,6 @@ def quad(
             otherwise dense.
         max_skew_dense: float, dimensions with skew larger than this compared to the other
             dimension will have diagonal preconditioners, otherwise dense.
-        n_iters: int, number of iterations for preconditioner updates. Defaults to 1. On first
-            step, 10 iterations are always used for better initialization.
         preconditioner_lr: float, learning rate for preconditioner.
         preconditioner_init_scale: float, scale for preconditioner initialization.
         mu_dtype: optional str or jnp.dtype, dtype of the momentum buffer. Defaults to
@@ -876,7 +861,6 @@ def quad(
             normalize_grads=normalize_grads,
             max_size_dense=max_size_dense,
             max_skew_dense=max_skew_dense,
-            n_iters=n_iters,
             preconditioner_lr=preconditioner_lr,
             preconditioner_init_scale=preconditioner_init_scale,
             mu_dtype=mu_dtype,
@@ -1047,11 +1031,8 @@ def _init_Q_exprs(
 
 
 def _norm_lower_bound(A: jax.Array):
-    max_abs = jnp.max(jnp.abs(A))
-
     def calc(A):
         # a little faster than xilin's but still pretty accurate
-        A = A / max_abs
         aa = A * A
         row_norms_sq = jnp.sum(aa, axis=0)
         i = jnp.argmax(row_norms_sq, 0)
@@ -1059,21 +1040,21 @@ def _norm_lower_bound(A: jax.Array):
         max_row_norm = jnp.sqrt(max_row_norm_sq)
         v_r = jax.lax.dynamic_index_in_dim(A, i, 1, keepdims=False) / max_row_norm
         u_r = A @ v_r
-        return max_abs * jnp.linalg.norm(u_r)
+        return jnp.linalg.norm(u_r)
 
-    return jnp.where(max_abs > 0, calc(A), max_abs)
+    return jnp.where(jnp.max(jnp.abs(A)) > 0, calc(A), 0.0)
 
 
 def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
     """Update Q using QUAD method and return preconditioned gradient."""
     exprP, exprGs = exprs
 
-    Pg = jnp.einsum(exprP, *[jnp.conj(q) for q in Q], *Q, G)
+    Pg = jnp.einsum(exprP, *Q, *Q, G)
     
     total_numel = G.size
     betaL = 0.95
     def _update_single_q_l(i, q, l):
-        term1 = jnp.einsum(exprGs[i], Pg, jnp.conj(Pg))
+        term1 = jnp.einsum(exprGs[i], Pg, Pg)
         
         if q.ndim < 2:
             term2 = total_numel / q.size
@@ -1096,7 +1077,7 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
             l_new = jnp.maximum(betaL * l + (1 - betaL) * ell, ell)
             p = q - precond_lr / 2 / l_new * (term1 @ q - term2 * q)
             p = p - precond_lr / 2 / l_new * (p @ term1 - p * term2)
-            q_new = (p + jnp.conj(p.T)) / 2
+            q_new = (p + p.T) / 2
             
         return q_new, l_new
 
