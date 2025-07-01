@@ -1418,7 +1418,7 @@ class Attention(eqx.Module):
         Note that this method only supports causal masks (for now)
 
         Arguments:
-            kv_state: KvPageState
+            page_cache: PageCache
             x: NamedArray [Pos, Embed]
             new_q_lens: NamedArray i32[MaxSeqs]
             pos_ids: NamedArray [Pos]
@@ -1428,23 +1428,7 @@ class Attention(eqx.Module):
 
         q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
 
-        Batch = q.resolve_axis("batch")
-        Pos = q.resolve_axis("position")
-
-        q_flat = q.flatten_axes(("batch", "position"), "tok")
-        k_flat = k.flatten_axes(("batch", "position"), "tok")
-        v_flat = v.flatten_axes(("batch", "position"), "tok")
-
-        mask = (pos_ids >= 0).flatten_axes(("batch", "position"), "tok")
-        sorted_indices = jnp.argsort(~mask.array)
-        num_tokens = int(jnp.sum(mask.array))
-        valid_indices = sorted_indices[:num_tokens]
-
-        q_tok = q_flat["tok", valid_indices]
-        k_tok = k_flat["tok", valid_indices]
-        v_tok = v_flat["tok", valid_indices]
-
-        kv_state = kv_state.update_kv_cache(k_tok, v_tok)
+        kv_state = kv_state.update_kv_cache(k, v)
 
         sm_scale = (
             self.config.scaling_factor
@@ -1453,8 +1437,9 @@ class Attention(eqx.Module):
         )
 
         if jax.default_backend() == "tpu":
+            # [max_num_batched_tokens, num_q_heads, head_dim]
             attn_tokens = tpu_ragged_paged_attention(
-                q_tok.array,
+                q.array,
                 kv_state.kv_pages.array,
                 kv_state.kv_lens.array,
                 kv_state.page_indices.array,
@@ -1466,7 +1451,7 @@ class Attention(eqx.Module):
             attn_tokens = hax.named(
                 attn_tokens,
                 (
-                    q_tok.resolve_axis("tok"),
+                    q.resolve_axis("tok"),
                     self.config.KVHeads,
                     self.config.QHeadsPerGroup,
                     self.config.HeadSize,
@@ -1474,7 +1459,7 @@ class Attention(eqx.Module):
             )
         else:
             attn_tokens = default_ragged_paged_attention(
-                q_tok,
+                q,
                 kv_state.kv_pages,
                 kv_state.kv_lens,
                 kv_state.page_indices,
@@ -1484,11 +1469,7 @@ class Attention(eqx.Module):
                 soft_cap=self.config.logits_soft_cap,
             )
 
-        out_flat = hax.zeros_like(q_flat)
-        out_flat = out_flat.at["tok", valid_indices].set(attn_tokens)
-        out = out_flat.unflatten_axis("tok", ("batch", "position"))
-
-        attn_output = out.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_tokens.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 
@@ -1784,7 +1765,7 @@ class PageTable(eqx.Module):
         allocated_table = jax.lax.fori_loop(0, self.max_seqs, _alloc_pages_for_seq, self)
         new_table = dataclasses.replace(allocated_table, seq_lens=new_lens)
 
-        batch_info = self._slice_batch_info(updated_seqs, new_table, new_token_counts)
+        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_token_counts)
 
         return new_table, batch_info
 
@@ -1850,7 +1831,8 @@ class PageTable(eqx.Module):
         # find all pages owned by this seq
 
         # pages_owned = self.page_owners == seq_id
-        new_page_owners = self.page_owners.at["page", pages_owned].set(-1)
+        # new_page_owners = self.page_owners.at["page", pages_owned].set(-1)
+        new_page_owners = hax.where(self.page_owners == seq_id, -1, self.page_owners)
         new_page_indices = self.page_indices.at["seq", seq_id].set(-1)
         new_seq_lens = self.seq_lens.at["seq", seq_id].set(-1)
 
