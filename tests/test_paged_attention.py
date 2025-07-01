@@ -67,6 +67,30 @@ def _build_random_case(rng, seq_lens):
     return q, kv_pages, kv_lens, page_indices, cu_q_lens, jnp.array(num_seqs, dtype=jnp.int32)
 
 
+def _build_incremental_case(rng, seq_lens, k_lens):
+    """Like ``_build_random_case`` but query only contains the last ``k`` tokens.
+
+    ``seq_lens`` gives the total tokens already in the KV cache for each
+    sequence. ``k_lens`` is how many query tokens each sequence has. The KV
+    cache still contains ``seq_lens`` tokens for every sequence.
+    """
+    q_full, kv_pages, kv_lens, page_indices, full_cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
+
+    assert len(seq_lens) == len(k_lens)
+
+    chunks = []
+    new_offsets = [0]
+    for sid, (total_len, k) in enumerate(zip(seq_lens, k_lens)):
+        start = int(full_cu_q_lens[sid]) + total_len - k
+        chunks.append(q_full["tok", hax.ds(start, k)])
+        new_offsets.append(new_offsets[-1] + k)
+
+    q = hax.concatenate("tok", chunks)
+    cu_q_lens = jnp.asarray(new_offsets, dtype=jnp.int32)
+
+    return q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs
+
+
 def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens):
     """Naïve per‑sequence causal soft‑max (slow but tiny)."""
     out_chunks = []
@@ -88,7 +112,8 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
         # rename axes so they line up with dot_product_attention sig
         q_seq = q_seq.rename({"tok": TOK_S.name})
 
-        mask = AttentionMask.causal()
+        offset = kv_lens["seq", sid].scalar() - qlen
+        mask = AttentionMask.causal(offset)
         ref = simple_attention_with_dropout(
             "tok", "kv_tok", D, q_seq, k_seq, v_seq, mask=mask, scaling_factor=SM_SCALE
         )
@@ -124,6 +149,32 @@ def test_ragged_paged_attention_multi_seq():
 
     ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
+
+    assert ragged.axes == ref.axes
+    assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
+
+
+def test_ragged_paged_attention_incremental_single_seq():
+    rng = jr.PRNGKey(2)
+    seq_lens = [47]
+    k_lens = [5]
+    q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_incremental_case(rng, seq_lens, k_lens)
+
+    ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+    ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
+
+    assert ragged.axes == ref.axes
+    assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
+
+
+def test_ragged_paged_attention_incremental_multi_seq():
+    rng = jr.PRNGKey(3)
+    seq_lens = [10, 37, 64]
+    k_lens = [1, 3, 9]
+    q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_incremental_case(rng, seq_lens, k_lens)
+
+    ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+    ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
 
     assert ragged.axes == ref.axes
     assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
