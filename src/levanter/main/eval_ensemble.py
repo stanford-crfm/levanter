@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Create ensemble model that averages logits
 class EnsembleModel(LmHeadModel):
-    models: list[LmHeadModel] = eqx.field(static=True)
+    models: list[LmHeadModel] = eqx.field()
     ensemble_method: str = eqx.field(static=True)
     temperature: float = eqx.field(static=True)
     _config: LmConfig = eqx.field(static=True)
