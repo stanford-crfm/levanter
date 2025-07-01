@@ -1406,7 +1406,7 @@ class Attention(eqx.Module):
     @named_call
     def paged_decode(
         self,
-        page_cache: "KvPageState",
+        kv_state: "KvPageState",
         x: NamedArray,
         pos_ids: NamedArray,
         *,
@@ -1418,7 +1418,7 @@ class Attention(eqx.Module):
         Note that this method only supports causal masks (for now)
 
         Arguments:
-            page_cache: PageCache
+            kv_state: KvPageState
             x: NamedArray [Pos, Embed]
             new_q_lens: NamedArray i32[MaxSeqs]
             pos_ids: NamedArray [Pos]
@@ -1428,7 +1428,23 @@ class Attention(eqx.Module):
 
         q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
 
-        page_cache = page_cache.update_kv_cache(k, v)
+        Batch = q.resolve_axis("batch")
+        Pos = q.resolve_axis("position")
+
+        q_flat = q.flatten_axes(("batch", "position"), "tok")
+        k_flat = k.flatten_axes(("batch", "position"), "tok")
+        v_flat = v.flatten_axes(("batch", "position"), "tok")
+
+        mask = (pos_ids >= 0).flatten_axes(("batch", "position"), "tok")
+        sorted_indices = jnp.argsort(~mask.array)
+        num_tokens = int(jnp.sum(mask.array))
+        valid_indices = sorted_indices[:num_tokens]
+
+        q_tok = q_flat["tok", valid_indices]
+        k_tok = k_flat["tok", valid_indices]
+        v_tok = v_flat["tok", valid_indices]
+
+        kv_state = kv_state.update_kv_cache(k_tok, v_tok)
 
         sm_scale = (
             self.config.scaling_factor
@@ -1437,106 +1453,46 @@ class Attention(eqx.Module):
         )
 
         if jax.default_backend() == "tpu":
-            # [max_num_batched_tokens, num_q_heads, head_dim]
             attn_tokens = tpu_ragged_paged_attention(
-                q.array,
-                page_cache.kv_pages.array,
-                page_cache.kv_lens.array,
-                page_cache.page_indices.array,
-                page_cache.cu_q_lens,
-                page_cache.num_seqs,
+                q_tok.array,
+                kv_state.kv_pages.array,
+                kv_state.kv_lens.array,
+                kv_state.page_indices.array,
+                kv_state.cu_q_lens,
+                kv_state.num_seqs,
                 sm_scale=sm_scale,
                 soft_cap=self.config.logits_soft_cap,
             )
+            attn_tokens = hax.named(
+                attn_tokens,
+                (
+                    q_tok.resolve_axis("tok"),
+                    self.config.KVHeads,
+                    self.config.QHeadsPerGroup,
+                    self.config.HeadSize,
+                ),
+            )
         else:
+            attn_tokens = default_ragged_paged_attention(
+                q_tok,
+                kv_state.kv_pages,
+                kv_state.kv_lens,
+                kv_state.page_indices,
+                kv_state.cu_q_lens,
+                kv_state.num_seqs,
+                sm_scale=sm_scale,
+                soft_cap=self.config.logits_soft_cap,
+            )
 
-            def _kv_from_cache(pc, seq):
-                kv_pages = pc.kv_pages.array
-                kv_heads = kv_pages.shape[2] // 2
-                length = int(pc.kv_lens.array[seq])
-                pages = pc.page_indices.array[seq]
-                k_list = []
-                v_list = []
-                for p in pages:
-                    if p < 0:
-                        break
-                    k_list.append(kv_pages[p, :, :kv_heads])
-                    v_list.append(kv_pages[p, :, kv_heads:])
-                if not k_list:
-                    return jnp.zeros((0, kv_heads, kv_pages.shape[3]), kv_pages.dtype), jnp.zeros(
-                        (0, kv_heads, kv_pages.shape[3]), kv_pages.dtype
-                    )
-                k_arr = jnp.concatenate(k_list, axis=0)[:length]
-                v_arr = jnp.concatenate(v_list, axis=0)[:length]
-                return k_arr, v_arr
+        out_flat = hax.zeros_like(q_flat)
+        out_flat = out_flat.at["tok", valid_indices].set(attn_tokens)
+        out = out_flat.unflatten_axis("tok", ("batch", "position"))
 
-            out = jnp.zeros_like(q_flat)
-            for b in range(Batch.size):
-                n_new = int(new_tokens_per_batch.array[b])
-                if n_new == 0:
-                    continue
-                mask_b = mask.array[b]
-                idx = jnp.nonzero(mask_b, size=n_new)[0]
-                q_seq = q.array[b, idx]
-                k_seq, v_seq = _kv_from_cache(page_cache, b)
-                k_len = k_seq.shape[0]
-                q_pos = Axis("q_pos", n_new)
-                k_pos = Axis("k_pos", k_len)
-                q_named = hax.named(
-                    q_seq,
-                    (q_pos, self.config.KVHeads, self.config.QHeadsPerGroup, self.config.HeadSize),
-                )
-                k_named = hax.named(k_seq, (k_pos, self.config.KVHeads, self.config.HeadSize))
-                v_named = hax.named(v_seq, (k_pos, self.config.KVHeads, self.config.HeadSize))
-                mask_obj = AttentionMask.causal(offset=k_len - n_new)
-                seq_out = dot_product_attention(
-                    q_pos,
-                    k_pos,
-                    "head_size",
-                    q_named,
-                    k_named,
-                    v_named,
-                    mask_obj,
-                    attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-                    flash_block_size=self.config.flash_attention_block_size,
-                    scaling_factor=sm_scale,
-                    logits_soft_cap=self.config.logits_soft_cap,
-                    inference=True,
-                    prng=key,
-                    attn_backend=AttentionBackend.VANILLA,
-                )
-                seq_out = seq_out.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
-                out = out.at[b * Pos.size + idx].set(seq_out.array)
-            attn_tokens = out[sorted_indices[:num_tokens]]
-
-        valid_indices = sorted_indices[:num_tokens]
-        valid_out = attn_tokens[:num_tokens]
-        out_flat = jnp.zeros_like(q_flat)
-        out_flat = out_flat.at[valid_indices].set(valid_out)
-        out = out_flat.reshape(Batch.size, Pos.size, num_heads, self.config.HeadSize.size)
-
-        attn_output = hax.named(
-            out.reshape(
-                Batch.size,
-                Pos.size,
-                self.config.KVHeads.size,
-                self.config.QHeadsPerGroup.size,
-                self.config.HeadSize.size,
-            ),
-            (
-                Batch,
-                Pos,
-                self.config.KVHeads,
-                self.config.QHeadsPerGroup,
-                self.config.HeadSize,
-            ),
-        )
-
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = out.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 
-        return attn_output, page_cache
+        return attn_output, kv_state
 
     def _compute_qkv(
         self,
@@ -2052,7 +2008,15 @@ def default_ragged_paged_attention(
             q_block = q["tok", hax.ds(q_start, Q_B)]
             kv_len = kv_lens["seq", seq_id].scalar()
 
-            q_pos_id_start = kv_len - q_len + q_start
+            # q_start indexes into the global query tensor, so we need to
+            # convert it to the token position within this sequence.
+            # kv_len is the total length of the sequence in the KV cache,
+            # including any prefix tokens. q_len is just the number of query
+            # tokens for this sequence. The position of the first query token
+            # within the sequence is therefore ``kv_len - q_len``. Adding the
+            # block offset ``q_start - cu_q_lens[seq_id]`` yields the absolute
+            # position of the current block within the sequence.
+            q_pos_id_start = kv_len - q_len + q_start - cu_q_lens[seq_id]
             q_tok = hax.arange(q_block.resolve_axis("tok"), start=q_pos_id_start)
 
             kv_pos_per_block = page_size * KV_BS  # how many tokens per kv block
