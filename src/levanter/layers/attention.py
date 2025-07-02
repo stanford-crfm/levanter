@@ -1727,95 +1727,87 @@ class PageTable(eqx.Module):
 
     @eqx.filter_jit(donate="all")
     def allocate_for_seqs(
-        self, updated_seqs: jnp.ndarray, new_token_counts: jnp.ndarray
+        self, updated_seqs: NamedArray, new_token_counts: NamedArray
     ) -> tuple["PageTable", "PageBatchInfo"]:
         """
         Allocate pages for new sequences and updates seq_lens
 
         Args:
-            updated_seqs: i32[Seq] ids for the updated sequences (can be padded with -1s)
-            new_token_counts: i32[Seq] number of new tokens for each sequence
+            updated_seqs: i32[Seq] ids for the updated sequences (can be padded with -1s). Can be a
+                NamedArray or a plain ndarray.
+            new_token_counts: NamedArray i32[Seq] number of new tokens for each sequence
 
         Returns:
             PageTable with new seq_lens and allocated pages, PageBatchInfo with page indices and seq_lens
         """
-        # -1 will get wrapped to max_seqs -1, so we set to max_seqs to force OOB (which gets dropped)
-        padded_updated_seqs = jnp.where(updated_seqs < 0, self.max_seqs, updated_seqs)
-        new_lens = self.seq_lens.at["seq", padded_updated_seqs].add(new_token_counts)
-        # make sure we have enough pages for each seq
+        # convert NamedArrays to plain arrays for easier manipulation inside jit/loops
+        page_indices = self.page_indices
+        page_owners = self.page_owners
+        seq_lens = self.seq_lens
+
+        padded_updated_seqs = hax.where(updated_seqs < 0, self.max_seqs, updated_seqs)
+        current_lens = hax.where(seq_lens < 0, 0, seq_lens)
+        new_lens_tmp = current_lens.at["seq", padded_updated_seqs].add(new_token_counts, mode="drop")
+        new_lens = hax.where(seq_lens < 0, hax.where(new_lens_tmp > 0, new_lens_tmp, -1), new_lens_tmp)
+
         new_num_pages_needed = (new_lens + self.page_size - 1) // self.page_size
-        old_num_pages_needed = (self.seq_lens + self.page_size - 1) // self.page_size
+        old_num_pages_needed = (seq_lens + self.page_size - 1) // self.page_size
 
-        # for each seq, allocate pages until we have enough
-        def _alloc_pages_for_seq(seq_id, table):
-            # Careful to make this jit friendly
-            num_pages_needed = new_num_pages_needed[seq_id]
-            old_pages_needed = old_num_pages_needed[seq_id]
+        def _alloc_pages_for_seq(seq_id, carry):
+            page_indices, page_owners = carry
+            num_needed = new_num_pages_needed["seq", seq_id].scalar()
+            old_needed = old_num_pages_needed["seq", seq_id].scalar()
 
-            def _alloc_one_page(page_idx_for_seq, table):
-                # find the first free page
-                free_page_idx = jnp.argmin(table.page_owners)
-                free_page_idx = eqx.error_if(free_page_idx, table.page_owners[free_page_idx] != -1, "No free pages")
-                new_page_owners = table.page_owners.at["page", free_page_idx].set(seq_id)
-                new_page_indices = table.page_indices.at["seq", seq_id, "page", page_idx_for_seq].set(free_page_idx)
-                return dataclasses.replace(table, page_owners=new_page_owners, page_indices=new_page_indices)
+            def body(page_idx, state):
+                page_indices, page_owners = state
+                free_page_idx = hax.argmin(page_owners, "page")
+                # free_page_idx = eqx.error_if(free_page_idx, page_owners["page", free_page_idx] != -1, "No free pages")
+                page_owners = page_owners.at["page", free_page_idx].set(seq_id)
+                page_indices = page_indices.at["seq", seq_id, "page", page_idx].set(free_page_idx)
+                return page_indices, page_owners
 
-            return jax.lax.fori_loop(old_pages_needed, num_pages_needed, _alloc_one_page, table)
+            new_page_indices, new_page_owners = jax.lax.fori_loop(
+                old_needed, num_needed, body, (page_indices, page_owners)
+            )
+            return new_page_indices, new_page_owners
 
-        allocated_table = jax.lax.fori_loop(0, self.max_seqs, _alloc_pages_for_seq, self)
-        new_table = dataclasses.replace(allocated_table, seq_lens=new_lens)
+        page_indices, page_owners = jax.lax.fori_loop(
+            0, self.max_seqs, _alloc_pages_for_seq, (page_indices, page_owners)
+        )
+
+        new_table = dataclasses.replace(
+            self,
+            page_indices=page_indices,
+            page_owners=page_owners,
+            seq_lens=new_lens,
+        )
 
         batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_token_counts)
 
         return new_table, batch_info
 
     def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts):
-        # page_indices is *local* to the batch
-        page_indices = new_table.page_indices["seq", updated_seqs]
-        page_indices = page_indices.at["seq", updated_seqs < 0].set(-1)
+        mask = updated_seqs >= 0
+        safe_updated = hax.where(mask, updated_seqs, 0)
 
-        seq_lens = new_table.seq_lens["seq", updated_seqs]
-        seq_lens = seq_lens.at["seq", updated_seqs < 0].set(-1)
+        page_indices = new_table.page_indices["seq", safe_updated]
+        page_indices = hax.where(mask, page_indices, -1)
 
-        num_seqs = jnp.sum(updated_seqs >= 0)
+        seq_lens = new_table.seq_lens["seq", safe_updated]
+        seq_lens = hax.where(mask, seq_lens, -1)
 
-        old_seq_lens = old_seq_lens["seq", updated_seqs]
+        num_seqs = jnp.sum(mask.array)
 
         # compute block mapping for new tokens: block_id * block_size + offset
         # we don't have to be too smart here since it's once per batch
-        new_token_dests = jnp.full_like(new_token_counts, -1, dtype=jnp.int32)
+        new_token_dests = hax.full_like(new_token_counts, -1, dtype=jnp.int32)
 
-        @functools.partial(jax.lax.fori_loop, 0, num_seqs)
-        def _assign_new_token_dests(seq_id, carry):
-            # carry is (tok_pos, new_token_dests)
-            # tok_pos is the position in the new_token_dests array
-
-            pages = page_indices["seq", seq_id]
-            seq_len = old_seq_lens["seq", seq_id]
-            num_new_tokens = new_token_counts["seq", seq_id]
-
-            @functools.partial(jax.lax.fori_loop, seq_len, seq_len + num_new_tokens)
-            def _assign_new_token_dest(token_id, carry):
-                tok_pos, new_token_dests = carry
-                # find the page index for this token
-                page_idx = token_id // self.page_size
-                page_offset = token_id % self.page_size
-
-                page_idx = pages[page_idx]
-                page_idx = eqx.error_if(page_idx < 0, "No page for token")
-
-                new_token_dest = page_idx * self.page_size + page_offset
-                new_token_dests = new_token_dests.at[tok_pos].set(new_token_dest)
-
-                return tok_pos + 1, new_token_dests
-
-            _, new_token_dests = _assign_new_token_dest(carry)
-
-            return new_token_dests
-
-        new_token_dests = _assign_new_token_dests((0, new_token_dests))
-
-        cu_q_lens = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(new_token_counts, dtype=jnp.int32)])
+        cu_q_lens = jnp.concatenate(
+            [
+                jnp.array([0], dtype=jnp.int32),
+                jnp.cumsum(new_token_counts.array, dtype=jnp.int32),
+            ]
+        )
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
