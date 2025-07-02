@@ -548,6 +548,7 @@ def test_attention_paged_decode_matches_full_ar():
         pt, binfo = pt.allocate_for_seqs(
             updated_seqs=hax.named([seq_id], "seq"),
             new_counts=hax.named([1], "seq"),
+            tokens=hax.named([seq_id], "position"),
         )
 
         kv_state = KvPageState.from_batch(binfo, kv_cache)

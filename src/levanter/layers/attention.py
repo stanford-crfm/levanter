@@ -805,8 +805,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> NamedArray:
-    ...
+) -> NamedArray: ...
 
 
 @overload
@@ -816,8 +815,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> Optional[NamedArray]:
-    ...
+) -> Optional[NamedArray]: ...
 
 
 def materialize_mask(
@@ -1764,7 +1762,10 @@ class PageTable(eqx.Module):
 
     # @eqx.filter_jit(donate="all")
     def allocate_for_seqs(
-        self, updated_seqs: NamedArray, new_counts: NamedArray
+        self,
+        updated_seqs: NamedArray,
+        new_counts: NamedArray,
+        tokens: NamedArray,
     ) -> tuple["PageTable", "PageBatchInfo"]:
         """
         Allocate pages for new sequences and updates seq_lens
@@ -1773,6 +1774,8 @@ class PageTable(eqx.Module):
             updated_seqs: i32[Seq] ids for the updated sequences (can be padded with -1s). Can be a
                 NamedArray or a plain ndarray.
             new_counts: NamedArray i32[Seq] number of new tokens for each sequence
+            tokens: NamedArray i32[Position] sequence id for each new token. Values
+                should be padded with -1
 
         Returns:
             PageTable with new seq_lens and allocated pages, PageBatchInfo with page indices and seq_lens
@@ -1819,61 +1822,56 @@ class PageTable(eqx.Module):
             seq_lens=new_lens,
         )
 
-        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts)
+        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts, tokens)
 
         return new_table, batch_info
 
-    def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts):
+    def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts, tokens):
         mask = updated_seqs >= 0
         safe_updated = hax.where(mask, updated_seqs, 0)
 
-        page_indices = new_table.page_indices["seq", safe_updated]
-        page_indices = hax.where(mask, page_indices, -1)
+        gathered_page_indices = new_table.page_indices["seq", safe_updated]
+        page_indices = hax.where(mask, gathered_page_indices, -1)
 
         seq_lens = new_table.seq_lens["seq", safe_updated]
         seq_lens = hax.where(mask, seq_lens, -1)
 
         num_seqs = jnp.sum(mask.array)
 
-        # compute block mapping for new tokens: block_id * block_size + offset
-        # we don't have to be too smart here since it's once per batch
+        # compute destination slots for each new token. tokens is i32[position]
+        # giving the owning seq id for each token (padded with -1)
 
-        # TODO: This should actually be length of the new tokens, not the old seq_lens
-        # We should thread throught the new token ids from above
-        new_token_dests = jnp.full_like(new_token_counts.array.shape, -1, dtype=jnp.int32)
+        token_dests = jnp.full(tokens.array.shape, -1, dtype=jnp.int32)
 
-        @functools.partial(jax.lax.fori_loop, 0, num_seqs)
-        def _assign_new_token_dests(seq_id, carry):
-            # carry is (tok_pos, new_token_dests)
-            # tok_pos is the position in the new_token_dests array
+        # start offsets for each sequence (treat -1 lens as 0)
+        seq_cursors = jnp.where(old_seq_lens.array < 0, 0, old_seq_lens.array)
 
-            pages = page_indices["seq", seq_id]
-            seq_len = old_seq_lens["seq", seq_id]
-            num_new_tokens = new_token_counts["seq", seq_id]
+        def token_body(i, carry):
+            token_dests, seq_cursors = carry
+            seq_id = tokens.array[i]
 
-            @functools.partial(jax.lax.fori_loop, seq_len, seq_len + num_new_tokens)
-            def _assign_new_token_dest(token_id, carry):
-                tok_pos, new_token_dests = carry
-                # find the page index for this token
-                page_idx = token_id // self.page_size
-                page_offset = token_id % self.page_size
+            def assign(carry):
+                token_dests, seq_cursors = carry
+                page_idx = seq_cursors[seq_id] // self.page_size
+                page_offset = seq_cursors[seq_id] % self.page_size
+                page = new_table.page_indices.array[seq_id, page_idx]
+                dest = jnp.where(page < 0, -1, page * self.page_size + page_offset)
+                token_dests = token_dests.at[i].set(dest)
+                seq_cursors = seq_cursors.at[seq_id].add(1)
+                return token_dests, seq_cursors
 
-                page_idx = pages[page_idx]
-                page_idx = eqx.error_if(page_idx < 0, "No page for token")
+            token_dests, seq_cursors = jax.lax.cond(seq_id >= 0, assign, lambda c: c, (token_dests, seq_cursors))
+            return token_dests, seq_cursors
 
-                new_token_dest = page_idx * self.page_size + page_offset
-                new_token_dests = new_token_dests.at[tok_pos].set(new_token_dest)
+        token_dests, _ = jax.lax.fori_loop(0, tokens.array.shape[0], token_body, (token_dests, seq_cursors))
+        new_token_dests = hax.named(token_dests, "position")
 
-                return tok_pos + 1, new_token_dests
-
-            _, new_token_dests = _assign_new_token_dest(carry)
-
-            return new_token_dests
-
-        new_token_dests = _assign_new_token_dests((0, new_token_dests))
-        new_token_dests = hax.named(new_token_dests, "position")
-
-        cu_q_lens = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(new_token_counts, dtype=jnp.int32)])
+        cu_q_lens = jnp.concatenate(
+            [
+                jnp.array([0], dtype=jnp.int32),
+                jnp.cumsum(new_token_counts.array, dtype=jnp.int32),
+            ]
+        )
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
