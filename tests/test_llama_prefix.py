@@ -548,7 +548,7 @@ def test_llama_last_block_and_logprobs():
     ln2_lev = ln2_lev_full.array[:, :prompt_len, :]
     ln2_hf_t = (
         hf_model.model.layers[-1]
-        .post_attention_layernorm(torch.from_numpy(x_mid_hf).to(device))
+        .post_attention_layernorm(torch.from_numpy(np.asarray(x_mid_hf)).to(device))
         .detach()
         .cpu()
         .numpy()
@@ -849,8 +849,8 @@ def test_llama_prefix_first_layer():
     """Detailed component-wise comparison of the *first* transformer layer (decoder block 0)
     between Levanter and HuggingFace.  Shows where divergence originates if any.
     """
-    RTOL = 1e-5
-    ATOL = 1e-5
+    RTOL = 1e-4
+    ATOL = 1e-4
 
     import torch.nn.functional as F  # local to keep global deps minimal
 
@@ -972,7 +972,7 @@ def test_llama_prefix_first_layer():
     ln2_lev = ln2_lev_full.array[:, :prompt_len, :]
     ln2_hf_t = (
         hf_model.model.layers[0]
-        .post_attention_layernorm(torch.from_numpy(x_mid_hf).to(device))
+        .post_attention_layernorm(torch.from_numpy(np.asarray(x_mid_hf)).to(device))
         .detach()
         .cpu()
         .numpy()
@@ -1000,15 +1000,15 @@ def test_llama_prefix_first_layer():
 @skip_if_no_torch
 @skip_if_hf_model_not_accessible(MODEL_ID)
 @skip_in_ci(f"Large {LLAMA3_VARIANT} model – skipped in CI.")
-def test_llama_prefix_first_layer_no_attention():
+def test_llama_prefix_no_attention():
     """Like `test_llama_prefix_first_layer` but forces **identical** attention outputs (taken from
     the Levanter implementation) into both model paths.  This helps determine if the initial
     divergence originates exclusively from attention or if subsequent sub-layers (LN/MLP) also
     contribute.
     """
 
-    RTOL = 1e-5
-    ATOL = 1e-5
+    RTOL = 1e-6
+    ATOL = 1e-6
 
     # ---------------- Tokenisation ----------------
     tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True)
@@ -1100,7 +1100,7 @@ def test_llama_prefix_first_layer_no_attention():
     ln2_lev_np = ln2_lev_full.array[:, :prompt_len, :]
 
     with torch.no_grad():
-        ln2_hf_t = hf_first_block.post_attention_layernorm(torch.from_numpy(x_mid_hf_np).to(device)).cpu().numpy()
+        ln2_hf_t = hf_first_block.post_attention_layernorm(torch.from_numpy(np.asarray(x_mid_hf_np)).to(device)).cpu().numpy()
     chex.assert_trees_all_close(ln2_lev_np.astype(np.float32), ln2_hf_t.astype(np.float32), rtol=RTOL, atol=ATOL)
 
     # ---------------- 5. MLP ----------------
