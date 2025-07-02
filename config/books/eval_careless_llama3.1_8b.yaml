@@ -1,0 +1,50 @@
+# Example config to evaluate a Llama-3.1-8B checkpoint with eval_careless_lm.py
+# This script generates sliding 100-token windows on-the-fly from a raw
+# text file, scores the second 50-token half of each window, and produces
+# character-level memorisation plots.
+
+# Raw plain-text book to read. Replace with your own path or local file.
+txt_path: "src/levanter/data/books/gatsby.txt"
+
+# How many tokens are taken as the prompt (first half of window).
+prompt_tokens: 50
+
+# Slide the character cursor by this many chars between windows.
+cursor_inc_chars: 10
+
+# Hugging Face tokenizer to load
+tokenizer_name: meta-llama/Llama-3.1-8B
+
+model:  # 8B llama3 model
+  type: llama
+  seq_len: 4096
+  hidden_dim: 8192
+  intermediate_dim: 28672
+  num_layers: 80
+  num_heads: 64
+  num_kv_heads: 8
+  flash_attention_block_size: 512
+  use_bias: false
+  use_layer_norm_weight: true
+  initializer_range: 0.02
+  rope:
+    type: "llama3"
+
+trainer:
+  seed: 0
+  tracker:
+    type: wandb
+    project: "marin"
+    tags: ["llama3", "eval"]
+  mp: p=f32,c=bfloat16
+  per_device_eval_parallelism: -1
+  tensor_parallel_axes: ["mlp", "heads"]
+  fsdp_axis: "embed"
+  batch_axis: "batch"
+eval_batch_size: 16
+
+# Load weights directly from the original HF checkpoint.
+initialize_from_hf: "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"
+
+# We keep our custom model block above, so set this to False.
+use_hf_model_config: False

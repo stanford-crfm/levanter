@@ -47,7 +47,7 @@ EXPECTED_RESPONSE_TOKENS = 50
 # Debugging flag – when True, the script will run **one** example replicated to
 # a full batch of 64 and print detailed per-token diagnostics.
 # -----------------------------------------------------------------------------
-DEBUG_SINGLE: bool = True  # set to True to enable single-example debug mode
+DEBUG_SINGLE: bool = False  # set to True to enable single-example debug mode
 DEBUG_BATCH_SIZE: int = 16
 
 logger = logging.getLogger(__name__)
@@ -376,7 +376,7 @@ def main(config: EvalSlidingLmConfig):
             ax.set_ylim(0, 1)
             ax.set_xlim(0, len(prob_dist))
             plt.tight_layout()
-            path = "suffix_likelihood_barcode-v3.png"
+            path = "suffix_likelihood_barcode-try_fp32.png"
             fig.savefig(path)
             levanter.tracker.current_tracker().log_artifact(path, name=path, type="plot")
 
