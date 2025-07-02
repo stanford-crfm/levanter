@@ -854,7 +854,6 @@ def test_rmsnorm_equivalence_detailed():
     chex.assert_trees_all_close(
         post_norm_hf.astype(np.float32), post_norm_lev.astype(np.float32), rtol=1e-4, atol=1e-4
     )
-<<<<<<< HEAD
 
 @skip_if_no_torch
 @skip_if_hf_model_not_accessible(MODEL_ID)
@@ -1134,5 +1133,3 @@ def test_llama_prefix_first_layer_no_attention():
     chex.assert_trees_all_close(last_out_lev_np.astype(np.float32), last_out_hf_np.astype(np.float32), rtol=RTOL, atol=ATOL)
 
     
-=======
->>>>>>> 9b720f98fa6ff649a6ca8f180c35c2e90e380564
