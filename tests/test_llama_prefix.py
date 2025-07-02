@@ -653,12 +653,7 @@ def test_llama_last_block_and_logprobs():
 
 @skip_if_no_torch
 @skip_if_hf_model_not_accessible(MODEL_ID)
-<<<<<<< HEAD
 @skip_in_ci(f"Large {LLAMA3_VARIANT} model – skipped in CI.")
-
-=======
-@skip_in_ci("Large 8B model – skipped in CI.")
->>>>>>> 9b720f98fa6ff649a6ca8f180c35c2e90e380564
 def test_final_activation_comparison():
     """Compare the final hidden activations (after the last layer norm, before the LM head)
     of Levanter vs HuggingFace Llama-3-{LLAMA3_VARIANT} on the same prompt.
@@ -683,13 +678,9 @@ def test_final_activation_comparison():
     hf_model.eval()
 
     with torch.no_grad():
-<<<<<<< HEAD
         hf_outputs = hf_model(
             input_ids_torch, use_cache=True, output_hidden_states=True, return_dict=True
         )
-=======
-        hf_outputs = hf_model(input_ids_torch, use_cache=False, output_hidden_states=True, return_dict=True)
->>>>>>> 9b720f98fa6ff649a6ca8f180c35c2e90e380564
     hf_final_activations = hf_outputs.hidden_states[-1].cpu().float().numpy()  # (1, P, E)
 
     # ---------------- Levanter side ----------------
@@ -768,12 +759,8 @@ def test_final_activation_comparison():
 
 @skip_if_no_torch
 @skip_if_hf_model_not_accessible(MODEL_ID)
-<<<<<<< HEAD
 @skip_in_ci(f"Large {LLAMA3_VARIANT} model – skipped in CI.")
 
-=======
-@skip_in_ci("Large 8B model – skipped in CI.")
->>>>>>> 9b720f98fa6ff649a6ca8f180c35c2e90e380564
 def test_rmsnorm_equivalence_detailed():
     """Diagnostic test that compares the final RMSNorm layer between HuggingFace and Levanter.
 
