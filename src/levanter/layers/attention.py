@@ -1203,7 +1203,7 @@ class AttentionConfig:
 
     @property
     def KVHeads(self) -> Axis:
-        return Axis("kv_heads", self.num_kv_heads)
+        return Axis("kv_head", self.num_kv_heads)
 
     @property
     def Heads(self) -> Axis:
@@ -1287,6 +1287,14 @@ class Attention(eqx.Module):
     def empty_cache(self, Batch: Axis, MaxLen: Axis, *, dtype):
         return self.config.empty_kv_cache(Batch, MaxLen, dtype=dtype)
 
+    def empty_page_cache(self, page_table, *, dtype) -> "KvPageCache":
+        return KvPageCache.init(
+            page_table,
+            self.config.KVHeads,
+            self.config.HeadSize,
+            dtype=dtype,
+        )
+
     @named_call
     def __call__(
         self,
@@ -1302,9 +1310,9 @@ class Attention(eqx.Module):
         q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
 
         # Reshape for attention kernels (convert embed → heads/head_size)
-        q = q.rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = k.rearrange((..., "kv_heads", "position", "head_size"))
-        v = v.rearrange((..., "kv_heads", "position", "head_size"))
+        q = q.rearrange((..., "kv_head", "q_heads_per_group", "position", "head_size"))
+        k = k.rearrange((..., "kv_head", "position", "head_size"))
+        v = v.rearrange((..., "kv_head", "position", "head_size"))
 
         # Distinguish key sequence axis for attention
         k = k.rename({"position": "key_position"})
@@ -1329,7 +1337,7 @@ class Attention(eqx.Module):
         )
 
         # Flatten heads and apply output projection
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_output.flatten_axes(("kv_head", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 
@@ -1397,7 +1405,7 @@ class Attention(eqx.Module):
         )
 
         # Flatten heads and apply output projection
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_output.flatten_axes(("kv_head", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 
@@ -1451,7 +1459,7 @@ class Attention(eqx.Module):
             attn_tokens = hax.named(
                 attn_tokens,
                 (
-                    q.resolve_axis("tok"),
+                    q.resolve_axis("position"),
                     self.config.KVHeads,
                     self.config.QHeadsPerGroup,
                     self.config.HeadSize,
@@ -1469,7 +1477,7 @@ class Attention(eqx.Module):
                 soft_cap=self.config.logits_soft_cap,
             )
 
-        attn_output = attn_tokens.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_tokens.flatten_axes(("kv_head", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 
@@ -1682,10 +1690,32 @@ def append_to_kv_cache(
 class KvPageCache(eqx.Module):
     """
     Contains a global view of all pages and their sequences. This can't be usefully used
-    with an accompanying PageTable
+    with an accompanying PageTable.
     """
 
-    kv_pages: NamedArray  # [Page, PageSize, 2 * KVHeads, Embed]
+    kv_pages: NamedArray  # [Page, Slot, 2 * KVHeads, Embed]
+
+    @staticmethod
+    def init(page_table: "PageTable", kv_heads: Axis, head_size: Axis, dtype=jnp.float32) -> "KvPageCache":
+        """
+        Initialize a KvPageCache with the given page table and dimensions.
+
+        Args:
+            page_table: The PageTable instance that defines the pages.
+            kv_heads: Axis for key/value heads.
+            head_size: Axis for head size.
+            dtype: Data type for the cache.
+        """
+        kv_pages = hax.zeros(
+            {
+                "page": page_table.num_pages,
+                "slot": page_table.page_size,
+                "kv_head": 2 * kv_heads.size,
+                head_size.name: head_size.size,
+            },
+            dtype=dtype,
+        )
+        return KvPageCache(kv_pages)
 
 
 class PageTable(eqx.Module):
@@ -1695,6 +1725,10 @@ class PageTable(eqx.Module):
     # may be 0 if no tokens yet
 
     page_size: int = eqx.field(static=True)
+
+    @property
+    def num_pages(self) -> int:
+        return self.page_indices.axis_size("page") * self.page_indices.axis_size("seq")
 
     @property
     def pages_per_seq(self) -> int:
@@ -1708,9 +1742,13 @@ class PageTable(eqx.Module):
     def max_len_per_seq(self) -> int:
         return self.page_size * self.pages_per_seq
 
+    @property
+    def current_num_seqs(self) -> int:
+        return hax.sum(self.seq_lens >= 0).scalar()
+
     @staticmethod
-    def init(max_pages: int, max_seqs: int, page_size: int, pages_per_seq: int) -> "PageTable":
-        page_indices = hax.full({"seq": max_seqs, "page": pages_per_seq}, -1, dtype=jnp.int32)
+    def init(max_pages: int, max_seqs: int, page_size: int, max_pages_per_seq: int) -> "PageTable":
+        page_indices = hax.full({"seq": max_seqs, "page": max_pages_per_seq}, -1, dtype=jnp.int32)
         page_owners = hax.full({"page": max_pages}, -1, dtype=jnp.int32)
         seq_lens = hax.full({"seq": max_seqs}, -1, dtype=jnp.int32)
         return PageTable(page_indices, page_owners, seq_lens, page_size)
@@ -1718,16 +1756,15 @@ class PageTable(eqx.Module):
     @eqx.filter_jit(donate="all")
     def assign_seq_id_to_seq(self) -> tuple["PageTable", int]:
         # find the first -1 in seq_lens
-        seq_id = hax.argmin(self.seq_lens)
-        seq_id = eqx.error_if(seq_id, self.seq_lens["seq", seq_id] != -1, "No unused seqs")
+        seq_id = hax.argmin(self.seq_lens, "seq")
+        # seq_id = eqx.error_if(seq_id, self.seq_lens["seq", seq_id] != -1, "No unused seqs")
         new_seq_lens = self.seq_lens.at["seq", seq_id].set(0)
-        # maybe increment num_seqs
 
         return dataclasses.replace(self, seq_lens=new_seq_lens), seq_id
 
-    @eqx.filter_jit(donate="all")
+    # @eqx.filter_jit(donate="all")
     def allocate_for_seqs(
-        self, updated_seqs: NamedArray, new_token_counts: NamedArray
+        self, updated_seqs: NamedArray, new_counts: NamedArray
     ) -> tuple["PageTable", "PageBatchInfo"]:
         """
         Allocate pages for new sequences and updates seq_lens
@@ -1735,7 +1772,7 @@ class PageTable(eqx.Module):
         Args:
             updated_seqs: i32[Seq] ids for the updated sequences (can be padded with -1s). Can be a
                 NamedArray or a plain ndarray.
-            new_token_counts: NamedArray i32[Seq] number of new tokens for each sequence
+            new_counts: NamedArray i32[Seq] number of new tokens for each sequence
 
         Returns:
             PageTable with new seq_lens and allocated pages, PageBatchInfo with page indices and seq_lens
@@ -1747,7 +1784,7 @@ class PageTable(eqx.Module):
 
         padded_updated_seqs = hax.where(updated_seqs < 0, self.max_seqs, updated_seqs)
         current_lens = hax.where(seq_lens < 0, 0, seq_lens)
-        new_lens_tmp = current_lens.at["seq", padded_updated_seqs].add(new_token_counts, mode="drop")
+        new_lens_tmp = current_lens.at["seq", padded_updated_seqs].add(new_counts, mode="drop")
         new_lens = hax.where(seq_lens < 0, hax.where(new_lens_tmp > 0, new_lens_tmp, -1), new_lens_tmp)
 
         new_num_pages_needed = (new_lens + self.page_size - 1) // self.page_size
@@ -1782,7 +1819,7 @@ class PageTable(eqx.Module):
             seq_lens=new_lens,
         )
 
-        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_token_counts)
+        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts)
 
         return new_table, batch_info
 
@@ -1800,21 +1837,50 @@ class PageTable(eqx.Module):
 
         # compute block mapping for new tokens: block_id * block_size + offset
         # we don't have to be too smart here since it's once per batch
-        new_token_dests = hax.full_like(new_token_counts, -1, dtype=jnp.int32)
 
-        cu_q_lens = jnp.concatenate(
-            [
-                jnp.array([0], dtype=jnp.int32),
-                jnp.cumsum(new_token_counts.array, dtype=jnp.int32),
-            ]
-        )
+        # TODO: This should actually be length of the new tokens, not the old seq_lens
+        # We should thread throught the new token ids from above
+        new_token_dests = jnp.full_like(new_token_counts.array.shape, -1, dtype=jnp.int32)
+
+        @functools.partial(jax.lax.fori_loop, 0, num_seqs)
+        def _assign_new_token_dests(seq_id, carry):
+            # carry is (tok_pos, new_token_dests)
+            # tok_pos is the position in the new_token_dests array
+
+            pages = page_indices["seq", seq_id]
+            seq_len = old_seq_lens["seq", seq_id]
+            num_new_tokens = new_token_counts["seq", seq_id]
+
+            @functools.partial(jax.lax.fori_loop, seq_len, seq_len + num_new_tokens)
+            def _assign_new_token_dest(token_id, carry):
+                tok_pos, new_token_dests = carry
+                # find the page index for this token
+                page_idx = token_id // self.page_size
+                page_offset = token_id % self.page_size
+
+                page_idx = pages[page_idx]
+                page_idx = eqx.error_if(page_idx < 0, "No page for token")
+
+                new_token_dest = page_idx * self.page_size + page_offset
+                new_token_dests = new_token_dests.at[tok_pos].set(new_token_dest)
+
+                return tok_pos + 1, new_token_dests
+
+            _, new_token_dests = _assign_new_token_dest(carry)
+
+            return new_token_dests
+
+        new_token_dests = _assign_new_token_dests((0, new_token_dests))
+        new_token_dests = hax.named(new_token_dests, "position")
+
+        cu_q_lens = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(new_token_counts, dtype=jnp.int32)])
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
             cu_q_lens=cu_q_lens,
             num_seqs=num_seqs,
-            page_size=self.page_size,
             new_token_dests=new_token_dests,
+            page_size=self.page_size,
         )
         return batch_info
 
@@ -1853,7 +1919,7 @@ class PageBatchInfo(eqx.Module):
     seq_lens: NamedArray  # i32[Seq]
     cu_q_lens: jnp.ndarray  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
     num_seqs: jnp.ndarray  # scalar int32
-    new_token_dests: jnp.ndarray  # i32[Tok] <-- page indices for the new tokens, -1 padded
+    new_token_dests: NamedArray  # i32[position] <-- page indices for the new tokens, -1 padded
     page_size: int = eqx.field(static=True)
 
 
@@ -1862,12 +1928,38 @@ class KvPageState(eqx.Module):
     PageState is a view of all kv information for one particular block for a single step/prefill.
     """
 
-    kv_pages: NamedArray  # [MaxPage, Slot, 2 * KvHeads, HeadDim] (Global view)
-    kv_lens: NamedArray  # [Seq] <-- length for each example in the cache (local)
-    cu_q_lens: jnp.ndarray
-    new_token_dests: jnp.ndarray  # i32[Tok] <-- page indices for the new tokens, -1 padded, block_id * block_size + offset
-    page_indices: NamedArray  # [Seq, MaxPagePerSeq] <-- mapping from seq to pages in the cache. (local)
-    num_seqs: jax.Array  # scalar int32
+    cache: KvPageCache
+    batch_info: PageBatchInfo
+
+    @property
+    def kv_pages(self) -> NamedArray:
+        """Global view of the KV pages: [Page, PageSize, 2 * KVHeads, HeadDim]"""
+        return self.cache.kv_pages
+
+    @property
+    def kv_lens(self) -> NamedArray:
+        """Local view of the KV lengths: [Seq]"""
+        return self.batch_info.seq_lens
+
+    @property
+    def page_indices(self) -> NamedArray:
+        """Local view of the page indices: [Seq, PagePerSeq]"""
+        return self.batch_info.page_indices
+
+    @property
+    def cu_q_lens(self) -> jnp.ndarray:
+        """Cumulative query lengths: i32[Seq + 1]"""
+        return self.batch_info.cu_q_lens
+
+    @property
+    def new_token_dests(self) -> NamedArray:
+        """Page indices for the new tokens: i32[Tok]. Used to update kv cache"""
+        return self.batch_info.new_token_dests
+
+    @property
+    def num_seqs(self) -> jnp.ndarray:
+        """Number of sequences in the batch: scalar int32"""
+        return self.batch_info.num_seqs
 
     @staticmethod
     def from_batch(batch_info: PageBatchInfo, cache: KvPageCache) -> "KvPageState":
@@ -1878,12 +1970,8 @@ class KvPageState(eqx.Module):
         """
         # get the pages and lengths for the batch
         return KvPageState(
-            kv_pages=cache.kv_pages,  # global view is ok
-            kv_lens=batch_info.seq_lens,  # local view
-            page_indices=batch_info.page_indices,  # local view
-            cu_q_lens=batch_info.cu_q_lens,
-            new_token_dests=batch_info.new_token_dests,
-            num_seqs=batch_info.num_seqs,  # local view
+            cache=cache,
+            batch_info=batch_info,
         )
 
     def update_kv_cache(
@@ -1900,17 +1988,20 @@ class KvPageState(eqx.Module):
         page_size = self.kv_pages.array.shape[1]
         kv_heads = new_k.array.shape[1]
 
-        t_pages = jnp.where(self.new_token_dests >= 0, self.new_token_dests // page_size, -num_pages)
-        t_slots = jnp.where(self.new_token_dests >= 0, self.new_token_dests % page_size, -page_size)
+        token_dests = self.new_token_dests
 
-        kv_pages = self.kv_pages.array.at[t_pages, t_slots, :kv_heads].set(new_k.array)
-        kv_pages = self.kv_pages.array.at[t_pages, t_slots, kv_heads:].set(new_v.array)
-        pages = hax.named(kv_pages, self.kv_pages.axes)
+        t_pages = hax.where(token_dests >= 0, token_dests // page_size, num_pages)
+        t_slots = hax.where(token_dests >= 0, token_dests % page_size, page_size)
 
-        return dataclasses.replace(
-            self,
-            kv_pages=pages,
+        kv_pages = self.kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", :kv_heads].set(new_k)
+        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", kv_heads:].set(new_v)
+
+        new_cache = dataclasses.replace(
+            self.cache,
+            kv_pages=kv_pages,
         )
+
+        return dataclasses.replace(self, cache=new_cache)
 
 
 def ragged_paged_attention(
@@ -1946,11 +2037,11 @@ def default_ragged_paged_attention(
     It does each sequence independently
     """
 
-    Q_BS = min(4, q.axis_size("tok"))  # block size for query
+    Q_BS = min(4, q.axis_size("position"))  # block size for query
     KV_BS = min(32, page_indices.axis_size("page"))  # block size for key-value
-    Q_B = hax.Axis("tok", Q_BS)
+    Q_B = hax.Axis("position", Q_BS)
 
-    H = q.resolve_axis("kv_heads")
+    H = q.resolve_axis("kv_head")
     Q_H = q.resolve_axis("q_heads_per_group")
 
     D = q.resolve_axis("head_size")
@@ -1959,10 +2050,10 @@ def default_ragged_paged_attention(
 
     q = q * sm_scale
 
-    padding_amount = (Q_BS - q.axis_size("tok") % Q_BS) % Q_BS
+    padding_amount = (Q_BS - q.axis_size("position") % Q_BS) % Q_BS
     padded_q = hax.concatenate(
-        "tok",
-        [q, hax.zeros_like(q["tok", hax.ds(0, padding_amount)])],
+        "position",
+        [q, hax.zeros_like(q["position", hax.ds(0, padding_amount)])],
     )
 
     q_orig = q
@@ -1979,7 +2070,7 @@ def default_ragged_paged_attention(
         def _compute_attention_for_q_block(q_block_id, carry):
             o = carry
             q_start = cu_q_lens[seq_id] + q_block_id * Q_BS
-            q_block = q["tok", hax.ds(q_start, Q_B)]
+            q_block = q["position", hax.ds(q_start, Q_B)]
             kv_len = kv_lens["seq", seq_id].scalar()
 
             # q_start indexes into the global query tensor, so we need to
@@ -1991,7 +2082,7 @@ def default_ragged_paged_attention(
             # block offset ``q_start - cu_q_lens[seq_id]`` yields the absolute
             # position of the current block within the sequence.
             q_pos_id_start = kv_len - q_len + q_start - cu_q_lens[seq_id]
-            q_tok = hax.arange(q_block.resolve_axis("tok"), start=q_pos_id_start)
+            q_tok = hax.arange(q_block.resolve_axis("position"), start=q_pos_id_start)
 
             kv_pos_per_block = page_size * KV_BS  # how many tokens per kv block
 
@@ -2006,11 +2097,11 @@ def default_ragged_paged_attention(
                 kv_pos_start = kv_page_start * page_size
 
                 slots = kv_pages["page", block_page_idx, "slot", :]
-                kv_block = slots.flatten_axes(("page", "slot"), "kv_tok")
+                kv_block = slots.flatten_axes(("page", "slot"), "kv_position")
 
-                kv_tok = hax.arange(kv_block.resolve_axis("kv_tok"), start=kv_pos_start)
-                k_block = kv_block["kv_heads", 0 : H.size]
-                v_block = kv_block["kv_heads", H.size :]
+                kv_tok = hax.arange(kv_block.resolve_axis("kv_position"), start=kv_pos_start)
+                k_block = kv_block["kv_head", 0 : H.size]
+                v_block = kv_block["kv_head", H.size :]
 
                 attn_b = hax.dot(q_block, k_block, axis=(D,))
 
@@ -2022,19 +2113,19 @@ def default_ragged_paged_attention(
 
                 attn_b = hax.where(attn_mask, attn_b, -1e10)
 
-                new_max_b = hax.maximum(max_b, hax.max(attn_b, "kv_tok"))
+                new_max_b = hax.maximum(max_b, hax.max(attn_b, "kv_position"))
                 P_ij = hax.exp(attn_b - new_max_b)
                 P_ij = hax.where(attn_mask, P_ij, 0.0)
 
                 exp_diff = hax.exp(max_b - new_max_b)
-                sum_exp_b = exp_diff * sum_exp_b + hax.sum(P_ij, axis="kv_tok")
+                sum_exp_b = exp_diff * sum_exp_b + hax.sum(P_ij, axis="kv_position")
 
-                o_b = exp_diff * o_b + hax.dot(P_ij, v_block, axis="kv_tok")
+                o_b = exp_diff * o_b + hax.dot(P_ij, v_block, axis="kv_position")
 
                 return o_b, sum_exp_b, new_max_b
 
             # standard flashattention loop with fancy paging
-            o_b = o["tok", hax.ds(q_start, Q_BS)]
+            o_b = o["position", hax.ds(q_start, Q_BS)]
             sum_exp_b = hax.zeros((Q_B, H, Q_H))
             max_b = hax.full((Q_B, H, Q_H), -jnp.inf)
 
@@ -2045,7 +2136,7 @@ def default_ragged_paged_attention(
             # Normalize
             sum_exp_b = hax.maximum(sum_exp_b, 1e-10)
             o_b = o_b / sum_exp_b
-            o = o.at["tok", hax.ds(q_start, Q_BS)].set(o_b, mode="drop")
+            o = o.at["position", hax.ds(q_start, Q_BS)].set(o_b, mode="drop")
             return o
 
         o = jax.lax.fori_loop(0, num_q_blocks, _compute_attention_for_q_block, o)
@@ -2053,6 +2144,6 @@ def default_ragged_paged_attention(
         return o
 
     output = jax.lax.fori_loop(0, num_seqs, _compute_attention_for_seq, output)
-    output = output["tok", 0 : q_orig.axis_size("tok")]
+    output = output["position", 0 : q_orig.axis_size("position")]
 
     return output

@@ -10,14 +10,15 @@ from chex import assert_trees_all_close
 from jax.sharding import Mesh
 
 import haliax as hax
-from haliax import Axis
+from haliax import Axis, NamedArray
 
 from levanter.layers.attention import (
     Attention,
     AttentionBackend,
     AttentionConfig,
     AttentionMask,
-    PageCache,
+    KvPageState,
+    PageTable,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
@@ -420,15 +421,9 @@ def _jit_decode(attn, x, pos_ids, cache):
     )
 
 
-def _jit_paged_decode(attn, x, pos_ids, cache):
-    def _decode(a, b, c, d):
-        return a.paged_decode(b, pos_ids=c, key=jrandom.PRNGKey(2), page_cache=d)
-
-    if jax.default_backend() == "tpu":
-        _decode_jit = equinox.filter_jit(_decode)
-        return _decode_jit(attn, x, pos_ids, cache)
-    else:
-        return _decode(attn, x, pos_ids, cache)
+# @equinox.filter_jit
+def _jit_paged_decode(attn, x, pos_ids, cache: KvPageState) -> tuple[NamedArray, KvPageState]:
+    return attn.paged_decode(cache, x, pos_ids, key=jrandom.PRNGKey(2))
 
 
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
@@ -534,17 +529,7 @@ def test_attention_decode_ragged_fill_in_chunks():
     assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
 
 
-def _build_page_cache(cfg, B: Axis, Pos: Axis, page_size: int = 2) -> PageCache:
-    pages_per_seq = (Pos.size + page_size - 1) // page_size
-    Seq = Axis("seq", B.size)
-    Page = Axis("page", pages_per_seq)
-    MaxPage = Axis("max_page", pages_per_seq * B.size)
-    Slot = Axis("slot", page_size)
-    return PageCache.init(Seq, Page, Slot, cfg.KVHeads, cfg.HeadSize, MaxPage, dtype=jnp.float32)
-
-
 def test_attention_paged_decode_matches_full_ar():
-    B = Axis("batch", 1)
     Pos = Axis("position", 4)
     Embed = Axis("embed", 8)
 
@@ -552,16 +537,26 @@ def test_attention_paged_decode_matches_full_ar():
     attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
     attn = Attention.init(cfg, key=attn_key)
 
-    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    x = hax.random.normal(x_key, (Pos, Embed)) * 0.2
     full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
 
-    cache = _build_page_cache(cfg, B, Pos)
+    pt = PageTable.init(max_pages=4, max_seqs=2, page_size=4, max_pages_per_seq=4)
+    pt, seq_id = pt.assign_seq_id_to_seq()
+    kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
     out_chunks = []
     for i in range(Pos.size):
+        pt, binfo = pt.allocate_for_seqs(
+            updated_seqs=hax.named([seq_id], "seq"),
+            new_counts=hax.named([1], "seq"),
+        )
+
+        kv_state = KvPageState.from_batch(binfo, kv_cache)
+
         x_tok = x[Pos, hax.dslice(i, 1)]
         sub_pos = x_tok.resolve_axis("position")
         pos_ids_tok = hax.arange(sub_pos, start=i)
-        out_tok, cache = _jit_paged_decode(attn, x_tok, pos_ids_tok, cache)
+        out_tok, new_state = _jit_paged_decode(attn, x_tok, pos_ids_tok, kv_state)
+        kv_cache = new_state.cache
         out_chunks.append(out_tok.array)
 
     decoded_arr = jnp.concatenate(out_chunks, axis=1)
@@ -580,7 +575,7 @@ def test_attention_paged_decode_matches_full_prefill():
     x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
     full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
 
-    cache = _build_page_cache(cfg, B, Pos)
+    cache = PageTable.init(cfg, B, Pos)
     pos_ids = hax.arange(Pos, dtype=jnp.int32)
     decode_out, _ = _jit_paged_decode(attn, x, pos_ids, cache)
 
@@ -600,7 +595,7 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
     full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
 
-    cache = _build_page_cache(cfg, B, Pos)
+    cache = PageTable.init(cfg, B, Pos)
     prefix = x[Pos, 0:prefix_size]
     prefill_chunk, cache = _jit_paged_decode(
         attn, prefix, pos_ids=hax.arange(Pos.resize(prefix_size), dtype=jnp.int32), cache=cache
@@ -633,7 +628,7 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
         pos = hax.arange(Pos, dtype=jnp.int32, start=start)
         return hax.where(pos >= stop, -1, pos)
 
-    cache = _build_page_cache(cfg, B, Pos)
+    cache = PageTable.init(cfg, B, Pos)
 
     chunk_sizes = [[4, 2], [0, 1], [0, 1], [2, 1], [1, 2], [1, 1]]
     off0 = off1 = 0

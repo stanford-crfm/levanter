@@ -1,7 +1,6 @@
 import dataclasses
 
 import jax.numpy as jnp
-import pytest
 
 import haliax as hax
 
@@ -42,19 +41,13 @@ def test_page_batch_info_shapes():
         seq_lens=hax.full((seq,), -1, dtype=jnp.int32),
         cu_q_lens=jnp.array([0, 1, 2], dtype=jnp.int32),
         num_seqs=jnp.array(2, dtype=jnp.int32),
-        new_token_dests=jnp.array([-1, -1], dtype=jnp.int32),
+        new_token_dests=hax.full((hax.Axis("position", 2),), -1, dtype=jnp.int32),
         page_size=2,
     )
 
     assert pb.page_indices.axes == (seq, page)
     assert pb.seq_lens.axes == (seq,)
     assert pb.cu_q_lens.shape[0] == pb.num_seqs + 1
-
-
-def test_assign_seq_id_to_seq_errors():
-    pt = _make_table()
-    with pytest.raises(TypeError):
-        PageTable.assign_seq_id_to_seq(pt)
 
 
 def test_allocate_for_seqs_with_padding():
