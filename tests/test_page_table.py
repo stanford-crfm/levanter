@@ -3,6 +3,7 @@ import dataclasses
 import jax.numpy as jnp
 
 import haliax as hax
+import pytest
 
 from levanter.layers.attention import PageBatchInfo, PageTable
 
@@ -48,3 +49,52 @@ def test_page_batch_info_shapes():
     assert pb.page_indices.axes == (seq, page)
     assert pb.seq_lens.axes == (seq,)
     assert pb.cu_q_lens.shape[0] == pb.num_seqs + 1
+
+
+def test_assign_seq_id_to_seq_errors():
+    pt = _make_table()
+    with pytest.raises(TypeError):
+        PageTable.assign_seq_id_to_seq(pt)
+
+
+def test_allocate_for_seqs_requires_named_counts():
+    pt = _make_table()
+    with pytest.raises(ValueError):
+        pt.allocate_for_seqs(jnp.array([0], dtype=jnp.int32), jnp.array([2], dtype=jnp.int32))
+
+
+def test_allocate_for_seqs_with_padding():
+    pt = _make_table()
+    axis = pt.seq_lens.axes[0]
+    counts = hax.named(jnp.array([1, 0, 0, 0], dtype=jnp.int32), axis)
+
+    updated = hax.named(jnp.array([0, -1, -1, -1], dtype=jnp.int32), axis)
+
+    new_pt, batch_info = pt.allocate_for_seqs(updated, counts)
+
+    assert new_pt.seq_lens.array[0] == 1
+    assert batch_info.num_seqs == 1
+
+
+def test_allocate_for_seqs_updates_only_valid_ids():
+    pt = _make_table(seqs=8, pages=16)
+    axis = pt.seq_lens.axes[0]
+    seq_lens = hax.named(jnp.array([0, 0, 0, 0, 0, 0, -1, -1], dtype=jnp.int32), axis)
+    pt = dataclasses.replace(pt, seq_lens=seq_lens)
+
+    updated = hax.named(jnp.array([2, 3, 5, -1, -1, -1, -1, -1], dtype=jnp.int32), axis)
+    counts = hax.named(jnp.array([1, 2, 3, 0, 0, 0, 0, 0], dtype=jnp.int32), axis)
+
+    new_pt, batch_info = pt.allocate_for_seqs(updated, counts)
+
+    assert jnp.all(new_pt.seq_lens.array[:6] == jnp.array([0, 0, 1, 2, 0, 3]))
+    assert jnp.all(new_pt.seq_lens.array[6:] == -1)
+    assert batch_info.num_seqs == 3
+
+def test_free_pages_invalid_seq_id_noop():
+    pt = _make_table()
+    freed = PageTable.free_pages(pt, -1)
+    fresh = _make_table()
+    assert jnp.array_equal(freed.page_owners.array, fresh.page_owners.array)
+    assert jnp.array_equal(freed.page_indices.array, fresh.page_indices.array)
+    assert jnp.array_equal(freed.seq_lens.array, fresh.seq_lens.array)
