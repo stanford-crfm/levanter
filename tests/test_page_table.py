@@ -57,7 +57,10 @@ def test_allocate_for_seqs_with_padding():
 
     updated = hax.named(jnp.array([0, -1, -1, -1], dtype=jnp.int32), axis)
 
-    new_pt, batch_info = pt.allocate_for_seqs(updated, counts)
+    tokens = hax.named(jnp.array([0], dtype=jnp.int32), hax.Axis("position", 1))
+    new_pt, batch_info = pt.allocate_for_seqs(updated, counts, tokens)
+
+    assert batch_info.new_token_dests.array[0] == 0
 
     assert new_pt.seq_lens.array[0] == 1
     assert batch_info.num_seqs == 1
@@ -72,10 +75,12 @@ def test_allocate_for_seqs_updates_only_valid_ids():
     updated = hax.named(jnp.array([2, 3, 5, -1, -1, -1, -1, -1], dtype=jnp.int32), axis)
     counts = hax.named(jnp.array([1, 2, 3, 0, 0, 10, 0, 0], dtype=jnp.int32), axis)
 
-    new_pt, batch_info = pt.allocate_for_seqs(updated, counts)
+    tokens = hax.named(jnp.array([2, 3, 3, 5, 5, 5], dtype=jnp.int32), hax.Axis("position", 6))
+    new_pt, batch_info = pt.allocate_for_seqs(updated, counts, tokens)
 
     assert jnp.all(new_pt.seq_lens.array[:6] == jnp.array([0, 0, 1, 2, 0, 3]))
     assert jnp.all(new_pt.seq_lens.array[6:] == -1)
+    assert jnp.array_equal(batch_info.new_token_dests.array, jnp.array([0, 2, 3, 4, 5, 6], dtype=jnp.int32))
     assert batch_info.num_seqs == 3
 
 
