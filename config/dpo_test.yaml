@@ -18,6 +18,10 @@ max_prompt_length: 512
 max_response_length: 512
 max_seq_len: 1024
 
+# Efficiency optimizations
+use_concatenated_forward: true  # Use concatenated forward passes for better FSDP efficiency
+precompute_ref_log_probs: false  # Precompute reference model log probabilities
+
 # Model initialization
 initialize_from_hf: false
 model_name_or_path: "gpt2"

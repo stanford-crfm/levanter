@@ -6,7 +6,7 @@ import numpy as np
 from haliax import Axis, NamedArray
 
 from levanter.data._preprocessor import BatchProcessor
-from levanter.models.dpo_example import DpoExample
+from levanter.main.dpo import DpoExample
 from levanter.utils.hf_utils import num_cpus_used_by_tokenizer
 
 

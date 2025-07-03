@@ -4,19 +4,20 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jrandom
+import numpy as np
 import transformers
 
 import haliax as hax
-from haliax import Axis
+from haliax import Axis, NamedArray
 
 import levanter
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.dpo_processor import DpoProcessor
 from levanter.data.text import DpoSourceConfig, legacy_mk_dpo_dataset
 from levanter.models.attention import AttentionMask
-from levanter.models.dpo_example import DpoExample
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.optim import AdamConfig, OptimizerConfig
@@ -32,6 +33,77 @@ DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
 
+class DpoExample(eqx.Module):
+    prompt_ids: NamedArray  # axes=(Pos,)
+    chosen_ids: NamedArray  # axes=(Response,)
+    rejected_ids: NamedArray  # axes=(Response,)
+    prompt_len: int = 0  # number of prompt tokens before padding
+    response_len: int = 0  # number of response tokens before padding
+
+    @staticmethod
+    def from_dict(
+        raw: dict,
+        tokenizer,
+        Pos: Axis,
+        Response: Axis,
+    ) -> "DpoExample":
+        """
+        Build a DpoExample from raw token id lists in raw dict.
+        Pads/truncates to Pos.size and Response.size, wraps in NamedArray without batch axis.
+        """
+        pad_id = getattr(tokenizer, "pad_token_id", 0)
+
+        def pad(seq, target_len):
+            # Unwrap NamedArray to raw array if needed
+            if hasattr(seq, "array"):
+                raw = seq.array
+            else:
+                raw = seq
+            # Convert to Python list
+            if isinstance(raw, np.ndarray):
+                lst = raw.tolist()
+            else:
+                lst = list(raw)
+            # Truncate or pad to target_len
+            out = lst[:target_len]
+            if len(out) < target_len:
+                out += [pad_id] * (target_len - len(out))
+            return out
+
+        raw_prompt = raw["prompt_ids"]
+        raw_chosen = raw["chosen_ids"]
+        raw_rejected = raw["rejected_ids"]
+
+        def seq_len(seq):
+            if hasattr(seq, "shape"):
+                return int(seq.shape[-1])
+            else:
+                return len(seq)
+
+        prompt_len = int(raw.get("prompt_len", min(seq_len(raw_prompt), Pos.size)))
+        chosen_len = min(seq_len(raw_chosen), Response.size)
+        rejected_len = min(seq_len(raw_rejected), Response.size)
+
+        response_len = int(raw.get("response_len", min(chosen_len, rejected_len)))
+
+        prompt = np.array(pad(raw_prompt, Pos.size), dtype=np.int32)
+        chosen = np.array(pad(raw_chosen, Response.size), dtype=np.int32)
+        rejected = np.array(pad(raw_rejected, Response.size), dtype=np.int32)
+
+        # wrap in NamedArray without batch axis
+        prompt_na = hax.named(prompt, (Pos,))
+        chosen_na = hax.named(chosen, (Response,))
+        rejected_na = hax.named(rejected, (Response,))
+
+        return DpoExample(
+            prompt_ids=prompt_na,
+            chosen_ids=chosen_na,
+            rejected_ids=rejected_na,
+            prompt_len=prompt_len,
+            response_len=response_len,
+        )
+
+
 @dataclass
 class DPOConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -43,6 +115,10 @@ class DPOConfig:
     max_prompt_length: int = 512
     max_response_length: int = 1536
     max_seq_len: int = 2048
+    
+    # Efficiency optimizations
+    use_concatenated_forward: bool = True  # use concatenated forward passes for better FSDP efficiency
+    precompute_ref_log_probs: bool = False  # precompute reference model log probabilities
 
     # config related to model loading and saving
     initialize_from_hf: Union[bool, str] = False
@@ -59,7 +135,13 @@ class DPOConfig:
     dpo_data: DpoSourceConfig = field(default_factory=DpoSourceConfig)
 
 
-def compute_dpo_loss(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_free=True, *, key=None):
+def compute_dpo_loss_separate(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_free=True, *, key=None):
+    """
+    Compute DPO loss using separate forward passes (original implementation).
+    
+    This approach does two separate forward passes - one for chosen and one for rejected.
+    Less efficient but simpler to understand and debug.
+    """
     # Unpack the DPO example fields
     p = ex.prompt_ids
     c = ex.chosen_ids
@@ -67,7 +149,7 @@ def compute_dpo_loss(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_fre
     prompt_len = ex.prompt_len
     response_len = ex.response_len
 
-    # Rename prompt and response axes to model's position axis (e.g., 'position')
+    # Rename prompt and response axes to model's position axis
     pos_name = model.Pos.name
     p_pos = p.rename({p.axes[-1].name: pos_name})
     c_pos = c.rename({c.axes[-1].name: pos_name})
@@ -80,6 +162,8 @@ def compute_dpo_loss(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_fre
     # Build causal attention mask
     mask = AttentionMask.causal()
     # Compute logits for both sequences with causal mask
+    # Note: This approach uses two separate forward passes, which is less efficient
+    # for FSDP but simpler to understand and debug
     logits_ch = model(seq_chosen, mask, key=key)
     logits_rj = model(seq_rejected, mask, key=key)
 
@@ -125,6 +209,138 @@ def compute_dpo_loss(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_fre
     return hax.mean(loss, axis="batch").array
 
 
+def compute_dpo_loss_concatenated(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_free=True, *, key=None):
+    """
+    Compute DPO loss using concatenated forward passes for better efficiency.
+    
+    This approach concatenates the chosen and rejected sequences into a single batch,
+    performs one forward pass, then splits the results. This is more efficient for
+    FSDP and reduces memory overhead.
+    """
+    # Unpack the DPO example fields
+    p = ex.prompt_ids
+    c = ex.chosen_ids
+    r = ex.rejected_ids
+    prompt_len = ex.prompt_len
+    response_len = ex.response_len
+
+    # Rename prompt and response axes to model's position axis
+    pos_name = model.Pos.name
+    p_pos = p.rename({p.axes[-1].name: pos_name})
+    c_pos = c.rename({c.axes[-1].name: pos_name})
+    r_pos = r.rename({r.axes[-1].name: pos_name})
+
+    # Build individual sequences
+    seq_chosen = hax.concatenate(pos_name, [p_pos, c_pos])
+    seq_rejected = hax.concatenate(pos_name, [p_pos, r_pos])
+
+    # Concatenate chosen and rejected sequences along batch dimension
+    # This creates a single batch with 2*original_batch_size sequences
+    # This is more efficient for FSDP as it reduces communication overhead
+    concatenated_seq = hax.concatenate("batch", [seq_chosen, seq_rejected])
+    
+    # Build causal attention mask for concatenated sequence
+    # The mask automatically handles the increased batch size
+    mask = AttentionMask.causal()
+    
+    # Single forward pass for both sequences
+    # This reduces memory allocation/deallocation cycles and improves FSDP efficiency
+    logits = model(concatenated_seq, mask, key=key)
+    
+    # Split the logits back into chosen and rejected
+    batch_size = seq_chosen.shape[0]
+    logits_ch = hax.slice(logits, "batch", start=0, length=batch_size)
+    logits_rj = hax.slice(logits, "batch", start=batch_size, length=batch_size)
+
+    # Determine where responses start (end of prompt)
+    start = prompt_len - 1
+    length_c = min(response_len, c_pos.shape[-1])
+    length_r = min(response_len, r_pos.shape[-1])
+
+    # Slice out response logits
+    resp_ch = hax.slice(logits_ch, pos_name, start=start, length=length_c)
+    resp_rj = hax.slice(logits_rj, pos_name, start=start, length=length_r)
+
+    # Log-softmax over vocab
+    lp_ch = hax.nn.log_softmax(resp_ch, axis="vocab")
+    lp_rj = hax.nn.log_softmax(resp_rj, axis="vocab")
+
+    # Sum log probabilities for the actual tokens
+    c_tokens = hax.slice(c_pos, pos_name, start=0, length=length_c)
+    r_tokens = hax.slice(r_pos, pos_name, start=0, length=length_r)
+    logp_ch = hax.sum(hax.take(lp_ch, "vocab", c_tokens), axis=pos_name)
+    logp_rj = hax.sum(hax.take(lp_rj, "vocab", r_tokens), axis=pos_name)
+
+    # Reference model log probabilities if needed
+    if not reference_free and hasattr(model, "reference_model"):
+        # Use same concatenated approach for reference model
+        logits_ref = model.reference_model(concatenated_seq, mask, key=key)
+        logits_ref_ch = hax.slice(logits_ref, "batch", start=0, length=batch_size)
+        logits_ref_rj = hax.slice(logits_ref, "batch", start=batch_size, length=batch_size)
+        
+        ref_ch = hax.slice(logits_ref_ch, pos_name, start=start, length=length_c)
+        ref_rj = hax.slice(logits_ref_rj, pos_name, start=start, length=length_r)
+        lp_ref_ch = hax.nn.log_softmax(ref_ch, axis="vocab")
+        lp_ref_rj = hax.nn.log_softmax(ref_rj, axis="vocab")
+        logp_ref_ch = hax.sum(hax.take(lp_ref_ch, "vocab", c_tokens), axis=pos_name)
+        logp_ref_rj = hax.sum(hax.take(lp_ref_rj, "vocab", r_tokens), axis=pos_name)
+    else:
+        logp_ref_ch = 0
+        logp_ref_rj = 0
+
+    # Compute the DPO loss
+    diff = (logp_ch - logp_rj) - (logp_ref_ch - logp_ref_rj)
+    loss = -hax.nn.log_sigmoid(beta * diff)
+
+    # Return mean loss over the batch axis
+    return hax.mean(loss, axis="batch").array
+
+
+def compute_dpo_loss(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_free=True, use_concatenated_forward=True, *, key=None):
+    """
+    Compute DPO loss with configurable forward pass strategy.
+    
+    Args:
+        model: The language model
+        ex: DPO example containing prompt, chosen, and rejected sequences
+        beta: DPO temperature parameter
+        reference_free: Whether to use reference-free DPO
+        use_concatenated_forward: Whether to use concatenated forward passes (more efficient for FSDP)
+        key: JAX random key
+    
+    Returns:
+        DPO loss value
+    """
+    if use_concatenated_forward:
+        return compute_dpo_loss_concatenated(model, ex, beta, reference_free, key=key)
+    else:
+        return compute_dpo_loss_separate(model, ex, beta, reference_free, key=key)
+
+
+def test_dpo_implementations_equivalence(model: LmHeadModel, ex: DpoExample, beta=0.1, reference_free=True, *, key=None):
+    """
+    Test that both DPO implementations produce the same results.
+    
+    This is useful for debugging and ensuring the concatenated implementation
+    is mathematically equivalent to the separate implementation.
+    """
+    # Test separate forward passes
+    loss_separate = compute_dpo_loss_separate(model, ex, beta, reference_free, key=key)
+    
+    # Test concatenated forward passes
+    loss_concatenated = compute_dpo_loss_concatenated(model, ex, beta, reference_free, key=key)
+    
+    # Check if they're close (within numerical precision)
+    diff = abs(loss_separate - loss_concatenated)
+    if diff > 1e-6:
+        logger.warning(f"DPO implementations differ by {diff:.2e}")
+        logger.warning(f"Separate: {loss_separate:.6f}, Concatenated: {loss_concatenated:.6f}")
+    else:
+        logger.info("DPO implementations produce equivalent results ✓")
+    
+    return loss_separate, loss_concatenated
+
+
 def main(config: DPOConfig):
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         config.tokenizer_name_or_path,
@@ -137,7 +353,7 @@ def main(config: DPOConfig):
     # Add special tokens if needed
     add_special_tokens(tokenizer)
 
-    # Handle HF checkpoint initialization similar to train_lm.py
+    # handle HF checkpoint initialization (same logic as used in train_lm.py)
     if config.initialize_from_hf:
         if config.trainer.initialize_from is not None:
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
@@ -165,8 +381,19 @@ def main(config: DPOConfig):
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    # Create DPO loss function
-    loss_function = functools.partial(compute_dpo_loss, beta=config.beta, reference_free=config.reference_free)
+    # Log the forward pass strategy being used
+    if config.use_concatenated_forward:
+        logger.info("Using concatenated forward passes for DPO (more efficient for FSDP)")
+    else:
+        logger.info("Using separate forward passes for DPO (simpler, less efficient)")
+
+    # Define the DPO loss function with configurable forward pass strategy
+    loss_function = functools.partial(
+        compute_dpo_loss, 
+        beta=config.beta, 
+        reference_free=config.reference_free,
+        use_concatenated_forward=config.use_concatenated_forward
+    )
 
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
@@ -275,7 +502,7 @@ def main(config: DPOConfig):
         else:
             train_loader = train_loader.iter_from_step(0)
 
-        ## OK, actually run training!
+        # actually run training
         trainer.train(state, train_loader)
 
     # This isn't necessary except when Levanter is run in a subprocess (as happens w/ ray)
