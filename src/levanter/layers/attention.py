@@ -805,7 +805,8 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> NamedArray: ...
+) -> NamedArray:
+    ...
 
 
 @overload
@@ -815,7 +816,8 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> Optional[NamedArray]: ...
+) -> Optional[NamedArray]:
+    ...
 
 
 def materialize_mask(
@@ -1774,7 +1776,7 @@ class PageTable(eqx.Module):
             updated_seqs: i32[Seq] ids for the updated sequences (can be padded with -1s). Can be a
                 NamedArray or a plain ndarray.
             new_counts: NamedArray i32[Seq] number of new tokens for each sequence
-            tokens: NamedArray i32[Position] sequence id for each new token. Values
+            tokens: NamedArray i32[position] sequence id for each new token. Values
                 should be padded with -1
 
         Returns:
@@ -1836,11 +1838,10 @@ class PageTable(eqx.Module):
         seq_lens = new_table.seq_lens["seq", safe_updated]
         seq_lens = hax.where(mask, seq_lens, -1)
 
-        num_seqs = jnp.sum(mask.array)
+        num_seqs = hax.sum(mask)
 
         # compute destination slots for each new token. tokens is i32[position]
         # giving the owning seq id for each token (padded with -1)
-
         token_dests = jnp.full(tokens.array.shape, -1, dtype=jnp.int32)
 
         # start offsets for each sequence (treat -1 lens as 0)
@@ -1848,14 +1849,14 @@ class PageTable(eqx.Module):
 
         def token_body(i, carry):
             token_dests, seq_cursors = carry
-            seq_id = tokens.array[i]
+            seq_id = tokens["position", i].scalar()
 
             def assign(carry):
                 token_dests, seq_cursors = carry
                 page_idx = seq_cursors[seq_id] // self.page_size
                 page_offset = seq_cursors[seq_id] % self.page_size
-                page = new_table.page_indices.array[seq_id, page_idx]
-                dest = jnp.where(page < 0, -1, page * self.page_size + page_offset)
+                page = new_table.page_indices["seq", seq_id, "page", page_idx]
+                dest = hax.where(page < 0, -1, page * self.page_size + page_offset)
                 token_dests = token_dests.at[i].set(dest)
                 seq_cursors = seq_cursors.at[seq_id].add(1)
                 return token_dests, seq_cursors
@@ -1863,7 +1864,7 @@ class PageTable(eqx.Module):
             token_dests, seq_cursors = jax.lax.cond(seq_id >= 0, assign, lambda c: c, (token_dests, seq_cursors))
             return token_dests, seq_cursors
 
-        token_dests, _ = jax.lax.fori_loop(0, tokens.array.shape[0], token_body, (token_dests, seq_cursors))
+        token_dests, _ = jax.lax.fori_loop(0, tokens.axis_size("position"), token_body, (token_dests, seq_cursors))
         new_token_dests = hax.named(token_dests, "position")
 
         cu_q_lens = jnp.concatenate(

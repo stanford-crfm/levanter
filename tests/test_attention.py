@@ -560,25 +560,41 @@ def test_attention_paged_decode_matches_full_ar():
         kv_cache = new_state.cache
         out_chunks.append(out_tok.array)
 
-    decoded_arr = jnp.concatenate(out_chunks, axis=1)
+    decoded_arr = jnp.concatenate(out_chunks, axis=0)
     assert_trees_all_close(full_out.array, decoded_arr, atol=1e-4, rtol=1e-4)
 
 
 def test_attention_paged_decode_matches_full_prefill():
-    B = Axis("batch", 2)
-    Pos = Axis("position", 4)
+    Pos = Axis("position", 16)
     Embed = Axis("embed", 16)
 
     cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
     attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
     attn = Attention.init(cfg, key=attn_key)
 
-    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
-    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+    pt = PageTable.init(max_pages=4, max_seqs=2, page_size=4, max_pages_per_seq=4)
+    pt, seq1 = pt.assign_seq_id_to_seq()
+    pt, seq2 = pt.assign_seq_id_to_seq()
 
-    cache = PageTable.init(cfg, B, Pos)
+    x = hax.random.normal(x_key, (Pos, Embed)) * 0.2
+    seq_ids = hax.named([seq1, seq2, -1, -1, -1, -1, -1, -1], "seq")
+    new_token_counts = hax.named([4, 3, 0, 0, 0, 0, 0, 0], "seq")
+
+    seg_ids = hax.named([0] * 4 + [1] * 3 + [-1] * 9, "position")
+    pt, binfo = pt.allocate_for_seqs(updated_seqs=seq_ids, new_counts=new_token_counts, tokens=seg_ids)
+
+    causal = AttentionMask.causal().with_segment_ids(seg_ids)
+    full_out = attn(x, causal, key=jrandom.PRNGKey(1))
+
+    kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
+
+    page_state = KvPageState.from_batch(binfo, kv_cache)
     pos_ids = hax.arange(Pos, dtype=jnp.int32)
-    decode_out, _ = _jit_paged_decode(attn, x, pos_ids, cache)
+    decode_out, _ = _jit_paged_decode(attn, x, pos_ids, page_state)
+
+    # we only care about the first 7 positions, since the rest are padding
+    full_out = full_out["position", hax.dslice(0, 7)]
+    decode_out = decode_out["position", hax.dslice(0, 7)]
 
     assert_trees_all_close(full_out.array, decode_out.array, atol=1e-4, rtol=1e-4)
 
