@@ -39,7 +39,7 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
 
     # this is mostly copy paste, but it looks at range of different env variables that slurm sometimes sets
     @classmethod
-    def get_coordinator_address(cls) -> str:
+    def get_coordinator_address(cls, timeout_secs: int | None = None) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]
         id = os.environ[_JOBID_PARAM]
         port = _choose_port(id)
@@ -121,6 +121,10 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         # So we have to do some parsing to figure out how many tasks are on each node
         # and then figure out which node we are on
         # first replace the repeated values with the number of times they are repeated
+        if _TASKS_PER_NODE not in os.environ:
+            logger.warning("%s not set in environment, assuming a single task per node", _TASKS_PER_NODE)
+            return 1
+
         unrolled_tasks_per_node = []
         multi_match = re.compile(r"(\d+)\(x(\d+)\)")
         for x in os.environ[_TASKS_PER_NODE].split(","):
@@ -322,7 +326,7 @@ class DistributedConfig:
                     device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
 
                 if coordinator_address is None:
-                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
+                    coordinator_address = LevanterSlurmCluster.get_coordinator_address(300.0)
 
             jax.distributed.initialize(
                 coordinator_address, self.num_processes, self.process_id, device_ids, initialization_timeout=30 * 60
