@@ -610,7 +610,8 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     attn = Attention.init(cfg, key=attn_key)
 
     B = Axis("batch", 2)
-    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    # x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    x = hax.arange((B, Pos, Embed), start=-2, step=0.1, dtype=jnp.float32)
     full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
 
     seq_axis = Axis("seq", 2)
@@ -678,7 +679,8 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
     cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, attn_backend=AttentionBackend.VANILLA)
     attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
     attn = Attention.init(cfg, key=attn_key)
-    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    # x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    x = hax.arange((B, Pos, Embed), start=-2, step=0.1, dtype=jnp.float32)
     full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
 
     pt = PageTable.init(max_pages=8, max_seqs=2, page_size=4, max_pages_per_seq=4)
