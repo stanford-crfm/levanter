@@ -2049,7 +2049,11 @@ def default_ragged_paged_attention(
 
     q = q * sm_scale
 
-    padding_amount = (Q_BS - q.axis_size("position") % Q_BS) % Q_BS
+    # pad by at least ``Q_BS`` positions so that any block starting within the
+    # original array has enough headroom for a full block slice. This avoids the
+    # clamping behavior of ``jax.lax.dynamic_slice`` when ``start + size``
+    # exceeds the array length.
+    padding_amount = (Q_BS - q.axis_size("position") % Q_BS) % Q_BS + Q_BS
     padded_q = hax.concatenate(
         "position",
         [q, hax.zeros_like(q["position", hax.ds(0, padding_amount)])],
