@@ -2081,6 +2081,7 @@ def default_ragged_paged_attention(
             # block offset ``q_start - cu_q_lens[seq_id]`` yields the absolute
             # position of the current block within the sequence.
             q_pos_id_start = kv_len - q_len + q_start - cu_q_lens[seq_id]
+            q_pos_id_end = q_pos_id_start + q_len
             q_tok = hax.arange(q_block.resolve_axis("position"), start=q_pos_id_start)
 
             kv_pos_per_block = page_size * KV_BS  # how many tokens per kv block
@@ -2108,7 +2109,7 @@ def default_ragged_paged_attention(
                     attn_b = hax.tanh(attn_b / soft_cap) * soft_cap
 
                 attn_mask = kv_tok.broadcast_axis(q_tok.axes) <= q_tok  # causal
-                attn_mask = attn_mask & (kv_tok < kv_len)  # stay within bounds
+                attn_mask = attn_mask & (kv_tok < kv_len) & (q_tok < q_pos_id_end)  # stay within bounds
 
                 attn_b = hax.where(attn_mask, attn_b, -1e10)
 
@@ -2135,6 +2136,8 @@ def default_ragged_paged_attention(
             # Normalize
             sum_exp_b = hax.maximum(sum_exp_b, 1e-10)
             o_b = o_b / sum_exp_b
+            # mask out anything not in the original query range
+            o_b = hax.where(q_tok < q_pos_id_end, o_b, 0.0)
             o = o.at["position", hax.ds(q_start, Q_BS)].set(o_b, mode="drop")
             return o
 
