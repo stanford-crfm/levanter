@@ -2,7 +2,7 @@ name: Build and Push Cluster Docker Image
 
 on:
   workflow_run:
-    workflows: ["Run Tests"]
+    workflows: ["Build and Push Docker TPU Images"]
     types:
       - completed
     branches: [main]
