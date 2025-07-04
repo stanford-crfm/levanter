@@ -6,7 +6,7 @@ import jax
 from jax.tree_util import DictKey, FlattenedIndexKey, GetAttrKey, SequenceKey
 
 import levanter.tracker
-from levanter.analysis.tree_stats import summary_statistics_for_tree
+from levanter.analysis.tree_stats import nu_dead_neuron_histograms, summary_statistics_for_tree
 from levanter.callbacks import JitCallback, M, S
 from levanter.tracker.histogram import Histogram
 from levanter.trainer_state import InsideJitInfo, TrainerState
@@ -136,6 +136,11 @@ class WatchCallback(JitCallback[S, M, dict[str, jax.Array | Histogram]]):
                         include_per_parameter_norms=self.include_per_parameter_norms,
                     )
                     to_log.update(this_stats)
+
+                    # log histograms of optimizer nu sums for linear layers
+                    if self.include_histogram and hasattr(v, "nu"):
+                        nu_stats = nu_dead_neuron_histograms(f"{name_to_log}/nu", v.nu, self.split_scan_layers)
+                        to_log.update(nu_stats)
 
         return to_log
 
