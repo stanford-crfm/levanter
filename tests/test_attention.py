@@ -520,8 +520,8 @@ def test_attention_decode_ragged_fill_in_chunks():
     outputs0_cat = hax.concatenate("position", outputs0)
     outputs1_cat = hax.concatenate("position", outputs1)
 
-    assert_trees_all_close(full_out[B, 0].array, outputs0_cat.array, atol=5e-2, rtol=5e-2)
-    assert_trees_all_close(full_out[B, 1].array, outputs1_cat.array, atol=5e-2, rtol=5e-2)
+    assert_trees_all_close(full_out[B, 0].array, outputs0_cat.array, atol=1e-4, rtol=1e-4)
+    assert_trees_all_close(full_out[B, 1].array, outputs1_cat.array, atol=1e-4, rtol=1e-4)
 
     decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
 
@@ -667,7 +667,7 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     outputs0_cat = hax.concatenate("position", outputs0)
     outputs1_cat = hax.concatenate("position", outputs1)
     decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
-    assert_trees_all_close(full_out.array, decoded_arr.array, atol=5e-2, rtol=5e-2)
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
 
 
 def test_attention_paged_decode_ragged_fill_in_chunks():
@@ -711,10 +711,27 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
             list(range(off0, off0 + step0)) + list(range(off1, off1 + step1)),
             tok_axis,
         )
-        output, state = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=state)
+        with jax.disable_jit():
+            output, state = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=state)
         kv_cache = state.cache
+        print(off0, off1, step0, step1)
         outputs0.append(output["position", hax.dslice(0, step0)])
         outputs1.append(output["position", hax.dslice(step0, step1)])
+
+        # check each chunk individually
+        assert_trees_all_close(
+            full_out[B, 0, "position", hax.dslice(off0, step0)].array,
+            outputs0[-1].array,
+            atol=1e-4,
+            rtol=1e-4,
+        )
+        assert_trees_all_close(
+            full_out[B, 1, "position", hax.dslice(off1, step1)].array,
+            outputs1[-1].array,
+            atol=1e-4,
+            rtol=1e-4,
+        )
+
         off0 += step0
         off1 += step1
 
@@ -722,4 +739,4 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
     outputs1_cat = hax.concatenate("position", outputs1)
 
     decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
-    assert_trees_all_close(full_out.array, decoded_arr.array, atol=5e-2, rtol=5e-2)
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
