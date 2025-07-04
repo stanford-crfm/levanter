@@ -44,11 +44,11 @@ uv run --extra gpu --extra test pytest
 ```
 
 Alternatively, you can just create the environment with
-```bash 
+```bash
 uv sync --extra gpu  # add extras as needed
 ```
 
-and activate the resulting venv with 
+and activate the resulting venv with
 ```bash
 source .venv/bin/activate
 ```
