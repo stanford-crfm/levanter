@@ -132,7 +132,7 @@ reasonable defaults and an "advanced" mode that gives you more control.
 | `batch_axis`           | The axis to shard the batch over, for distributed data parallelism           | `"batch"` |
 | `fsdp_axis`            | The axis or axes to shard the model over, for Fully Sharded Data Parallelism | `"embed"` |
 | `tensor_parallel_axes` | The axis or axes to shard the model over, for Tensor Parallelism             | `None`    |
-| `model_axis_size`      | How many devices for tensor parallelism                                      | `1`       |
+| `model_axis_size`      | How many devices for tensor parallelism. If greater than `1`, at least one tensor parallel axis must be specified via `tensor_parallel_axes` or `axis_resources`. | `1`       |
 
 #### Advanced Mode
 

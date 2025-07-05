@@ -1,6 +1,7 @@
 import dataclasses
 
 import fsspec
+import pytest
 
 from haliax.partitioning import ResourceAxis
 
@@ -49,6 +50,13 @@ def test_new_style_axis_mapping():
         "a2": ResourceAxis.MODEL,
         "batch": (ResourceAxis.REPLICA, ResourceAxis.DATA),
     }
+
+
+def test_error_if_model_axis_without_model_axes():
+    config = TrainerConfig(model_axis_size=2)
+
+    with pytest.raises(ValueError):
+        config._validate_and_set_defaults()
 
 
 def test_lm_dataset_config():

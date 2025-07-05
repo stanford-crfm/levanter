@@ -222,20 +222,16 @@ class Trainer:
         return self.config.num_train_steps
 
     @typing.overload
-    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1):
-        ...
+    def add_hook(self, fn: Callable[[StepInfo], Any], *, every: int = 1): ...
 
     @typing.overload
-    def add_hook(self, fn: JitCallback, *, every: int = 1):
-        ...
+    def add_hook(self, fn: JitCallback, *, every: int = 1): ...
 
     @typing.overload
-    def add_hook(self, fn: Callback, *, every: int = 1):
-        ...
+    def add_hook(self, fn: Callback, *, every: int = 1): ...
 
     @typing.overload
-    def add_hook(self, *, every: int = 1):
-        ...
+    def add_hook(self, *, every: int = 1): ...
 
     def add_hook(self, fn: Optional[Callable[[StepInfo], Any] | Callback | JitCallback] = None, *, every: int = 1):
         return self.hooks.add_hook(fn, every=every)
@@ -910,6 +906,15 @@ class TrainerConfig:
             and self.model_axis_size % jax.local_device_count() != 0
         ):
             raise ValueError("either model_axis_size or local_device_count must be divisible by the other")
+
+        if self.model_axis_size > 1:
+            mapping = self.compute_axis_mapping
+            has_model_axis = any(
+                res == ResourceAxis.MODEL or (isinstance(res, tuple) and ResourceAxis.MODEL in res)
+                for res in mapping.values()
+            )
+            if not has_model_axis:
+                raise ValueError("model_axis_size > 1 but no tensor parallel axes were defined")
 
         if self.train_batch_size == -1 and self.per_device_parallelism == -1:
             raise ValueError("either train_batch_size or per_device_parallelism must be specified (not -1)")
