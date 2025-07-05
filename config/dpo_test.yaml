@@ -31,19 +31,19 @@ tokenizer_name_or_path: "gpt2"
 dpo_data:
   # Using HuggingFace H4 ultrafeedback_binarized dataset from GCS
   train_urls:
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00000.jsonl.gz"
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00001.jsonl.gz"
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00002.jsonl.gz"
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00003.jsonl.gz"
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00004.jsonl.gz"
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00005.jsonl.gz"
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00006.jsonl.gz"
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/train_prefs/shard_00007.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00000.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00001.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00002.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00003.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00004.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00005.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00006.jsonl.gz"
+    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-f7496e/train_prefs/shard_00007.jsonl.gz"
   
-  # For now, using a subset of training data for validation
-  # You may want to point this to a separate validation set if available
-  validation_urls:
-    - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/test_prefs/shard_00000.jsonl.gz"
+  # # For now, using a subset of training data for validation
+  # # You may want to point this to a separate validation set if available
+  # validation_urls:
+  #   - "gs://marin-us-central2/preference/HuggingFaceH4--ultrafeedback_binarized-3949bf5-69e206/test_prefs/shard_00000.jsonl.gz"
   
   # Field names in the ultrafeedback_binarized dataset
   prompt_field: "prompt"
@@ -62,9 +62,10 @@ trainer:
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
-  per_device_parallelism: -1
+  per_device_parallelism: 1  # Smaller value to allow smaller batch sizes
 
-  train_batch_size: 32  # Small batch size for testing
+
+  train_batch_size: 64  # Must be divisible by per_device_parallelism * data_axis_size (1 * 64 = 64)
   num_train_steps: 1000  # Increased for actual training
 
 # Optimizer Configuration

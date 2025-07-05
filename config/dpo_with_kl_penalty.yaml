@@ -1,0 +1,70 @@
+# Example configuration for DPO training with KL divergence penalty
+# This configuration adds a KL penalty to prevent the model from deviating too far from the reference model
+
+trainer:
+  # Training configuration
+  num_train_steps: 1000
+  batch_size: 4
+  eval_batch_size: 4
+  max_eval_batches: 10
+  steps_per_eval: 100
+  seed: 42
+  
+  # Checkpointing
+  checkpointer:
+    base_path: "checkpoints/dpo_with_kl"
+    save_steps: 100
+    keep_steps: [100, 500, 1000]
+
+model:
+  # Use Llama2 7B model
+  model_type: "llama"
+  hidden_dim: 4096
+  intermediate_dim: 11008
+  num_layers: 32
+  num_heads: 32
+  max_seq_len: 2048
+  vocab_size: 32000  # Will be overridden by tokenizer
+
+optimizer:
+  # Adam optimizer configuration
+  learning_rate: 1e-5
+  weight_decay: 0.01
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+
+# DPO specific configuration
+beta: 0.1  # DPO temperature parameter
+reference_free: False  # Use reference model for DPO
+kl_penalty_weight: 0.1  # Weight for KL divergence penalty (0.0 disables)
+
+# Sequence length configuration
+max_prompt_length: 512
+max_response_length: 1536
+max_seq_len: 2048
+
+# Efficiency optimizations
+use_concatenated_forward: true  # Use concatenated forward passes for better FSDP efficiency
+
+# Model loading and saving
+initialize_from_hf: "meta-llama/Llama-2-7b-hf"  # Initialize from HuggingFace checkpoint
+use_hf_model_config: true
+hf_save_path: "outputs/dpo_with_kl_model"
+hf_save_steps: 500
+hf_save_dtype: "float16"
+
+# Tokenizer configuration
+model_name_or_path: "meta-llama/Llama-2-7b-hf"
+tokenizer_name_or_path: "meta-llama/Llama-2-7b-hf"
+
+# DPO dataset configuration
+dpo_data:
+  # Example dataset URLs (replace with your actual dataset)
+  train_urls:
+    - "https://example.com/dpo_dataset.jsonl"
+  
+  # Field names in the dataset
+  prompt_field: "prompt"
+  chosen_field: "chosen"
+  rejected_field: "rejected" 
