@@ -11,7 +11,7 @@ import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.tracker.wandb import WandbConfig
+from levanter.tracker import NoopConfig
 
 
 @pytest.mark.entry
@@ -41,7 +41,7 @@ def test_viz_lm():
                 trainer=viz_logprobs.TrainerConfig(
                     per_device_eval_parallelism=len(jax.devices()),
                     max_eval_batches=1,
-                    wandb=WandbConfig(mode="disabled"),
+                    tracker=NoopConfig(),
                     require_accelerator=False,
                     ray=RayConfig(auto_start_cluster=False),
                 ),
