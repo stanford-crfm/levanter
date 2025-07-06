@@ -95,6 +95,23 @@ mypy_path = ["src"]
 [tool.mypy-haliax.core]
 ignore_missing_imports = true
 
+# [flake8]
+#exclude = .git
+#max-line-length = 120
+#ignore = E203, E501, W503, W605, F821, E266, E731
+#per-file-ignores =
+#    */__init__.py: F401
+#    examples/*.py: E402
+
+[tool.ruff]
+line-length = 119
+target-version = "py310"
+# Note: Grow more strict over time!
+extend-exclude = ["scripts/"]
+
+[tool.ruff.lint]
+ignore = [ "E203", "E501", "W605", "F821", "E266", "E731", "E741" ]
+
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
 markers = [
@@ -118,6 +135,16 @@ gpu = [
 ]
 tpu = [
     "jax[tpu]>=0.5",
+]
+
+dev = [
+    "pytest",
+    "pytest-forked",
+    "pytest-asyncio",
+    "soundfile",
+    "librosa",
+    "tensorboardX>=2.6",
+    "pre-commit",
 ]
 
 # we only use pytorch for more thorough testing, so we don't require it by default

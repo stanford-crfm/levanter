@@ -1,9 +1,10 @@
 import argparse
 import os
 
-import wandb  # For wandb.Api()
 import wandb_workspaces.reports.v2 as wr
 import wandb_workspaces.workspaces as ws
+
+import wandb  # For wandb.Api()
 
 
 def main():
