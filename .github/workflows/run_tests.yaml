@@ -22,7 +22,8 @@ jobs:
         run: |
           # install uv
           pip install uv
+          uv venv
           uv sync --extra dev
       - name: Test with pytest
         run: |
-          PYTHONPATH=tests:src:. pytest tests -m "not entry and not slow and not ray"
+          PYTHONPATH=tests:src:. .venv/bin/pytest tests -m "not entry and not slow and not ray"
