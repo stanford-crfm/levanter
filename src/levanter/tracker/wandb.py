@@ -19,8 +19,9 @@ from levanter.utils import jax_utils
 
 
 if typing.TYPE_CHECKING:
-    import wandb
     import wandb.sdk.lib.disabled
+
+    import wandb
 
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ class WandbConfig(TrackerConfig):
         if jax.process_index() == 0:
             mode = self.mode
         else:
-            mode = "disabled"
+            mode = "offline"
 
         git_settings = self._git_settings()
 

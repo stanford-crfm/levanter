@@ -36,7 +36,7 @@ import levanter.tracker
 import levanter.tracker.wandb
 import levanter.utils.logging
 from levanter import tracker
-from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
+from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, StepInfo
 from levanter.callbacks.watch import WatchConfig
 from levanter.checkpoint import CheckpointerConfig, is_checkpoint_path, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
@@ -57,6 +57,8 @@ from levanter.utils.types import ComputeLossFunction, FilterSpec
 logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
+M = TypeVar("M")  # Model
+S = TypeVar("S", bound=TrainerState)  # State
 
 DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
     "jax_threefry_partitionable": True,

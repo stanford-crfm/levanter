@@ -11,7 +11,7 @@ import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
 from levanter.models.gpt2 import Gpt2LMHeadModel
-from levanter.tracker.wandb import WandbConfig
+from levanter.tracker import NoopConfig
 from levanter.trainer_state import TrainerState
 from test_utils import skip_if_no_torch
 
@@ -45,7 +45,7 @@ def test_eval_lm():
                 trainer=eval_lm.TrainerConfig(
                     per_device_eval_parallelism=len(jax.devices()),
                     max_eval_batches=1,
-                    wandb=WandbConfig(mode="disabled"),
+                    tracker=NoopConfig(),
                     require_accelerator=False,
                     ray=RayConfig(auto_start_cluster=False),
                 ),
@@ -89,7 +89,7 @@ def test_eval_lm_from_hf():
                 trainer=eval_lm.TrainerConfig(
                     per_device_eval_parallelism=len(jax.devices()),
                     max_eval_batches=1,
-                    wandb=WandbConfig(mode="disabled"),
+                    tracker=NoopConfig(),
                     require_accelerator=False,
                     ray=RayConfig(auto_start_cluster=False),
                 ),
