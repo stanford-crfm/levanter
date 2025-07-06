@@ -8,7 +8,7 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * **Get better.** Whenever you discover something missing from these guidelines, or the requester
   suggests a better way to do something, please update this document. The goal is to make it easier for
   everyone to contribute and maintain the codebase. Generally speaking, you should add bullets or new sections.
-  Be sure to do this when directed to. For example, if directed that you should neve relax tolerances in
+  Be sure to do this when directed to. For example, if directed that you should never relax tolerances in
   floating point tests, add that to the list.
 * **Playbooks.** Sometimes, there are repeatable tasks (e.g. porting models) for which we follow a standard set of steps.
   Please reference `.playbooks/` to see what playbooks are available, or see the list below. If you want to add a playbook
@@ -16,7 +16,7 @@ repository. Follow these notes when implementing new features or fixing bugs.
 
 ## Playbooks
 
-* None yet!
+* [Porting a Model to Levanter](.playbooks/port-models.md): A guide for porting model architectures to the Levanter ecosystem using Haliax and Equinox.
 
 
 ## Code Style
@@ -30,6 +30,10 @@ repository. Follow these notes when implementing new features or fixing bugs.
   their purpose is painfully obvious. Use
   [Google style](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings) for
   consistency.
+* **Commenting**: Use comments to explain why something is done a certain way, especially if it is not
+  immediately obvious. Avoid commenting on every line of code; focus on the intent and purpose of
+  complex logic. Demarcating logical groups of code with comments is encouraged, unless it is better
+  to refactor the code into smaller functions or classes.
 * **Mkdocs**: We use [Mkdocs](https://www.mkdocs.org/) for documentation. The main documentation is in
   the `docs` directory. Use Markdown for writing docs, and follow the existing structure. When linking to
   symbols, prefer using mkdocs-style links (e.g. With a custom title: `[full.path.object2][]` or
@@ -45,6 +49,11 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * In general, never relax tolerances in floating point tests unless specifically discussed with the
   team. Use `assert_allclose` with appropriate tolerances for numerical comparisons. We typically use
   1e-4 for more complex modules, and 1e-5 for simpler ones.
+* Tests should be reasonably fast. Mark long-running tests with @pytest.mark.slow so they are excluded from the default suite.
+* Always mark tests that depend on pytorch with `@skip_if_no_torch` to ensure they are skipped
+  when PyTorch is not available. This is particularly important for tests that require PyTorch-specific
+  functionality.
+
 
 ## Design Preferences
 
@@ -62,6 +71,7 @@ repository. Follow these notes when implementing new features or fixing bugs.
   TensorBoard). Use the existing callback/hook framework instead of ad-hoc logging.
 * **Reproducibility**: Levanter aims for deterministic training where possible. Avoid sources of
   nondeterminism unless explicitly required.
+* Prefer Stacked with fold or scan over writing custom loops, for better compile times and gradient checkpointing support
 
 ## Additional Tips
 
