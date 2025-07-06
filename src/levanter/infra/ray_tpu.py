@@ -282,6 +282,12 @@ class SliceActor:
         pod_name = ray.util.accelerators.tpu.get_current_pod_name()
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
         num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()
+        tpe = TPUAcceleratorManager._get_current_node_tpu_pod_type()
+        # there seems to be a bug with some version of ray here
+        if tpe.startswith("v4") or tpe.startswith("v5"):
+            num_cores = int(tpe.split("-")[1])
+            num_tpus_per_host = 4
+            num_hosts = num_cores // 8
 
         pg = _ensure_pg(pod_name, num_hosts, num_tpus_per_host)
 
@@ -408,8 +414,11 @@ def run_on_pod_ray(
             pending_futures = list(futures)
             had_a_failure = False
 
+            # check health of actors in the loop too
+            actor_health_futures = [actor.healthy.remote() for actor in slice_pool]
+
             while pending_futures and not had_a_failure:
-                finished, pending_futures = ray.wait(pending_futures, num_returns=1)
+                finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
 
                 for f in finished:
                     try:
@@ -422,6 +431,23 @@ def run_on_pod_ray(
                         logger.warning(f"Task {f} failed with unexpected error {e}. Will retry.")
                         had_a_failure = True
                         tpu_results[future_to_index[f]] = TpuRunError(e)
+
+                if had_a_failure:
+                    # skip health checks if we already had a failure
+                    break
+
+                # Check if any actors are unhealthy. We hit this if it's been 10 seconds or we got a result
+                try:
+                    actor_healths = ray.get(actor_health_futures)
+                except RayError as e:
+                    logger.warning("Failed to get actor healths", exc_info=e)
+                    # assume things are bad
+                    had_a_failure = True
+                else:
+                    for i, healthy in enumerate(actor_healths):
+                        if not healthy:
+                            logger.warning(f"Actor {slice_pool[i]} is unhealthy. Will retry.")
+                            had_a_failure = True
 
             # Proactively cancel jobs if one fails.
             if had_a_failure and pending_futures:
@@ -553,10 +579,9 @@ def _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices):
 
     # if we don't have enough actors, create more
     new_actor_to_slice_infos: dict[ActorHandle, ray.ObjectRef] = {}  # ref is to SliceInfo
-    while len(slice_pool) < num_slices:
+    while len(slice_pool) + len(new_actor_to_slice_infos) < num_slices:
         a = SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote()  # type: ignore
         new_actor_to_slice_infos[a] = a.get_slice_info.remote()
-        slice_pool.append(a)
 
     # wait for all new actors to be ready
     if new_actor_to_slice_infos:
@@ -564,6 +589,7 @@ def _scale_slice_pool(slice_pool, slice_infos, tpu_type, num_slices):
         for a, info_ref in new_actor_to_slice_infos.items():
             try:
                 slice_infos[a] = ray.get(info_ref)
+                slice_pool.append(a)
             except ray.exceptions.RayError as e:
                 # this can happen with a logic error or if the actor is unhealthy/preempted/whatever
                 logger.exception("Failed to get new actors ready", exc_info=e)

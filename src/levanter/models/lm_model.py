@@ -10,7 +10,7 @@ from jaxtyping import PRNGKeyArray
 import haliax as hax
 from haliax import Axis, NamedArray, NamedOrNumeric
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.loss import maybe_fused_next_token_loss
 
 
@@ -178,7 +178,12 @@ class LmHeadModel(eqx.Module, Generic[LmConfigT]):
         pass
 
     def __call__(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         """
         Compute the logits for the next token in a sequence.
@@ -191,14 +196,24 @@ class LmHeadModel(eqx.Module, Generic[LmConfigT]):
             NamedArray: logits with shape [..., Pos, Vocab]
 
         """
-        x = self.activations(input_ids, attn_mask, key=key)
+        try:
+            x = self.activations(input_ids, attn_mask, key=key, pos_ids=pos_ids)
+        except TypeError:
+            # For backward compatibility with models that don't yet support pos_ids
+            x = self.activations(input_ids, attn_mask, key=key)
+
         lm_logits = hax.dot(x, self.get_lm_head(), axis=self.Embed)
 
         return lm_logits
 
     @abc.abstractmethod
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         """
         Compute the activations for the next token in a sequence.
@@ -242,6 +257,7 @@ def compute_next_token_loss(
     reduction_axis: Optional[hax.AxisSelection] = None,
     logsumexp_weight: Optional[float] = None,
     loss_dtype: Optional[jnp.dtype] = jnp.float32,
+    logit_soft_cap: Optional[float] = None,
 ) -> jnp.ndarray | NamedArray:
     """
     Computes the cross-entropy loss for a language modeling example. If reduction is not None, the loss is reduced
@@ -267,6 +283,7 @@ def compute_next_token_loss(
         logsumexp_weight=logsumexp_weight,
         dtype=loss_dtype,
         block_size=model.config.cross_entropy_block_size,
+        logit_soft_cap=logit_soft_cap,
     )
 
     return loss + aux_loss

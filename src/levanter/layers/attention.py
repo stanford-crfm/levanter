@@ -1,23 +1,31 @@
 import functools
 import math
 import warnings
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union, overload
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.random as jrandom
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import PRNGKeyArray
 
 import haliax
+import haliax as hax
+import haliax.nn as hnn
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
-from haliax.jax_utils import named_call
+from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
+from haliax.nn.normalization import LayerNormBase
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
+
+from .normalization import LayerNormConfigBase
+from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
 
 
 class AttentionBackend(Enum):
@@ -55,9 +63,10 @@ def dot_product_attention(
     flash_block_size: Optional[int] = None,
     dropout: float = 0.0,
     *,
+    logits_soft_cap: float | None = None,
     scaling_factor: float | None = None,
     inference: bool = True,
-    prng: Optional[PRNGKeyArray] = None,
+    prng: PRNGKeyArray | None = None,
 ):
     """
     This method is similar to [haliax.nn.attention.dot_product_attention][] but it can use different backends for
@@ -80,12 +89,14 @@ def dot_product_attention(
         attention_dtype: Optional dtype to use for attention
         precision: PrecisionLike for dot product. See precision argument to jax.lax.dot_general
         use_flash: whether to use flash attention
+        attn_backend: AttentionBackend to use. If None, will use the default for the accelerator.
         flash_block_size: block size for flash attention. If None, will use an appropriate default
         dropout: dropout rate
         inference: whether to use inference mode
         prng: PRNGKeyArray for dropout
         scaling_factor: If not None, query will be multiplied by this value before attention.
              default is 1/sqrt(HeadSize.size)
+        logits_soft_cap: If not None, the attention logits will be soft_capped with tanh(logits / logits_soft_cap) * logits_soft_cap.
     Returns:
         NamedArray of shape (value.axes - KPos + QPos)
     """
@@ -140,6 +151,7 @@ def dot_product_attention(
                 flash_block_size=flash_block_size,
                 force_te=not was_default,
                 scaling_factor=scaling_factor,
+                logits_soft_cap=logits_soft_cap,
             )
         case AttentionBackend.SPLASH:
             attention_out = _try_tpu_splash_attention(
@@ -159,6 +171,7 @@ def dot_product_attention(
                 precision=precision,
                 block_size=flash_block_size,
                 scaling_factor=scaling_factor,
+                logits_soft_cap=logits_soft_cap,
             )
         case AttentionBackend.VANILLA:
             attention_out = simple_attention_with_dropout(
@@ -176,6 +189,7 @@ def dot_product_attention(
                 precision,
                 prng=prng,
                 scaling_factor=scaling_factor,
+                logits_soft_cap=logits_soft_cap,
             )
         case _:
             attention_out = None
@@ -202,6 +216,7 @@ def dot_product_attention(
             dtype=attention_dtype,
             precision=precision,
             scaling_factor=scaling_factor,
+            logits_soft_cap=logits_soft_cap,
         )
 
 
@@ -221,23 +236,40 @@ def simple_attention_with_dropout(
     *,
     prng: Optional[PRNGKeyArray] = None,
     scaling_factor: float | None = None,
+    logits_soft_cap: Optional[float] = None,
 ):
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
     m = materialize_mask(mask, QPos, KPos)
-    weights = haliax.nn.attention.dot_product_attention_weights(
-        Key,
-        KPos,
-        query,
-        key,
-        mask=m,
-        bias=bias,
-        attention_dtype=attention_dtype,
-        precision=precision,
-        scaling_factor=scaling_factor,
-    )
-    weights = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
-    return haliax.dot(weights, value, axis=KPos)
+    orig_dtype = query.dtype
+
+    if scaling_factor is None:
+        scaling_factor = 1.0 / jnp.sqrt(query.axis_size(Key))
+
+    query = query * scaling_factor
+
+    if attention_dtype is not None:
+        query = query.astype(attention_dtype)
+        key = key.astype(attention_dtype)
+
+    weights = haliax.dot(query, key, precision=precision, axis=Key)
+
+    if bias is not None:
+        weights = weights + bias
+
+    if logits_soft_cap is not None:
+        weights = hax.tanh(weights / logits_soft_cap) * logits_soft_cap
+
+    if m is not None:
+        weights = haliax.where(m, weights, -1e9)
+
+    weights = haliax.nn.softmax(weights, axis=KPos)
+
+    weights = weights.astype(orig_dtype)
+
+    out = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
+
+    return haliax.dot(out, value, axis=KPos)
 
 
 def _try_te_attention(
@@ -258,6 +290,7 @@ def _try_te_attention(
     flash_block_size: Optional[int] = None,
     force_te: bool,
     scaling_factor: float,
+    logits_soft_cap: Optional[float] = None,
 ):
     try:
         return _te_flash_attention(
@@ -276,6 +309,7 @@ def _try_te_attention(
             precision=precision,
             block_size=flash_block_size,
             scaling_factor=scaling_factor,
+            logits_soft_cap=logits_soft_cap,
         )
     except ImportError as e:
         if "transformer_engine" not in str(e):
@@ -332,9 +366,16 @@ def _te_flash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
     scaling_factor: float,
+    logits_soft_cap: Optional[float] = None,
 ):
     from transformer_engine.jax.attention import fused_attn  # noqa: F401
     from transformer_engine.jax.attention import AttnBiasType, AttnMaskType, QKVLayout  # noqa: F401
+
+    if logits_soft_cap is not None:
+        raise NotImplementedError(
+            "logits_soft_cap is not supported for NVTE fused attention. "
+            "Please use the JAX reference implementation or ask NVIDIA..."
+        )
 
     attention_dtype = attention_dtype or query.dtype
     query = query.astype(attention_dtype)
@@ -752,6 +793,7 @@ def _try_tpu_splash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
     scaling_factor: float,
+    logits_soft_cap: float | None,
 ) -> Optional[NamedArray]:
     if dropout != 0.0:
         if force_flash:
@@ -782,6 +824,7 @@ def _try_tpu_splash_attention(
             precision=precision,
             block_size=block_size,
             scaling_factor=scaling_factor,
+            logits_soft_cap=logits_soft_cap,
         )
     except ImportError as e:
         if "pallas" not in str(e):
@@ -819,6 +862,7 @@ def _tpu_splash_attention(
     precision: PrecisionLike = None,
     block_size: Optional[int] = None,
     scaling_factor: float,
+    logits_soft_cap: float | None = None,
 ) -> Optional[NamedArray]:
     from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
 
@@ -966,7 +1010,11 @@ def _tpu_splash_attention(
 
         # copied from MaxText
         splash_kernel = splash_attention_kernel.make_splash_mha(
-            mask=kernel_mask, head_shards=1, q_seq_shards=1, block_sizes=block_sizes
+            mask=kernel_mask,
+            head_shards=1,
+            q_seq_shards=1,
+            block_sizes=block_sizes,
+            attn_logits_soft_cap=logits_soft_cap,
         )
 
         q = q.astype(attention_dtype)
@@ -1004,3 +1052,185 @@ def _tpu_splash_attention(
     attn_output = haliax.shard(attn_output)
 
     return attn_output
+
+
+@dataclass(frozen=True)
+class AttentionConfig:
+    """Configuration for the Attention module.
+
+    Args:
+        Embed: The embedding dimension axis
+        num_heads: Number of attention heads
+        num_kv_heads: Number of key/value heads (for grouped-query attention)
+        use_bias: Whether to use bias in the attention projections
+        upcast_attn: Whether to upcast attention to float32 for better numerical stability
+        attn_backend: Which attention backend to use
+        flash_attention_block_size: Block size for flash attention
+        rope: Configuration for rotary position embeddings
+        scaling_factor: Optional scaling factor for attention scores. If None, defaults to 1/sqrt(head_size)
+        qk_norm: Optional configuration for QK normalization. If None, no normalization is applied.
+    """
+
+    Embed: Axis
+
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int | None = None
+    use_bias: bool = False
+    upcast_attn: bool = False
+    attn_backend: Optional[AttentionBackend] = None
+    flash_attention_block_size: Optional[int] = None
+    rope: Optional[RotaryEmbeddingsConfig] = None
+    scaling_factor: Optional[float] = None
+    logits_soft_cap: Optional[float] = None
+    qk_norm: Optional[LayerNormConfigBase] = None
+    """Configuration for QK normalization. If None, no normalization is applied."""
+
+    def __post_init__(self):
+        assert (
+            self.num_heads % self.num_kv_heads == 0
+        ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+
+    @property
+    def head_size(self) -> int:
+        if self.head_dim is not None:
+            return self.head_dim
+        return self.Embed.size // self.num_heads
+
+    @property
+    def q_heads_per_group(self) -> int:
+        return self.num_heads // self.num_kv_heads
+
+    @property
+    def KVHeads(self) -> Axis:
+        return Axis("kv_heads", self.num_kv_heads)
+
+    @property
+    def Heads(self) -> Axis:
+        return Axis("heads", self.num_heads)
+
+    @property
+    def HeadSize(self) -> Axis:
+        return Axis("head_size", self.head_size)
+
+    @property
+    def QHeadsPerGroup(self) -> Axis:
+        """Axis for query heads per group."""
+        return Axis("q_heads_per_group", self.q_heads_per_group)
+
+    @property
+    def use_flash_attention(self) -> bool:
+        """Whether to use flash attention based on the backend."""
+        if self.attn_backend is None:
+            return default_attention_type() != AttentionBackend.VANILLA
+        return self.attn_backend != AttentionBackend.VANILLA
+
+
+class Attention(eqx.Module):
+    """A multi-head attention layer that uses dot product attention.
+
+    This is a general-purpose attention layer that can be used in various transformer architectures.
+    It supports multi-head attention (MHA), multi-query attention (MQA), and grouped-query attention (GQA).
+    """
+
+    config: AttentionConfig = eqx.field(static=True)
+    q_proj: hnn.Linear
+    k_proj: hnn.Linear
+    v_proj: hnn.Linear
+    o_proj: hnn.Linear
+    q_norm: Optional[LayerNormBase] = None
+    k_norm: Optional[LayerNormBase] = None
+    rot_embs: Optional[RotaryEmbeddings] = eqx.field(default=None)
+
+    @staticmethod
+    def init(config: AttentionConfig, *, key) -> "Attention":
+        use_bias = config.use_bias
+        k_q, k_k, k_v, k_o = jrandom.split(key, 4)
+        q_proj = hnn.Linear.init(
+            In=config.Embed,
+            Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize),
+            key=k_q,
+            use_bias=use_bias,
+            out_first=True,
+        )
+        k_proj = hnn.Linear.init(
+            In=config.Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
+        )
+        v_proj = hnn.Linear.init(
+            In=(config.Embed), Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
+        )
+        o_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize), Out=config.Embed, key=k_o, use_bias=use_bias, out_first=True
+        )
+
+        q_norm = None
+        k_norm = None
+        if config.qk_norm is not None:
+            q_norm = config.qk_norm.build(config.HeadSize)
+            k_norm = config.qk_norm.build(config.HeadSize)
+
+        # Build rotary embeddings once during initialization if configured
+        rot_embs = config.rope.build(config.HeadSize) if config.rope is not None else None
+
+        return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm, rot_embs)
+
+    @named_call
+    def __call__(
+        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
+        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
+
+        # Project to query, key, value
+        q_proj = self.q_proj(x, key=key_q)
+        k_proj = self.k_proj(x, key=key_k)
+        v = self.v_proj(x, key=key_v)
+
+        # Apply QK normalization if enabled
+        if self.config.qk_norm is not None:
+            q = self.q_norm(q_proj)  # type: ignore[misc]
+            k = self.k_norm(k_proj)  # type: ignore[misc]
+        else:
+            q = q_proj
+            k = k_proj
+
+        # Reshape for attention
+        q = q.rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
+        k = k.rearrange((..., "kv_heads", "position", "head_size"))
+        v = v.rearrange((..., "kv_heads", "position", "head_size"))
+
+        # Apply rotary position embeddings if configured
+        if self.rot_embs is not None:
+            if pos_ids is None:
+                pos_ids = hax.arange(x.resolve_axis("position"), dtype=jnp.int32)
+            q = self.rot_embs(q, pos_ids)
+            k = self.rot_embs(k, pos_ids)
+
+        # Rename position axis for attention
+        k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
+
+        # Apply attention
+        attn_output = dot_product_attention(
+            "position",
+            "key_position",
+            "head_size",
+            q,
+            k,
+            v,
+            mask,
+            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
+            attn_backend=self.config.attn_backend,
+            flash_block_size=self.config.flash_attention_block_size,
+            scaling_factor=self.config.scaling_factor,
+            logits_soft_cap=self.config.logits_soft_cap,
+            dropout=0.0,  # TODO: support dropout
+            inference=True,  # TODO: support training
+            prng=key,
+        )
+
+        # Flatten heads and apply output projection
+        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_output.astype(x.dtype)
+        attn_output = self.o_proj(attn_output, key=key_o)
+
+        return attn_output

@@ -6,73 +6,18 @@
 
 We have two installation options for Levanter:
 
-1. [Using a Virtual Environment](#using-a-virtual-environment): This is the simplest way if you don't have root access to your machine (and don't have rootless docker installed).
+1. [Using `uv` Virtual Environments](#using-uv-virtual-environments): This is the simplest way if you don't have root access to your machine (and don't have rootless docker installed).
 2. [Using a Docker Container](#using-a-docker-container): This is the best way to achieve the fastest training speeds, because the Docker container has [TransformerEngine](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html), and Levanter uses TransformerEngine's FusedAttention implementation to accelerate training.
 
-## Using a Virtual Environment
-
-### TL;DR
-
-```bash
-virtualenv -p python3.10 levanter
-source levanter/bin/activate
-pip install --upgrade "jax[cuda12]"
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
-```
-
-### Step 1: Setting up a Virtual Environment
-
-We recommend using a virtual environment to install Levanter.
-You can use either `virtualenv` or `conda` to create a virtual environment.
-
-#### Setting up a Virtualenv
-
-Here are the steps for creating a virtual environment with `virtualenv`
-
-```bash
-virtualenv -p python3.10 levanter
-source levanter/bin/activate
-```
-
-#### Setting up a Conda Environment
-
-```bash
-conda create --name levanter python=3.10 pip
-conda activate levanter
-```
-### Step 2: Install JAX with CUDA
-
-Please refer to the [JAX Installation Guide](https://docs.jax.dev/en/latest/installation.html#nvidia-gpu). Below is one option that works as of 2025-03.
-
-```bash
-pip install --upgrade "jax[cuda12]"
-```
-
-### Step 3: Install Levanter
-
-You can install Levanter either from PyPI or from source. We recommend installing from source.
-
-
-#### Install from Source
+## Using `uv` Virtual Environments
 
 ```bash
 git clone https://github.com/stanford-crfm/levanter.git
 cd levanter
-pip install -e .
+uv run --extra gpu <command>
 ```
 
-#### Install from PyPI
-
-!!! note
-    This package is frequently out of date, so we recommend installing from source.
-
-```bash
-pip install levanter
-```
-
-### Step 4: WandB Login
+### WandB Login
 
 By default, Levanter logs training runs to Weights and Biases. You can sign up for a free WandB account at https://wandb.ai/site.
 
@@ -81,7 +26,7 @@ You can obtain an API token from [Weights and Biases](https://wandb.ai/authorize
 To use WandB, you can log in to your WandB account on the command line as follows:
 
 ```bash
-wandb login ${YOUR TOKEN HERE}
+uv run wandb login ${YOUR TOKEN HERE}
 ```
 
 For more information on getting set up with Weights and Biases, visit https://wandb.ai/site.
@@ -89,7 +34,7 @@ For more information on getting set up with Weights and Biases, visit https://wa
 If you do not want to use WandB, you can disable it by running:
 
 ```bash
-wandb offline
+uv run wandb offline
 ```
 
 #### Using a Different Tracker

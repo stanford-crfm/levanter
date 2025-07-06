@@ -7,7 +7,6 @@ model:  # 1B class model
   num_layers: 16
   num_heads: 16
   num_kv_heads: 16
-  use_flash_attention: True
   flash_attention_block_size: 1024
 trainer:
   tracker:
