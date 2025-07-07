@@ -1,8 +1,9 @@
 import dataclasses
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Type, Union
+from typing import Any, Callable, Dict, Optional, Type, Union
 
 import equinox as eqx
+import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
 
@@ -15,14 +16,19 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.layers import LayerNormConfigBase, RmsNormConfig
-from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.attention import (
+    Attention,
+    AttentionBackend,
+    AttentionConfig,
+    AttentionMask,
+    KvPageState,
+)
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.types import BlockFoldable
-
 
 silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
@@ -273,6 +279,47 @@ class LlamaDecoderLayer(eqx.Module):
     post_attn_layernorm: Optional[hnn.RmsNorm] = None
     post_mlp_layernorm: Optional[hnn.RmsNorm] = None
 
+    def _forward(
+        self,
+        x: NamedArray,
+        *,
+        key,
+        attn_fn: Callable[[NamedArray, Optional[PRNGKeyArray]], tuple[NamedArray, Any]],
+    ) -> tuple[NamedArray, Any]:
+        k_attn, k_mlp = maybe_rng_split(key, 2)
+
+        residual = x
+        x = self.input_layernorm(x)
+        attn_out, extra = attn_fn(x, k_attn)
+        if self.post_attn_layernorm is not None:
+            attn_out = self.post_attn_layernorm(attn_out)
+        x = residual + attn_out
+
+        residual = x
+        x = self.post_attention_layernorm(x)
+        mlp_out = self.mlp(x, key=k_mlp)
+        if self.post_mlp_layernorm is not None:
+            mlp_out = self.post_mlp_layernorm(mlp_out)
+        x = residual + mlp_out
+
+        return x, extra
+
+    @named_call
+    def paged_decode(
+        self,
+        kv_state: KvPageState,
+        x: NamedArray,
+        *,
+        key=None,
+        pos_ids: NamedArray,
+    ) -> tuple[NamedArray, KvPageState]:
+        """Decode with KV paging support."""
+
+        def attn_fn(x, k):
+            return self.self_attn.paged_decode(kv_state, x, pos_ids, key=k)
+
+        return self._forward(x, key=key, attn_fn=attn_fn)
+
     @staticmethod
     def init(config: LlamaConfig, *, key) -> "LlamaDecoderLayer":
         k_attn, k_mlp = jrandom.split(key, 2)
@@ -299,22 +346,10 @@ class LlamaDecoderLayer(eqx.Module):
     def __call__(
         self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
     ) -> NamedArray:
-        k_attn, k_mlp = maybe_rng_split(key, 2)
-        # self attention and skip connection
-        residual = x
-        x = self.input_layernorm(x)
-        attn_output = self.self_attn(x=x, mask=mask, key=k_attn, pos_ids=pos_ids)
-        if self.post_attn_layernorm is not None:
-            attn_output = self.post_attn_layernorm(attn_output)
-        x = residual + attn_output
+        def attn_fn(x, k):
+            return self.self_attn(x=x, mask=mask, key=k, pos_ids=pos_ids), None
 
-        # MLP and skip connection
-        residual = x
-        x = self.post_attention_layernorm(x)
-        mlp_output = self.mlp(x, key=k_mlp)
-        if self.post_mlp_layernorm is not None:
-            mlp_output = self.post_mlp_layernorm(mlp_output)
-        output = residual + mlp_output
+        output, _ = self._forward(x, key=key, attn_fn=attn_fn)
         return output
 
 
@@ -348,6 +383,38 @@ class LlamaTransformer(eqx.Module):
         x = self.norm(x)
 
         return x
+
+    def init_page_caches(self, page_table, *, dtype=jnp.float32):
+        """Initialize a :class:`KvPageCache` for each decoder layer."""
+
+        def _init(layer):
+            return layer.self_attn.empty_page_cache(page_table, dtype=dtype)
+
+        caches = hax.vmap(_init, self.config.Layers)(self.layers.stacked)
+        return Stacked(caches, self.config.Layers, self.layers.gradient_checkpointing)
+
+    @named_call
+    def paged_decode(
+        self,
+        layer_states: Stacked[KvPageState],
+        x: NamedArray,
+        pos_ids: NamedArray,
+        *,
+        key,
+    ) -> tuple[NamedArray, Stacked[KvPageState]]:
+        """Decode a single step with paged KV caches."""
+
+        keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
+
+        def do_layer(x_and_state, layer, state, k):
+            x = x_and_state
+            new_x, new_state = layer.paged_decode(state, x, pos_ids=pos_ids, key=k)
+            return new_x, new_state
+
+        x, new_states = hax.scan(do_layer, self.config.Layers)(x, self.layers.stacked, layer_states.stacked, keys)
+
+        x = self.norm(x)
+        return x, Stacked(new_states, self.config.Layers, self.layers.gradient_checkpointing)
 
 
 class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):

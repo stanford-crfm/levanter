@@ -805,8 +805,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> NamedArray:
-    ...
+) -> NamedArray: ...
 
 
 @overload
@@ -816,8 +815,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> Optional[NamedArray]:
-    ...
+) -> Optional[NamedArray]: ...
 
 
 def materialize_mask(
@@ -1624,12 +1622,12 @@ def append_to_kv_cache(
         Simple path for the common case where new_lengths are all 0 or 1.
         Uses a direct indexed update.
         """
-        k, v, l, nk, nv, nl = ops
+        k, v, lens, nk, nv, nl = ops
         batch_size = k.shape[0]
         batch_idx = jnp.arange(batch_size)
 
         # The update positions are simply the current lengths.
-        pos_idx = l
+        pos_idx = lens
 
         # We only care about the first new token for each sequence.
         update_vals_k = nk[:, 0]
@@ -1659,10 +1657,10 @@ def append_to_kv_cache(
         Robust general path for any combination of new_lengths.
         Constructs the cache using coordinate grids and `where`.
         """
-        k, v, l, nk, nv, nl = ops
+        k, v, lens, nk, nv, nl = ops
         batch_size, _, kv_heads, head_size = k.shape
         b_coords, p_coords = jnp.indices((batch_size, max_len))
-        lengths_b = l[:, None]
+        lengths_b = lens[:, None]
         new_lengths_b = nl[:, None]
 
         update_mask = (p_coords >= lengths_b) & (p_coords < lengths_b + new_lengths_b)
@@ -2036,6 +2034,21 @@ def default_ragged_paged_attention(
     It does each sequence independently
     """
 
+    orig_pos_name = q.axes[0].name
+    if q.axis_indices("position") is None:
+        if q.axis_indices("tok") is not None:
+            q = q.rename({"tok": "position"})
+        else:
+            raise ValueError("q must have a position axis")
+
+    orig_kv_name = "kv_head" if q.axis_indices("kv_head") is not None else "kv_heads"
+    if orig_kv_name == "kv_heads":
+        q = q.rename({"kv_heads": "kv_head"})
+
+    kv_orig_name = "kv_head" if kv_pages.axis_indices("kv_head") is not None else "kv_heads"
+    if kv_orig_name == "kv_heads":
+        kv_pages = kv_pages.rename({"kv_heads": "kv_head"})
+
     Q_BS = min(4, q.axis_size("position"))  # block size for query
     KV_BS = min(32, page_indices.axis_size("page"))  # block size for key-value
     Q_B = hax.Axis("position", Q_BS)
@@ -2151,5 +2164,11 @@ def default_ragged_paged_attention(
 
     output = jax.lax.fori_loop(0, num_seqs, _compute_attention_for_seq, output)
     output = output["position", 0 : q_orig.axis_size("position")]
+    if orig_pos_name != "position":
+        output = output.rename({"position": orig_pos_name})
+    if orig_kv_name != "kv_head":
+        output = output.rename({"kv_head": orig_kv_name})
+    if kv_orig_name != "kv_head":
+        output = output.rename({"kv_head": kv_orig_name})
 
     return output
