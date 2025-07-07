@@ -100,7 +100,7 @@ data:
     validation_urls:
       - "gs://path/to/valid.{1..4}.jsonl.gz"
     cache_dir: "gs://path/to/cache"
-    tokenizer: "gpt2"  # any HF tokenizer path, or GCS path to an HF tokenizer
+    tokenizer: "llama"  # any HF tokenizer path, or GCS path to an HF tokenizer
 ```
 
 ### Mixture of Sources
@@ -121,7 +121,7 @@ data:
     wikitext: 0.1
     web: 0.9
   cache_dir: "gs://path/to/cache"
-  tokenizer: "gpt2"  # any HF tokenizer path, or GCS path to an HF tokenizer
+  tokenizer: "llama"  # any HF tokenizer path, or GCS path to an HF tokenizer
 ```
 
 `train_weights` is a dictionary mapping source names to weights. The weights need not sum to 1, but they should be positive.
@@ -206,9 +206,9 @@ data:
     validation_urls:
       - "gs://path/to/valid.{1..4}.jsonl.gz" # TODO
     cache_dir: "gs://path/to/cache"  # TODO
-    tokenizer: "gpt2"  # any HF tokenizer path, or GCS path to an HF tokenizer
+    tokenizer: "llama"  # any HF tokenizer path, or GCS path to an HF tokenizer
 model:
-  type: gpt2
+  type: llama
   hidden_dim: 1536
   num_heads: 24
   num_layers: 48
@@ -219,7 +219,7 @@ trainer:
   tracker:
     type: wandb
     project: "levanter" # TODO
-    tags: ["gpt2"]
+    tags: ["llama"]
 
   mp: p=f32,c=bfloat16
   num_train_steps: 100000  # TODO

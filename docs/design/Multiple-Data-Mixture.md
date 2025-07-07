@@ -62,7 +62,7 @@ data:
   weights:
     owt: 0.6
     wikitext: 0.4
-  tokenizer: gpt2
+  tokenizer: "meta-llama/Llama-2-7b-hf"
   cache_dir: "gs://levanter-data/tokenized/mixture"
 ```
 

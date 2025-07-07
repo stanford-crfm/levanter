@@ -27,7 +27,7 @@ data:
       - "gs://my_bucket/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
     cache_dir: "gs://my_bucket/tokenized/openwebtext_2/"
 model:
-  type: gpt2
+  type: llama
   hidden_dim: 768
   num_heads: 12
   num_layers: 12
@@ -38,7 +38,7 @@ trainer:
   tracker:
     type: wandb
     project: "levanter"
-    tags: [ "openwebtext", "gpt2"]
+    tags: [ "openwebtext", "llama"]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
@@ -435,7 +435,7 @@ Additionally, [levanter.optim.AdamConfig][] has the following fields:
 
 [levanter.models.lm_model.LmConfig][] is a Draccus "choice class" that acts as a base class for all autoregressive
 language models in Levanter. You typically will specify a kind of model by using the `type` field, which is a string
-that specifies the kind of model. For instance, `type: gpt2` will use the [levanter.models.gpt2.Gpt2Config][] class,
+that specifies the kind of model. For instance, `type: llama` will use the [levanter.models.llama.Gpt2Config][] class,
 while `type: llama` will use the [levanter.models.llama.LlamaConfig][] class.
 
 We won't go into detail here. You can see the auto-generated docs below.
@@ -490,6 +490,6 @@ trainer:
 
 ::: levanter.models.lm_model.LmConfig
 
-::: levanter.models.gpt2.Gpt2Config
+::: levanter.models.llama.Gpt2Config
 
 ::: levanter.models.llama.LlamaConfig

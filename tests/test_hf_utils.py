@@ -13,18 +13,18 @@ def test_load_tokenizer_in_memory_fs():
 
     fs: AbstractFileSystem = fsspec.filesystem("memory")
     directory_of_this_test = os.path.dirname(os.path.abspath(__file__))
-    fs.put(f"{directory_of_this_test}/gpt2_tokenizer_config.json", "memory://foo/tokenizer_config.json")
-    fs.put(f"{directory_of_this_test}/gpt2_tokenizer_config.json", "memory://foo/tokenizer.json")
+    fs.put(f"{directory_of_this_test}/llama_tokenizer_config.json", "memory://foo/tokenizer_config.json")
+    fs.put(f"{directory_of_this_test}/llama_tokenizer_config.json", "memory://foo/tokenizer.json")
 
     with fsspec.open("memory://foo/config.json", "w") as f:
         f.write(
             """{
-         "model_type": "gpt2",
-         "vocab_size": 5027
+         "model_type": "llama",
+         "vocab_size": 100
          }"""
         )
     tokenizer = load_tokenizer("memory://foo/")
-    assert len(tokenizer) == 5027
+    assert len(tokenizer) == 100
 
 
 @skip_if_hf_model_not_accessible("meta-llama/Llama-2-7b-hf")
@@ -80,9 +80,9 @@ def test_byte_length_of_token_multi():
         assert total_length == len(expr.encode("utf-8"))
 
 
-@skip_if_hf_model_not_accessible("gpt2")
-def test_byte_length_of_token_gpt2():
-    tok = load_tokenizer("gpt2")
+@skip_if_hf_model_not_accessible("meta-llama/Llama-2-7b-hf")
+def test_byte_length_of_token_llama_external():
+    tok = load_tokenizer("meta-llama/Llama-2-7b-hf")
     ids = tok("this is hello a test", add_special_tokens=False)["input_ids"]
     assert byte_length_of_token(tok, ids[2]) == len(" hello".encode("utf-8"))
 

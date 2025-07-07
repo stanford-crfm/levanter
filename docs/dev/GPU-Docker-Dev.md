@@ -36,7 +36,7 @@ Now you should be able to run training jobs in this container and it will use th
 
 ```bash
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_nano.yaml
+    --config_path config/llama2_nano.yaml
 ```
 
 For more information on how to train models in Levanter see our [User Guide](../Getting-Started-Training.md).

@@ -175,7 +175,7 @@ def test_llama_attention_uses_te(q_heads):
 
 
 @skip_if_module_missing("transformer_engine")
-def test_gpt2_attention_uses_te():
+def test_llama_attention_basic_te():
     QPos = hax.Axis("position", 128)
     KPos = hax.Axis("key_position", 128)
     B = hax.Axis("batch", 8)

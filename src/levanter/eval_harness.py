@@ -44,7 +44,7 @@ from levanter.data.packing import (
     per_segment_correct,
     per_segment_loss,
 )
-from levanter.models.gpt2 import Gpt2Config
+from levanter.models.llama import LlamaConfig
 from levanter.models.loss import next_token_loss
 from levanter.utils.background_iterable import BackgroundIterator
 from levanter.utils.hf_utils import HfTokenizer
@@ -519,7 +519,7 @@ class EvalHarnessMainConfig:
     Whether or not to apply the chat template this model was trained with before running inference
     """
     trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
-    model: LmConfig = dataclasses.field(default_factory=Gpt2Config)
+    model: LmConfig = dataclasses.field(default_factory=LlamaConfig)
 
     @property
     def EvalBatch(self):

@@ -30,7 +30,7 @@ Embed = property(lambda self: Axis(name="embed", size=self.hidden_dim))
 Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
 ```
 
-For real examples and deeper understanding, check out `Gpt2Config` in [gpt2.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/gpt2.py) and `LlamaConfig` in [llama.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/llama.py).
+For real examples and deeper understanding, check out `Gpt2Config` in [llama.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/llama.py) and `LlamaConfig` in [llama.py](https://github.com/stanford-crfm/levanter/blob/main/src/levanter/models/llama.py).
 
 #### [For HF models] Convert to/from Hugging Face Config
 To convert your config class to and from Hugging Face config class, you will need to:
@@ -71,7 +71,7 @@ Lastly, there are a few steps to register a model in Levanter and make it tightl
 Below is an example:
 
 ```python
-@LmConfig.register_subclass("gpt2") # if implementing a Causal Language model
+@LmConfig.register_subclass("llama") # if implementing a Causal Language model
 @dataclass(frozen=True)  # for parsing the config file
 class MyConfig(HFCompatConfig):
     # ...
@@ -150,10 +150,10 @@ non-weight-tied embeddings.)
         # In levanter's implementation, we have a shared embedding matrix for both the word
         # embeddings and the sense embeddings
         state_dict[apply_prefix(prefix, "backpack.word_embeddings.weight")] = state_dict[
-            apply_prefix(prefix, "backpack.gpt2_model.wte.weight")
+            apply_prefix(prefix, "backpack.llama_model.wte.weight")
         ]
         state_dict[apply_prefix(prefix, "backpack.position_embeddings.weight")] = state_dict[
-            apply_prefix(prefix, "backpack.gpt2_model.wpe.weight")
+            apply_prefix(prefix, "backpack.llama_model.wpe.weight")
         ]
         return state_dict
 ```

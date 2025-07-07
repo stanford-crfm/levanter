@@ -127,24 +127,24 @@ this will make the package public, but that's what you want.
 To get a GitHub token, see [this guide on creating access tokens](https://docs.github.com/en/github/authenticating-to-github/keeping-your-account-and-data-secure/creating-a-personal-access-token)
 and [the GitHub Container Registry docs](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
 
-### Launch a GPT-2 Small in the background
+### Launch a Llama Small in the background
 
 Now run `launch.py`. This will package your current directory into a Docker image and run it on your workers. Everything after the `--` is run on each worker.
 
 ```bash
-python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/llama_small_fast.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 The command you run should be run as though it's being run on the TPU VM, from the root of the Levanter repo. Everything
 in your current directory not covered by `.dockerignore` will be copied to the TPU VM. (This can lead to surprises
 if you have large files in your directory that you don't want to copy over.)
 
-### Launch a GPT-2 Small in interactive mode
+### Launch a Llama Small in interactive mode
 
 To run in the foreground, use `--foreground` with the `launch.py` script. You should use tmux or something for long-running jobs for this version.
 
 ```bash
-python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch.py -- python src/levanter/main/train_lm.py --config_path config/llama_small_fast.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 ### Running your own config
@@ -152,7 +152,7 @@ python infra/launch.py -- python src/levanter/main/train_lm.py --config_path con
 If you want to run your own config, we suggest you start from one of the existing configs. Just copy it to
 a new file:
 
-`cp config/gpt2_small.yaml config/my_config.yaml`
+`cp config/llama_small_fast.yaml config/my_config.yaml`
 
 If you're using `launch.py`, the config will be automatically uploaded as part of your Docker image, so you
 can just reference the local config path in your command line:
@@ -237,7 +237,7 @@ Then, **in a separate terminal**, you can submit a job to the cluster. To replic
 
 ```bash
 export RAY_ADDRESS=http://localhost:8265  # tell ray where the cluster is
-python infra/launch_on_ray.py --tpu_type v4-32 --foreground -- python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml --trainer.checkpointer.base_path gs://<somewhere>'
+python infra/launch_on_ray.py --tpu_type v4-32 --foreground -- python src/levanter/main/train_lm.py --config_path config/llama_small_fast.yaml --trainer.checkpointer.base_path gs://<somewhere>'
 ```
 
 Even without `--foreground`, the job will be restarted if it fails. The `--tpu_type` flag is required, and should be
@@ -341,7 +341,7 @@ Defaults are:
 path is not `~/.ssh/google_compute_engine`, you will need to modify the script.
 * The command will spam you with a lot of output, sorry.
 * If you use a preemptible instance, you probably want to use the ["babysitting" script](#babysitting-script) to
-the VM. That's explained down below in the [Running Levanter GPT-2](#running-levanter-gpt-2) section.
+the VM. That's explained down below in the [Babysitting script for preemptible TPUs](#babysitting-script-for-preemptible-tpus) section.
 
 
 ## Useful commands

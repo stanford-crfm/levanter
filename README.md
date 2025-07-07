@@ -96,29 +96,29 @@ If you're using a TPU, more complete documentation for setting that up is availa
 
 <!--levanter-user-guide-start-->
 
-### Training a GPT2-nano
+### Training a Llama2-nano
 
 As a kind of hello world, here's how you can train a GPT-2 "nano"-sized model on a small dataset.
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_nano.yaml
+python -m levanter.main.train_lm --config_path config/llama2_nano.yaml
 
 # alternatively, if you didn't use -e and are in a different directory
-python -m levanter.main.train_lm --config_path gpt2_nano
+python -m levanter.main.train_lm --config_path llama2_nano
 ```
 
-This will train a GPT2-nano model on the [WikiText-103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset.
+This will train a Llama2-nano model on the [WikiText-103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset.
 
-### Training a GPT2-small on your own data
+### Training a Llama small on your own data
 
 You can also change the dataset by changing the `dataset` field in the config file.
 If your dataset is a [Hugging Face dataset](https://huggingface.co/docs/datasets/loading_datasets.html), you can use the `data.id` field to specify it:
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext
 
 # optionally, you may specify a tokenizer and/or a cache directory, which may be local or on gcs
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext --data.tokenizer "EleutherAI/gpt-neox-20b" --data.cache_dir "gs://path/to/cache/dir"
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext --data.tokenizer "EleutherAI/gpt-neox-20b" --data.cache_dir "gs://path/to/cache/dir"
 ```
 
 If instead your data is a list of URLs, you can use the `data.train_urls` and `data.validation_urls` fields to specify them.
@@ -126,13 +126,13 @@ Data URLS can be local files, gcs files, or http(s) URLs, or anything that [fssp
 Levanter (really, fsspec) will automatically uncompress `.gz` and `.zstd` files, and probably other formats too.
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
 ```
 
 ### Customizing a Config File
 
 You can modify the config file to change the model, the dataset, the training parameters, and more. Here's
-the `gpt2_small.yaml` file:
+the `llama_small_fast.yaml` file:
 
 ```yaml
 data:
@@ -142,7 +142,7 @@ data:
       - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
 model:
-  gpt2:
+  llama:
     hidden_dim: 768
     num_heads: 12
     num_layers: 12
@@ -153,7 +153,7 @@ trainer:
   tracker:
     type: wandb
     project: "levanter"
-    tags: [ "openwebtext", "gpt2"]
+    tags: [ "openwebtext", "llama"]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1

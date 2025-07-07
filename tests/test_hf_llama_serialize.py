@@ -11,14 +11,14 @@ from fsspec import AbstractFileSystem
 from jax.random import PRNGKey
 from numpy.testing import assert_allclose
 from transformers import AutoModelForCausalLM
-from transformers import GPT2Config as HfGpt2Config
-from transformers import GPT2LMHeadModel as HfGpt2LMHeadModel
+from transformers import LlamaConfig as HfLlamaConfig
+from transformers import LlamaForCausalLM as HfLlamaLMHeadModel
 
 import haliax as hax
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.layers.attention import AttentionMask
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig
 from levanter.utils.tree_utils import inference_mode
@@ -26,39 +26,39 @@ from test_utils import arrays_only, skip_if_no_torch
 
 
 @skip_if_no_torch
-def test_hf_gpt2_roundtrip():
-    _roundtrip_compare_gpt2_checkpoint("gpt2", None)
+def test_hf_llama_roundtrip():
+    _roundtrip_compare_llama_checkpoint("meta-llama/Llama-2-7b-hf", None)
 
 
 @skip_if_no_torch
-def test_hf_gpt2_roundtrip_fa():
-    hf_config = HfGpt2Config.from_pretrained("gpt2")
-    config = Gpt2Config.from_hf_config(hf_config)
+def test_hf_llama_roundtrip_fa():
+    hf_config = HfLlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    config = LlamaConfig.from_hf_config(hf_config)
     config = dataclasses.replace(config, use_flash_attention=True, flash_attention_block_size=128)
-    _roundtrip_compare_gpt2_checkpoint("gpt2", None, config=config)
+    _roundtrip_compare_llama_checkpoint("meta-llama/Llama-2-7b-hf", None, config=config)
 
 
 # TODO: gotta figure out why this regressed
 @pytest.mark.skip
 @skip_if_no_torch
-def test_mistral_gpt2_roundtrip():
-    _roundtrip_compare_gpt2_checkpoint("stanford-crfm/expanse-gpt2-small-x777", "checkpoint-60000")
+def test_mistral_llama_roundtrip():
+    _roundtrip_compare_llama_checkpoint("stanford-crfm/expanse-llama2-small", "checkpoint-60000")
 
 
-def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2Config] = None):
+def _roundtrip_compare_llama_checkpoint(model_id, revision, config: Optional[LlamaConfig] = None):
     import torch
 
     if config is None:
-        converter = Gpt2Config(use_flash_attention=False).hf_checkpoint_converter()
+        converter = LlamaConfig(use_flash_attention=False).hf_checkpoint_converter()
     else:
         converter = config.hf_checkpoint_converter()
 
-    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
+    torch_model: HfLlamaLMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model: Gpt2LMHeadModel = cast(
-        Gpt2LMHeadModel,
-        converter.load_pretrained(Gpt2LMHeadModel, RepoRef(model_id, revision=revision), config),
+    model: LlamaLMHeadModel = cast(
+        LlamaLMHeadModel,
+        converter.load_pretrained(LlamaLMHeadModel, RepoRef(model_id, revision=revision), config),
     )
     model = inference_mode(model, True)
 
@@ -88,7 +88,7 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
     with tempfile.TemporaryDirectory() as tmpdir:
         converter.save_pretrained(model, tmpdir)
 
-        torch_model2: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir)
+        torch_model2: HfLlamaLMHeadModel = AutoModelForCausalLM.from_pretrained(tmpdir)
         torch_model2.eval()
 
         torch_out2 = torch_model2(torch.from_numpy(onp.array(input.array)).to(torch.int32).unsqueeze(0))
@@ -103,27 +103,27 @@ def _roundtrip_compare_gpt2_checkpoint(model_id, revision, config: Optional[Gpt2
 
 @skip_if_no_torch
 def test_hf_gradient():
-    _compare_gpt2_checkpoint_gradients("gpt2", None)
+    _compare_llama_checkpoint_gradients("meta-llama/Llama-2-7b-hf", None)
 
 
 @skip_if_no_torch
 def test_hf_gradient_fa():
-    hf_config = HfGpt2Config.from_pretrained("gpt2")
-    config = Gpt2Config.from_hf_config(hf_config)
+    hf_config = HfLlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    config = LlamaConfig.from_hf_config(hf_config)
     # keep block size small to make sure we test the tiling behavior
     config = dataclasses.replace(config, use_flash_attention=True, flash_attention_block_size=128)
-    _compare_gpt2_checkpoint_gradients("gpt2", None, config=config)
+_compare_llama_checkpoint_gradients("meta-llama/Llama-2-7b-hf", None, config=config)
 
 
-def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2Config] = None):
+def _compare_llama_checkpoint_gradients(model_id, revision, config: Optional[LlamaConfig] = None):
     import torch
 
-    config = config or Gpt2Config()
+    config = config or LlamaConfig()
     converter = config.hf_checkpoint_converter()
-    torch_model: HfGpt2LMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
+    torch_model: HfLlamaLMHeadModel = AutoModelForCausalLM.from_pretrained(model_id, revision=revision)
     torch_model.eval()
 
-    model = cast(Gpt2LMHeadModel, converter.load_pretrained(config.model_type, RepoRef(model_id, revision), config))
+    model = cast(LlamaLMHeadModel, converter.load_pretrained(config.model_type, RepoRef(model_id, revision), config))
     model = inference_mode(model, True)
 
     input = hax.random.randint(PRNGKey(0), model.Pos, 0, model.Vocab.size)
@@ -138,7 +138,7 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
         return compute_next_token_loss(model, example, key=None).scalar()
 
     jax_compute_grad = equinox.filter_value_and_grad(compute_loss, has_aux=False)
-    jax_grad: Gpt2LMHeadModel
+    jax_grad: LlamaLMHeadModel
     jax_loss, jax_grad = jax_compute_grad(model, input)
 
     # gradients are kind of a pain to get at in torch, but we do it anyway
@@ -191,9 +191,9 @@ def _compare_gpt2_checkpoint_gradients(model_id, revision, config: Optional[Gpt2
 
 
 def test_hf_save_to_fs_spec():
-    config = Gpt2Config(hidden_dim=32, num_heads=2, num_layers=2)
-    converter = HFCheckpointConverter(Gpt2Config, "gpt2", HfGpt2Config, ignore_prefix="transformer")
-    simple_model = Gpt2LMHeadModel.init(converter.Vocab, config, key=PRNGKey(0))
+    config = LlamaConfig(hidden_dim=32, num_heads=2, num_layers=2)
+    converter = HFCheckpointConverter(LlamaConfig, "meta-llama/Llama-2-7b-hf", HfLlamaConfig, ignore_prefix="model")
+    simple_model = LlamaLMHeadModel.init(converter.Vocab, config, key=PRNGKey(0))
 
     converter.save_pretrained(simple_model, "memory://model")
 
@@ -203,7 +203,7 @@ def test_hf_save_to_fs_spec():
         fs: AbstractFileSystem = fsspec.filesystem("memory")
         fs.get("model/", f"{tmpdir}/test", recursive=True)
 
-        loaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=f"{tmpdir}/test")
+        loaded_model = converter.load_pretrained(LlamaLMHeadModel, ref=f"{tmpdir}/test")
 
         simple_dict = hax.state_dict.to_torch_compatible_state_dict(simple_model)
         loaded_dict = hax.state_dict.to_torch_compatible_state_dict(loaded_model)

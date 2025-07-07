@@ -10,7 +10,7 @@ import levanter.main.eval_lm as eval_lm
 import tiny_test_corpus
 from levanter.checkpoint import save_checkpoint
 from levanter.distributed import RayConfig
-from levanter.models.gpt2 import Gpt2LMHeadModel
+from levanter.models.llama import LlamaLMHeadModel
 from levanter.tracker.wandb import WandbConfig
 from levanter.trainer_state import TrainerState
 from test_utils import skip_if_no_torch
@@ -20,7 +20,7 @@ from test_utils import skip_if_no_torch
 def test_eval_lm():
     # just testing if eval_lm has a pulse
     # save a checkpoint
-    model_config = eval_lm.Gpt2Config(
+    model_config = eval_lm.LlamaConfig(
         num_layers=2,
         num_heads=2,
         seq_len=64,
@@ -33,7 +33,7 @@ def test_eval_lm():
             data_config, _ = tiny_test_corpus.construct_small_data_cache(f)
             tok = data_config.the_tokenizer
             Vocab = haliax.Axis("vocab", len(tok))
-            model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
+            model = LlamaLMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
             state = TrainerState(0, model, model, jax.random.PRNGKey(0), None, True, None, None)
 
@@ -64,7 +64,7 @@ def test_eval_lm():
 def test_eval_lm_from_hf():
     # just testing if eval_lm has a pulse
     # save a checkpoint
-    model_config = eval_lm.Gpt2Config(
+    model_config = eval_lm.LlamaConfig(
         num_layers=2,
         num_heads=2,
         seq_len=1024,
@@ -77,7 +77,7 @@ def test_eval_lm_from_hf():
             data_config, _ = tiny_test_corpus.construct_small_data_cache(f)
             tok = data_config.the_tokenizer
             Vocab = haliax.Axis("vocab", len(tok))
-            model = Gpt2LMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
+            model = LlamaLMHeadModel.init(Vocab, model_config, key=jax.random.PRNGKey(0))
 
             state = TrainerState(0, model, model, jax.random.PRNGKey(0), None, True, None, None)
 

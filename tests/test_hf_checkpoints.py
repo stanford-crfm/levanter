@@ -14,7 +14,7 @@ from haliax import Axis
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import SAFE_TENSORS_MODEL, ModelWithHfSerializationMixin, _convert_to_jnp
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
+from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from test_utils import skip_if_no_torch
 
 
@@ -33,10 +33,10 @@ def test_conversion_to_jnp_bfloat16():
 
 
 def test_save_sharded_checkpoints():
-    nano_config = Gpt2Config(hidden_dim=64, num_heads=2, num_layers=2, resid_pdrop=0.0, use_flash_attention=False)
+    nano_config = LlamaConfig(hidden_dim=64, num_heads=2, num_layers=2, use_flash_attention=False)
     converter = nano_config.hf_checkpoint_converter()
 
-    nano_model = Gpt2LMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
+    nano_model = LlamaLMHeadModel.init(converter.Vocab, nano_config, key=PRNGKey(3))
 
     mp = jmp.get_policy("f32")
     nano_model = mp.cast_to_param(nano_model)
@@ -50,7 +50,7 @@ def test_save_sharded_checkpoints():
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
         loaded_model = converter.load_pretrained(
-            Gpt2LMHeadModel, ref=tmpdir, config=nano_model.config, dtype=mp.param_dtype
+            LlamaLMHeadModel, ref=tmpdir, config=nano_model.config, dtype=mp.param_dtype
         )
 
         assert loaded_model.config == nano_model.config
@@ -64,7 +64,7 @@ def test_save_sharded_checkpoints():
 
 # A simple wrapper to include diverse dtypes in a model
 class BasicModelWrapper(ModuleWithStateDictSerialization, ModelWithHfSerializationMixin):
-    model: Gpt2LMHeadModel
+    model: LlamaLMHeadModel
     an_int_param: jax.Array
     a_bool_buffer: jax.Array
     a_float_param: jax.Array
@@ -78,8 +78,8 @@ class BasicModelWrapper(ModuleWithStateDictSerialization, ModelWithHfSerializati
         return self.model.Vocab
 
     @classmethod
-    def init(cls, Vocab: Axis, config: Gpt2Config, *, key: PRNGKey) -> "BasicModelWrapper":
-        model = Gpt2LMHeadModel.init(Vocab, config, key=key)
+    def init(cls, Vocab: Axis, config: LlamaConfig, *, key: PRNGKey) -> "BasicModelWrapper":
+        model = LlamaLMHeadModel.init(Vocab, config, key=key)
         an_int_param = jnp.array([-1, 0, 1, 2, 3], dtype=jnp.int32)
         a_bool_buffer = jnp.array([True, False, True, False], dtype=jnp.bool_)
         a_float_param = jnp.array([10.0, 20.0, 30.0], dtype=jnp.float32)
@@ -94,7 +94,7 @@ class BasicModelWrapper(ModuleWithStateDictSerialization, ModelWithHfSerializati
     def _state_dict_key_map(self):
         # This tells the serialization logic how to map attribute names to state dict keys
         # We want the wrapper's parameters to be at the top level.
-        # The Gpt2LMHeadModel's parameters will be nested under "model" if we follow its own mapping.
+        # The LlamaLMHeadModel's parameters will be nested under "model" if we follow its own mapping.
         return {
             "model": "model",
             "an_int_param": "an_int_param",
@@ -104,7 +104,7 @@ class BasicModelWrapper(ModuleWithStateDictSerialization, ModelWithHfSerializati
 
 
 def test_save_pretrained_with_custom_dtype():
-    gpt2_config = Gpt2Config(num_layers=1, num_heads=1, hidden_dim=32, use_flash_attention=False)
+    gpt2_config = LlamaConfig(num_layers=1, num_heads=1, hidden_dim=32, use_flash_attention=False)
     converter = gpt2_config.hf_checkpoint_converter()
     # Wrap the model
     wrapped_model = BasicModelWrapper.init(converter.Vocab, gpt2_config, key=PRNGKey(0))
@@ -180,7 +180,7 @@ def test_save_pretrained_with_custom_dtype():
 
 
 def test_save_pretrained_default_dtype():
-    gpt2_config = Gpt2Config(num_layers=1, num_heads=1, hidden_dim=32, use_flash_attention=False)
+    gpt2_config = LlamaConfig(num_layers=1, num_heads=1, hidden_dim=32, use_flash_attention=False)
     converter = gpt2_config.hf_checkpoint_converter()
 
     wrapped_model = BasicModelWrapper.init(converter.Vocab, gpt2_config, key=PRNGKey(0))

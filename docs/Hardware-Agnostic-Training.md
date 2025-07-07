@@ -12,13 +12,13 @@ run, ensuring a smooth and efficient training process for your models.
 
 After getting setup up in your [GPU](Getting-Started-GPU.md) or [TPU](Getting-Started-TPU-VM.md) environment (please see [our tutorials](Installation.md) on how to do so if you haven't already), the following command will kick off a training run.
 
-Let's say we want to train a GPT2-small model on the OpenWebText dataset on a single GPU machine with some number of GPUS.
+Let's say we want to train a Llama small model on the OpenWebText dataset on a single GPU machine with some number of GPUs.
 We can do so with the following command:
 
 ```bash
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml \
-    --trainer.checkpointer.base_path output/gpt2_small_webtext \
+    --config_path config/llama_small_fast.yaml \
+    --trainer.checkpointer.base_path output/llama_small_webtext \
     --trainer.train_batch_size 256 \
     --trainer.checkpointer.save_interval 15min
 ```
@@ -72,7 +72,7 @@ Once your new hardware environment is set up and you've moved your training chec
 
 ```bash
 python levanter/src/levanter/main/train_lm.py \
-	--config_path levanter/config/gpt2_small.yaml \
+	--config_path levanter/config/llama_small_fast.yaml \
 	--trainer.load_checkpoint_path gs://<SOMEWHERE> \
 	--trainer.wandb.resume true \
 	--trainer.id rj96a79n
