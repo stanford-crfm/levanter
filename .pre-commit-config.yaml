@@ -6,36 +6,60 @@ default_stages:
 fail_fast: true
 
 repos:
--   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
-    hooks:
-    -   id: trailing-whitespace
-    -   id: end-of-file-fixer
-    -   id: check-yaml
-        args: ['--unsafe']
-    -   id: check-toml
-    -   id: check-merge-conflict
-    -   id: check-added-large-files
+-  repo: local
+   hooks:
+   -  id: trailing-whitespace
+      name: trailing-whitespace-fixer
+      entry: trailing-whitespace-fixer
+      language: python
+      types: [text]
+   -  id: end-of-file-fixer
+      name: end-of-file-fixer
+      entry: end-of-file-fixer
+      language: python
+      types: [text]
+   -  id: check-yaml
+      name: check-yaml
+      entry: check-yaml
+      language: python
+      types: [text]
+      files: \.(yml|yaml)$
+      args: ["--unsafe"]
+   -  id: check-toml
+      name: check-toml
+      entry: check-toml
+      language: python
+      types: [text]
+      files: \.toml$
+   -  id: check-merge-conflict
+      name: check-merge-conflict
+      entry: check-merge-conflict
+      language: python
+      types: [text]
+   -  id: check-added-large-files
+      name: check-added-large-files
+      entry: check-added-large-files
+      language: python
+      types: [text]
+   -  id: ruff
+      name: ruff
+      entry: ruff check
+      language: system
+      args: ["--fix", "--exit-non-zero-on-fix"]
+      types: [python]
+   -  id: mypy
+      name: mypy
+      entry: mypy src/levanter/trainer.py tests/test_config.py
+      language: system
+      pass_filenames: false
+      args: ["--ignore-missing-imports", "--follow-imports=skip"]
 
--   repo: https://github.com/psf/black
-    rev: 22.3.0
-    hooks:
-    -   id: black
-
--   repo: https://github.com/timothycrosley/isort
-    rev: 5.11.5
-    hooks:
-    -   id: isort
-
--   repo: https://github.com/PyCQA/flake8
-    rev: 6.1.0
-    hooks:
-    -   id: flake8
-        additional_dependencies: [flake8-isort]
-
--   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: 'v1.4.1'
-    hooks:
-    -   id: mypy
-        args: [--ignore-missing-imports]
-        additional_dependencies: [wandb==0.17.8, types-PyYAML]
+#- repo: local
+#  hooks:
+#    - id: ty-check
+#      name: ty-check
+#      language: python
+#      entry: ty check
+#      pass_filenames: false
+#      args: [--python=.venv/]
+#      additional_dependencies: [ty]

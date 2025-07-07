@@ -71,10 +71,14 @@ def tree_serialize_leaves_tensorstore(
     arrays = [_ensure_is_array(x) for x in leaves]
 
     # filter out the None leaves and paths (must be zip)
-    arrays, paths = zip(*[(a, p) for a, p in zip(arrays, paths) if equinox.is_array_like(a)])
+    filtered = [(a, p) for a, p in zip(arrays, paths) if equinox.is_array_like(a)]
+    if filtered:
+        arrays_t, paths_t = zip(*filtered)
+    else:
+        arrays_t, paths_t = (), ()
 
-    arrays = list(arrays)
-    paths = list(paths)
+    arrays = list(arrays_t)
+    paths = list(paths_t)
 
     if commit_callback is None:
         commit_callback = lambda: logger.info("Committed checkpoint to Tensorstore")  # noqa
