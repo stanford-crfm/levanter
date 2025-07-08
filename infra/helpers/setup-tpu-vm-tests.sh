@@ -121,6 +121,4 @@ git checkout $BRANCH
 
 # install levanter
 
-pip install -e ".[test]"
-
-pip install -r tests/requirements.txt
+pip install -e ".[dev]"
