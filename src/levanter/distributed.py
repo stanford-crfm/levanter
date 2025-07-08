@@ -69,6 +69,22 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         return next((os.environ[o] for o in _NODE_LIST_CHOICES if o in os.environ), None)
 
     @classmethod
+    def get_process_count(cls) -> int:  # type: ignore[override]
+        if _PROCESS_COUNT in os.environ:
+            return int(os.environ[_PROCESS_COUNT])
+
+        if cls.is_env_present():
+            num_nodes = next(
+                (os.environ[o] for o in ["SLURM_JOB_NUM_NODES", _NUM_NODES, "SLURM_NNODES"] if o in os.environ),
+                None,
+            )
+            if num_nodes == "1":
+                logger.info("%s not set; assuming single-process job", _PROCESS_COUNT)
+                return 1
+
+        return super().get_process_count()
+
+    @classmethod
     def get_local_device_ids_for_process(cls) -> Optional[List[int]]:
         local_process_id = cls.get_local_process_id()
 
@@ -328,8 +344,19 @@ class DistributedConfig:
                 if coordinator_address is None:
                     coordinator_address = LevanterSlurmCluster.get_coordinator_address(300.0)
 
+                if self.num_processes is None:
+                    self_num_processes = LevanterSlurmCluster.get_process_count()
+                else:
+                    self_num_processes = self.num_processes
+            else:
+                self_num_processes = self.num_processes
+
             jax.distributed.initialize(
-                coordinator_address, self.num_processes, self.process_id, device_ids, initialization_timeout=30 * 60
+                coordinator_address,
+                self_num_processes,
+                self.process_id,
+                device_ids,
+                initialization_timeout=30 * 60,
             )
             logger.info(
                 f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} processes,"
