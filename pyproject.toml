@@ -110,7 +110,7 @@ target-version = "py310"
 extend-exclude = ["scripts/"]
 
 [tool.ruff.lint]
-ignore = [ "E203", "E501", "W605", "F821", "E266", "E731", "E741" ]
+ignore = [ "E203", "E501", "W605", "F821", "E266", "E722", "E731", "E741" ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
@@ -120,6 +120,30 @@ markers = [
     "ray: marks tests that require Ray (deselect with '-m \"not ray\"')",
 ]
 asyncio_default_fixture_loop_scope = "function"
+
+
+[dependency-groups]
+
+dev = [
+    "pytest >= 7.4.0",
+    "pytest-forked",
+    "pytest-asyncio",
+    "soundfile",
+    "librosa",
+    "tensorboardX>=2.6",
+    "pre-commit",
+    "chex>=0.1.86",
+    # Documentation dependencies
+    "mkdocs >= 1.4.3",
+    "mkdocs-material >= 7.3.3",
+    "mkdocstrings >= 0.22.0",
+    "mkdocs-literate-nav >= 0.6.0",
+    "mkdocs-macros-plugin >= 0.7.0",
+    "mkdocstrings-python >= 1.1.2",
+    "mkdocs-include-markdown-plugin",
+    "pymdown-extensions",
+    "pygments",
+]
 
 [project.optional-dependencies]
 test = [
@@ -135,16 +159,6 @@ gpu = [
 ]
 tpu = [
     "jax[tpu]>=0.5",
-]
-
-dev = [
-    "pytest",
-    "pytest-forked",
-    "pytest-asyncio",
-    "soundfile",
-    "librosa",
-    "tensorboardX>=2.6",
-    "pre-commit",
 ]
 
 # we only use pytorch for more thorough testing, so we don't require it by default
