@@ -14,10 +14,17 @@ import haliax.nn as hnn
 from levanter.layers.attention import AttentionBackend, AttentionMask
 from levanter.models.llama import Attention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.utils.jax_utils import parameter_count
-from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+from test_utils import (
+    check_load_config,
+    check_model_works_with_seqlen,
+    parameterize_with_configs,
+    skip_if_hf_model_not_accessible,
+    skip_if_no_torch,
+)
 
 
 @skip_if_no_torch
+@skip_if_hf_model_not_accessible("meta-llama/Llama-2-7b-hf")
 def test_llama_config():
     # load HF config and convert to levanter config
     hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
