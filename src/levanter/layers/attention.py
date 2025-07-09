@@ -19,6 +19,7 @@ from jaxtyping import PRNGKeyArray
 import haliax
 import haliax as hax
 import haliax.nn as hnn
+import haliax.haxtyping as ht
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
@@ -1287,7 +1288,7 @@ class Attention(eqx.Module):
     def empty_cache(self, Batch: Axis, MaxLen: Axis, *, dtype):
         return self.config.empty_kv_cache(Batch, MaxLen, dtype=dtype)
 
-    def empty_page_cache(self, page_table, *, dtype) -> "KvPageCache":
+    def empty_page_cache(self, page_table: "PageTable", *, dtype) -> "KvPageCache":
         return KvPageCache.init(
             page_table,
             self.config.KVHeads,
@@ -1914,7 +1915,7 @@ class PageBatchInfo(eqx.Module):
 
     # NOTE: seq_lens is the length of the sequence **after** the new tokens are appended, though these
     # positions won't have been filled in the kv cache typically
-    page_indices: NamedArray  # i32[Seq, Page]  <-- mapping from seq to pages in cache
+    page_indices: ht.i32[NamedArray, " seq page"]  # <-- mapping from seq to pages in cache
     seq_lens: NamedArray  # i32[Seq]
     cu_q_lens: jnp.ndarray  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
     num_seqs: jnp.ndarray  # scalar int32

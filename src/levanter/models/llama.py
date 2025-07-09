@@ -15,7 +15,9 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.layers import LayerNormConfigBase, RmsNormConfig
-from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask, KvPageCache, \
+    KvPageState, \
+    PageTable
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum
@@ -317,6 +319,36 @@ class LlamaDecoderLayer(eqx.Module):
         output = residual + mlp_output
         return output
 
+    @named_call
+    def decode(self, state: KvPageState, x: NamedArray, pos_ids: NamedArray, *, key=None) -> tuple[NamedArray, KvPageState]:
+        k_attn, k_mlp = maybe_rng_split(key, 2)
+        # self attention and skip connection
+        residual = x
+        x = self.input_layernorm(x)
+        attn_output, state = self.self_attn.paged_decode(state, x=x, key=k_attn, pos_ids=pos_ids)
+
+        if self.post_attn_layernorm is not None:
+            attn_output = self.post_attn_layernorm(attn_output)
+        x = residual + attn_output
+
+        # MLP and skip connection
+        residual = x
+        x = self.post_attention_layernorm(x)
+        mlp_output = self.mlp(x, key=k_mlp)
+        if self.post_mlp_layernorm is not None:
+            mlp_output = self.post_mlp_layernorm(mlp_output)
+        output = residual + mlp_output
+        return output, state
+
+    def initial_cache(self, page_table: PageTable, *, dtype) -> KvPageCache:
+        """
+        Creates an empty page cache for this layer. Note that in order to create a decoder state, you
+        need to couple this with a call to the
+        """
+
+
+        return self.self_attn.empty_page_cache(page_table, dtype=dtype)
+
 
 class LlamaTransformer(eqx.Module):
     config: LlamaConfig = eqx.field(static=True)
@@ -348,6 +380,22 @@ class LlamaTransformer(eqx.Module):
         x = self.norm(x)
 
         return x
+
+    @named_call
+    def decode(
+        self, state: KvPageState, x: NamedArray, pos_ids: NamedArray, *, key=None
+    ) -> tuple[NamedArray, KvPageState]:
+        keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
+        assert isinstance(self.layers, Stacked)
+        x, new_state = self.layers.scan_via(LlamaDecoderLayer.decode)(
+            state,
+            x,
+            pos_ids=pos_ids,
+            key=keys,
+        )
+        x = self.norm(x)
+
+        return x, new_state
 
 
 class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
