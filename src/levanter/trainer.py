@@ -204,7 +204,7 @@ class Trainer:
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
-                return _ensure_scalar(self._raw_loss_function(model, *batch, **batch_kwargs))
+                return _ensure_scalar(self._raw_loss_function(model, *batch, **batch_kwargs).mean())
 
         return fn
 

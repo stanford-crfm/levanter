@@ -54,7 +54,9 @@ dependencies = [
     "tqdm-loggable>=0.2",
     "deepdiff",
     "lenses",
-    "jinja2"   # needed for apply_chat_template
+    "jinja2",   # needed for apply_chat_template
+    # This was causing problems with ray or something
+    "protobuf<6"
     #    "lm-eval==0.4.2",
     #    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
