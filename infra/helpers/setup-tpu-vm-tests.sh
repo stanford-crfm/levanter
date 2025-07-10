@@ -91,20 +91,10 @@ retry sudo add-apt-repository -y ppa:git-core/ppa
 retry sudo apt-get -qq update
 retry sudo apt-get -qq install -y python3.10-full python3.10-dev git
 
-VENV=~/venv310
-# if the venv doesn't exist, make it
-if [ ! -d "$VENV" ]; then
-    echo "Creating virtualenv at $VENV"
-    python3.10 -m venv $VENV
-fi
-
-source $VENV/bin/activate
-
 pip install -U pip uv wheel
 
 # clone levanter
 git clone $REPO levanter
-echo $VENV > levanter/infra/venv_path.txt
 
 cd levanter
 
@@ -116,5 +106,4 @@ git checkout $BRANCH
 
 # install levanter
 
-#pip install -e ".[dev]"
 uv sync --extras tpu
