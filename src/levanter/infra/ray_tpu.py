@@ -228,28 +228,31 @@ def _ensure_pg(pod_name: str, num_hosts: int, num_tpus: int):
         for _ in range(num_hosts)
     ]
 
-    pg = ray.util.placement_group(bundles=bundles, name=pg_name)
     try:
-        ray.get(pg.ready(), timeout=300)
+        pg = ray.util.placement_group(bundles=bundles, name=pg_name)
     except RaySystemError as e:
         if "already exists" in str(e):
             logger.warning(f"Placement group {pg_name} already exists. Reusing it.")
             # In theory this is fine since in order to use this PG we have to have the lock on the slice
             pg = ray.util.get_placement_group(pg_name)
         else:
-            logger.exception(f"Failed to create placement group {pg_name}. Error: {e}")
             try:
+                logger.exception(f"Failed to create placement group {pg_name}. Removing it. Error: {e}")
                 ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
-            except Exception as e:
-                logger.exception(f"Failed to remove placement group {pg_name} after failure: {e}")
-                raise RuntimeError(f"Failed to create placement group {pg_name}") from e
-    except Exception:
+            except Exception as remove_pg_exception:
+                logger.exception(f"Failed to remove placement group {pg_name} after failure: {remove_pg_exception}")
+            raise RuntimeError(f"Failed to create placement group {pg_name}") from e
+
+    try:
+        ray.get(pg.ready(), timeout=300)
+    except Exception as e:
         try:
-            logger.warning(f"Failed to create placement group {pg_name}. Removing it.")
+            logger.exception(f"Failed to create placement group {pg_name}. Removing it. Error: {e}")
             ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
-        except Exception as e:
-            logger.exception(f"Failed to remove placement group {pg_name} after failure: {e}")
-        raise
+        except Exception as remove_pg_exception:
+            logger.exception(f"Failed to remove placement group {pg_name} after failure: {remove_pg_exception}")
+        raise RuntimeError(f"Failed to create placement group {pg_name}") from e
+
     return pg
 
 
