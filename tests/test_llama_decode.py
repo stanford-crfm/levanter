@@ -8,7 +8,8 @@ import pytest
 import haliax as hax
 from haliax import Axis
 
-from levanter.layers.attention import AttentionMask, KvPageState, PageTable, AttentionBackend
+from levanter.layers.attention import AttentionMask, KvPageState, AttentionBackend
+from levanter.layers.page_table import PageTable
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 
 
