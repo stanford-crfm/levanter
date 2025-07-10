@@ -101,7 +101,6 @@ def main(config: TrainLmConfig):
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
     loss_function = functools.partial(compute_next_token_loss, logsumexp_weight=config.z_loss_weight)
-    # loss_function = haliax.vmap(loss_function, "batch", default=lambda x: None)
 
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
