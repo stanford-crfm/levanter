@@ -4,7 +4,7 @@ import jax.numpy as jnp
 
 import haliax as hax
 
-from levanter.layers.attention import PageBatchInfo, PageTable
+from levanter.layers.page_table import PageBatchInfo, PageTable
 
 
 def _make_table(pages=8, seqs=4, page_size=2, pages_per_seq=2):

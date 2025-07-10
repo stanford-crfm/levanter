@@ -16,8 +16,8 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.layers import LayerNormConfigBase, RmsNormConfig
 from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask, KvPageCache, \
-    KvPageState, \
-    PageTable
+    KvPageState
+from levanter.layers.page_table import PageTable
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum

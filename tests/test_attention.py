@@ -18,12 +18,12 @@ from levanter.layers.attention import (
     AttentionConfig,
     AttentionMask,
     KvPageState,
-    PageTable,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
     dot_product_attention,
 )
+from levanter.layers.page_table import PageTable
 from test_utils import skip_if_module_missing
 
 
