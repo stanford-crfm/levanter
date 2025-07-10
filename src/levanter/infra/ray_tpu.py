@@ -239,8 +239,8 @@ def _ensure_pg(pod_name: str, num_hosts: int, num_tpus: int):
             try:
                 logger.exception(f"Failed to create placement group {pg_name}. Removing it. Error: {e}")
                 ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
-            except Exception as e:
-                logger.exception(f"Failed to remove placement group {pg_name} after failure: {e}")
+            except Exception as remove_pg_exception:
+                logger.exception(f"Failed to remove placement group {pg_name} after failure: {remove_pg_exception}")
             raise RuntimeError(f"Failed to create placement group {pg_name}") from e
 
     try:
@@ -249,8 +249,8 @@ def _ensure_pg(pod_name: str, num_hosts: int, num_tpus: int):
         try:
             logger.exception(f"Failed to create placement group {pg_name}. Removing it. Error: {e}")
             ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
-        except Exception as e:
-            logger.exception(f"Failed to remove placement group {pg_name} after failure: {e}")
+        except Exception as remove_pg_exception:
+            logger.exception(f"Failed to remove placement group {pg_name} after failure: {remove_pg_exception}")
         raise RuntimeError(f"Failed to create placement group {pg_name}") from e
 
     return pg
