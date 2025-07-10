@@ -10,7 +10,13 @@ import equinox as eqx
 import jax
 import jax.random as jrandom
 from jax import numpy as jnp
-from jax.experimental.pallas.ops.tpu.ragged_paged_attention import ragged_paged_attention as tpu_ragged_paged_attention
+try:
+    from jax.experimental.pallas.ops.tpu.ragged_paged_attention import (
+        ragged_paged_attention as tpu_ragged_paged_attention,
+    )
+except Exception:  # pragma: no cover - optional dep
+    tpu_ragged_paged_attention = None
+
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
@@ -1445,38 +1451,16 @@ class Attention(eqx.Module):
             else 1.0 / math.sqrt(self.config.HeadSize.size)
         )
 
-        if jax.default_backend() == "tpu":
-            # [max_num_batched_tokens, num_q_heads, head_dim]
-            attn_tokens = tpu_ragged_paged_attention(
-                q.array,
-                kv_state.kv_pages.array,
-                kv_state.kv_lens.array,
-                kv_state.page_indices.array,
-                kv_state.cu_q_lens.array,
-                kv_state.num_seqs,
-                sm_scale=sm_scale,
-                soft_cap=self.config.logits_soft_cap,
-            )
-            attn_tokens = hax.named(
-                attn_tokens,
-                (
-                    q.resolve_axis("position"),
-                    self.config.KVHeads,
-                    self.config.QHeadsPerGroup,
-                    self.config.HeadSize,
-                ),
-            )
-        else:
-            attn_tokens = default_ragged_paged_attention(
-                q,
-                kv_state.kv_pages,
-                kv_state.kv_lens,
-                kv_state.page_indices,
-                kv_state.cu_q_lens.array,
-                kv_state.num_seqs,
-                sm_scale=sm_scale,
-                soft_cap=self.config.logits_soft_cap,
-            )
+        attn_tokens = ragged_paged_attention(
+            q,
+            kv_state.kv_pages,
+            kv_state.kv_lens,
+            kv_state.page_indices,
+            kv_state.cu_q_lens.array,
+            kv_state.num_seqs,
+            sm_scale=sm_scale,
+            soft_cap=self.config.logits_soft_cap,
+        )
 
         attn_output = attn_tokens.flatten_axes(("kv_head", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
@@ -2015,13 +1999,58 @@ def ragged_paged_attention(
     cu_q_lens: jnp.ndarray,  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
     num_seqs: jnp.ndarray,  # scalar int32
     sm_scale: float = 1.0,
-    soft_cap: float = 100.0,
+    soft_cap: float | None = 100.0,
 ) -> NamedArray:
     """Ragged attention for paged KV caches.
 
-    This function performs attention over a ragged set of pages, where each page contains
-    key-value pairs for multiple sequences. It uses the provided `page_indices` to determine
+    This function dispatches to the TPU implementation when available and
+    supported, otherwise it falls back to :func:`default_ragged_paged_attention`.
     """
+
+    def _tpu_rpa_available() -> bool:
+        if tpu_ragged_paged_attention is None:
+            return False
+        if jax.default_backend() != "tpu":
+            return False
+        kind = str(getattr(jax.devices()[0], "device_kind", "")).lower()
+        if "tpu v2" in kind or "tpu v3" in kind:
+            return False
+        return True
+
+    if _tpu_rpa_available():
+        try:
+            out = tpu_ragged_paged_attention(
+                q.array,
+                kv_pages.array,
+                kv_lens.array,
+                page_indices.array,
+                cu_q_lens,
+                num_seqs,
+                sm_scale=sm_scale,
+                soft_cap=soft_cap,
+            )
+            return hax.named(
+                out,
+                (
+                    q.resolve_axis("position"),
+                    q.resolve_axis("kv_head"),
+                    q.resolve_axis("q_heads_per_group"),
+                    q.resolve_axis("head_size"),
+                ),
+            )
+        except Exception as e:  # pragma: no cover - fall back if kernel fails
+            warnings.warn(f"Failed to use TPU ragged paged attention: {e}. Falling back to reference.")
+
+    return default_ragged_paged_attention(
+        q,
+        kv_pages,
+        kv_lens,
+        page_indices,
+        cu_q_lens,
+        num_seqs,
+        sm_scale=sm_scale,
+        soft_cap=soft_cap,
+    )
 
 
 def default_ragged_paged_attention(
