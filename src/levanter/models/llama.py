@@ -554,3 +554,50 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         need to couple the KvPageCache to the PageTable's state with a BatchInfo object.
         """
         return self.transformer.initial_cache(page_table, dtype=dtype)
+
+    @named_call
+    def decode(
+        self,
+        input_ids: NamedArray,  # token IDs for *this* step (shape {Pos} or {Batch, Pos})
+        state: KvPageState,
+        pos_ids: NamedArray,
+        *,
+        key=None,
+    ) -> tuple[NamedArray, KvPageState]:
+        """Run one decode / pre-fill step with an existing paged-KV *state*.
+
+        Parameters
+        ----------
+        input_ids : NamedArray
+            Token IDs for the positions being decoded **this call**.
+        state : KvPageState
+            Current paged-KV cache (one per layer). Obtain the initial value via
+            ``self.initial_cache`` and update with the returned *new_state* each step.
+        pos_ids : NamedArray
+            Absolute position IDs matching *input_ids* (negative IDs can mark padding as
+            in the lower-level API).
+        key : jax.random.PRNGKey | None
+            RNG key for dropout etc.  Can be omitted during inference.
+
+        Returns
+        -------
+        logits : NamedArray
+            Logits for the provided tokens (axes match *input_ids* + ``Vocab``).
+        new_state : KvPageState
+            Updated cache to pass into the next decode call.
+        """
+
+        # Embed the incoming token IDs
+        x = self.embeddings.embed(input_ids)
+
+        # Propagate through the transformer with paged-KV caching
+        k_t = maybe_rng_split(key, 1)[0] if key is not None else None
+        x, new_state = self.transformer.decode(state, x, pos_ids, key=k_t)
+
+        # Project to logits
+        if self.lm_head is not None:
+            logits = self.lm_head(x, key=None)
+        else:
+            logits = self.embeddings.unembed(x)
+
+        return logits, new_state

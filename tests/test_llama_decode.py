@@ -90,3 +90,70 @@ def test_llama_paged_decode_matches_full_ar():
     # Concatenate along the position axis and compare -------------------------------------
     decoded_arr = jnp.concatenate(out_chunks, axis=0)
     assert_trees_all_close(full_out.array, decoded_arr, atol=1e-4, rtol=1e-4)
+
+
+# -----------------------------------------------------------------------------
+# End-to-end model.decode test -------------------------------------------------
+# -----------------------------------------------------------------------------
+
+
+def test_llama_model_decode_logits():
+    """End-to-end check that model.decode reproduces full-forward logits."""
+
+    Pos = Axis("position", 4)
+    Embed = Axis("embed", 8)
+    Vocab = Axis("vocab", 32)
+
+    cfg = LlamaConfig(
+        seq_len=Pos.size,
+        hidden_dim=Embed.size,
+        intermediate_dim=16,
+        num_layers=2,
+        num_heads=2,
+        num_kv_heads=2,
+        rope=None,
+        gradient_checkpointing=False,
+        scan_layers=True,
+        attn_backend=AttentionBackend.VANILLA,
+    )
+
+    model_key, input_key = jrandom.split(jrandom.PRNGKey(123))
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=cfg, key=model_key)
+
+    input_ids = hax.random.randint(input_key, Pos, 0, Vocab.size)
+    attn_mask = AttentionMask.causal()
+
+    # Reference full-sequence logits
+    full_logits = model(input_ids, attn_mask)
+
+    # Prepare paged cache
+    pt = PageTable.init(max_pages=Pos.size, max_seqs=1, page_size=Pos.size, max_pages_per_seq=Pos.size)
+    pt, seq_id = pt.assign_seq_id_to_seq()
+    layer_caches = model.transformer.initial_cache(pt, dtype=jnp.float32)
+
+    gathered_logits = []
+
+    for i in range(Pos.size):
+        # Allocate one token's worth of space
+        pt, binfo = pt.allocate_for_seqs(
+            updated_seqs=hax.named([seq_id], "seq"),
+            new_counts=hax.named([1], "seq"),
+            tokens=hax.named([seq_id], "position"),
+        )
+
+        # Build KvPageState tree matching layers
+        layer_states = KvPageState.from_batch(binfo, layer_caches)
+
+        x_tok_ids = input_ids["position", hax.dslice(i, 1)]
+        pos_ids_tok = hax.arange(x_tok_ids.resolve_axis("position"), start=i)
+
+        logits_tok, new_states = model.decode(x_tok_ids, layer_states, pos_ids_tok)
+
+        # Update caches
+        layer_caches = new_states.cache
+
+        gathered_logits.append(logits_tok.array)
+
+    step_logits = jnp.concatenate(gathered_logits, axis=0)
+
+    assert_trees_all_close(step_logits, full_logits.array, atol=1e-4, rtol=1e-4)
