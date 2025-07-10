@@ -1415,8 +1415,8 @@ class Attention(eqx.Module):
     @named_call
     def paged_decode(
         self,
-        kv_state: "KvPageState",
         x: NamedArray,
+        kv_state: "KvPageState",
         pos_ids: NamedArray,
         *,
         key=None,
@@ -1452,7 +1452,7 @@ class Attention(eqx.Module):
                 kv_state.kv_pages.array,
                 kv_state.kv_lens.array,
                 kv_state.page_indices.array,
-                kv_state.cu_q_lens,
+                kv_state.cu_q_lens.array,
                 kv_state.num_seqs,
                 sm_scale=sm_scale,
                 soft_cap=self.config.logits_soft_cap,
@@ -1472,7 +1472,7 @@ class Attention(eqx.Module):
                 kv_state.kv_pages,
                 kv_state.kv_lens,
                 kv_state.page_indices,
-                kv_state.cu_q_lens,
+                kv_state.cu_q_lens.array,
                 kv_state.num_seqs,
                 sm_scale=sm_scale,
                 soft_cap=self.config.logits_soft_cap,
@@ -1757,7 +1757,7 @@ class PageTable(eqx.Module):
     @eqx.filter_jit(donate="all")
     def assign_seq_id_to_seq(self) -> tuple["PageTable", int]:
         # find the first -1 in seq_lens
-        seq_id = hax.argmin(self.seq_lens, "seq")
+        seq_id = hax.argmin(self.seq_lens, "seq").scalar()
         # seq_id = eqx.error_if(seq_id, self.seq_lens["seq", seq_id] != -1, "No unused seqs")
         new_seq_lens = self.seq_lens.at["seq", seq_id].set(0)
 
@@ -1766,9 +1766,9 @@ class PageTable(eqx.Module):
     # @eqx.filter_jit(donate="all")
     def allocate_for_seqs(
         self,
-        updated_seqs: NamedArray,
-        new_counts: NamedArray,
-        tokens: NamedArray,
+        updated_seqs: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
+        new_counts: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
+        tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
     ) -> tuple["PageTable", "PageBatchInfo"]:
         """
         Allocate pages for new sequences and updates seq_lens
@@ -1839,11 +1839,10 @@ class PageTable(eqx.Module):
         seq_lens = new_table.seq_lens["seq", safe_updated]
         seq_lens = hax.where(mask, seq_lens, -1)
 
-        num_seqs = hax.sum(mask)
+        num_seqs = hax.sum(mask).scalar()
 
-        # compute destination slots for each new token. tokens is i32[position]
-        # giving the owning seq id for each token (padded with -1)
-        token_dests = jnp.full(tokens.array.shape, -1, dtype=jnp.int32)
+        # Initialize destination indices as a NamedArray instead of a raw JAX array
+        token_dests = hax.full(tokens.shape, -1, dtype=jnp.int32)
 
         # start offsets for each sequence (treat -1 lens as 0)
         seq_cursors = jnp.where(old_seq_lens.array < 0, 0, old_seq_lens.array)
@@ -1858,7 +1857,7 @@ class PageTable(eqx.Module):
                 page_offset = seq_cursors[seq_id] % self.page_size
                 page = new_table.page_indices["seq", seq_id, "page", page_idx]
                 dest = hax.where(page < 0, -1, page * self.page_size + page_offset)
-                token_dests = token_dests.at[i].set(dest)
+                token_dests = token_dests.at["position", i].set(dest)
                 seq_cursors = seq_cursors.at[seq_id].add(1)
                 return token_dests, seq_cursors
 
@@ -1866,20 +1865,20 @@ class PageTable(eqx.Module):
             return token_dests, seq_cursors
 
         token_dests, _ = jax.lax.fori_loop(0, tokens.axis_size("position"), token_body, (token_dests, seq_cursors))
-        new_token_dests = hax.named(token_dests, "position")
 
-        cu_q_lens = jnp.concatenate(
+        cu_q_lens = hax.concatenate(
+            "seq",
             [
-                jnp.array([0], dtype=jnp.int32),
-                jnp.cumsum(new_token_counts.array, dtype=jnp.int32),
-            ]
+                hax.zeros({"seq": 1}, dtype=jnp.int32),  # cu_q_lens[0] = 0
+                hax.cumsum(new_token_counts, "seq", dtype=jnp.int32),
+            ],
         )
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
             cu_q_lens=cu_q_lens,
             num_seqs=num_seqs,
-            new_token_dests=new_token_dests,
+            new_token_dests=token_dests,
             page_size=self.page_size,
         )
         return batch_info
@@ -1907,20 +1906,24 @@ class PageBatchInfo(eqx.Module):
     Contains just the page and length information for a particular set of sequences, -1 padded.
 
     Arguments:
-        page_indices: i32[Seq, Page]
+        page_indices: i32[Seq, Page] mapping from seq to pages in cache
         seq_lens: i32[Seq]. Contains the lengths **after** the new tokens are appended.
-        num_seqs: i32[]
+        cu_q_lens: i32[Seq + 1]. Cumulative lengths for the sequences, including new tokens
+        num_seqs: i32[] number of sequences in the batch
         page_size: int
     """
 
     # NOTE: seq_lens is the length of the sequence **after** the new tokens are appended, though these
     # positions won't have been filled in the kv cache typically
-    page_indices: ht.i32[NamedArray, " seq page"]  # <-- mapping from seq to pages in cache
-    seq_lens: NamedArray  # i32[Seq]
-    cu_q_lens: jnp.ndarray  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
-    num_seqs: jnp.ndarray  # scalar int32
-    new_token_dests: NamedArray  # i32[position] <-- page indices for the new tokens, -1 padded
+    page_indices: ht.i32[NamedArray, " seq page"]
+    seq_lens: ht.i32[NamedArray, " seq"]
+    cu_q_lens: ht.i32[NamedArray, " seq"]  # cumulative lengths for the sequences, including new tokens
+    num_seqs: ht.i32[jnp.ndarray, ""]  # number of sequences in the batch
+    new_token_dests: ht.i32[NamedArray, "position"]  # ipage indices for the new tokens, -1 padded
     page_size: int = eqx.field(static=True)
+
+    def __post_init__(self):
+        assert isinstance(self.num_seqs, jnp.ndarray), "num_seqs must be a JAX ndarray"
 
 
 class KvPageState(eqx.Module):
@@ -1947,8 +1950,8 @@ class KvPageState(eqx.Module):
         return self.batch_info.page_indices
 
     @property
-    def cu_q_lens(self) -> jnp.ndarray:
-        """Cumulative query lengths: i32[Seq + 1]"""
+    def cu_q_lens(self) -> NamedArray:
+        """Cumulative query lengths: i32[Seq + 1] as NamedArray"""
         return self.batch_info.cu_q_lens
 
     @property

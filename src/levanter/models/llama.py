@@ -319,12 +319,12 @@ class LlamaDecoderLayer(eqx.Module):
         return output
 
     @named_call
-    def decode(self, state: KvPageState, x: NamedArray, pos_ids: NamedArray, *, key=None) -> tuple[NamedArray, KvPageState]:
+    def decode(self, x: NamedArray, state: KvPageState, pos_ids: NamedArray, *, key=None) -> tuple[NamedArray, KvPageState]:
         k_attn, k_mlp = maybe_rng_split(key, 2)
         # self attention and skip connection
         residual = x
         x = self.input_layernorm(x)
-        attn_output, state = self.self_attn.paged_decode(state, x=x, key=k_attn, pos_ids=pos_ids)
+        attn_output, state = self.self_attn.paged_decode(x, state, pos_ids=pos_ids, key=k_attn)
 
         if self.post_attn_layernorm is not None:
             attn_output = self.post_attn_layernorm(attn_output)
@@ -342,10 +342,8 @@ class LlamaDecoderLayer(eqx.Module):
     def initial_cache(self, page_table: PageTable, *, dtype) -> KvPageCache:
         """
         Creates an empty page cache for this layer. Note that in order to create a decoder state, you
-        need to couple this with a call to the
+        need to couple the KvPageCache to the PageTable's state with a BatchInfo object.
         """
-
-
         return self.self_attn.empty_page_cache(page_table, dtype=dtype)
 
 
@@ -385,16 +383,23 @@ class LlamaTransformer(eqx.Module):
         self, state: KvPageState, x: NamedArray, pos_ids: NamedArray, *, key=None
     ) -> tuple[NamedArray, KvPageState]:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        assert isinstance(self.layers, Stacked)
+
         x, new_state = self.layers.scan_via(LlamaDecoderLayer.decode)(
-            state,
             x,
+            state,
             pos_ids=pos_ids,
             key=keys,
         )
         x = self.norm(x)
 
         return x, new_state
+
+    def initial_cache(self, page_table: PageTable, *, dtype) -> KvPageCache:
+        """
+        Creates an empty page cache for this transformer. Note that in order to create a decoder state, you
+        need to couple the KvPageCache to the PageTable's state with a BatchInfo object.
+        """
+        return self.layers.vmap_via(LlamaDecoderLayer.initial_cache)(page_table, dtype=dtype)
 
 
 class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
@@ -542,3 +547,10 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
 
     def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
         return {"transformer": "model", "embeddings": None}
+
+    def initial_cache(self, page_table: PageTable, *, dtype) -> KvPageCache:
+        """
+        Creates an initial cache for this model. Note that in order to create a decoder state, you
+        need to couple the KvPageCache to the PageTable's state with a BatchInfo object.
+        """
+        return self.transformer.initial_cache(page_table, dtype=dtype)

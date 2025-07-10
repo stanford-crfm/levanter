@@ -111,7 +111,7 @@ target-version = "py310"
 extend-exclude = ["scripts/"]
 
 [tool.ruff.lint]
-ignore = [ "E203", "E501", "W605", "F821", "E266", "E731", "E741" ]
+ignore = [ "E203", "E501", "W605", "F821", "E266", "E731", "E741", "F722" ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
@@ -122,30 +122,41 @@ markers = [
 ]
 asyncio_default_fixture_loop_scope = "function"
 
-[project.optional-dependencies]
+[dependency-groups]
+
 test = [
-    "pytest",
-    "pytest-forked",
+    "pytest>=8.3.2",
     "pytest-asyncio",
-    "soundfile",
-    "librosa",
-    "tensorboardX>=2.6",
+    "pytest-xdist",
+    "pytest-cov",
 ]
+
+lint = [
+    "pre-commit",
+]
+
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings>=0.24.0",
+    "mkdocstrings-python>=1.7.0",
+    "pymdown-extensions>=10.0.0",
+    "mkdocs-git-revision-date-localized-plugin>=1.2.0",
+    "mkdocs-git-authors-plugin>=0.9.0",
+    "mkdocs-minify-plugin>=0.7.0",
+    "mkdocs-include-markdown-plugin>=7.1.5",
+]
+
+
+
+[project.optional-dependencies]
+
+
 gpu = [
     "jax[cuda12]>=0.5",
 ]
 tpu = [
     "jax[tpu]>=0.5",
-]
-
-dev = [
-    "pytest",
-    "pytest-forked",
-    "pytest-asyncio",
-    "soundfile",
-    "librosa",
-    "tensorboardX>=2.6",
-    "pre-commit",
 ]
 
 # we only use pytorch for more thorough testing, so we don't require it by default
@@ -156,6 +167,8 @@ torch_test = [
 
 
 [tool.uv]
+default-groups = ["test", "lint", "docs"]
+
 conflicts = [
     [
         { extra = "gpu" },

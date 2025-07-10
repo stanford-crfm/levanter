@@ -39,7 +39,7 @@ def test_page_batch_info_shapes():
     pb = PageBatchInfo(
         page_indices=hax.full((seq, page), -1, dtype=jnp.int32),
         seq_lens=hax.full((seq,), -1, dtype=jnp.int32),
-        cu_q_lens=jnp.array([0, 1, 2], dtype=jnp.int32),
+        cu_q_lens=hax.named(jnp.array([0, 1, 2], dtype=jnp.int32), hax.Axis("seq_plus_one", 3)),
         num_seqs=jnp.array(2, dtype=jnp.int32),
         new_token_dests=hax.full((hax.Axis("position", 2),), -1, dtype=jnp.int32),
         page_size=2,
@@ -47,7 +47,7 @@ def test_page_batch_info_shapes():
 
     assert pb.page_indices.axes == (seq, page)
     assert pb.seq_lens.axes == (seq,)
-    assert pb.cu_q_lens.shape[0] == pb.num_seqs + 1
+    assert pb.cu_q_lens.array.shape[0] == pb.num_seqs + 1
 
 
 def test_allocate_for_seqs_with_padding():

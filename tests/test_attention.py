@@ -423,7 +423,7 @@ def _jit_decode(attn, x, pos_ids, cache):
 
 # @equinox.filter_jit
 def _jit_paged_decode(attn, x, pos_ids, cache: KvPageState) -> tuple[NamedArray, KvPageState]:
-    return attn.paged_decode(cache, x, pos_ids, key=jrandom.PRNGKey(2))
+    return attn.paged_decode(x, cache, pos_ids, key=jrandom.PRNGKey(2))
 
 
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
