@@ -48,3 +48,4 @@ from .sophia import (  # SophiaGConfig,; SophiaGObjective,; scale_by_sophia_g,
     SophiaHConfig,
     scale_by_sophia_h,
 )
+from .quad import QUADConfig
