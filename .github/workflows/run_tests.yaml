@@ -22,7 +22,7 @@ jobs:
         run: |
           pip install uv
           uv sync
-          uv pip install --system -e . --torch-backend=cpu "jax[cpu]=${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
+          uv pip install --system -e . --torch-backend=cpu "jax[cpu]==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
       - name: Test with pytest
         run: |
           PYTHONPATH=tests:src:. uv run pytest tests -m "not entry and not slow and not ray"
