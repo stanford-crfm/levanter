@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10"]
-        jax-version: ["0.4.38"]
+        jax-version: ["0.5.2"]
 
     steps:
       - uses: actions/checkout@v4
@@ -22,11 +22,7 @@ jobs:
           enable-cache: true
       - name: Set up Python
         run: uv python install
-      - name: Install dependencies
-        run: |
-          uv pip install --system flake8 pytest pre-commit
-          uv pip install --system . "jax[cpu]==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
       - name: "Run Pre-commit"
-        run: pre-commit run --all-files --show-diff-on-failure
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
 
