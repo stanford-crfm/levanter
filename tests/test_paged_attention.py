@@ -13,7 +13,7 @@ from levanter.layers.attention import AttentionMask, default_ragged_paged_attent
 
 PAGE = hax.Axis("page", 64)  # plenty of slack
 SLOT = hax.Axis("slot", 4)  # page size
-KV_HEADS = hax.Axis("kv_heads", 2)
+KV_HEADS = hax.Axis("kv_head", 2)
 QH = hax.Axis("q_heads_per_group", 1)
 D = hax.Axis("head_size", 4)
 
@@ -56,8 +56,8 @@ def _build_random_case(rng, seq_lens):
 
     # random queries for whole token axis
     total_tokens = tok_offsets[-1]
-    this_TOK = hax.Axis("tok", int(total_tokens))
-    q = hax.random.normal(rng, (this_TOK, KV_HEADS, QH, D))
+    this_position = hax.Axis("position", int(total_tokens))
+    q = hax.random.normal(rng, (this_position, KV_HEADS, QH, D))
 
     kv_lens = jnp.asarray(seq_lens, dtype=jnp.int32)
     kv_lens = hax.named(kv_lens, "seq")
@@ -82,10 +82,10 @@ def _build_incremental_case(rng, seq_lens, k_lens):
     new_offsets = [0]
     for sid, (total_len, k) in enumerate(zip(seq_lens, k_lens)):
         start = int(full_cu_q_lens[sid]) + total_len - k
-        chunks.append(q_full["tok", hax.ds(start, k)])
+        chunks.append(q_full["position", hax.ds(start, k)])
         new_offsets.append(new_offsets[-1] + k)
 
-    q = hax.concatenate("tok", chunks)
+    q = hax.concatenate("position", chunks)
     cu_q_lens = jnp.asarray(new_offsets, dtype=jnp.int32)
 
     return q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs
@@ -97,30 +97,30 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
     for sid, qlen in enumerate(seq_lens):
         # slice query tokens for this sequence
         start = int(cu_q_lens[sid])
-        q_seq = q["tok", hax.ds(start, qlen)]
-        TOK_S = hax.Axis("tok", qlen)
+        q_seq = q["position", hax.ds(start, qlen)]
+        TOK_S = hax.Axis("position", qlen)
 
         # gather kv for the sequence
         n_pages = (kv_lens["seq", sid] + SLOT.size - 1) // SLOT.size
         pages = page_indices["seq", sid, "page", : n_pages.scalar()]
-        kv_flat = kv_pages["page", pages, "slot", :].flatten_axes(("page", "slot"), "kv_tok")
-        kv_flat = kv_flat["kv_tok", hax.ds(0, kv_lens["seq", sid].scalar())]
+        kv_flat = kv_pages["page", pages, "slot", :].flatten_axes(("page", "slot"), "kv_position")
+        kv_flat = kv_flat["kv_position", hax.ds(0, kv_lens["seq", sid].scalar())]
 
-        k_seq = kv_flat["kv_heads", : KV_HEADS.size]
-        v_seq = kv_flat["kv_heads", KV_HEADS.size :]
+        k_seq = kv_flat["kv_head", : KV_HEADS.size]
+        v_seq = kv_flat["kv_head", KV_HEADS.size :]
 
         # rename axes so they line up with dot_product_attention sig
-        q_seq = q_seq.rename({"tok": TOK_S.name})
+        q_seq = q_seq.rename({"position": TOK_S.name})
 
         offset = kv_lens["seq", sid].scalar() - qlen
         mask = AttentionMask.causal(offset)
         ref = simple_attention_with_dropout(
-            "tok", "kv_tok", D, q_seq, k_seq, v_seq, mask=mask, scaling_factor=SM_SCALE
+            "position", "kv_position", D, q_seq, k_seq, v_seq, mask=mask, scaling_factor=SM_SCALE
         )
 
         out_chunks.append(ref)
 
-    return hax.concatenate("tok", out_chunks)
+    return hax.concatenate("position", out_chunks)
 
 
 # ---------------------------------------------------------------------------
