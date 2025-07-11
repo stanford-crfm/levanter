@@ -17,7 +17,7 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
-from levanter.layers.attention import KvPageState, PageTable
+from levanter.layers.page_table import PageTable
 from levanter.layers.sampler import Sampler
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -116,14 +116,12 @@ def main(config: SampleLmConfig):
             new_counts=hax.named([len(prompt_ids)], "seq"),
             tokens=hax.named([seq_id] * len(prompt_ids), prompt_axis),
         )
-        state = KvPageState.from_batch(binfo, cache)
         pos_ids = hax.arange(prompt_axis, dtype=jnp.int32)
-        _, state = model.decode(prompt_tokens, state, pos_ids)
+        _, cache = model.decode(prompt_tokens, cache, binfo, pos_ids)
         # TODO: we're missing a sample from the prefill step
 
         generated = list(prompt_ids)
         temps = hax.full((), config.temperature, dtype=jnp.float32)
-        cache = state.cache
 
         token_times = []
 
@@ -155,16 +153,16 @@ def do_generate(model, cache, page_table, prev_token, sampler, seq_id, start, te
         new_counts=hax.named([1], "seq"),
         tokens=seq_id.rename({"seq": "position"})
     )
-    state = KvPageState.from_batch(binfo, cache)
     pos_id = hax.arange(Axis("position", 1), start=start)
-    logits, state = model.decode(
+    logits, cache = model.decode(
         prev_token,
-        state,
+        cache,
+        binfo,
         pos_id,
     )
     logits = logits["position", 0]
     tok, _ = sampler(logits, temps, key=prng_key)
-    return tok, page_table, state.cache
+    return tok, page_table, cache
 
 
 if __name__ == "__main__":

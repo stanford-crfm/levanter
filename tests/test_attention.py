@@ -17,13 +17,13 @@ from levanter.layers.attention import (
     AttentionBackend,
     AttentionConfig,
     AttentionMask,
-    KvPageState,
+    KvPageCache,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
     dot_product_attention,
 )
-from levanter.layers.page_table import PageTable
+from levanter.layers.page_table import PageBatchInfo, PageTable
 from test_utils import skip_if_module_missing
 
 
@@ -422,8 +422,8 @@ def _jit_decode(attn, x, pos_ids, cache):
 
 
 # @equinox.filter_jit
-def _jit_paged_decode(attn, x, pos_ids, cache: KvPageState) -> tuple[NamedArray, KvPageState]:
-    return attn.paged_decode(x, cache, pos_ids, key=jrandom.PRNGKey(2))
+def _jit_paged_decode(attn, x, pos_ids, cache: KvPageCache, binfo: PageBatchInfo) -> tuple[NamedArray, KvPageCache]:
+    return attn.paged_decode(x, cache, binfo, pos_ids=pos_ids, key=jrandom.PRNGKey(2))
 
 
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
@@ -551,13 +551,10 @@ def test_attention_paged_decode_matches_full_ar():
             tokens=hax.named([seq_id], "position"),
         )
 
-        kv_state = KvPageState.from_batch(binfo, kv_cache)
-
         x_tok = x[Pos, hax.dslice(i, 1)]
         sub_pos = x_tok.resolve_axis("position")
         pos_ids_tok = hax.arange(sub_pos, start=i)
-        out_tok, new_state = _jit_paged_decode(attn, x_tok, pos_ids_tok, kv_state)
-        kv_cache = new_state.cache
+        out_tok, kv_cache = _jit_paged_decode(attn, x_tok, pos_ids_tok, kv_cache, binfo)
         out_chunks.append(out_tok.array)
 
     decoded_arr = jnp.concatenate(out_chunks, axis=0)
@@ -588,9 +585,8 @@ def test_attention_paged_decode_matches_full_prefill():
 
     kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
 
-    page_state = KvPageState.from_batch(binfo, kv_cache)
     pos_ids = hax.arange(Pos, dtype=jnp.int32)
-    decode_out, _ = _jit_paged_decode(attn, x, pos_ids, page_state)
+    decode_out, _ = _jit_paged_decode(attn, x, pos_ids, kv_cache, binfo)
 
     # we only care about the first 7 positions, since the rest are padding
     full_out = full_out["position", hax.dslice(0, 7)]
@@ -632,14 +628,12 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     tok_axis = Axis("position", 2 * prefix_size)
     tokens = hax.named([seq1] * prefix_size + [seq2] * prefix_size, tok_axis)
     pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
-    state = KvPageState.from_batch(binfo, kv_cache)
     x_prefill = hax.concatenate(
         "position",
         [x0[Pos, 0:prefix_size], x1[Pos, 0:prefix_size]],
     )
     pos_ids_prefill = hax.named(list(range(prefix_size)) + list(range(prefix_size)), tok_axis)
-    out, state = _jit_paged_decode(attn, x_prefill, pos_ids_prefill, state)
-    kv_cache = state.cache
+    out, kv_cache = _jit_paged_decode(attn, x_prefill, pos_ids_prefill, kv_cache, binfo)
     outputs0.append(out["position", hax.dslice(0, prefix_size)])
     outputs1.append(out["position", hax.dslice(prefix_size, prefix_size)])
 
@@ -650,7 +644,6 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
         tok_axis = Axis("position", 2 * chunk_size)
         tokens = hax.named([seq1] * chunk_size + [seq2] * chunk_size, tok_axis)
         pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
-        state = KvPageState.from_batch(binfo, kv_cache)
 
         x_chunk = hax.concatenate(
             "position",
@@ -660,8 +653,7 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
             list(range(i, i + chunk_size)) + list(range(i, i + chunk_size)),
             tok_axis,
         )
-        out_chunk, state = _jit_paged_decode(attn, x_chunk, pos_ids_chunk, state)
-        kv_cache = state.cache
+        out_chunk, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids_chunk, kv_cache, binfo)
         outputs0.append(out_chunk["position", hax.dslice(0, chunk_size)])
         outputs1.append(out_chunk["position", hax.dslice(chunk_size, chunk_size)])
 
@@ -703,7 +695,6 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
         new_counts = hax.named([step0, step1], seq_axis)
         tokens = hax.named([seq1] * step0 + [seq2] * step1, tok_axis)
         pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
-        state = KvPageState.from_batch(binfo, kv_cache)
 
         x_chunk = hax.concatenate(
             "position",
@@ -714,8 +705,7 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
             tok_axis,
         )
         with jax.disable_jit():
-            output, state = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=state)
-        kv_cache = state.cache
+            output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=kv_cache, binfo=binfo)
         print(off0, off1, step0, step1)
         outputs0.append(output["position", hax.dslice(0, step0)])
         outputs1.append(output["position", hax.dslice(step0, step1)])
