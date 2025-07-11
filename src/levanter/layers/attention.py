@@ -1888,6 +1888,8 @@ def default_ragged_paged_attention(
             "position",
             [q, hax.zeros_like(q["position", hax.ds(0, padding_amount)])],
         )
+    else:
+        padded_q = q
 
     q_orig = q
     q = padded_q
