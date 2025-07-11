@@ -1788,36 +1788,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "chex" },
-    { name = "librosa" },
-    { name = "mkdocs" },
-    { name = "mkdocs-include-markdown-plugin" },
-    { name = "mkdocs-literate-nav" },
-    { name = "mkdocs-macros-plugin" },
-    { name = "mkdocs-material" },
-    { name = "mkdocstrings" },
-    { name = "mkdocstrings-python" },
-    { name = "pre-commit" },
-    { name = "pygments" },
-    { name = "pymdown-extensions" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-forked" },
-    { name = "soundfile" },
-    { name = "tensorboardx" },
-]
 gpu = [
     { name = "jax", version = "0.5.3", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "(sys_platform == 'linux' and extra == 'extra-8-levanter-gpu') or (extra == 'extra-8-levanter-gpu' and extra == 'extra-8-levanter-tpu')" },
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "(sys_platform != 'linux' and extra == 'extra-8-levanter-gpu') or (extra == 'extra-8-levanter-gpu' and extra == 'extra-8-levanter-tpu')" },
-]
-test = [
-    { name = "librosa" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-forked" },
-    { name = "soundfile" },
-    { name = "tensorboardx" },
 ]
 torch-test = [
     { name = "peft" },
@@ -1827,11 +1800,36 @@ tpu = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, extra = ["tpu"], marker = "extra == 'extra-8-levanter-tpu'" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pre-commit" },
+    { name = "pygments" },
+]
+docs = [
+    { name = "mkdocs" },
+    { name = "mkdocs-include-markdown-plugin" },
+    { name = "mkdocs-literate-nav" },
+    { name = "mkdocs-macros-plugin" },
+    { name = "mkdocs-material" },
+    { name = "mkdocstrings" },
+    { name = "mkdocstrings-python" },
+    { name = "pygments" },
+    { name = "pymdown-extensions" },
+]
+test = [
+    { name = "chex" },
+    { name = "librosa" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-forked" },
+    { name = "soundfile" },
+    { name = "tensorboardx" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "async-lru", specifier = "~=2.0" },
     { name = "braceexpand", specifier = ">=0.1.7" },
-    { name = "chex", marker = "extra == 'dev'", specifier = ">=0.1.86" },
     { name = "dataclasses-json", specifier = "~=0.6.4" },
     { name = "datasets", specifier = ">=3.1.0,<4.0" },
     { name = "deepdiff" },
@@ -1848,38 +1846,16 @@ requires-dist = [
     { name = "jinja2" },
     { name = "jmp", specifier = ">=0.0.3" },
     { name = "lenses" },
-    { name = "librosa", marker = "extra == 'dev'" },
-    { name = "librosa", marker = "extra == 'test'" },
     { name = "matplotlib", specifier = ">=3.7.0" },
-    { name = "mkdocs", marker = "extra == 'dev'", specifier = ">=1.4.3" },
-    { name = "mkdocs-include-markdown-plugin", marker = "extra == 'dev'" },
-    { name = "mkdocs-literate-nav", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "mkdocs-macros-plugin", marker = "extra == 'dev'", specifier = ">=0.7.0" },
-    { name = "mkdocs-material", marker = "extra == 'dev'", specifier = ">=7.3.3" },
-    { name = "mkdocstrings", marker = "extra == 'dev'", specifier = ">=0.22.0" },
-    { name = "mkdocstrings-python", marker = "extra == 'dev'", specifier = ">=1.1.2" },
     { name = "optax", specifier = ">=0.1.9" },
     { name = "peft", marker = "extra == 'torch-test'", specifier = ">=0.12.0" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "protobuf", specifier = "<6" },
     { name = "pyarrow", specifier = ">=11.0.0" },
     { name = "pydantic", specifier = "<3" },
-    { name = "pygments", marker = "extra == 'dev'" },
-    { name = "pymdown-extensions", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", marker = "extra == 'test'" },
-    { name = "pytest-forked", marker = "extra == 'dev'" },
-    { name = "pytest-forked", marker = "extra == 'test'" },
     { name = "pytimeparse", specifier = ">=1.1.8" },
     { name = "ray", extras = ["default"], specifier = ">=2.34.0" },
     { name = "safetensors", extras = ["numpy"], specifier = ">=0.4.2,<0.6.0" },
-    { name = "soundfile", marker = "extra == 'dev'" },
-    { name = "soundfile", marker = "extra == 'test'" },
     { name = "tblib", specifier = ">=1.7.0,<4.0.0" },
-    { name = "tensorboardx", marker = "extra == 'dev'", specifier = ">=2.6" },
-    { name = "tensorboardx", marker = "extra == 'test'", specifier = ">=2.6" },
     { name = "tensorstore", specifier = ">=0.1.73" },
     { name = "tokenizers", specifier = ">=0.15.2" },
     { name = "torch", marker = "extra == 'torch-test'", specifier = ">=2.7.0" },
@@ -1888,7 +1864,33 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.17.8" },
     { name = "zstandard", specifier = ">=0.18.0" },
 ]
-provides-extras = ["test", "gpu", "tpu", "torch-test", "dev"]
+provides-extras = ["gpu", "tpu", "torch-test"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pre-commit" },
+    { name = "pygments" },
+]
+docs = [
+    { name = "mkdocs", specifier = ">=1.4.3" },
+    { name = "mkdocs-include-markdown-plugin" },
+    { name = "mkdocs-literate-nav", specifier = ">=0.6.0" },
+    { name = "mkdocs-macros-plugin", specifier = ">=0.7.0" },
+    { name = "mkdocs-material", specifier = ">=7.3.3" },
+    { name = "mkdocstrings", specifier = ">=0.22.0" },
+    { name = "mkdocstrings-python", specifier = ">=1.1.2" },
+    { name = "pygments" },
+    { name = "pymdown-extensions" },
+]
+test = [
+    { name = "chex", specifier = ">=0.1.86" },
+    { name = "librosa" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-forked" },
+    { name = "soundfile" },
+    { name = "tensorboardx", specifier = ">=2.6" },
+]
 
 [[package]]
 name = "librosa"

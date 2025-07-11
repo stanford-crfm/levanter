@@ -68,6 +68,14 @@ Homepage = "https://github.com/stanford-crfm/levanter"
 "Bug Tracker" = "https://github.com/stanford-crfm/levanter/issues"
 
 [project.optional-dependencies]
+gpu = ["jax[cuda12]>=0.5"]
+tpu = ["jax[tpu]>=0.5"]
+torch_test = [
+  "torch>=2.7.0",
+  "peft>=0.12.0",
+]
+
+[dependency-groups]
 test = [
   "pytest",
   "pytest-forked",
@@ -75,29 +83,10 @@ test = [
   "soundfile",
   "librosa",
   "tensorboardX>=2.6",
-]
-gpu = [
-  "jax[cuda12]>=0.5",
-]
-tpu = [
-  "jax[tpu]>=0.5",
-]
-torch_test = [
-  "torch>=2.7.0",
-  "peft>=0.12.0",
+  "chex>=0.1.86",
 ]
 
-# This is what `uv sync` installs by default
-# (Obnoxiously, there's no way to say dev consists of test)
-dev = [
-  "pytest",
-  "pytest-forked",
-  "pytest-asyncio",
-  "soundfile",
-  "librosa",
-  "tensorboardX>=2.6",
-  "pre-commit",
-  "chex>=0.1.86",
+docs = [
   "mkdocs>=1.4.3",
   "mkdocs-material>=7.3.3",
   "mkdocstrings>=0.22.0",
@@ -109,7 +98,13 @@ dev = [
   "pygments",
 ]
 
+dev = [
+  "pygments",
+  "pre-commit",
+]
+
 [tool.uv]
+default-groups = ["test", "docs", "dev"]
 conflicts = [
   [
     { extra = "gpu" },

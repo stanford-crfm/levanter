@@ -22,4 +22,4 @@ jobs:
           pip install uv
       - name: Test with pytest
         run: |
-          PYTHONPATH=tests:src:. uv run --extra dev pytest tests -m "entry"
+          PYTHONPATH=tests:src:. uv run pytest tests -m "entry"
