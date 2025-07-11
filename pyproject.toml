@@ -25,6 +25,8 @@ classifiers = [
     "Intended Audience :: Science/Research",
 ]
 dependencies = [
+    "jax[tpu]==0.4.38",
+    "jaxlib==0.4.38",
     "haliax>=1.4.dev348",
     "equinox>=0.11.7,!=0.12.0",
     "jaxtyping>=0.2.34",

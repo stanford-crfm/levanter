@@ -67,8 +67,8 @@ class SFTConfig:
     hf_save_steps: int = 0
 
     max_seq_len: int = 2048
-    model_name_or_path: str = "meta-llama/Llama-2-7b-hf"
-    tokenizer: str = "meta-llama/Llama-2-7b-hf"
+    model_name_or_path: str = "NousResearch/Llama-2-7b-hf"
+    tokenizer: str = "NousResearch/Llama-2-7b-hf"
 
     # Add dataset type and chat-specific fields
     dataset_type: DatasetType = DatasetType.CHAT_JSONL

@@ -8,6 +8,7 @@ from .muon import MuonConfig, ScaleByMuonState
 from .rmsprop import RMSPropMomentumConfig, ScaleByRMSPropMomState
 from .scion import ScaleByScionState, ScionConfig
 from .soap import SoapConfig
+from .mudam import MudamConfig
 from .sophia import (  # SophiaGConfig,; SophiaGObjective,; scale_by_sophia_g,
     ScaleBySophiaState,
     SophiaHConfig,

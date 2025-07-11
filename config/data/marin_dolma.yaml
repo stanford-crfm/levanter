@@ -1,4 +1,4 @@
-tokenizer: meta-llama/Meta-Llama-3.1-8B
+tokenizer: NousResearch/NousResearch-3.1-8B
 cache_dir: null
 cache_options:
   batch_size: 128
