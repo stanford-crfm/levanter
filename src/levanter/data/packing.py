@@ -20,7 +20,7 @@ from jaxtyping import PyTree
 import haliax as hax
 
 from levanter.data import AsyncDataset
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.store.jagged_array import JaggedArrayStore
 from levanter.utils.jax_utils import leaf_key_paths, local_cpu_mesh, tree_broadcast_to

@@ -26,7 +26,7 @@ from haliax.partitioning import ResourceMapping
 
 from levanter.data.dataset import AsyncDataset
 from levanter.data.utils import batched
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.lm_model import LmExample
 from levanter.schedule import BatchSchedule, IntSchedule
 from levanter.shapes import NamedShapeSpec, ShapeSpec, to_raw_shape
@@ -243,9 +243,8 @@ class DataLoaderIterator(Iterator[Ex]):
 
     def __next__(self):
         time_start = time.time()
-        individual_data_batch = next(self._batches)
+        batch = next(self._batches)
         time_mid = time.time()
-        batch = self._batchify_local_data(individual_data_batch)
 
         time_end = time.time()
         time_batch = time_end - time_mid
@@ -294,6 +293,7 @@ class DataLoaderIterator(Iterator[Ex]):
             batch_of_batches: list[_Batch[Ex]] = await self._do_retrieve_batch_of_batches(batches)
 
             for batch in batch_of_batches:
+                batch = self._batchify_local_data(batch)
                 yield batch
 
             batch_number = next_batch_numbers[-1] + 1

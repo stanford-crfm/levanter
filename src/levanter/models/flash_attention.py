@@ -1,7 +1,6 @@
 # cf https://github.com/lucidrains/flash-attention-jax
 # cf https://tridao.me/publications/flash2/flash2.pdf
 # cf https://arxiv.org/pdf/2205.14135.pdf
-import math
 from typing import Optional, Tuple
 
 import equinox
@@ -12,11 +11,11 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import ds
+from haliax import AxisSelection, AxisSpec, ds
 from haliax.jax_utils import named_call
 from haliax.types import PrecisionLike
 
-from levanter.models.attention import AttentionMask, materialize_mask
+from levanter.layers.attention import AttentionMask, materialize_mask
 
 
 BLOCK_SIZE = 1024
@@ -39,9 +38,11 @@ def flash_attention(
     block_size: Optional[int] = None,
     dtype: Optional[jnp.dtype] = None,
     precision: PrecisionLike = None,
+    scaling_factor: float | None = None,
+    logits_soft_cap: float | None = None,
 ):
     """
-    Flash Attention impl, vaguely following the v2 paper.
+    Crappy pure-jax Flash Attention impl, vaguely following the v2 paper.
 
     Args:
         Key: axis of key dim.
@@ -64,14 +65,28 @@ def flash_attention(
     KPos = k.resolve_axis(KPos)
 
     if QPos.size < block_size or KPos.size < block_size:
-        from levanter.models.attention import simple_attention_with_dropout
+        from levanter.layers.attention import simple_attention_with_dropout
 
         return simple_attention_with_dropout(
-            QPos, KPos, Key, q, k, v, mask=mask, bias=bias, dropout=dropout, inference=inference, prng=key
+            QPos,
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            mask=mask,
+            bias=bias,
+            dropout=dropout,
+            inference=inference,
+            prng=key,
+            logits_soft_cap=logits_soft_cap,
         )
 
-    # premultiply by 1/sqrt(d_k) for normal dot product attention
-    q = q / math.sqrt(float(q.axis_size(Key)))
+    if scaling_factor is None:
+        if Key.size == 0:
+            raise ValueError("Key axis must be non-empty")
+        scaling_factor = 1 / jnp.sqrt(Key.size)
+    q = q * scaling_factor
 
     return _flash_attention(
         (q, k, v),
@@ -85,6 +100,7 @@ def flash_attention(
         key=key,
         block_size=block_size,
         precision=precision,
+        logits_soft_cap=logits_soft_cap,
     )
 
 
@@ -102,6 +118,7 @@ def _flash_attention(
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
     precision: PrecisionLike,
+    logits_soft_cap: Optional[float],
 ) -> hax.NamedArray:
     return _flash_attention_forward(
         None,
@@ -116,6 +133,7 @@ def _flash_attention(
         key=key,
         block_size=block_size,
         precision=precision,
+        logits_soft_cap=logits_soft_cap,
     )[0]
 
 
@@ -134,6 +152,7 @@ def _flash_attention_forward(
     key: Optional[PRNGKeyArray],
     block_size: int,
     precision: PrecisionLike,
+    logits_soft_cap: Optional[float],
 ):
     del ignore
     q, k, v = qkv
@@ -195,6 +214,9 @@ def _flash_attention_forward(
 
                 attn_ij = attn_ij + bias_ij
 
+            if logits_soft_cap is not None:
+                attn_ij = hax.tanh(attn_ij / logits_soft_cap) * logits_soft_cap
+
             if mask is not None:
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
@@ -231,7 +253,6 @@ def _flash_attention_forward(
 
         return i + 1, o, ell
 
-    # o, ell = hax.map(do_o_block, Tr)(jnp.arange(Tr.size))
     _, o, ell = jax.lax.while_loop(lambda state: state[0] < Tr, do_o_block, (0, o, ell))
 
     return o, (o, ell)
@@ -254,6 +275,7 @@ def _flash_attention_backward(
     key: Optional[PRNGKeyArray] = None,
     block_size: int,
     precision: PrecisionLike,
+    logits_soft_cap: Optional[float] = None,
 ):
     del ignore
     O, L = residuals
@@ -305,6 +327,9 @@ def _flash_attention_backward(
                 bias_ij = bias[QPos, ds.block(i, block_size), KPos, ds.block(j, block_size)]
                 attn_ij = attn_ij + bias_ij
 
+            if logits_soft_cap is not None:
+                attn_ij = hax.tanh(attn_ij / logits_soft_cap) * logits_soft_cap
+
             if mask is not None:
                 mask_ij = _materialize_mask_slice(mask, i, j, QPos, KPos, block_size)
                 attn_ij = hax.where(mask_ij, attn_ij, -1e10)
@@ -322,7 +347,7 @@ def _flash_attention_backward(
             dK_ji = hax.dot(dAttn_ij, q_i, axis=QPos.name).astype(dK_j.dtype)
 
             # GQA-specific: eliminate unnecessary axes (e.g. 'q_heads_per_group')
-            unnecessary_axes = hax.eliminate_axes(dV_ji.axes, v.axes)
+            unnecessary_axes = hax.eliminate_axes(dV_ji.axes, _strip_sizes(v.axes))
             dV_ji = hax.sum(dV_ji, unnecessary_axes)
             dK_ji = hax.sum(dK_ji, unnecessary_axes)
 
@@ -362,3 +387,10 @@ def _infer_attention_output_block_shape(QPos, KPos, Key, q_i, k, v):
 
 def _materialize_mask_slice(mask, i, j, QPos, KPos, block_size):
     return materialize_mask(mask, QPos, KPos, q_slice=hax.ds.block(i, block_size), k_slice=hax.ds.block(j, block_size))
+
+
+def _strip_sizes(axes: AxisSpec) -> AxisSelection:
+    """Strip sizes from axes, returning only the names."""
+    if isinstance(axes, hax.Axis):
+        return axes.name
+    return tuple(axis.name for axis in axes)

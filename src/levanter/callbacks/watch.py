@@ -1,22 +1,30 @@
+import dataclasses
 from dataclasses import dataclass
-from typing import Any, Literal, Sequence, Union
+from typing import Any, Literal, Sequence, TypeVar, Union
 
 import jax
 from jax.tree_util import DictKey, FlattenedIndexKey, GetAttrKey, SequenceKey
+from jaxtyping import PyTree
 
 import levanter.tracker
 from levanter.analysis.tree_stats import summary_statistics_for_tree
-from levanter.callbacks import JitCallback, M, S
+from levanter.callbacks import JitCallback
 from levanter.tracker.histogram import Histogram
 from levanter.trainer_state import InsideJitInfo, TrainerState
 
 
 Target = Literal["grads", "params", "opt_state", "updates"]
+M = TypeVar("M", bound=PyTree)
+S = TypeVar("S", bound=TrainerState)
 
 
 @dataclass(frozen=True)
 class WatchConfig:
-    watch_targets: Union[Sequence[Target], Target] = ("grads", "params")
+    watch_targets: Union[list[Target], Target] = dataclasses.field(default_factory=lambda: ["grads", "params"])
+    """
+    What to watch during training. Can be a single target or a list of targets.
+    Valid targets are: 'grads', 'params', 'opt_state', 'updates'.
+    """
     include_norms: bool = True
     include_per_parameter_norms: bool = True
     include_histograms: bool = False

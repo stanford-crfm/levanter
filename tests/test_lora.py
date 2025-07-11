@@ -15,6 +15,7 @@ from haliax.quantization import DefaultDotGeneralOp, DotGeneralOp
 from levanter.callbacks import StepInfo
 from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.layers.attention import AttentionMask
 from levanter.lora import (
     LoraConfig,
     LoraLinear,
@@ -25,11 +26,10 @@ from levanter.lora import (
     save_merged_hf_model,
     save_peft_pretrained,
 )
-from levanter.models.attention import AttentionMask
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from levanter.trainer_state import TrainerState
 from levanter.utils.tree_utils import inference_mode
-from test_utils import skip_if_no_torch
+from test_utils import skip_if_module_missing, skip_if_no_torch
 
 
 In = hax.Axis("In", 10)
@@ -96,6 +96,7 @@ def test_lora_scan_layers():
     assert not hax.all(hax.isclose(module.fold(input), loraized.fold(input)))
 
 
+@skip_if_module_missing("peft")
 @skip_if_no_torch
 def test_lora_peft_integration():
     import peft
@@ -176,6 +177,7 @@ def test_merge_lora():
     assert_trees_all_close(merged.fold(input), loraized.fold(input), rtol=1e-3, atol=3e-3)
 
 
+@skip_if_module_missing("peft")
 @skip_if_no_torch
 def test_lora_load_in_peft():
     import torch
@@ -225,6 +227,7 @@ def test_lora_load_in_peft():
         assert not np.allclose(lev_lora_out, hf_out, atol=1e-4)
 
 
+@skip_if_module_missing("peft")
 @skip_if_no_torch
 def test_lora_merged_load_in_hf():
     import torch

@@ -20,11 +20,11 @@ from haliax.state_dict import ModuleWithStateDictSerialization, StateDict
 
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.models.attention import AttentionBackend, AttentionMask
-from levanter.models.llama import LlamaAttention, LlamaEmbedding, LlamaMlp
+from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
+from levanter.models.llama import LlamaEmbedding, LlamaMlp
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.models.mistral import MistralConfig
-from levanter.models.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
@@ -112,12 +112,14 @@ class MixtralConfig(MistralConfig):
             self.num_experts_per_tok <= self.n_routed_experts
         ), f"num_experts_per_tok={self.num_experts_per_tok} greater than by n_routed_experts={self.n_routed_experts}."
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MixtralConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["MixtralConfig"]:  # type: ignore
         return HFCheckpointConverter(
             self.__class__,
-            reference_checkpoint=self.reference_checkpoint,
+            reference_checkpoint=self.reference_checkpoint if ref_checkpoint is None else ref_checkpoint,
             trust_remote_code=True,
-            tokenizer=self.tokenizer if self.tokenizer else self.reference_checkpoint,
+            tokenizer=ref_checkpoint if self.tokenizer is None else self.tokenizer,
             HfConfigClass=HfMixtralConfig,
         )
 
@@ -220,6 +222,19 @@ class MixtralConfig(MistralConfig):
 
         return transformer + token_embedding * 2  # plus embedding and lm head
 
+    def attention_config(self) -> AttentionConfig:
+        """Convert this MixtralConfig to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+        )
+
 
 class MixtralMoEMlp(ModuleWithStateDictSerialization):
     """Multi-layer Perceptron with Mixture of Experts"""
@@ -265,7 +280,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
         num_experts = self.w1.Experts.size
         for i in range(num_experts):
             for j in range(3):
-                key = f"{prefix}.{i}.w{j+1}.weight"
+                key = f"{prefix}.{i}.w{j + 1}.weight"
                 val = w[j]["experts", i].array
                 # out[key] = val
                 out[key] = jnp.swapaxes(val, -1, -2)
@@ -277,7 +292,7 @@ class MixtralMoEMlp(ModuleWithStateDictSerialization):
         num_experts = self.w1.Experts.size
         for i in range(num_experts):
             for j in range(3):
-                key = f"{prefix}.{i}.w{j+1}.weight"
+                key = f"{prefix}.{i}.w{j + 1}.weight"
                 val = jnp.swapaxes(state_dict[key], -1, -2)[..., None, :, :]
                 # val = state_dict[key][..., None, :, :]
                 w[j].append(val)
@@ -452,7 +467,7 @@ class MixtralSparseMoeBlock(eqx.Module):
 
 class MixtralDecoderLayer(eqx.Module):
     config: MixtralConfig = eqx.field(static=True)
-    self_attn: LlamaAttention
+    self_attn: Attention
     block_sparse_moe: MixtralSparseMoeBlock
     input_layernorm: hnn.RmsNorm
     post_attention_layernorm: hnn.RmsNorm
@@ -462,22 +477,21 @@ class MixtralDecoderLayer(eqx.Module):
     def init(config: MistralConfig, *, key) -> "MixtralDecoderLayer":
         k_attn, k_moe, k_mlp = jrandom.split(key, 3)
 
-        attn = LlamaAttention.init(config, key=k_attn)
-        moe = MixtralSparseMoeBlock.init(config, key=k_moe)
-        ln_1 = config.mk_LayerNorm(config.Embed)
-        ln_2 = config.mk_LayerNorm(config.Embed)
-
+        attn_config = config.attention_config()
+        attn = Attention.init(attn_config, key=k_attn)
+        block_sparse_moe = MixtralSparseMoeBlock.init(config, key=k_moe)
+        ln_1 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_2 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
         shared_mlp = None
         if config.n_shared_experts > 0:
             shared_mlp = LlamaMlp.init(
                 config.Embed,
-                (config.SharedExperts, config.Mlp),
+                config.Mlp,
                 config.activation_function,
                 key=k_mlp,
                 use_bias=config.use_bias,
             )
-
-        return MixtralDecoderLayer(config, attn, moe, ln_1, ln_2, shared_mlp)
+        return MixtralDecoderLayer(config, attn, block_sparse_moe, ln_1, ln_2, shared_mlp)
 
     @named_call
     def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
@@ -519,7 +533,9 @@ class MixtralTransformer(eqx.Module):
         return MixtralTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, key) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, attn_mask: Optional[NamedArray], *, key, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x, extras = self.layers.scan(x, mask=attn_mask, key=keys)
         x = self.norm(x)
@@ -579,6 +595,7 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
         self,
         input_ids: NamedArray,
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
+        pos_ids: NamedArray | None = None,
         *,
         key=None,
     ) -> NamedArray:
@@ -592,7 +609,7 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x, _ = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        x, _ = self.transformer(x, attn_mask=attn_mask, key=k_t, pos_ids=pos_ids)
         if self.lm_head:
             lm_logits = self.lm_head(x, key=k_head)
         else:
@@ -600,7 +617,12 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
         return lm_logits
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        pos_ids: NamedArray | None = None,
+        *,
+        key=None,
     ) -> NamedArray:
         """
         Compute the activations for the next token in a sequence.
@@ -614,7 +636,7 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
 
         """
         x = self.embeddings.embed(input_ids)
-        x, extras = self.transformer(x, attn_mask=attn_mask, key=key)
+        x, extras = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
 
         aux_loss = 0
         if self.config.lbl_coef is not None:

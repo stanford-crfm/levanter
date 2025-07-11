@@ -19,8 +19,9 @@ from levanter.utils import jax_utils
 
 
 if typing.TYPE_CHECKING:
-    import wandb
     import wandb.sdk.lib.disabled
+
+    import wandb
 
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ class WandbConfig(TrackerConfig):
         if jax.process_index() == 0:
             mode = self.mode
         else:
-            mode = "disabled"
+            mode = "offline"
 
         git_settings = self._git_settings()
 
@@ -251,7 +252,11 @@ class WandbConfig(TrackerConfig):
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
             # for some reason, wandb isn't populating the git commit, so we do it here
-            sha = self._get_git_sha(code_dir)
+            try:
+                sha = self._get_git_sha(code_dir)
+            except:  # noqa: E722
+                logger.warning(f"Could not get git sha for {code_dir}. Will not log git commit.")
+                sha = None
             if sha is not None:
                 other_settings["git_commit"] = sha
 

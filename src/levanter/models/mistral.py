@@ -11,7 +11,8 @@ from haliax.jax_utils import maybe_rng_split
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.models.attention import AttentionBackend, AttentionMask
+from levanter.layers.attention import AttentionBackend, AttentionConfig, AttentionMask
+from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum
@@ -62,7 +63,7 @@ class MistralConfig(LlamaConfig):
     gradient_checkpointing: bool = True
 
     use_bias: bool = False
-    rope_scaling: Optional[dict] = None
+    rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -74,17 +75,23 @@ class MistralConfig(LlamaConfig):
     Mlp = property(lambda self: Axis(name="mlp", size=self.intermediate_dim))
     HeadSize = property(lambda self: Axis(name="head_size", size=self.hidden_dim // self.num_heads))
 
-    def hf_checkpoint_converter(self) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["MistralConfig"]:  # type: ignore
+        hf_model_path = "mistralai/Mistral-7B-v0.1" if ref_checkpoint is None else ref_checkpoint
+
         return HFCheckpointConverter(
             self,
-            "mistralai/Mistral-7B-v0.1",
+            reference_checkpoint=hf_model_path,
             trust_remote_code=True,
-            tokenizer="mistralai/Mistral-7B-v0.1",
+            tokenizer=hf_model_path,
             HfConfigClass=HfMistralConfig,
         )
 
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
+        rope_theta = hf_config.rope_theta
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, None)
         return MistralConfig(
             seq_len=hf_config.max_position_embeddings,  # this might be too big...
             hidden_dim=hf_config.hidden_size,
@@ -96,6 +103,7 @@ class MistralConfig(LlamaConfig):
             initializer_range=hf_config.initializer_range,
             layer_norm_epsilon=hf_config.rms_norm_eps,
             sliding_window=hf_config.sliding_window,
+            rope=rope_config,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfMistralConfig:
@@ -111,6 +119,8 @@ class MistralConfig(LlamaConfig):
         if config_overrides is None:
             config_overrides = {}
 
+        rope_theta, rope_scaling = self.rope.to_hf_config()
+
         return HfMistralConfig(
             max_position_embeddings=self.seq_len,
             hidden_size=self.hidden_dim,
@@ -123,6 +133,9 @@ class MistralConfig(LlamaConfig):
             rms_norm_eps=self.layer_norm_epsilon,
             sliding_window=self.sliding_window,
             vocab_size=vocab_size,
+            rope_theta=rope_theta,
+            # Mistral 1 doesn't use rope_scaling
+            # rope_scaling=rope_scaling,
             **config_overrides,
         )
 
@@ -140,6 +153,19 @@ class MistralConfig(LlamaConfig):
             seq_len=self.seq_len,
             vocab_size=vocab_size,
             glu=False,
+        )
+
+    def attention_config(self) -> AttentionConfig:
+        """Convert this MistralConfig to an AttentionConfig for use with Attention."""
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
         )
 
 
@@ -178,6 +204,7 @@ class MistralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MistralCo
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
         *,
         key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         """
         Args:
@@ -189,7 +216,7 @@ class MistralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MistralCo
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        x = self.transformer(x, attn_mask=attn_mask, key=k_t, pos_ids=pos_ids)
         return x
 
     def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[MistralConfig]":

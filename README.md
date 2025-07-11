@@ -24,7 +24,7 @@ Levanter is a framework for training large language models (LLMs) and other foun
 2. **Scalable**: Levanter scales to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
 3. **Reproducible**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
-We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
+We built Levanter with [JAX](https://github.com/jax-ml/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
 
 ## Documentation
 
@@ -72,9 +72,7 @@ pip install levanter
 or using the latest version from GitHub:
 
 ```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
+pip install git+https://github.com/stanford-crfm/levanter.git
 wandb login  # optional, we use wandb for logging
 ```
 
@@ -89,7 +87,6 @@ cd haliax
 pip install -e .
 cd ../levanter
 ```
-
 
 <!--levanter-installation-end-->
 
@@ -172,12 +169,15 @@ optimizer:
 ### Other Architectures
 
 Currently, we support the following architectures:
+
 * GPT-2
-* [LLama](https://ai.meta.com/llama/)
-* [Backpacks](http://backpackmodels.science/)
-* [Gemma](https://ai.google.dev/gemma)
-* [Qwen](https://huggingface.co/Qwen/Qwen2.5-7B)
+* [LLama](https://ai.meta.com/llama/), including Llama 1, 2 and 3
+* [Gemma](https://ai.google.dev/gemma), including Gemma 1, 2 and Gemma 3.
+* [Qwen2](https://huggingface.co/Qwen/Qwen2.5-7B)
+* [Qwen3](https://huggingface.co/Qwen/Qwen3-8B)
 * [Mistral](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3)
+* [Mixtral](https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1)
+* [Olmo2](https://huggingface.co/allenai/Olmo-2-1124-7B)
 
 We plan to add more in the future.
 

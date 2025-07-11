@@ -19,6 +19,8 @@ from haliax._src.util import index_where
 from haliax.jax_utils import is_jax_array_like
 from haliax.partitioning import ResourceAxis, ResourceMapping
 
+from levanter.utils.tree_utils import key_path_to_str, tree_flatten_one_level_with_keys
+
 
 X = TypeVar("X")
 T = TypeVar("T", bound=PyTree)
@@ -87,9 +89,8 @@ def multihost_broadcast_sync(obj: X, is_source: Optional[bool] = None, timeout: 
         return obj
 
     import jax._src.distributed as distributed
-    from jaxlib.xla_extension import DistributedRuntimeClient
 
-    client: Optional[DistributedRuntimeClient] = distributed.global_state.client
+    client = distributed.global_state.client
 
     if client is None:
         raise RuntimeError("multihost_broadcast_sync requires jax distributed client to be initialized")
@@ -135,7 +136,7 @@ def barrier_sync(timeout: float = 200):
 def _isnamedtupleinstance(x):
     t = type(x)
     b = t.__bases__
-    if len(b) != 1 or b[0] != tuple:
+    if len(b) != 1 or b[0] is not tuple:
         return False
     f = getattr(t, "_fields", None)
     if not isinstance(f, tuple):
@@ -190,14 +191,30 @@ def leaf_key_paths(
 
         _, tree_def = eqx.tree_flatten_one_level(pytree)
         out = jax.tree_util.tree_unflatten(tree_def, rec_values)
-    else:
+    elif isinstance(pytree, hax.NamedArray):
         leaves, treedef = jax.tree_util.tree_flatten(pytree, is_leaf=is_leaf)
+        out = jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
+    else:
+        leaves, treedef = jax.tree_util.tree_flatten(pytree)
         if len(leaves) == 0:
             out = None
         elif len(leaves) == 1:
             out = jax.tree_util.tree_unflatten(treedef, [f"{prefix}"])
         else:
-            out = jax.tree_util.tree_unflatten(treedef, [join_key(prefix, str(i)) for i in range(len(leaves))])
+            # new behavior: use registered keys
+            leaves_with_keys, treedef = tree_flatten_one_level_with_keys(pytree)
+            out_leaves = []
+            for key, leaf in leaves_with_keys:
+                if key is None:
+                    out_leaves.append(join_key(prefix, ""))
+                else:
+                    key_str = key_path_to_str([key])
+                    # out_leaves.append(join_key(prefix, key_str))
+                    rec_pref = join_key(prefix, key_str)
+                    out_leaves.append(
+                        leaf_key_paths(leaf, rec_pref, is_leaf=is_leaf, use_state_dict_keys=use_state_dict_keys)
+                    )
+            out = jax.tree_util.tree_unflatten(treedef, out_leaves)
 
     # assert len(jax.tree.leaves(out, is_leaf=is_leaf)) == len(jax.tree.leaves(pytree, is_leaf=is_leaf)), (out, pytree)
     return out

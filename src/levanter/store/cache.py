@@ -421,7 +421,7 @@ class TreeCache(AsyncDataset[T_co]):
             metrics = _ledger_to_metrics(ledger)
             if metrics.rows_finished == 0 and metrics.is_finished:
                 # this means we built an empty cache. go with it
-                store = TreeStore.open(self._exemplar, f"memory://{self.cache_dir}", mode="a")
+                store = TreeStore.open(self._exemplar, self.cache_dir, mode="a")
             else:
                 raise
         try:
@@ -599,7 +599,7 @@ class SerialCacheWriter(AbstractContextManager):
         self._tree_store.extend(cbatch)
 
 
-def _serialize_json_and_commit(path, obj):
+def _serialize_json_and_commit(path: str, obj):
     # just to be paranoid, we write to a temp file and then rename it
     # TODO: probably we could do better here
     fs: AbstractFileSystem = fsspec.core.url_to_fs(path)[0]

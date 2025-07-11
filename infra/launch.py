@@ -1,6 +1,7 @@
 #!/usr/bin/python
 import argparse
 import getpass
+import os
 import subprocess
 import sys
 import time
@@ -75,7 +76,7 @@ def main():
     run_id = args.run_id
     registry = args.docker_registry
     github_user = args.github_user
-    github_token = args.github_token
+    github_token = args.github_token or os.getenv("GITHUB_DOCKER_TOKEN")
     extra_context = args.extra_context
 
     if zone is None:

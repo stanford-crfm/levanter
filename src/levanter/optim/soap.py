@@ -39,8 +39,8 @@ class SoapConfig(OptimizerConfig):
     merge_small_dims: bool = True
     one_diag: bool = False
     target_merged_dim_size: int = 2048
-    mu_dtype: Optional[str] = None
-    precond_dtype: Optional[str] = None
+    mu_dtype: Optional[Union[str, jnp.dtype]] = None
+    precond_dtype: Optional[Union[str, jnp.dtype]] = None
     partition_grads_into_blocks: bool = True
     block_size: int = 256
 
@@ -339,7 +339,7 @@ def scale_by_soap(
             )
 
         # Replace updates with zeros
-        new_updates = otu.tree_zeros_like(updates, dtype = jnp.float32)
+        new_updates = otu.tree_zeros_like(updates)
 
         new_state = {
             "GG": new_GG,
@@ -558,7 +558,7 @@ def scale_by_soap(
                 state["Q"],
             ),
             lambda: jax.tree.map(
-                lambda nm, e, gg, q: (q, e.astype(mu_dtype)) if e is not None else (q, None),
+                lambda nm, e, gg, q: (q, e),
                 jax.tree.leaves(n_dims_to_map),
                 jax.tree.leaves(blocked_exp_avg_sq),
                 state["GG"],
@@ -658,7 +658,6 @@ def scale_by_soap(
         exp_avg_sq = otu.tree_cast(exp_avg_sq, mu_dtype)
         new_GG = otu.tree_cast(new_GG, precond_dtype)
         new_Q = otu.tree_cast(new_Q, precond_dtype)
-
         new_state = {
             "GG": new_GG,
             "Q": new_Q,
@@ -666,7 +665,6 @@ def scale_by_soap(
             "exp_avg_sq": exp_avg_sq,
             "count": state["count"],
         }
-        # norm_updates = otu.tree_cast(norm_updates, jnp.bfloat16)
 
         return norm_updates, new_state
 
