@@ -43,7 +43,7 @@ import levanter
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data._preprocessor import BatchProcessor
 from levanter.data.text import DpoSourceConfig, legacy_mk_dpo_dataset
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.optim import AdamConfig, OptimizerConfig
