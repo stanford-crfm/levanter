@@ -39,6 +39,8 @@ jobs:
           version: "0.7.20"
           python-version-file: "pyproject.toml"
           enable-cache: true
+      - name: Set up Python
+        run: uv python install
       - name: Install dependencies
         run: uv pip install --system -e .
 
