@@ -3,7 +3,7 @@ name: Pre-Commit
 on: [push, pull_request]
 
 jobs:
-  build:
+  pre_commit:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
 
     runs-on: ubuntu-latest
