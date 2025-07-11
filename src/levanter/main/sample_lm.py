@@ -67,10 +67,21 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
         return model
 
 
-@haliax.named_jit(donate_args=(False, False, True, True, True, True))
-def jit_prefill_fn(model, tokens, state, pos_id):
-    _, state = model.decode(tokens, state, pos_id)
-    return state
+
+@haliax.named_jit(donate_args=(False, True, True, False, False, False, True))
+def do_prefill(model, cache, page_table, tokens, sampler, seq_id, temps, key):
+    """Prefill ``tokens`` and sample the next token."""
+    pos_axis = tokens.axes[0]
+    page_table, binfo = page_table.allocate_for_seqs(
+        updated_seqs=seq_id,
+        new_counts=hax.named([pos_axis.size], "seq"),
+        tokens=hax.named([seq_id.array[0]] * pos_axis.size, pos_axis),
+    )
+
+    pos_ids = hax.arange(pos_axis, dtype=jnp.int32)
+    logits, cache = model.decode(tokens, cache, binfo, pos_ids)
+    next_tok, _ = sampler(logits["position", -1], temps, key=key)
+    return next_tok, page_table, cache
 
 
 @haliax.named_jit(donate_args=(False, False, False, True, True, True, True))
@@ -111,23 +122,20 @@ def main(config: SampleLmConfig):
         cache = model.initial_cache(page_table, dtype=jnp.float32)
 
         seq_named = hax.named([seq_id], "seq")
-        page_table, binfo = page_table.allocate_for_seqs(
-            updated_seqs=seq_named,
-            new_counts=hax.named([len(prompt_ids)], "seq"),
-            tokens=hax.named([seq_id] * len(prompt_ids), prompt_axis),
-        )
-        pos_ids = hax.arange(prompt_axis, dtype=jnp.int32)
-        _, cache = model.decode(prompt_tokens, cache, binfo, pos_ids)
-        # TODO: we're missing a sample from the prefill step
-
-        generated = list(prompt_ids)
         temps = hax.full((), config.temperature, dtype=jnp.float32)
+
+        prng_key = jrandom.PRNGKey(0)
+        tok, page_table, cache = do_prefill(
+            model, cache, page_table, prompt_tokens, sampler, seq_named, temps, prng_key
+        )
+
+        generated = list(prompt_ids) + [int(tok.array)]
 
         token_times = []
 
-        for i in range(config.max_new_tokens):
+        for i in range(1, config.max_new_tokens):
             time_in = time.time()
-            prng_key = jrandom.PRNGKey(i + 1)
+            prng_key = jrandom.PRNGKey(i)
             prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
             start = jnp.array(len(generated), dtype=jnp.int32)
 
