@@ -13,15 +13,16 @@ jobs:
         jax-version: ["0.5.2", "0.6.2"]
 
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
         with:
+          version: "0.7.20"
           python-version: ${{ matrix.python-version }}
-      - name: Install uv
-        run: |
-          pip install uv
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked --dev
       - name: Test with pytest
         run: |
           # check we are using the right jax version
-          PYTHONPATH=tests:src:. uv run --with "jax[cpu]==${{matrix.jax-version}}" pytest tests -m "not entry and not slow and not ray"
+          PYTHONPATH=tests:src:. uv run --with "jax[cpu]==${{ matrix.jax-version }}" pytest tests -m "not entry and not slow and not ray"
