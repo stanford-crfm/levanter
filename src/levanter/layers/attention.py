@@ -1423,28 +1423,24 @@ class Attention(eqx.Module):
     def paged_decode(
         self,
         x: NamedArray,
-        kv_state: "KvPageState",
-        pos_ids: NamedArray,
+        kv_cache: KvPageCache,
+        batch_info: PageBatchInfo,
         *,
+        pos_ids: NamedArray,
         key=None,
-    ) -> tuple[NamedArray, "KvPageState"]:
-        """
-        Decode-time forward pass using a paged KV cache.
-        This method is intended for autoregressive decoding and prefill.
-        Note that this method only supports causal masks (for now)
+    ) -> tuple[NamedArray, KvPageCache]:
+        """Decode-time forward pass using a paged KV cache.
 
-        Arguments:
-            page_cache: PageCache
-            x: NamedArray [Pos, Embed]
-            new_q_lens: NamedArray i32[MaxSeqs]
-            pos_ids: NamedArray [Pos]
+        This method is intended for autoregressive decoding and prefill.  ``batch_info``
+        describes where the new keys and values should be written in ``kv_cache``.
+        Currently only causal masks are supported.
         """
 
         key_proj, key_o = maybe_rng_split(key, 2)
 
         q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
 
-        kv_state = kv_state.update_kv_cache(k, v)
+        kv_cache = kv_cache.update(batch_info, k, v)
 
         sm_scale = (
             self.config.scaling_factor
@@ -1454,11 +1450,11 @@ class Attention(eqx.Module):
 
         attn_tokens = ragged_paged_attention(
             q,
-            kv_state.kv_pages,
-            kv_state.kv_lens,
-            kv_state.page_indices,
-            kv_state.cu_q_lens.array,
-            kv_state.num_seqs,
+            kv_cache.kv_pages,
+            batch_info.seq_lens,
+            batch_info.page_indices,
+            batch_info.cu_q_lens.array,
+            batch_info.num_seqs,
             sm_scale=sm_scale,
             soft_cap=self.config.logits_soft_cap,
         )
@@ -1467,7 +1463,7 @@ class Attention(eqx.Module):
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 
-        return attn_output, kv_state
+        return attn_output, kv_cache
 
     def _compute_qkv(
         self,
@@ -1703,75 +1699,19 @@ class KvPageCache(eqx.Module):
         )
         return KvPageCache(kv_pages)
 
-
-
-
-class KvPageState(eqx.Module):
-    """
-    PageState is a view of all kv information for one particular block for a single step/prefill.
-    """
-
-    cache: KvPageCache
-    batch_info: PageBatchInfo
-
-    @property
-    def kv_pages(self) -> NamedArray:
-        """Global view of the KV pages: [Page, PageSize, 2 * KVHeads, HeadDim]"""
-        return self.cache.kv_pages
-
-    @property
-    def kv_lens(self) -> NamedArray:
-        """Local view of the KV lengths: [Seq]"""
-        return self.batch_info.seq_lens
-
-    @property
-    def page_indices(self) -> NamedArray:
-        """Local view of the page indices: [Seq, PagePerSeq]"""
-        return self.batch_info.page_indices
-
-    @property
-    def cu_q_lens(self) -> NamedArray:
-        """Cumulative query lengths: i32[Seq + 1] as NamedArray"""
-        return self.batch_info.cu_q_lens
-
-    @property
-    def new_token_dests(self) -> NamedArray:
-        """Page indices for the new tokens: i32[Tok]. Used to update kv cache"""
-        return self.batch_info.new_token_dests
-
-    @property
-    def num_seqs(self) -> jnp.ndarray:
-        """Number of sequences in the batch: scalar int32"""
-        return self.batch_info.num_seqs
-
-    @staticmethod
-    def from_batch(batch_info: PageBatchInfo, cache: KvPageCache) -> "KvPageState":
-        """
-        Arguments:
-            batch_info: PageBatchInfo
-            cache: KvPageCache
-        """
-        # get the pages and lengths for the batch
-        return KvPageState(
-            cache=cache,
-            batch_info=batch_info,
-        )
-
-    def update_kv_cache(
+    def update(
         self,
+        batch_info: PageBatchInfo,
         new_k: NamedArray,  # [Tok, KvHeads, HeadDim]
         new_v: NamedArray,  # [Tok, KvHeads, HeadDim]
-    ) -> "KvPageState":
-        """Append keys and values to the paged cache.
-        It's assumed that this pagecache already has the pages reserved for the new tokens.
-        """
+    ) -> "KvPageCache":
+        """Append keys and values to the paged cache using *batch_info* to locate pages."""
 
-        # Determine per-page capacity and head dimension
         num_pages = self.kv_pages.array.shape[0]
         page_size = self.kv_pages.array.shape[1]
         kv_heads = new_k.array.shape[1]
 
-        token_dests = self.new_token_dests
+        token_dests = batch_info.new_token_dests
 
         t_pages = hax.where(token_dests >= 0, token_dests // page_size, num_pages)
         t_slots = hax.where(token_dests >= 0, token_dests % page_size, page_size)
@@ -1779,12 +1719,11 @@ class KvPageState(eqx.Module):
         kv_pages = self.kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", :kv_heads].set(new_k)
         kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", kv_heads:].set(new_v)
 
-        new_cache = dataclasses.replace(
-            self.cache,
-            kv_pages=kv_pages,
-        )
+        return dataclasses.replace(self, kv_pages=kv_pages)
 
-        return dataclasses.replace(self, cache=new_cache)
+
+
+
 
 
 def ragged_paged_attention(

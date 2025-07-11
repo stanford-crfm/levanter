@@ -8,15 +8,15 @@ import pytest
 import haliax as hax
 from haliax import Axis
 
-from levanter.layers.attention import AttentionMask, KvPageState, AttentionBackend
-from levanter.layers.page_table import PageTable
+from levanter.layers.attention import AttentionMask, KvPageCache, AttentionBackend
+from levanter.layers.page_table import PageTable, PageBatchInfo
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 
 
 @eqx.filter_jit
-def _jit_paged_decode(transformer, x, pos_ids, state):
+def _jit_paged_decode(transformer, x, pos_ids, cache: KvPageCache, binfo: PageBatchInfo):
     """Jitted wrapper around ``transformer.decode`` for a single decoding step."""
-    return transformer.decode(state, x, pos_ids, key=jrandom.PRNGKey(2))
+    return transformer.decode(cache, x, binfo, pos_ids, key=jrandom.PRNGKey(2))
 
 
 def test_llama_paged_decode_matches_full_ar():
@@ -72,8 +72,7 @@ def test_llama_paged_decode_matches_full_ar():
             tokens=hax.named([seq_id], "position"),
         )
 
-        # Wrap per-layer caches in KvPageState referencing the newly allocated pages
-        layer_states = KvPageState.from_batch(binfo, layer_caches)
+        # Use the batch info with the layer caches
 
         # Embed the current token
         x_tok_ids = input_ids["position", hax.dslice(i, 1)]
@@ -83,10 +82,7 @@ def test_llama_paged_decode_matches_full_ar():
         pos_ids_tok = hax.arange(sub_pos, start=i)
 
         # Decode one step
-        out_tok, new_states = _jit_paged_decode(model.transformer, x_tok, pos_ids_tok, layer_states)
-
-        # layer_caches = jax.tree_util.tree_map(lambda state: state.cache, new_states)
-        layer_caches = new_states.cache
+        out_tok, layer_caches = _jit_paged_decode(model.transformer, x_tok, pos_ids_tok, layer_caches, binfo)
 
         out_chunks.append(out_tok.array)
 
@@ -139,16 +135,12 @@ def test_llama_model_decode_logits():
             tokens=hax.named([seq_id], "position"),
         )
 
-        # Build KvPageState tree matching layers
-        layer_states = KvPageState.from_batch(binfo, layer_caches)
+        # Use batch info with caches
 
         x_tok_ids = input_ids["position", hax.dslice(i, 1)]
         pos_ids_tok = hax.arange(x_tok_ids.resolve_axis("position"), start=i)
 
-        logits_tok, new_states = model.decode(x_tok_ids, layer_states, pos_ids_tok)
-
-        # Update caches
-        layer_caches = new_states.cache
+        logits_tok, layer_caches = model.decode(x_tok_ids, layer_caches, binfo, pos_ids_tok)
 
         gathered_logits.append(logits_tok.array)
 
@@ -194,10 +186,9 @@ def test_llama_paged_decode_matches_full_prefill():
     full_out = model.activations(input_ids, attn_mask=mask, key=jrandom.PRNGKey(1))
 
     layer_caches = model.transformer.initial_cache(pt, dtype=jnp.float32)
-    page_state = KvPageState.from_batch(binfo, layer_caches)
     pos_ids = hax.arange(Pos, dtype=jnp.int32)
     x = model.embeddings.embed(input_ids)
-    decode_out, _ = _jit_paged_decode(model.transformer, x, pos_ids, page_state)
+    decode_out, _ = _jit_paged_decode(model.transformer, x, pos_ids, layer_caches, binfo)
 
     full_out = full_out["position", hax.dslice(0, 7)]
     decode_out = decode_out["position", hax.dslice(0, 7)]
@@ -249,11 +240,9 @@ def test_llama_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     tok_axis = Axis("position", 2 * prefix_size)
     tokens = hax.named([seq1] * prefix_size + [seq2] * prefix_size, tok_axis)
     pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
-    state = KvPageState.from_batch(binfo, layer_caches)
     x_prefill = hax.concatenate("position", [x0[Pos, 0:prefix_size], x1[Pos, 0:prefix_size]])
     pos_ids_prefill = hax.named(list(range(prefix_size)) + list(range(prefix_size)), tok_axis)
-    out, state = _jit_paged_decode(model.transformer, x_prefill, pos_ids_prefill, state)
-    layer_caches = state.cache
+    out, layer_caches = _jit_paged_decode(model.transformer, x_prefill, pos_ids_prefill, layer_caches, binfo)
     outputs0.append(out["position", hax.dslice(0, prefix_size)])
     outputs1.append(out["position", hax.dslice(prefix_size, prefix_size)])
 
@@ -263,15 +252,13 @@ def test_llama_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
         tok_axis = Axis("position", 2 * chunk_size)
         tokens = hax.named([seq1] * chunk_size + [seq2] * chunk_size, tok_axis)
         pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
-        state = KvPageState.from_batch(binfo, layer_caches)
 
         x_chunk = hax.concatenate(
             "position",
             [x0[Pos, hax.dslice(i, chunk_size)], x1[Pos, hax.dslice(i, chunk_size)]],
         )
         pos_ids_chunk = hax.named(list(range(i, i + chunk_size)) + list(range(i, i + chunk_size)), tok_axis)
-        out_chunk, state = _jit_paged_decode(model.transformer, x_chunk, pos_ids_chunk, state)
-        layer_caches = state.cache
+        out_chunk, layer_caches = _jit_paged_decode(model.transformer, x_chunk, pos_ids_chunk, layer_caches, binfo)
         outputs0.append(out_chunk["position", hax.dslice(0, chunk_size)])
         outputs1.append(out_chunk["position", hax.dslice(chunk_size, chunk_size)])
 
@@ -327,7 +314,6 @@ def test_llama_paged_decode_ragged_fill_in_chunks():
         new_counts = hax.named([step0, step1], seq_axis)
         tokens = hax.named([seq1] * step0 + [seq2] * step1, tok_axis)
         pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
-        state = KvPageState.from_batch(binfo, layer_caches)
 
         x_chunk = hax.concatenate(
             "position",
@@ -335,8 +321,7 @@ def test_llama_paged_decode_ragged_fill_in_chunks():
         )
         pos_ids = hax.named(list(range(off0, off0 + step0)) + list(range(off1, off1 + step1)), tok_axis)
         with jax.disable_jit():
-            output, state = _jit_paged_decode(model.transformer, x_chunk, pos_ids, state)
-        layer_caches = state.cache
+            output, layer_caches = _jit_paged_decode(model.transformer, x_chunk, pos_ids, layer_caches, binfo)
         outputs0.append(output["position", hax.dslice(0, step0)])
         outputs1.append(output["position", hax.dslice(step0, step1)])
 

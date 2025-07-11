@@ -15,9 +15,8 @@ from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
 from levanter.layers import LayerNormConfigBase, RmsNormConfig
-from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask, KvPageCache, \
-    KvPageState
-from levanter.layers.page_table import PageTable
+from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask, KvPageCache
+from levanter.layers.page_table import PageBatchInfo, PageTable
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.activation import ActivationFunctionEnum
@@ -319,12 +318,22 @@ class LlamaDecoderLayer(eqx.Module):
         return output
 
     @named_call
-    def decode(self, x: NamedArray, state: KvPageState, pos_ids: NamedArray, *, key=None) -> tuple[NamedArray, KvPageState]:
+    def decode(
+        self,
+        x: NamedArray,
+        kv_cache: KvPageCache,
+        batch_info: PageBatchInfo,
+        pos_ids: NamedArray,
+        *,
+        key=None,
+    ) -> tuple[NamedArray, KvPageCache]:
         k_attn, k_mlp = maybe_rng_split(key, 2)
         # self attention and skip connection
         residual = x
         x = self.input_layernorm(x)
-        attn_output, state = self.self_attn.paged_decode(x, state, pos_ids=pos_ids, key=k_attn)
+        attn_output, kv_cache = self.self_attn.paged_decode(
+            x, kv_cache, batch_info, pos_ids=pos_ids, key=k_attn
+        )
 
         if self.post_attn_layernorm is not None:
             attn_output = self.post_attn_layernorm(attn_output)
@@ -337,7 +346,7 @@ class LlamaDecoderLayer(eqx.Module):
         if self.post_mlp_layernorm is not None:
             mlp_output = self.post_mlp_layernorm(mlp_output)
         output = residual + mlp_output
-        return output, state
+        return output, kv_cache
 
     def initial_cache(self, page_table: PageTable, *, dtype) -> KvPageCache:
         """
@@ -380,19 +389,26 @@ class LlamaTransformer(eqx.Module):
 
     @named_call
     def decode(
-        self, state: KvPageState, x: NamedArray, pos_ids: NamedArray, *, key=None
-    ) -> tuple[NamedArray, KvPageState]:
+        self,
+        kv_cache: KvPageCache,
+        x: NamedArray,
+        batch_info: PageBatchInfo,
+        pos_ids: NamedArray,
+        *,
+        key=None,
+    ) -> tuple[NamedArray, KvPageCache]:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
 
-        x, new_state = self.layers.scan_via(LlamaDecoderLayer.decode)(
+        x, kv_cache = self.layers.scan_via(LlamaDecoderLayer.decode)(
             x,
-            state,
+            kv_cache,
+            batch_info,
             pos_ids=pos_ids,
             key=keys,
         )
         x = self.norm(x)
 
-        return x, new_state
+        return x, kv_cache
 
     def initial_cache(self, page_table: PageTable, *, dtype) -> KvPageCache:
         """
@@ -559,18 +575,19 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
     def decode(
         self,
         input_ids: NamedArray,  # token IDs for *this* step (shape {Pos} or {Batch, Pos})
-        state: KvPageState,
+        kv_cache: KvPageCache,
+        batch_info: PageBatchInfo,
         pos_ids: NamedArray,
         *,
         key=None,
-    ) -> tuple[NamedArray, KvPageState]:
+    ) -> tuple[NamedArray, KvPageCache]:
         """Run one decode / pre-fill step with an existing paged-KV *state*.
 
         Parameters
         ----------
         input_ids : NamedArray
             Token IDs for the positions being decoded **this call**.
-        state : KvPageState
+        kv_cache : KvPageCache
             Current paged-KV cache (one per layer). Obtain the initial value via
             ``self.initial_cache`` and update with the returned *new_state* each step.
         pos_ids : NamedArray
@@ -583,7 +600,7 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         -------
         logits : NamedArray
             Logits for the provided tokens (axes match *input_ids* + ``Vocab``).
-        new_state : KvPageState
+        new_state : KvPageCache
             Updated cache to pass into the next decode call.
         """
 
@@ -592,7 +609,7 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
 
         # Propagate through the transformer with paged-KV caching
         k_t = maybe_rng_split(key, 1)[0] if key is not None else None
-        x, new_state = self.transformer.decode(state, x, pos_ids, key=k_t)
+        x, new_state = self.transformer.decode(kv_cache, x, batch_info, pos_ids, key=k_t)
 
         # Project to logits
         if self.lm_head is not None:
