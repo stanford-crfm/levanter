@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10"]
-        jax-version: ["0.5"]
+        jax-version: ["0.5.2", "0.6.2"]
 
     steps:
       - uses: actions/checkout@v3
@@ -20,10 +20,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          # install uv
           pip install uv
-          uv venv
           uv sync
+          uv pip install --system -e . --torch-backend=cpu "jax[cpu]=${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
       - name: Test with pytest
         run: |
           PYTHONPATH=tests:src:. uv run pytest tests -m "not entry and not slow and not ray"
