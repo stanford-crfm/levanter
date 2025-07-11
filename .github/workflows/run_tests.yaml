@@ -22,7 +22,7 @@ jobs:
         run: |
           pip install uv
           uv sync
-          uv pip install "jax[cpu]==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
+          uv pip install "jax[cpu]==${{ matrix.jax-version }}"
       - name: Test with pytest
         run: |
           # check we are using the right jax version
