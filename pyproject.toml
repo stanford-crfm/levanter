@@ -121,19 +121,18 @@ markers = [
 ]
 asyncio_default_fixture_loop_scope = "function"
 
-
-[dependency-groups]
-
-dev = [
-    "pytest >= 7.4.0",
+[project.optional-dependencies]
+test = [
+    "pytest",
     "pytest-forked",
     "pytest-asyncio",
     "soundfile",
     "librosa",
     "tensorboardX>=2.6",
+]
+docs = [
     "pre-commit",
     "chex>=0.1.86",
-    # Documentation dependencies
     "mkdocs >= 1.4.3",
     "mkdocs-material >= 7.3.3",
     "mkdocstrings >= 0.22.0",
@@ -144,15 +143,9 @@ dev = [
     "pymdown-extensions",
     "pygments",
 ]
-
-[project.optional-dependencies]
-test = [
-    "pytest",
-    "pytest-forked",
-    "pytest-asyncio",
-    "soundfile",
-    "librosa",
-    "tensorboardX>=2.6",
+dev = [
+    "levanter[test]",
+    "levanter[docs]",
 ]
 gpu = [
     "jax[cuda12]>=0.5",
@@ -169,6 +162,7 @@ torch_test = [
 
 
 [tool.uv]
+default-groups = ["test", "docs"]
 conflicts = [
     [
         { extra = "gpu" },
