@@ -88,6 +88,7 @@ torch_test = [
 ]
 
 # This is what `uv sync` installs by default
+# (Obnoxiously, there's no way to say dev consists of test)
 dev = [
   "pytest",
   "pytest-forked",

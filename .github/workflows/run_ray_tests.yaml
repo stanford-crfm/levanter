@@ -3,7 +3,7 @@ name: Run tests that use ray
 on: [push]
 
 jobs:
-  build:
+  ray_tests:
 
     runs-on: ubuntu-latest
     strategy:
@@ -17,12 +17,9 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
+      - name: Install uv
         run: |
-          # install uv
           pip install uv
-          uv venv
-          uv sync
-      - name: Run ray tests with pytest
+      - name: Test with pytest
         run: |
-          PYTHONPATH=$(pwd)/tests:$(pwd)/src:$(pwd):. uv run pytest tests -m ray
+          PYTHONPATH=tests:src:. uv run --extra dev pytest tests -m "ray"
