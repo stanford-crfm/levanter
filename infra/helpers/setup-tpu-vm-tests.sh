@@ -91,7 +91,7 @@ retry sudo add-apt-repository -y ppa:git-core/ppa
 retry sudo apt-get -qq update
 retry sudo apt-get -qq install -y python3.10-full python3.10-dev git
 
-pip install -U pip uv wheel
+pip install -U pip uv wheel || exit 1
 
 # clone levanter
 git clone $REPO levanter || exit 1
