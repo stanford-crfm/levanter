@@ -18,13 +18,8 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: |
-          pip install uv
-          uv sync
-          uv pip install "jax[cpu]==${{ matrix.jax-version }}"
       - name: Test with pytest
         run: |
           # check we are using the right jax version
           uv run python -c "import jax; print(jax.__version__)"
-          PYTHONPATH=tests:src:. uv run --extra dev pytest tests -m "not entry and not slow and not ray"
+          PYTHONPATH=tests:src:. uv run --with "jax[cpu]==${{matrix.jax-version}}" --extra dev pytest tests -m "not entry and not slow and not ray"
