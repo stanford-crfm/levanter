@@ -94,15 +94,15 @@ retry sudo apt-get -qq install -y python3.10-full python3.10-dev git
 pip install -U pip uv wheel
 
 # clone levanter
-git clone $REPO levanter
+git clone $REPO levanter || exit 1
 
-cd levanter
+cd levanter || exit 1
 
 # checkout the branch we want
 
 echo "Checking out branch $BRANCH"
 
-git checkout $BRANCH
+git checkout $BRANCH || exit 1
 
 # install levanter
 
