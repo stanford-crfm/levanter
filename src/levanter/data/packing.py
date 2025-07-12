@@ -79,7 +79,7 @@ class SequencePacker:
 
         self._ids.extend(ids)
         if segment_id is None:
-            segment_id = self.num_segments
+            segment_id = self.num_segments + 1
 
         self.num_segments += 1
 
@@ -90,7 +90,7 @@ class SequencePacker:
     def pack(self) -> LmExample:
         ids = self._ids + [self.pad_token] * (self.Pos.size - len(self._ids))
 
-        segment_ids = self._segment_ids + [-1] * (self.Pos.size - len(self._segment_ids))
+        segment_ids = self._segment_ids + [0] * (self.Pos.size - len(self._segment_ids))
 
         loss_mask = self._loss_mask + [0] * (self.Pos.size - len(self._loss_mask))
 
@@ -176,6 +176,9 @@ def per_segment_loss(
     assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
 
     segment_ids = packed_example.attn_mask.segment_ids
+    if isinstance(segment_ids, tuple):
+        segment_ids = segment_ids[0]
+
     assert (
         segment_ids.ndim == 1
     ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"
@@ -222,6 +225,9 @@ def per_segment_correct(
     assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
 
     segment_ids = packed_example.attn_mask.segment_ids
+    if isinstance(segment_ids, tuple):
+        segment_ids = segment_ids[0]
+
     assert (
         segment_ids.ndim == 1
     ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"

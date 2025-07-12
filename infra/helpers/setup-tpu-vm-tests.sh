@@ -100,12 +100,7 @@ fi
 
 source $VENV/bin/activate
 
-pip install -U pip
-pip install -U wheel
-
-# jax and jaxlib
-# libtpu sometimes has issues installing for clinical (probably firewall?)
-retry pip install -U "jax[tpu]==0.5.3" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+pip install -U pip uv wheel
 
 # clone levanter
 git clone $REPO levanter
@@ -121,6 +116,4 @@ git checkout $BRANCH
 
 # install levanter
 
-pip install -e ".[test]"
-
-pip install -r tests/requirements.txt
+uv sync --extras tpu
