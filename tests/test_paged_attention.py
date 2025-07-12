@@ -4,19 +4,18 @@ import math
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
+import pytest
 from chex import assert_trees_all_close
 
 import haliax as hax
 
-from levanter.layers.attention import AttentionMask, default_ragged_paged_attention, simple_attention_with_dropout
-
+from levanter.layers.attention import AttentionMask, ragged_paged_attention, simple_attention_with_dropout
 
 PAGE = hax.Axis("page", 64)  # plenty of slack
 SLOT = hax.Axis("slot", 4)  # page size
 KV_HEADS = hax.Axis("kv_head", 2)
 QH = hax.Axis("q_heads_per_group", 1)
 D = hax.Axis("head_size", 4)
-
 
 KV_BS = 32  # must match constant inside kernel
 SM_SCALE = 1 / math.sqrt(D.size)
@@ -29,6 +28,7 @@ def _build_random_case(rng, seq_lens):
     # token → sequence mapping and cumulative Q lengths
     tok_offsets = np.cumsum([0] + seq_lens)
     cu_q_lens = jnp.asarray(tok_offsets, dtype=jnp.int32)
+    cu_q_lens = hax.named(cu_q_lens, "seq")
 
     # allocate enough pages for the longest sequence, but give each sequence its own slice
     pages_per_seq_raw = [(length + SLOT.size - 1) // SLOT.size for length in seq_lens]
@@ -81,12 +81,12 @@ def _build_incremental_case(rng, seq_lens, k_lens):
     chunks = []
     new_offsets = [0]
     for sid, (total_len, k) in enumerate(zip(seq_lens, k_lens)):
-        start = int(full_cu_q_lens[sid]) + total_len - k
+        start = int(full_cu_q_lens["seq", sid]) + total_len - k
         chunks.append(q_full["position", hax.ds(start, k)])
         new_offsets.append(new_offsets[-1] + k)
 
     q = hax.concatenate("position", chunks)
-    cu_q_lens = jnp.asarray(new_offsets, dtype=jnp.int32)
+    cu_q_lens = hax.named(jnp.asarray(new_offsets, dtype=jnp.int32), "seq")
 
     return q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs
 
@@ -96,7 +96,7 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
     out_chunks = []
     for sid, qlen in enumerate(seq_lens):
         # slice query tokens for this sequence
-        start = int(cu_q_lens[sid])
+        start = int(cu_q_lens["seq", sid])
         q_seq = q["position", hax.ds(start, qlen)]
         TOK_S = hax.Axis("position", qlen)
 
@@ -107,7 +107,7 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
         kv_flat = kv_flat["kv_position", hax.ds(0, kv_lens["seq", sid].scalar())]
 
         k_seq = kv_flat["kv_head", : KV_HEADS.size]
-        v_seq = kv_flat["kv_head", KV_HEADS.size :]
+        v_seq = kv_flat["kv_head", KV_HEADS.size:]
 
         # rename axes so they line up with dot_product_attention sig
         q_seq = q_seq.rename({"position": TOK_S.name})
@@ -133,7 +133,7 @@ def test_ragged_paged_attention_single_seq():
     seq_lens = [46]  # one sequence
     q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
 
-    ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+    ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
     assert ragged.axes == ref.axes
@@ -142,12 +142,18 @@ def test_ragged_paged_attention_single_seq():
     assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
 
 
-def test_ragged_paged_attention_multi_seq():
+@pytest.mark.parametrize("seq_lens", [
+    [8],
+    [8, 32, 16],
+    [10, 37, 64],
+    [64, 10, 37],
+    [5, 15, 25, 35, 45]
+])
+def test_ragged_paged_attention_multi_seq(seq_lens):
     rng = jr.PRNGKey(1)
-    seq_lens = [10, 37, 64]  # three different lengths
     q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
 
-    ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+    ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
     assert ragged.axes == ref.axes
@@ -160,7 +166,7 @@ def test_ragged_paged_attention_incremental_single_seq():
     k_lens = [5]
     q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_incremental_case(rng, seq_lens, k_lens)
 
-    ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+    ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
 
     assert ragged.axes == ref.axes
@@ -173,7 +179,7 @@ def test_ragged_paged_attention_incremental_multi_seq():
     k_lens = [1, 3, 9]
     q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_incremental_case(rng, seq_lens, k_lens)
 
-    ragged = default_ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+    ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
 
     assert ragged.axes == ref.axes

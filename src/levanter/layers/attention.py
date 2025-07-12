@@ -675,7 +675,7 @@ class AttentionMask(eqx.Module):
     #
     # Note: ``causal_offset==0`` is equivalent to a standard causal mask; ``None`` means no
     # causal masking at all.
-    causal_offset: int | None | NamedArray = eqx.field(static=True, default=None)
+    causal_offset: int | None | NamedArray = None
     explicit_mask: Optional[NamedArray] = None
     segment_ids: NamedArray | tuple[NamedArray, NamedArray] = None
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
@@ -1752,27 +1752,18 @@ def ragged_paged_attention(
             return False
         return True
 
-    if _tpu_rpa_available():
+    if _tpu_rpa_available() and False:
         try:
-            q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "kv_head")
-            if num_seqs.ndim == 0:
-                this_num_seqs = num_seqs.reshape((1,))
-            else:
-                this_num_seqs = num_seqs
-            out = tpu_ragged_paged_attention(
-                q_flat.array,
-                kv_pages.array,
-                kv_lens.array,
-                page_indices.array,
-                cu_q_lens.array,
-                this_num_seqs,
+            out = _do_tpu_ragged_paged_attention(
+                q,
+                kv_pages,
+                kv_lens,
+                page_indices,
+                cu_q_lens,
+                num_seqs,
                 sm_scale=sm_scale,
                 soft_cap=soft_cap,
             )
-            out =  hax.named(
-                out, ("position","kv_head", "head_size"),
-            )
-            out = out.unflatten_axis("kv_head", (q.resolve_axis("kv_head"), q.resolve_axis("q_heads_per_group")))
             return out
         except Exception:  # pragma: no cover - fall back if kernel fails
             logger.warning("Failed to use TPU ragged paged attention. Falling back to reference", exc_info=True)
@@ -1787,6 +1778,54 @@ def ragged_paged_attention(
         sm_scale=sm_scale,
         soft_cap=soft_cap,
     )
+
+
+def _do_tpu_ragged_paged_attention(
+    q: NamedArray,
+    kv_pages: NamedArray,
+    kv_lens: NamedArray,
+    page_indices: NamedArray,
+    cu_q_lens: NamedArray,
+    num_seqs: jnp.ndarray,
+    sm_scale: float = 1.0,
+    soft_cap: float | None = 100.0,
+) -> NamedArray:
+    # Usual shardmap dance
+    q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "kv_head")
+    if num_seqs.ndim == 0:
+        this_num_seqs = num_seqs.reshape((1,))
+    else:
+        this_num_seqs = num_seqs
+
+    o = shard_map(
+        functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale, soft_cap=soft_cap),
+        haliax.partitioning._get_mesh(),
+        in_specs=(
+            haliax.partitioning.pspec_for_axis(q_flat.axes),
+            haliax.partitioning.pspec_for_axis(kv_pages.axes),
+            haliax.partitioning.pspec_for_axis(kv_lens.axes),
+            haliax.partitioning.pspec_for_axis(page_indices.axes),
+            haliax.partitioning.pspec_for_axis(cu_q_lens.axes),
+            # haliax.partitioning.pspec_for_axis(num_seqs)
+            PartitionSpec(),  # num_seqs
+        ),
+        out_specs=pspec_for_axis(("position", "kv_head", "head_size",)),
+        check_rep=False,
+    )(
+        q_flat.array,
+        kv_pages.array,
+        kv_lens.array,
+        page_indices.array,
+        cu_q_lens.array,
+        this_num_seqs,
+    )
+
+    out = hax.named(
+        o, ("position", "kv_head", "head_size"),
+    )
+    out = out.unflatten_axis("kv_head", (q.resolve_axis("kv_head"), q.resolve_axis("q_heads_per_group")))
+
+    return out
 
 
 def default_ragged_paged_attention(

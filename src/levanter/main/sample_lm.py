@@ -16,6 +16,7 @@ from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
+from haliax.jax_utils import is_jax_array_like
 from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
@@ -38,7 +39,7 @@ class SampleLmConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: LmConfig = field(default_factory=LlamaConfig)
 
-    tokenizer: str = "meta-llama/Llama-2-7b-hf"
+    tokenizer: str | None = None
 
     prompt: str = "Four score and seven years ago, our"
     max_new_tokens: int = 20
@@ -59,6 +60,7 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
         with use_cpu_device():
             model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
             model = load_checkpoint(model, config.checkpoint_path, subpath="model")
+            model = mp.cast_to_compute(model)
         return model
     else:
         assert hasattr(config.model, "hf_checkpoint_converter"), "model config lacks HF loader"
@@ -85,10 +87,28 @@ def do_prefill(model, cache, page_table, tokens, sampler, seq_id, temps, key):
     return next_tok, page_table, cache
 
 
-def main(config: SampleLmConfig):
-    jax.config.update("jax_explain_cache_misses", True)
+def tree_byte_size(tree):
+    """Calculate the total byte size of a JAX tree."""
+    # TODO: take into account sharding
+    def _leaf_size(x):
+        if is_jax_array_like(x):
+            return x.nbytes
+        return 0
 
+    return sum(_leaf_size(x) for x in jax.tree.leaves(tree))
+
+
+def main(config: SampleLmConfig):
     levanter.initialize(config)
+    tok_string: str | None = config.tokenizer
+    if config.tokenizer is None:
+        if config.hf_checkpoint is not None:
+            # If we have an HF checkpoint, we can load the tokenizer from it
+            tok_string = config.hf_checkpoint.model_name_or_path
+
+    if tok_string is None:
+        raise ValueError("Must specify a tokenizer or an HF checkpoint with a tokenizer")
+
     tokenizer = load_tokenizer(config.tokenizer)
 
     vocab_size = len(tokenizer)
@@ -114,10 +134,25 @@ def main(config: SampleLmConfig):
             max_pages_per_seq=1,
         )
         page_table, seq_id = page_table.assign_seq_id_to_seq()
-        cache = model.initial_cache(page_table, dtype=jnp.float32)
+        cache = model.initial_cache(page_table, dtype=config.trainer.mp.compute_dtype)
 
         seq_named = hax.named([seq_id], "seq")
         temps = hax.full((), config.temperature, dtype=jnp.float32)
+
+        model_size = tree_byte_size(model)
+
+        size = tree_byte_size(
+            (model, cache, page_table, prompt_tokens, sampler, seq_named, temps)
+        )
+
+        print(f"Arg sizes for pre_fill {size / 1024**2:.2f} MB:\n"
+              f"  model: {model_size / 1024**2:.2f} MB\n"
+              f"  cache: {tree_byte_size(cache) / 1024**2:.2f} MB\n"
+              f"  page_table: {tree_byte_size(page_table) / 1024**2:.2f} MB\n"
+              f"  prompt_tokens: {tree_byte_size(prompt_tokens) / 1024**2:.2f} MB\n"
+              f"  sampler: {tree_byte_size(sampler) / 1024**2:.2f} MB\n"
+              f"  seq_named: {tree_byte_size(seq_named) / 1024**2:.2f} MB\n"
+              f"  temps: {tree_byte_size(temps) / 1024**2:.2f} MB")
 
         for R in range(55):
             token_times = []
