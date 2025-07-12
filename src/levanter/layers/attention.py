@@ -1,5 +1,7 @@
 import dataclasses
 import functools
+import logging
+
 import math
 import warnings
 from dataclasses import dataclass
@@ -36,6 +38,8 @@ from .page_table import PageBatchInfo, PageTable
 
 from .normalization import LayerNormConfigBase
 from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
+
+logger = logging.getLogger(__name__)
 
 
 class AttentionBackend(Enum):
@@ -1423,12 +1427,12 @@ class Attention(eqx.Module):
     def paged_decode(
         self,
         x: NamedArray,
-        kv_cache: KvPageCache,
+        kv_cache: "KvPageCache",
         batch_info: PageBatchInfo,
         *,
         pos_ids: NamedArray,
         key=None,
-    ) -> tuple[NamedArray, KvPageCache]:
+    ) -> tuple[NamedArray, "KvPageCache"]:
         """Decode-time forward pass using a paged KV cache.
 
         This method is intended for autoregressive decoding and prefill.  ``batch_info``
@@ -1453,7 +1457,7 @@ class Attention(eqx.Module):
             kv_cache.kv_pages,
             batch_info.seq_lens,
             batch_info.page_indices,
-            batch_info.cu_q_lens.array,
+            batch_info.cu_q_lens,
             batch_info.num_seqs,
             sm_scale=sm_scale,
             soft_cap=self.config.logits_soft_cap,
@@ -1722,17 +1726,13 @@ class KvPageCache(eqx.Module):
         return dataclasses.replace(self, kv_pages=kv_pages)
 
 
-
-
-
-
 def ragged_paged_attention(
     q: NamedArray,  # [Tok, KVHeads, QHeadsPerGroup, HeadSize]
     kv_pages: NamedArray,  # [Page, PageSize, 2 * KVHeads, HeadDim]
     kv_lens: NamedArray,  # i32[Seq]
     page_indices: NamedArray,  # i32[Seq, PagePerSeq]
-    cu_q_lens: jnp.ndarray,  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
-    num_seqs: jnp.ndarray,  # scalar int32
+    cu_q_lens: NamedArray,  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
+    num_seqs: jnp.ndarray,
     sm_scale: float = 1.0,
     soft_cap: float | None = 100.0,
 ) -> NamedArray:
@@ -1754,34 +1754,35 @@ def ragged_paged_attention(
 
     if _tpu_rpa_available():
         try:
+            q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "kv_head")
+            if num_seqs.ndim == 0:
+                this_num_seqs = num_seqs.reshape((1,))
+            else:
+                this_num_seqs = num_seqs
             out = tpu_ragged_paged_attention(
-                q.array,
+                q_flat.array,
                 kv_pages.array,
                 kv_lens.array,
                 page_indices.array,
-                cu_q_lens,
-                num_seqs,
+                cu_q_lens.array,
+                this_num_seqs,
                 sm_scale=sm_scale,
                 soft_cap=soft_cap,
             )
-            return hax.named(
-                out,
-                (
-                    q.resolve_axis("position"),
-                    q.resolve_axis("kv_head"),
-                    q.resolve_axis("q_heads_per_group"),
-                    q.resolve_axis("head_size"),
-                ),
+            out =  hax.named(
+                out, ("position","kv_head", "head_size"),
             )
-        except Exception as e:  # pragma: no cover - fall back if kernel fails
-            warnings.warn(f"Failed to use TPU ragged paged attention: {e}. Falling back to reference.")
+            out = out.unflatten_axis("kv_head", (q.resolve_axis("kv_head"), q.resolve_axis("q_heads_per_group")))
+            return out
+        except Exception:  # pragma: no cover - fall back if kernel fails
+            logger.warning("Failed to use TPU ragged paged attention. Falling back to reference", exc_info=True)
 
     return default_ragged_paged_attention(
         q,
         kv_pages,
         kv_lens,
         page_indices,
-        cu_q_lens,
+        cu_q_lens.array,
         num_seqs,
         sm_scale=sm_scale,
         soft_cap=soft_cap,

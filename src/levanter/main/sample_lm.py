@@ -1,4 +1,5 @@
 import equinox.debug
+import jax
 import time
 
 import logging
@@ -15,6 +16,7 @@ from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
+from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.layers.page_table import PageTable
@@ -25,7 +27,6 @@ from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class SampleLmConfig:
@@ -39,9 +40,9 @@ class SampleLmConfig:
 
     tokenizer: str = "meta-llama/Llama-2-7b-hf"
 
-    prompt: str = "Four score and seven years ago"
+    prompt: str = "Four score and seven years ago, our"
     max_new_tokens: int = 20
-    temperature: float = 0.2
+    temperature: float = 1e-4
 
 
 def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
@@ -84,15 +85,9 @@ def do_prefill(model, cache, page_table, tokens, sampler, seq_id, temps, key):
     return next_tok, page_table, cache
 
 
-@haliax.named_jit(donate_args=(False, False, False, True, True, True, True))
-def jit_decode_fn(model, sampler, temps, tokens, state, pos_id, key):
-    k1, k2 = hax.split(key, 2)
-    logits, state = model.decode(tokens, state, pos_id, key=k1)
-    token, log_prob = sampler(logits["position", 0], temps, key=key)
-    return token, log_prob, state
-
-
 def main(config: SampleLmConfig):
+    jax.config.update("jax_explain_cache_misses", True)
+
     levanter.initialize(config)
     tokenizer = load_tokenizer(config.tokenizer)
 
@@ -124,31 +119,36 @@ def main(config: SampleLmConfig):
         seq_named = hax.named([seq_id], "seq")
         temps = hax.full((), config.temperature, dtype=jnp.float32)
 
-        prng_key = jrandom.PRNGKey(0)
-        tok, page_table, cache = do_prefill(
-            model, cache, page_table, prompt_tokens, sampler, seq_named, temps, prng_key
-        )
+        for R in range(55):
+            token_times = []
+            prng_key = jrandom.PRNGKey(0)
+            page_table = page_table.free_pages(0)
 
-        generated = list(prompt_ids) + [int(tok.array)]
+            if R == 5 and False:
+                start_profiler("gen_profile", create_perfetto_link=True)
+            elif R == 50 and False:
+                stop_profiler_and_maybe_wait(create_perfetto_link=True)
 
-        token_times = []
+            tok, page_table, cache = do_prefill(
+                model, cache, page_table, prompt_tokens, sampler, seq_named, temps, prng_key
+            )
 
-        for i in range(1, config.max_new_tokens):
-            time_in = time.time()
-            prng_key = jrandom.PRNGKey(i)
-            prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
-            start = jnp.array(len(generated), dtype=jnp.int32)
+            generated = list(prompt_ids) + [int(tok.array)]
+            for i in range(1, config.max_new_tokens):
+                time_in = time.time()
+                prng_key = jrandom.PRNGKey(i)
+                prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
+                start = jnp.array(len(generated), dtype=jnp.int32)
 
-            tok, page_table, cache, = do_generate(model, cache, page_table, prev_token, sampler, seq_named, start, temps, prng_key)
-            next_token = int(tok.array)
-            time_out = time.time()
-            token_times.append(time_out - time_in)
-            generated.append(next_token)
+                tok, page_table, cache, = do_generate(model, cache, page_table, prev_token, sampler, seq_named, start, temps, prng_key)
+                next_token = int(tok.array)
+                time_out = time.time()
+                token_times.append(time_out - time_in)
+                generated.append(next_token)
 
-        text = tokenizer.decode(generated, skip_special_tokens=True)
-        print(text)
-        print(f"Generated {len(generated) - len(prompt_ids)} tokens in {sum(token_times):.2f} seconds")
-        print(token_times)
+            text = tokenizer.decode(generated, skip_special_tokens=True)
+            print(text)
+            print(f"Generated {len(generated) - len(prompt_ids)} tokens in {sum(token_times):.2f} seconds")
 
 
 @hax.named_jit(donate_args=(False, True, True, False, False, False, True))
