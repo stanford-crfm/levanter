@@ -1734,7 +1734,7 @@ def ragged_paged_attention(
     cu_q_lens: NamedArray,  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
     num_seqs: jnp.ndarray,
     sm_scale: float = 1.0,
-    soft_cap: float | None = 100.0,
+    soft_cap: float | None = None,
 ) -> NamedArray:
     """Ragged attention for paged KV caches.
 
