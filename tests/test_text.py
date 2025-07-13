@@ -2,6 +2,8 @@ import json
 import tempfile
 from pathlib import Path
 
+from transformers import AutoTokenizer
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
