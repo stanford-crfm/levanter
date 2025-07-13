@@ -1788,7 +1788,7 @@ def _do_tpu_ragged_paged_attention(
     cu_q_lens: NamedArray,
     num_seqs: jnp.ndarray,
     sm_scale: float = 1.0,
-    soft_cap: float | None = 100.0,
+    soft_cap: float | None = None,
 ) -> NamedArray:
     # Usual shardmap dance
     # The TPU kernel expects the second dimension of the query tensor to be the
