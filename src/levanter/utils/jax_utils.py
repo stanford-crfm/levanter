@@ -10,7 +10,7 @@ import jax
 import numpy as np
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
-from jax.sharding import Mesh, NamedSharding, PartitionSpec, PositionalSharding
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from jaxtyping import PRNGKeyArray, PyTree
 
 import haliax as hax
@@ -296,8 +296,11 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
             gcd = np.gcd(shape_i, num_devices)
             num_devices //= gcd
             device_shape = (num_devices, gcd) + device_shape[1:]
-        sharding = PositionalSharding(devices).reshape(list(device_shape))
-        sharding = sharding.replicate(axis=0, keepdims=False)
+
+        device_mesh = np.array(devices).reshape(list(device_shape[1:]))
+        axis_names = [f"d{i}" for i in range(len(shape))]
+        mesh = Mesh(device_mesh, axis_names)
+        sharding = NamedSharding(mesh, PartitionSpec(*axis_names))
         return sharding
     else:
         # get the existing mesh and find the FSDP axis
