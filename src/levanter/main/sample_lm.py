@@ -1,6 +1,5 @@
 import equinox.debug
 import jax
-import time
 
 import logging
 from dataclasses import dataclass, field
@@ -87,6 +86,31 @@ def do_prefill(model, cache, page_table, tokens, sampler, seq_id, temps, key):
     return next_tok, page_table, cache
 
 
+@haliax.named_jit(donate_args=(False, True, True, False, False, False, False, True))
+def do_generate_multi(model, cache, page_table, prev_token, sampler, seq_id, start, temps, key, num_tokens):
+    """Generate ``num_tokens`` tokens starting from ``prev_token`` inside ``jax.jit``."""
+
+    def loop_fn(carry, i):
+        cache, page_table, prev_tok, key = carry
+        key, subkey = jrandom.split(key)
+
+        prev_tok_named = hax.named(jnp.array([prev_tok], dtype=jnp.int32), "position")
+        page_table, binfo = page_table.allocate_for_seqs(
+            updated_seqs=seq_id,
+            new_counts=hax.named([1], "seq"),
+            tokens=seq_id.rename({"seq": "position"}),
+        )
+        pos_id = hax.arange(Axis("position", 1), start=start + i)
+        logits, cache = model.decode(prev_tok_named, cache, binfo, pos_id)
+        logits = logits["position", 0]
+        tok, _ = sampler(logits, temps, key=subkey)
+        return (cache, page_table, tok.array[0], key), tok
+
+    Loop = Axis("position", num_tokens)
+    (cache, page_table, _last_tok, _), toks = hax.scan(loop_fn, Loop)((cache, page_table, prev_token, key), hax.arange(Loop))
+    return toks, page_table, cache
+
+
 def tree_byte_size(tree):
     """Calculate the total byte size of a JAX tree."""
     # TODO: take into account sharding
@@ -155,7 +179,6 @@ def main(config: SampleLmConfig):
               f"  temps: {tree_byte_size(temps) / 1024**2:.2f} MB")
 
         for R in range(55):
-            token_times = []
             prng_key = jrandom.PRNGKey(0)
             page_table = page_table.free_pages(0)
 
@@ -168,22 +191,28 @@ def main(config: SampleLmConfig):
                 model, cache, page_table, prompt_tokens, sampler, seq_named, temps, prng_key
             )
 
-            generated = list(prompt_ids) + [int(tok.array)]
-            for i in range(1, config.max_new_tokens):
-                time_in = time.time()
-                prng_key = jrandom.PRNGKey(i)
-                prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
-                start = jnp.array(len(generated), dtype=jnp.int32)
-
-                tok, page_table, cache, = do_generate(model, cache, page_table, prev_token, sampler, seq_named, start, temps, prng_key)
-                next_token = int(tok.array)
-                time_out = time.time()
-                token_times.append(time_out - time_in)
-                generated.append(next_token)
+            gen_axis = config.max_new_tokens - 1
+            if gen_axis > 0:
+                prng_key, loop_key = jrandom.split(prng_key)
+                start = jnp.array(len(prompt_ids) + 1, dtype=jnp.int32)
+                toks, page_table, cache = do_generate_multi(
+                    model,
+                    cache,
+                    page_table,
+                    tok.array,
+                    sampler,
+                    seq_named,
+                    start,
+                    temps,
+                    loop_key,
+                    gen_axis,
+                )
+                generated = list(prompt_ids) + [int(tok.array)] + [int(t) for t in toks.array]
+            else:
+                generated = list(prompt_ids) + [int(tok.array)]
 
             text = tokenizer.decode(generated, skip_special_tokens=True)
             print(text)
-            print(f"Generated {len(generated) - len(prompt_ids)} tokens in {sum(token_times):.2f} seconds")
 
 
 @hax.named_jit(donate_args=(False, True, True, False, False, False, True))
