@@ -1791,7 +1791,12 @@ def _do_tpu_ragged_paged_attention(
     soft_cap: float | None = 100.0,
 ) -> NamedArray:
     # Usual shardmap dance
-    q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "kv_head")
+    # The TPU kernel expects the second dimension of the query tensor to be the
+    # total number of query heads.  ``q`` is shaped
+    # ``[position, kv_head, q_heads_per_group, head_size]`` so we need to merge
+    # the head axes.  Use a fresh axis name so the partitioning rules treat this
+    # as query heads rather than KV heads.
+    q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "q_head")
     if num_seqs.ndim == 0:
         this_num_seqs = num_seqs.reshape((1,))
     else:
@@ -1809,7 +1814,7 @@ def _do_tpu_ragged_paged_attention(
             # haliax.partitioning.pspec_for_axis(num_seqs)
             PartitionSpec(),  # num_seqs
         ),
-        out_specs=pspec_for_axis(("position", "kv_head", "head_size",)),
+        out_specs=pspec_for_axis(("position", "q_head", "head_size",)),
         check_rep=False,
     )(
         q_flat.array,
@@ -1821,9 +1826,15 @@ def _do_tpu_ragged_paged_attention(
     )
 
     out = hax.named(
-        o, ("position", "kv_head", "head_size"),
+        o, ("position", "q_head", "head_size"),
     )
-    out = out.unflatten_axis("kv_head", (q.resolve_axis("kv_head"), q.resolve_axis("q_heads_per_group")))
+    out = out.unflatten_axis(
+        "q_head",
+        (
+            q.resolve_axis("kv_head"),
+            q.resolve_axis("q_heads_per_group"),
+        ),
+    )
 
     return out
 
