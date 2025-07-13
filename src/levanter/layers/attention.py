@@ -1884,7 +1884,7 @@ def default_ragged_paged_attention(
         def _compute_attention_for_q_block(q_block_id, carry):
             o = carry
             q_start = cu_q_lens[seq_id] + q_block_id * Q_BS
-            q_block = q["position", hax.ds(q_start, Q_B)]
+            q_block = q.at["position", hax.ds(q_start, Q_B)].get(mode="fill", fill_value=float("nan"))
             kv_len = kv_lens["seq", seq_id].scalar()
 
             # q_start indexes into the global query tensor, so we need to
@@ -1940,7 +1940,7 @@ def default_ragged_paged_attention(
                 return o_b, sum_exp_b, new_max_b
 
             # standard flashattention loop with fancy paging
-            o_b = o["position", hax.ds(q_start, Q_BS)]
+            o_b = o.at["position", hax.ds(q_start, Q_BS)].get(mode="fill", fill_value=float("nan"))
             sum_exp_b = hax.zeros((Q_B, H, Q_H))
             max_b = hax.full((Q_B, H, Q_H), -jnp.inf)
 

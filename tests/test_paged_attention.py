@@ -146,11 +146,13 @@ def test_ragged_paged_attention_single_seq():
     [8],
     [8, 32, 16],
     [10, 37, 64],
+    [5, 10, 34, 128],
+    [9, 10, 34, 128],
     [64, 10, 37],
     [5, 15, 25, 35, 45]
 ])
 def test_ragged_paged_attention_multi_seq(seq_lens):
-    rng = jr.PRNGKey(1)
+    rng = jr.PRNGKey(hash(tuple(seq_lens)))
     q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
 
     ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
