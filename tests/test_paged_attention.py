@@ -137,9 +137,9 @@ def test_ragged_paged_attention_single_seq():
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
     assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array[:-1], ref.array[:-1], atol=1e-3, rtol=1e-3)
-    assert_trees_all_close(ragged.array[-1], ref.array[-1], atol=1e-3, rtol=1e-3)
-    assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(ragged.array[:-1], ref.array[:-1], atol=1e-4, rtol=1e-4)
+    assert_trees_all_close(ragged.array[-1], ref.array[-1], atol=1e-4, rtol=1e-4)
+    assert_trees_all_close(ragged.array, ref.array, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.parametrize("seq_lens", [
@@ -159,7 +159,7 @@ def test_ragged_paged_attention_multi_seq(seq_lens):
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
     assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(ragged.array, ref.array, atol=1e-4, rtol=1e-4)
 
 
 def test_ragged_paged_attention_incremental_single_seq():
@@ -172,7 +172,7 @@ def test_ragged_paged_attention_incremental_single_seq():
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
 
     assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(ragged.array, ref.array, atol=1e-4, rtol=1e-4)
 
 
 def test_ragged_paged_attention_incremental_multi_seq():
@@ -185,4 +185,4 @@ def test_ragged_paged_attention_incremental_multi_seq():
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
 
     assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array, ref.array, atol=1e-3, rtol=1e-3)
+    assert_trees_all_close(ragged.array, ref.array, atol=1e-4, rtol=1e-4)
