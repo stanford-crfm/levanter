@@ -23,7 +23,6 @@ from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.types import BlockFoldable
 
-
 silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
@@ -103,7 +102,7 @@ class LlamaConfig(HFCompatConfig):
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
         rope_theta = hf_config.rope_theta
-        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, getattr(hf_config, "rope_scaling", None))
         return LlamaConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,

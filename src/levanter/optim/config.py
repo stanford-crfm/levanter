@@ -432,6 +432,15 @@ class AdamConfig(OptimizerConfig):
     See https://github.com/allenai/OLMo-core/blob/main/src/olmo_core/optim/skip_step_optimizer.py
     """
 
+    adamc_weight_decay: bool = False
+    """
+    If set, use the AdamC corrected weight decay, which keeps
+    ``weight_decay / lr`` constant across training.
+
+    This follows Defazio, *On the Correct Treatment of Weight Decay in Adam*
+    (2025, https://arxiv.org/abs/2506.02285v2).
+    """
+
     def __post_init__(self):
         if self.update_rms_clipping is not None and self.update_rms_clipping <= 0:
             raise ValueError("update_rms_clipping must be a positive number or None.")
@@ -452,7 +461,12 @@ class AdamConfig(OptimizerConfig):
             components.append(optax.scale_by_adam(self.beta1, self.beta2, self.epsilon, nesterov=self.nesterov))
 
             if self.weight_decay > 0:
-                components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
+                if self.adamc_weight_decay:
+                    max_lr = self.learning_rate
+                    weight_decay = self.weight_decay * (learning_rate / max_lr)
+                else:
+                    weight_decay = self.weight_decay
+                components.append(optax.add_decayed_weights(weight_decay, self.build_weight_decay_mask()))
 
             if self.update_rms_clipping is not None:
                 components.append(log_norm_passthrough("optim/pre_clip_update_norm"))

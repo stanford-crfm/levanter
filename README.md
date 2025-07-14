@@ -72,9 +72,7 @@ pip install levanter
 or using the latest version from GitHub:
 
 ```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
+pip install git+https://github.com/stanford-crfm/levanter.git
 wandb login  # optional, we use wandb for logging
 ```
 
@@ -89,7 +87,6 @@ cd haliax
 pip install -e .
 cd ../levanter
 ```
-
 
 <!--levanter-installation-end-->
 
