@@ -1,17 +1,8 @@
-import importlib.util
-from importlib.machinery import ModuleSpec
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
 import numpy as np
-from pathlib import Path
 
-TREE_UTILS_PATH = Path(__file__).resolve().parents[1] / "src" / "levanter" / "utils" / "tree_utils.py"
-spec: ModuleSpec | None = importlib.util.spec_from_file_location("tree_utils", str(TREE_UTILS_PATH))
-assert spec is not None and spec.loader is not None
-tree_utils = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(tree_utils)
-pack_pytree = tree_utils.pack_pytree
-unpack_pytree = tree_utils.unpack_pytree
+from levanter.utils.tree_utils import pack_pytree, unpack_pytree
 
 
 def test_pack_and_unpack_simple():

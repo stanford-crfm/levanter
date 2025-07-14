@@ -8,7 +8,6 @@ import equinox as eqx
 import jax
 from jax._src.tree_util import DictKey, FlattenedIndexKey, GetAttrKey, KeyEntry, PyTreeDef, SequenceKey
 from jaxtyping import PyTree
-import jax_dataclasses as jdc
 
 try:
     from haliax.util import StringHolderEnum
@@ -151,12 +150,11 @@ def key_path_to_str(path: Sequence) -> str:
     return out
 
 
-@jdc.pytree_dataclass
-class PackedLeaf:
+class PackedLeaf(eqx.Module):
     """Metadata describing the location and shape of a packed leaf."""
 
-    offset: jdc.Static[int]
-    shape: jdc.Static[tuple[int, ...]]
+    offset: int = eqx.static_field()
+    shape: tuple[int, ...] = eqx.static_field()
 
 
 def pack_pytree(tree: PyTree, dtype=jnp.float32) -> tuple[PyTree, jnp.ndarray]:
