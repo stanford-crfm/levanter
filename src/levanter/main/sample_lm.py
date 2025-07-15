@@ -92,12 +92,9 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
 @haliax.named_jit(donate_args=(False, True, True, False, False, True))
 def do_prefill(model, cache, page_table: PageTable, tokens, seq_ids, sampler, temps, key):
     """Prefill ``tokens`` and sample the next token."""
-    pos_ids = page_table.pos_ids_from_seq_ids(seq_ids)
     page_table, binfo = page_table.allocate_for_seq(token_seq_ids=seq_ids)
 
-    jax.debug.print("this pos_ids={} computed={}", pos_ids, hax.arange(tokens.axes[0], dtype=jnp.int32))
-
-    logits, cache = model.decode(tokens, cache, binfo, pos_ids)
+    logits, cache = model.decode(tokens, cache, binfo, binfo.pos_ids)
     next_tok, _ = sampler(logits["position", -1], temps, key=key)
     return next_tok, page_table, cache
 

@@ -74,11 +74,10 @@ def test_llama_paged_decode_matches_full_ar():
         x_tok_ids = input_ids["position", hax.dslice(i, 1)]
         x_tok = model.embeddings.embed(x_tok_ids)
 
-        sub_pos = x_tok.resolve_axis("position")
-        pos_ids_tok = hax.arange(sub_pos, start=i)
-
         # Decode one step
-        out_tok, layer_caches = _jit_paged_decode(model.transformer, x_tok, pos_ids_tok, layer_caches, binfo)
+        out_tok, layer_caches = _jit_paged_decode(
+            model.transformer, x_tok, binfo.pos_ids, layer_caches, binfo
+        )
 
         out_chunks.append(out_tok.array)
 
@@ -130,9 +129,8 @@ def test_llama_model_decode_logits():
         # Use batch info with caches
 
         x_tok_ids = input_ids["position", hax.dslice(i, 1)]
-        pos_ids_tok = hax.arange(x_tok_ids.resolve_axis("position"), start=i)
 
-        logits_tok, layer_caches = model.decode(x_tok_ids, layer_caches, binfo, pos_ids_tok)
+        logits_tok, layer_caches = model.decode(x_tok_ids, layer_caches, binfo, binfo.pos_ids)
 
         gathered_logits.append(logits_tok.array)
 
@@ -176,9 +174,8 @@ def test_llama_paged_decode_matches_full_prefill():
     full_out = model.activations(input_ids, attn_mask=mask, key=jrandom.PRNGKey(1))
 
     layer_caches = model.transformer.initial_cache(pt, dtype=jnp.float32)
-    pos_ids = hax.arange(Pos, dtype=jnp.int32)
     x = model.embeddings.embed(input_ids)
-    decode_out, _ = _jit_paged_decode(model.transformer, x, pos_ids, layer_caches, binfo)
+    decode_out, _ = _jit_paged_decode(model.transformer, x, binfo.pos_ids, layer_caches, binfo)
 
     full_out = full_out["position", hax.dslice(0, 7)]
     decode_out = decode_out["position", hax.dslice(0, 7)]
@@ -228,8 +225,9 @@ def test_llama_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     tokens = hax.named([seq1] * prefix_size + [seq2] * prefix_size, tok_axis)
     pt, binfo = pt.allocate_for_seq(tokens)
     x_prefill = hax.concatenate("position", [x0[Pos, 0:prefix_size], x1[Pos, 0:prefix_size]])
-    pos_ids_prefill = hax.named(list(range(prefix_size)) + list(range(prefix_size)), tok_axis)
-    out, layer_caches = _jit_paged_decode(model.transformer, x_prefill, pos_ids_prefill, layer_caches, binfo)
+    out, layer_caches = _jit_paged_decode(
+        model.transformer, x_prefill, binfo.pos_ids, layer_caches, binfo
+    )
     outputs0.append(out["position", hax.dslice(0, prefix_size)])
     outputs1.append(out["position", hax.dslice(prefix_size, prefix_size)])
 
@@ -242,8 +240,9 @@ def test_llama_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
             "position",
             [x0[Pos, hax.dslice(i, chunk_size)], x1[Pos, hax.dslice(i, chunk_size)]],
         )
-        pos_ids_chunk = hax.named(list(range(i, i + chunk_size)) + list(range(i, i + chunk_size)), tok_axis)
-        out_chunk, layer_caches = _jit_paged_decode(model.transformer, x_chunk, pos_ids_chunk, layer_caches, binfo)
+        out_chunk, layer_caches = _jit_paged_decode(
+            model.transformer, x_chunk, binfo.pos_ids, layer_caches, binfo
+        )
         outputs0.append(out_chunk["position", hax.dslice(0, chunk_size)])
         outputs1.append(out_chunk["position", hax.dslice(chunk_size, chunk_size)])
 
@@ -301,9 +300,10 @@ def test_llama_paged_decode_ragged_fill_in_chunks():
             "position",
             [x0[Pos, hax.dslice(off0, step0)], x1[Pos, hax.dslice(off1, step1)]],
         )
-        pos_ids = hax.named(list(range(off0, off0 + step0)) + list(range(off1, off1 + step1)), tok_axis)
         with jax.disable_jit():
-            output, layer_caches = _jit_paged_decode(model.transformer, x_chunk, pos_ids, layer_caches, binfo)
+            output, layer_caches = _jit_paged_decode(
+                model.transformer, x_chunk, binfo.pos_ids, layer_caches, binfo
+            )
         outputs0.append(output["position", hax.dslice(0, step0)])
         outputs1.append(output["position", hax.dslice(step0, step1)])
 
