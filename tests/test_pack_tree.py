@@ -1,26 +1,15 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-import importlib.util
-from pathlib import Path
-
-spec = importlib.util.spec_from_file_location(
-    "tree_utils", Path(__file__).resolve().parents[1] / "src" / "levanter" / "utils" / "tree_utils.py"
-)
-assert spec is not None
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-tree_utils = module
-pack_pytree = tree_utils.pack_pytree
-unpack_pytree = tree_utils.unpack_pytree
+from levanter.utils.tree_utils import pack_pytree, unpack_pytree
 
 
 def test_pack_and_unpack_simple():
     tree = {"a": np.arange(3, dtype=np.float32), "b": np.arange(4, dtype=np.float32).reshape(2, 2)}
-    offsets, packed = pack_pytree(tree, dtype=jnp.float32)
-    rebuilt = unpack_pytree(offsets, packed)
+    offsets, packed = eqx.filter_jit(pack_pytree)(tree, dtype=jnp.float32)
+    rebuilt = eqx.filter_jit(unpack_pytree)(offsets, packed)
     for orig, new in zip(jax.tree_util.tree_leaves(tree), jax.tree_util.tree_leaves(rebuilt)):
         np.testing.assert_array_equal(np.asarray(orig, dtype=np.float32), np.array(new))
 
