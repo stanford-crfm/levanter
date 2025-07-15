@@ -1795,9 +1795,6 @@ def _do_tpu_ragged_paged_attention(
 ) -> NamedArray:
     # Usual shardmap dance
     # The TPU kernel expects the second dimension of the query tensor to be the total number of query heads.
-    # ``q`` is shaped ``[position, kv_head, q_heads_per_group, head_size]`` so we need to merge
-    # the head axes.  Use a fresh axis name so the partitioning rules treat this
-    # as query heads rather than KV heads.
     q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "kv_head")
     if num_seqs.ndim == 0:
         this_num_seqs = num_seqs.reshape((1,))
