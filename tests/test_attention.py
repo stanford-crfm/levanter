@@ -548,9 +548,7 @@ def test_attention_paged_decode_matches_full_ar():
         pt, binfo = pt.allocate_for_seq(hax.named([seq_id], "position"))
 
         x_tok = x[Pos, hax.dslice(i, 1)]
-        sub_pos = x_tok.resolve_axis("position")
-        pos_ids_tok = hax.arange(sub_pos, start=i)
-        out_tok, kv_cache = _jit_paged_decode(attn, x_tok, pos_ids_tok, kv_cache, binfo)
+        out_tok, kv_cache = _jit_paged_decode(attn, x_tok, binfo.pos_ids, kv_cache, binfo)
         out_chunks.append(out_tok.array)
 
     decoded_arr = jnp.concatenate(out_chunks, axis=0)
@@ -578,8 +576,7 @@ def test_attention_paged_decode_matches_full_prefill():
 
     kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
 
-    pos_ids = hax.arange(Pos, dtype=jnp.int32)
-    decode_out, _ = _jit_paged_decode(attn, x, pos_ids, kv_cache, binfo)
+    decode_out, _ = _jit_paged_decode(attn, x, binfo.pos_ids, kv_cache, binfo)
 
     # we only care about the first 7 positions, since the rest are padding
     full_out = full_out["position", hax.dslice(0, 7)]
@@ -622,8 +619,7 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
         "position",
         [x0[Pos, 0:prefix_size], x1[Pos, 0:prefix_size]],
     )
-    pos_ids_prefill = hax.named(list(range(prefix_size)) + list(range(prefix_size)), tok_axis)
-    out, kv_cache = _jit_paged_decode(attn, x_prefill, pos_ids_prefill, kv_cache, binfo)
+    out, kv_cache = _jit_paged_decode(attn, x_prefill, binfo.pos_ids, kv_cache, binfo)
     outputs0.append(out["position", hax.dslice(0, prefix_size)])
     outputs1.append(out["position", hax.dslice(prefix_size, prefix_size)])
 
@@ -637,11 +633,7 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
             "position",
             [x0[Pos, hax.dslice(i, chunk_size)], x1[Pos, hax.dslice(i, chunk_size)]],
         )
-        pos_ids_chunk = hax.named(
-            list(range(i, i + chunk_size)) + list(range(i, i + chunk_size)),
-            tok_axis,
-        )
-        out_chunk, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids_chunk, kv_cache, binfo)
+        out_chunk, kv_cache = _jit_paged_decode(attn, x_chunk, binfo.pos_ids, kv_cache, binfo)
         outputs0.append(out_chunk["position", hax.dslice(0, chunk_size)])
         outputs1.append(out_chunk["position", hax.dslice(chunk_size, chunk_size)])
 
@@ -685,11 +677,7 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
             "position",
             [x0[Pos, hax.dslice(off0, step0)], x1[Pos, hax.dslice(off1, step1)]],
         )
-        pos_ids = hax.named(
-            list(range(off0, off0 + step0)) + list(range(off1, off1 + step1)),
-            tok_axis,
-        )
-        output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=kv_cache, binfo=binfo)
+        output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=binfo.pos_ids, cache=kv_cache, binfo=binfo)
         outputs0.append(output["position", hax.dslice(0, step0)])
         outputs1.append(output["position", hax.dslice(step0, step1)])
 

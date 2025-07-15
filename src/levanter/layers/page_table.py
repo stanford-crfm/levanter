@@ -175,12 +175,14 @@ class PageTable(eqx.Module):
                 hax.cumsum(new_token_counts, "seq", dtype=jnp.int32),
             ],
         )
+        pos_ids = self.pos_ids_from_seq_ids(tokens)
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
             cu_q_lens=cu_q_lens,
             num_seqs=num_seqs,
             new_token_dests=token_dests,
+            pos_ids=pos_ids,
             page_size=self.page_size,
         )
         return batch_info
@@ -206,7 +208,7 @@ class PageTable(eqx.Module):
         """
         rel_pos = _relative_positions(seq_ids.array)
         # We need to add the start position of the segment to the relative position
-        seg_pos_starts = self.seq_lens["seq", rel_pos].array
+        seg_pos_starts = self.seq_lens["seq", seq_ids].array
 
         pos_ids = seg_pos_starts + rel_pos
         # mask out the -1 segments
@@ -223,6 +225,7 @@ class PageBatchInfo(eqx.Module):
     cu_q_lens: ht.i32[NamedArray, " seq"]
     num_seqs: ht.i32[jnp.ndarray, ""]
     new_token_dests: ht.i32[NamedArray, "position"]
+    pos_ids: ht.i32[NamedArray, "position"]
     page_size: int = eqx.field(static=True)
 
     def __post_init__(self):
