@@ -1798,11 +1798,22 @@ def _do_tpu_ragged_paged_attention(
     # ``[position, kv_head, q_heads_per_group, head_size]`` so we need to merge
     # the head axes.  Use a fresh axis name so the partitioning rules treat this
     # as query heads rather than KV heads.
-    q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "q_head")
+    q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "kv_head")
     if num_seqs.ndim == 0:
         this_num_seqs = num_seqs.reshape((1,))
     else:
         this_num_seqs = num_seqs
+
+
+    print(f"""Shardings:
+    q_flat: {q_flat.axes} {hax.partitioning.pspec_for_axis(q_flat.axes)}
+    kv_pages: {kv_pages.axes} {haliax.partitioning.pspec_for_axis(kv_pages.axes)}
+    kv_lens: {kv_lens.axes} {haliax.partitioning.pspec_for_axis(kv_lens.axes)}
+    page_indices: {page_indices.axes} {haliax.partitioning.pspec_for_axis(page_indices.axes)}
+    cu_q_lens: {cu_q_lens.axes} {haliax.partitioning.pspec_for_axis(cu_q_lens.axes)}""")
+
+
+
 
     o = shard_map(
         functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale, soft_cap=soft_cap),
@@ -1816,7 +1827,7 @@ def _do_tpu_ragged_paged_attention(
             # haliax.partitioning.pspec_for_axis(num_seqs)
             PartitionSpec(),  # num_seqs
         ),
-        out_specs=pspec_for_axis(("position", "q_head", "head_size",)),
+        out_specs=pspec_for_axis(("position", "kv_head", "head_size",)),
         check_rep=False,
     )(
         q_flat.array,
@@ -1828,10 +1839,10 @@ def _do_tpu_ragged_paged_attention(
     )
 
     out = hax.named(
-        o, ("position", "q_head", "head_size"),
+        o, ("position", "kv_head", "head_size"),
     )
     out = out.unflatten_axis(
-        "q_head",
+        "kv_head",
         (
             q.resolve_axis("kv_head"),
             q.resolve_axis("q_heads_per_group"),

@@ -4,4 +4,5 @@ trainer:
   ray:
     auto_start_cluster: false
   mp: p=f32,c=bfloat16
-  tensor_parallel_axes: ["mlp", "heads", "kv_head"]
+  tensor_parallel_axes: ["mlp", "heads", "kv_head", "vocab"]
+  model_axis_size: 4

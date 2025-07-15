@@ -1,4 +1,3 @@
-import shutil
 
 import equinox.debug
 import jax
@@ -19,7 +18,6 @@ from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
 from haliax.jax_utils import is_jax_array_like
-from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.layers.page_table import PageTable
@@ -44,7 +42,7 @@ class SampleLmConfig:
     tokenizer: str | None = None
 
     prompt: str = "Four score and seven years ago, our"
-    max_new_tokens: int = 20
+    max_new_tokens: int = 100
     temperature: float = 1e-4
 
 
@@ -113,13 +111,12 @@ def main(config: SampleLmConfig):
 
     tokenizer = load_tokenizer(config.tokenizer)
 
-    vocab_size = len(tokenizer)
-    Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), config.trainer.compute_axis_mapping)
-
     key = jrandom.PRNGKey(0)
 
     # NB: we use the compute_axis_mapping b/c we're doing inference
     with config.trainer.device_mesh, hax.axis_mapping(config.trainer.compute_axis_mapping):
+        vocab_size = len(tokenizer)
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), config.trainer.compute_axis_mapping)
         model = _load_model(config, Vocab, key=key)
         assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
 
@@ -136,7 +133,7 @@ def main(config: SampleLmConfig):
             max_pages_per_seq=1,
         )
         page_table, seq_id = page_table.assign_seq_id_to_seq()
-        cache = model.initial_cache(page_table, dtype=jnp.float32)
+        cache = model.initial_cache(page_table, dtype=jnp.bfloat16)
 
         seq_named = hax.named([seq_id], "seq")
         temps = hax.full((), config.temperature, dtype=jnp.float32)
@@ -161,37 +158,37 @@ def main(config: SampleLmConfig):
             prng_key = jrandom.PRNGKey(0)
             page_table = page_table.free_pages(0)
 
-            if R == 5:
-                start_profiler("/tmp/gen_profile", create_perfetto_link=False)
-            elif R == 50:
-                stop_profiler_and_maybe_wait(create_perfetto_link=False)
-                levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
-                shutil.rmtree("/tmp/gen_profile")
+            # if R == 5:
+            #     start_profiler("/tmp/gen_profile", create_perfetto_link=False)
+            # elif R == 50:
+            #     stop_profiler_and_maybe_wait(create_perfetto_link=False)
+            #     levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
+            #     shutil.rmtree("/tmp/gen_profile")
 
             tok, page_table, cache = do_prefill(
                 model, cache, page_table, prompt_tokens, sampler, seq_named, temps, prng_key
             )
 
             generated = list(prompt_ids) + [int(tok.array)]
-            for i in range(1, config.max_new_tokens):
-                time_in = time.time()
-                prng_key = jrandom.PRNGKey(i)
-                prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
-                start = jnp.array(len(generated), dtype=jnp.int32)
+            # for i in range(1, config.max_new_tokens):
+            time_in = time.time()
+            prng_key = jrandom.PRNGKey(R)
+            prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
+            start = jnp.array(len(generated), dtype=jnp.int32)
 
-                tok, page_table, cache, = do_generate(model, cache, page_table, prev_token, sampler, seq_named, start, temps, prng_key)
-                next_token = int(tok.array)
-                time_out = time.time()
-                token_times.append(time_out - time_in)
-                generated.append(next_token)
+            toks, page_table, cache, = do_generate_n_times(config.max_new_tokens, model, cache, page_table, prev_token, sampler, seq_named, start, temps, prng_key)
+            toks.block_until_ready()
+            time_out = time.time()
+            token_times.append(time_out - time_in)
+            generated.extend(toks)
 
             text = tokenizer.decode(generated, skip_special_tokens=True)
             print(text)
             print(f"Generated {len(generated) - len(prompt_ids)} tokens in {sum(token_times):.2f} seconds")
 
 
-@hax.named_jit(donate_args=(False, True, True, False, False, False, True))
-@equinox.debug.assert_max_traces(max_traces=4)
+# @hax.named_jit(donate_args=(False, True, True, False, False, False, True))
+# @equinox.debug.assert_max_traces(max_traces=4)
 def do_generate(model, cache, page_table, prev_token, sampler, seq_id, start, temps, prng_key):
     prev_token = hax.named(prev_token, "position")
 
@@ -210,6 +207,20 @@ def do_generate(model, cache, page_table, prev_token, sampler, seq_id, start, te
     logits = logits["position", 0]
     tok, _ = sampler(logits, temps, key=prng_key)
     return tok, page_table, cache
+
+@haliax.named_jit(donate_args=(False, True, True, False, False, False, False))
+def do_generate_n_times(n, model, cache, page_table, prev_token, sampler, seq_id, start, temps, prng_key):
+    """Generate `n` tokens starting from `prev_token`."""
+    generated_tokens = jnp.full(n, -1, dtype=jnp.int32)
+    def do_block(i, gen_tokens, prev_token, page_table, cache, prng_key):
+        this_key, prng_key = jrandom.split(prng_key, 2)
+        tok, page_table, cache = do_generate(model, cache, page_table, prev_token, sampler, seq_id, start + i, temps, this_key)
+        gen_tokens = gen_tokens.at[i].set(tok.scalar())
+        return gen_tokens, tok.scalar().reshape((1,)), page_table, cache, prng_key
+    gen_tokens, last_tok, page_table, cache, _ = jax.lax.fori_loop(0, n, lambda i, args: do_block(i, *args),
+                                                                   (generated_tokens, prev_token, page_table, cache, prng_key),
+                                                                   unroll=4)
+    return gen_tokens, page_table, cache
 
 
 if __name__ == "__main__":
