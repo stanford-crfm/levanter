@@ -545,11 +545,7 @@ def test_attention_paged_decode_matches_full_ar():
     kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
     out_chunks = []
     for i in range(Pos.size):
-        pt, binfo = pt.allocate_for_seqs(
-            updated_seqs=hax.named([seq_id], "seq"),
-            new_counts=hax.named([1], "seq"),
-            tokens=hax.named([seq_id], "position"),
-        )
+        pt, binfo = pt.allocate_for_seq(hax.named([seq_id], "position"))
 
         x_tok = x[Pos, hax.dslice(i, 1)]
         sub_pos = x_tok.resolve_axis("position")
@@ -574,11 +570,8 @@ def test_attention_paged_decode_matches_full_prefill():
     pt, seq2 = pt.assign_seq_id_to_seq()
 
     x = hax.random.normal(x_key, (Pos, Embed)) * 0.2
-    seq_ids = hax.named([seq1, seq2, -1, -1, -1, -1, -1, -1], "seq")
-    new_token_counts = hax.named([4, 3, 0, 0, 0, 0, 0, 0], "seq")
-
     seg_ids = hax.named([0] * 4 + [1] * 3 + [-1] * 9, "position")
-    pt, binfo = pt.allocate_for_seqs(updated_seqs=seq_ids, new_counts=new_token_counts, tokens=seg_ids)
+    pt, binfo = pt.allocate_for_seq(seg_ids)
 
     causal = AttentionMask.causal().with_segment_ids(seg_ids)
     full_out = attn(x, causal, key=jrandom.PRNGKey(1))
@@ -610,7 +603,6 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     x = hax.arange((B, Pos, Embed), start=-2, step=0.1, dtype=jnp.float32)
     full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
 
-    seq_axis = Axis("seq", 2)
     pt = PageTable.init(max_pages=8, max_seqs=2, page_size=4, max_pages_per_seq=4)
     pt, seq1 = pt.assign_seq_id_to_seq()
     pt, seq2 = pt.assign_seq_id_to_seq()
@@ -623,11 +615,9 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     outputs1 = []
 
     # prefill
-    updated = hax.named([seq1, seq2], seq_axis)
-    new_counts = hax.named([prefix_size, prefix_size], seq_axis)
     tok_axis = Axis("position", 2 * prefix_size)
     tokens = hax.named([seq1] * prefix_size + [seq2] * prefix_size, tok_axis)
-    pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
+    pt, binfo = pt.allocate_for_seq(tokens)
     x_prefill = hax.concatenate(
         "position",
         [x0[Pos, 0:prefix_size], x1[Pos, 0:prefix_size]],
@@ -639,11 +629,9 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
 
     # decode rest in chunks
     for i in range(prefix_size, Pos.size, chunk_size):
-        updated = hax.named([seq1, seq2], seq_axis)
-        new_counts = hax.named([chunk_size, chunk_size], seq_axis)
         tok_axis = Axis("position", 2 * chunk_size)
         tokens = hax.named([seq1] * chunk_size + [seq2] * chunk_size, tok_axis)
-        pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
+        pt, binfo = pt.allocate_for_seq(tokens)
 
         x_chunk = hax.concatenate(
             "position",
@@ -688,13 +676,10 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
     outputs0 = []
     outputs1 = []
 
-    seq_axis = Axis("seq", 2)
     for step0, step1 in chunk_sizes:
         tok_axis = Axis("position", step0 + step1)
-        updated = hax.named([seq1, seq2], seq_axis)
-        new_counts = hax.named([step0, step1], seq_axis)
-        tokens = hax.named([seq1] * step0 + [seq2] * step1, tok_axis)
-        pt, binfo = pt.allocate_for_seqs(updated, new_counts, tokens)
+        seg_ids = hax.named([seq1] * step0 + [seq2] * step1, tok_axis)
+        pt, binfo = pt.allocate_for_seq(seg_ids)
 
         x_chunk = hax.concatenate(
             "position",
@@ -704,9 +689,7 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
             list(range(off0, off0 + step0)) + list(range(off1, off1 + step1)),
             tok_axis,
         )
-        with jax.disable_jit():
-            output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=kv_cache, binfo=binfo)
-        print(off0, off1, step0, step1)
+        output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=kv_cache, binfo=binfo)
         outputs0.append(output["position", hax.dslice(0, step0)])
         outputs1.append(output["position", hax.dslice(step0, step1)])
 

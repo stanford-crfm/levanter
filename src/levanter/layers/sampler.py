@@ -29,24 +29,28 @@ class Sampler(eqx.Module):
     def __init__(self, Vocab: hax.AxisSelector = "vocab"):
         self.Vocab = Vocab
 
-    # ---------------------------------------------------------------------
-    # Public API
-    # ---------------------------------------------------------------------
     def __call__(
         self,
         logits: NamedArray,
-        temperatures: NamedArray,
+        temperatures: NamedArray | float | jnp.ndarray,
         *,
         key: PRNGKeyArray,
     ) -> tuple[NamedArray, NamedArray]:
         """Sample token IDs and their log-probs.
 
-        Returns
-        -------
-        tokens : NamedArray
-            Sampled token indices with the same axes as *temperatures*.
-        log_probs : NamedArray
-            Log-probabilities for each sampled token (same shape as *tokens*).
+        Args:
+            logits : NamedArray
+                Logits for each token in the vocabulary, with axes including *vocab_axis*.
+            temperatures : NamedArray | float | jnp.ndarray
+                Temperature values for sampling. Scalar or named array with the same axes as *logits* except for the vocabulary axis.
+            key : PRNGKeyArray
+                JAX random key for sampling.
+
+        Returns:
+            tokens : NamedArray
+                Sampled token indices with the same axes as *temperatures*.
+            log_probs : NamedArray
+                Log-probabilities for each sampled token (same shape as *tokens*).
         """
 
         # Ensure float32 for numerical stability
@@ -60,7 +64,6 @@ class Sampler(eqx.Module):
         safe_t = hax.where(temperatures == 0, 1.0, temperatures).astype(jnp.float32)
         scaled_logits = logits_f32 / safe_t
 
-        # Sample using categorical – identical to Gumbel-max trick used in torch code
         samples = hax.random.categorical(key, scaled_logits, axis=self.Vocab)
 
         # Where temperature == 0, fall back to greedy choice

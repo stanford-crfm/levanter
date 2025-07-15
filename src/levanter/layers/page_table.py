@@ -41,6 +41,11 @@ class PageTable(eqx.Module):
     def current_num_seqs(self) -> int:
         return hax.sum(self.seq_lens >= 0).scalar()
 
+    @property
+    def max_Seq(self) -> hax.Axis:
+        """Axis representing the maximum number of sequences."""
+        return hax.Axis("seq", self.max_seqs)
+
     # ------------------------------------------------------------------
     # Constructors
     # ------------------------------------------------------------------
@@ -57,14 +62,17 @@ class PageTable(eqx.Module):
     @eqx.filter_jit(donate="all")
     def assign_seq_id_to_seq(self) -> tuple["PageTable", int]:
         seq_id = hax.argmin(self.seq_lens, "seq").scalar()
-        new_seq_lens = self.seq_lens.at["seq", seq_id].set(0)
+        # Error handling: if there are no sequences available, return -1
+        seq_id = hax.where(self.seq_lens["seq", seq_id] < 0, seq_id, -1)
+        new_seq_lens = hax.where(
+            seq_id >= 0,
+            self.seq_lens.at["seq", seq_id].set(0),
+            self.seq_lens)
         return dataclasses.replace(self, seq_lens=new_seq_lens), seq_id
 
-    def allocate_for_seqs(
+    def allocate_for_seq(
         self,
-        updated_seqs: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
-        new_counts: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
-        tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        token_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
     ) -> tuple["PageTable", "PageBatchInfo"]:
         """Allocate pages for new sequences and update ``seq_lens``."""
 
@@ -72,10 +80,15 @@ class PageTable(eqx.Module):
         page_owners = self.page_owners
         seq_lens = self.seq_lens
 
-        padded_updated_seqs = hax.where(updated_seqs < 0, self.max_seqs, updated_seqs)
+        token_seq_ids = hax.where(token_seq_ids < 0, self.max_seqs, token_seq_ids)
+        updated_seqs, new_counts = hax.unique_counts(token_seq_ids, self.max_Seq, fill_value=self.max_seqs)
+
+        new_counts = hax.where(updated_seqs >= self.max_seqs, 0, new_counts)
+
         current_lens = hax.where(seq_lens < 0, 0, seq_lens)
-        new_lens_tmp = current_lens.at["seq", padded_updated_seqs].add(new_counts, mode="drop")
-        new_lens = hax.where(seq_lens < 0, hax.where(new_lens_tmp > 0, new_lens_tmp, -1), new_lens_tmp)
+        new_lens = current_lens.at["seq", updated_seqs].add(new_counts, mode="drop")
+        # anything that was -1 should still be -1
+        new_lens = hax.where(self.seq_lens >= 0, new_lens, -1)
 
         new_num_pages_needed = (new_lens + self.page_size - 1) // self.page_size
         old_num_pages_needed = (seq_lens + self.page_size - 1) // self.page_size
@@ -108,12 +121,12 @@ class PageTable(eqx.Module):
             seq_lens=new_lens,
         )
 
-        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts, tokens)
+        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts, token_seq_ids)
 
         return new_table, batch_info
 
     def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts, tokens):
-        mask = updated_seqs >= 0
+        mask = hax.logical_and(updated_seqs >= 0, updated_seqs < self.max_seqs)
         safe_updated = hax.where(mask, updated_seqs, 0)
 
         gathered_page_indices = new_table.page_indices["seq", safe_updated]

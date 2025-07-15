@@ -52,13 +52,9 @@ def test_page_batch_info_shapes():
 
 def test_allocate_for_seqs_with_padding():
     pt = _make_table()
-    axis = pt.seq_lens.axes[0]
-    counts = hax.named(jnp.array([1, 0, 0, 0], dtype=jnp.int32), axis)
+    pt, seq_id = pt.assign_seq_id_to_seq()
 
-    updated = hax.named(jnp.array([0, -1, -1, -1], dtype=jnp.int32), axis)
-
-    tokens = hax.named(jnp.array([0], dtype=jnp.int32), hax.Axis("position", 1))
-    new_pt, batch_info = pt.allocate_for_seqs(updated, counts, tokens)
+    new_pt, batch_info = pt.allocate_for_seq(hax.zeros({"position": 1}, dtype=jnp.int32))
 
     assert batch_info.new_token_dests.array[0] == 0
 
@@ -72,11 +68,8 @@ def test_allocate_for_seqs_updates_only_valid_ids():
     seq_lens = hax.named(jnp.array([0, 0, 0, 0, 0, 0, -1, -1], dtype=jnp.int32), axis)
     pt = dataclasses.replace(pt, seq_lens=seq_lens)
 
-    updated = hax.named(jnp.array([2, 3, 5, -1, -1, -1, -1, -1], dtype=jnp.int32), axis)
-    counts = hax.named(jnp.array([1, 2, 3, 0, 0, 10, 0, 0], dtype=jnp.int32), axis)
-
     tokens = hax.named(jnp.array([2, 3, 3, 5, 5, 5], dtype=jnp.int32), hax.Axis("position", 6))
-    new_pt, batch_info = pt.allocate_for_seqs(updated, counts, tokens)
+    new_pt, batch_info = pt.allocate_for_seq(tokens)
 
     assert jnp.all(new_pt.seq_lens.array[:6] == jnp.array([0, 0, 1, 2, 0, 3]))
     assert jnp.all(new_pt.seq_lens.array[6:] == -1)

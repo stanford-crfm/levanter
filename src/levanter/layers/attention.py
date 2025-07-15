@@ -27,6 +27,7 @@ from jaxtyping import PRNGKeyArray
 import haliax
 import haliax as hax
 import haliax.nn as hnn
+import haliax.haxtyping as ht
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
@@ -1783,19 +1784,18 @@ def ragged_paged_attention(
 
 
 def _do_tpu_ragged_paged_attention(
-    q: NamedArray,
-    kv_pages: NamedArray,
-    kv_lens: NamedArray,
-    page_indices: NamedArray,
-    cu_q_lens: NamedArray,
-    num_seqs: jnp.ndarray,
+    q: ht.Float[NamedArray, "position kv_head q_heads_per_group head_size"],
+    kv_pages: ht.Float[NamedArray, "page page_size kv_head head_size"],
+    kv_lens: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
+    page_indices: ht.i32[NamedArray, "seq page"],
+    cu_q_lens: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
+    num_seqs: jnp.ndarray,  # scalar int32
     sm_scale: float = 1.0,
     soft_cap: float | None = None,
 ) -> NamedArray:
     # Usual shardmap dance
-    # The TPU kernel expects the second dimension of the query tensor to be the
-    # total number of query heads.  ``q`` is shaped
-    # ``[position, kv_head, q_heads_per_group, head_size]`` so we need to merge
+    # The TPU kernel expects the second dimension of the query tensor to be the total number of query heads.
+    # ``q`` is shaped ``[position, kv_head, q_heads_per_group, head_size]`` so we need to merge
     # the head axes.  Use a fresh axis name so the partitioning rules treat this
     # as query heads rather than KV heads.
     q_flat = q.flatten_axes(("kv_head", "q_heads_per_group"), "kv_head")
@@ -1804,16 +1804,12 @@ def _do_tpu_ragged_paged_attention(
     else:
         this_num_seqs = num_seqs
 
-
     # print(f"""Shardings:
     # q_flat: {q_flat.axes} {hax.partitioning.pspec_for_axis(q_flat.axes)}
     # kv_pages: {kv_pages.axes} {haliax.partitioning.pspec_for_axis(kv_pages.axes)}
     # kv_lens: {kv_lens.axes} {haliax.partitioning.pspec_for_axis(kv_lens.axes)}
     # page_indices: {page_indices.axes} {haliax.partitioning.pspec_for_axis(page_indices.axes)}
     # cu_q_lens: {cu_q_lens.axes} {haliax.partitioning.pspec_for_axis(cu_q_lens.axes)}""")
-
-
-
 
     o = shard_map(
         functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale, soft_cap=soft_cap),
