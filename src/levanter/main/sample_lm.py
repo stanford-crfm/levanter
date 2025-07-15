@@ -1,4 +1,3 @@
-import shutil
 
 import jax
 import time
@@ -19,7 +18,6 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from haliax.jax_utils import is_jax_array_like
 
-from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.layers.page_table import PageTable
@@ -95,12 +93,9 @@ def do_prefill(model, cache, page_table: PageTable, tokens, seq_ids, sampler, te
     pos_ids = page_table.pos_ids_from_seq_ids(seq_ids)
     page_table, binfo = page_table.allocate_for_seq(token_seq_ids=seq_ids)
 
-    jax.debug.print("this pos_ids={} computed={}", pos_ids, hax.arange(tokens.axes[0], dtype=jnp.int32))
-
     logits, cache = model.decode(tokens, cache, binfo, pos_ids)
     next_tok, _ = sampler(logits["position", -1], temps, key=key)
     return next_tok, page_table, cache
-
 
 
 
@@ -145,10 +140,10 @@ def main(config: SampleLmConfig):
         prompt_tokens = hax.NamedArray(jnp.array(prompt_ids, dtype=jnp.int32), axes=(prompt_axis,))
 
         page_table = PageTable.init(
-            max_pages=1,
-            max_seqs=1,
-            page_size=len(prompt_ids) + config.max_new_tokens,
-            max_pages_per_seq=1,
+            max_pages=10,
+            max_seqs=64,
+            page_size=16,
+            max_pages_per_seq=32,
         )
         cache = model.initial_cache(page_table, dtype=jnp.bfloat16)
 
@@ -174,21 +169,24 @@ def main(config: SampleLmConfig):
             page_table = page_table.free_pages(0)
             page_table, seq_id = page_table.assign_seq_id_to_seq()
 
-            if R == 5:
-                start_profiler("/tmp/gen_profile", create_perfetto_link=False)
-            elif R == 50:
-                stop_profiler_and_maybe_wait(create_perfetto_link=False)
-                levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
-                shutil.rmtree("/tmp/gen_profile")
-
+            # if R == 5:
+            #     start_profiler("/tmp/gen_profile", create_perfetto_link=False)
+            # elif R == 50:
+            #     stop_profiler_and_maybe_wait(create_perfetto_link=False)
+            #     levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
+            #     shutil.rmtree("/tmp/gen_profile")
+            #
             seq_ids = hax.full_like(prompt_tokens, seq_id, dtype=jnp.int32)
+            time_in = time.time()
 
             tok, page_table, cache = do_prefill(
                 model, cache, page_table, prompt_tokens, seq_ids, sampler, temps, prng_key
             )
+            tok = tok.array
+            tok.block_until_ready()
+            print(f"Prefill took {time.time() - time_in:.2f} seconds")
 
-            generated = list(prompt_ids) + [int(tok.array)]
-            time_in = time.time()
+            generated = list(prompt_ids) + [int(tok)]
             prng_key = jrandom.PRNGKey(R)
             prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
 

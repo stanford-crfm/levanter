@@ -79,6 +79,7 @@ class PageTable(eqx.Module):
             self.seq_lens)
         return dataclasses.replace(self, seq_lens=new_seq_lens), seq_id
 
+    @eqx.filter_jit
     def allocate_for_seq(
         self,
         token_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
@@ -227,3 +228,10 @@ class PageBatchInfo(eqx.Module):
 
     def __post_init__(self):
         assert isinstance(self.num_seqs, jnp.ndarray), "num_seqs must be a JAX ndarray"
+
+
+
+def _find_first(arr, value, axis):
+    mask = arr == value
+    first = hax.argmax(mask, axis=axis)
+    return hax.where(mask.any(), first, -1)
