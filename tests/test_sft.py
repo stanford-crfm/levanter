@@ -2,7 +2,6 @@ import equinox
 import jax
 import jax.numpy as jnp
 import pytest
-from transformers import AutoTokenizer
 
 import haliax as hax
 
@@ -16,13 +15,13 @@ class TestModel(equinox.Module):
     lm_head: hax.nn.Linear
 
 
-def test_reinitialize_some_tokens():
+def test_reinitialize_some_tokens(local_gpt2_tokenizer):
     # Setup test data
     embed_dim = 32
     tokens_to_reinit = ["<|test_token|>", "<|another_token|>"]
 
     # Create a simple tokenizer with our test tokens
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = local_gpt2_tokenizer
     tokenizer.add_special_tokens({"additional_special_tokens": tokens_to_reinit})
     vocab_size = len(tokenizer)
 
@@ -73,17 +72,17 @@ def test_reinitialize_some_tokens():
             ), f"Embedding for token {i} was changed when it shouldn't have been"
 
 
-def test_reinitialize_some_tokens_invalid_tokens():
+def test_reinitialize_some_tokens_invalid_tokens(local_gpt2_tokenizer):
     # Test with tokens not in vocabulary
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = local_gpt2_tokenizer
     model = None
 
     with pytest.raises(ValueError, match="One or more tokens are not in the tokenizer vocabulary"):
         reinitialize_some_tokens(model, tokenizer, ["<mklamnfljkaf>"], jax.random.PRNGKey(0))
 
 
-def test_reinitialize_some_tokens_empty_list():
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+def test_reinitialize_some_tokens_empty_list(local_gpt2_tokenizer):
+    tokenizer = local_gpt2_tokenizer
     model = None
 
     with pytest.raises(ValueError, match="No tokens to reinitialize"):
