@@ -119,8 +119,19 @@ class PageTable(eqx.Module):
             )
             return new_page_indices, new_page_owners
 
+        def outer(i, carry):
+            page_indices, page_owners = carry
+            seq_id = updated_seqs["seq", i].scalar()
+
+            def do_alloc(carry):
+                return _alloc_pages_for_seq(seq_id, carry)
+
+            cond = jnp.logical_and(seq_id >= 0, seq_id < self.max_seqs)
+            page_indices, page_owners = jax.lax.cond(cond, do_alloc, lambda c: c, (page_indices, page_owners))
+            return page_indices, page_owners
+
         page_indices, page_owners = jax.lax.fori_loop(
-            0, self.max_seqs, _alloc_pages_for_seq, (page_indices, page_owners)
+            0, updated_seqs.axis_size("seq"), outer, (page_indices, page_owners)
         )
 
         new_table = dataclasses.replace(
