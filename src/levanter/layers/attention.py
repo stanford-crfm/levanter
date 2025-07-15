@@ -1713,15 +1713,14 @@ class KvPageCache(eqx.Module):
 
         num_pages = self.kv_pages.array.shape[0]
         page_size = self.kv_pages.array.shape[1]
-        kv_heads = new_k.array.shape[1]
 
         token_dests = batch_info.new_token_dests
 
         t_pages = hax.where(token_dests >= 0, token_dests // page_size, num_pages)
         t_slots = hax.where(token_dests >= 0, token_dests % page_size, page_size)
 
-        kv_pages = self.kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", :kv_heads].set(new_k)
-        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", kv_heads:].set(new_v)
+        kv_pages = self.kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 0::2].set(new_k)
+        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 1::2].set(new_v)
 
         return dataclasses.replace(self, kv_pages=kv_pages)
 
@@ -1752,7 +1751,7 @@ def ragged_paged_attention(
             return False
         return True
 
-    if _tpu_rpa_available() and False:
+    if _tpu_rpa_available():
         try:
             out = _do_tpu_ragged_paged_attention(
                 q,
@@ -1766,6 +1765,9 @@ def ragged_paged_attention(
             )
             return out
         except Exception:  # pragma: no cover - fall back if kernel fails
+            warnings.warn(
+                "TPU ragged paged attention failed. Falling back to reference implementation."
+            )
             logger.warning("Failed to use TPU ragged paged attention. Falling back to reference", exc_info=True)
 
     return default_ragged_paged_attention(
@@ -1926,8 +1928,8 @@ def default_ragged_paged_attention(
                 kv_block = slots.flatten_axes(("page", "slot"), "kv_position")
 
                 kv_tok = hax.arange(kv_block.resolve_axis("kv_position"), start=kv_pos_start)
-                k_block = kv_block["kv_head", 0 : H.size]
-                v_block = kv_block["kv_head", H.size :]
+                k_block = kv_block["kv_head", 0::2]
+                v_block = kv_block["kv_head", 1::2]
 
                 attn_b = hax.dot(q_block, k_block, axis=(D,))
 

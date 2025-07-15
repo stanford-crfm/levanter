@@ -1,3 +1,5 @@
+import shutil
+
 import equinox.debug
 import jax
 import time
@@ -134,7 +136,7 @@ def main(config: SampleLmConfig):
             max_pages_per_seq=1,
         )
         page_table, seq_id = page_table.assign_seq_id_to_seq()
-        cache = model.initial_cache(page_table, dtype=config.trainer.mp.compute_dtype)
+        cache = model.initial_cache(page_table, dtype=jnp.float32)
 
         seq_named = hax.named([seq_id], "seq")
         temps = hax.full((), config.temperature, dtype=jnp.float32)
@@ -159,10 +161,12 @@ def main(config: SampleLmConfig):
             prng_key = jrandom.PRNGKey(0)
             page_table = page_table.free_pages(0)
 
-            if R == 5 and False:
-                start_profiler("gen_profile", create_perfetto_link=True)
-            elif R == 50 and False:
-                stop_profiler_and_maybe_wait(create_perfetto_link=True)
+            if R == 5:
+                start_profiler("/tmp/gen_profile", create_perfetto_link=False)
+            elif R == 50:
+                stop_profiler_and_maybe_wait(create_perfetto_link=False)
+                levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
+                shutil.rmtree("/tmp/gen_profile")
 
             tok, page_table, cache = do_prefill(
                 model, cache, page_table, prompt_tokens, sampler, seq_named, temps, prng_key

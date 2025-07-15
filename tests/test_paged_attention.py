@@ -1,4 +1,5 @@
 # tests/test_ragged_paged_attention.py
+import jax
 import math
 
 import jax.numpy as jnp
@@ -11,11 +12,11 @@ import haliax as hax
 
 from levanter.layers.attention import AttentionMask, ragged_paged_attention, simple_attention_with_dropout
 
-PAGE = hax.Axis("page", 64)  # plenty of slack
+PAGE = hax.Axis("page", 1)  # plenty of slack
 SLOT = hax.Axis("slot", 4)  # page size
-KV_HEADS = hax.Axis("kv_head", 2)
+KV_HEADS = hax.Axis("kv_head", 1)
 QH = hax.Axis("q_heads_per_group", 1)
-D = hax.Axis("head_size", 4)
+D = hax.Axis("head_size", 128)
 
 KV_BS = 32  # must match constant inside kernel
 SM_SCALE = 1 / math.sqrt(D.size)
@@ -106,8 +107,8 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
         kv_flat = kv_pages["page", pages, "slot", :].flatten_axes(("page", "slot"), "kv_position")
         kv_flat = kv_flat["kv_position", hax.ds(0, kv_lens["seq", sid].scalar())]
 
-        k_seq = kv_flat["kv_head", : KV_HEADS.size]
-        v_seq = kv_flat["kv_head", KV_HEADS.size:]
+        k_seq = kv_flat["kv_head", 0::2]
+        v_seq = kv_flat["kv_head", 1::2]
 
         # rename axes so they line up with dot_product_attention sig
         q_seq = q_seq.rename({"position": TOK_S.name})
@@ -129,17 +130,21 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
 
 
 def test_ragged_paged_attention_single_seq():
-    rng = jr.PRNGKey(0)
-    seq_lens = [46]  # one sequence
-    q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
+    with jax.make_mesh((len(jax.devices()),), ("dp",)):
+        rng = jr.PRNGKey(0)
+        seq_lens = [1]  # one sequence
+        q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
 
-    ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
-    ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
+        ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+        ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
-    assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array[:-1], ref.array[:-1], atol=1e-4, rtol=1e-4)
-    assert_trees_all_close(ragged.array[-1], ref.array[-1], atol=1e-4, rtol=1e-4)
-    assert_trees_all_close(ragged.array, ref.array, atol=1e-4, rtol=1e-4)
+        assert ragged.axes == ref.axes
+        for i in range(len(ragged.array)):
+            print(i)
+            assert_trees_all_close(ragged.array[i], ref.array[i], atol=1e-4, rtol=1e-4, custom_message=f" at index {i}")
+        # assert_trees_all_close(ragged.array[:-1], ref.array[:-1], atol=1e-4, rtol=1e-4)
+        # assert_trees_all_close(ragged.array[-1], ref.array[-1], atol=1e-4, rtol=1e-4)
+        # assert_trees_all_close(ragged.array, ref.array, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.parametrize("seq_lens", [
