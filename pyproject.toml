@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.7.19,<0.8.0"]
+build-backend = "uv_build"
 
 [project]
 name = "levanter"
@@ -35,7 +35,7 @@ dependencies = [
     "draccus>=0.11.5",
     "pyarrow>=11.0.0",
     "zstandard>=0.18.0",
-    "datasets>=3.1.0,<4.0",
+    "datasets>=3.1.0,<5.0",
     "gcsfs>=2024.2,<2026",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
@@ -95,6 +95,23 @@ mypy_path = ["src"]
 [tool.mypy-haliax.core]
 ignore_missing_imports = true
 
+# [flake8]
+#exclude = .git
+#max-line-length = 120
+#ignore = E203, E501, W503, W605, F821, E266, E731
+#per-file-ignores =
+#    */__init__.py: F401
+#    examples/*.py: E402
+
+[tool.ruff]
+line-length = 119
+target-version = "py310"
+# Note: Grow more strict over time!
+extend-exclude = ["scripts/"]
+
+[tool.ruff.lint]
+ignore = [ "E203", "E501", "W605", "F821", "E266", "E731", "E741" ]
+
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
 markers = [
@@ -109,12 +126,38 @@ test = [
     "pytest",
     "pytest-forked",
     "pytest-asyncio",
-    "flake8",
     "soundfile",
     "librosa",
     "tensorboardX>=2.6",
 ]
+gpu = [
+    "jax[cuda12]>=0.5",
+]
+tpu = [
+    "jax[tpu]>=0.5",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["levanter", "levanter.*"]
+dev = [
+    "pytest",
+    "pytest-forked",
+    "pytest-asyncio",
+    "soundfile",
+    "librosa",
+    "tensorboardX>=2.6",
+    "pre-commit",
+]
+
+# we only use pytorch for more thorough testing, so we don't require it by default
+torch_test = [
+    "torch>=2.7.0",
+    "peft>=0.12.0",
+]
+
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "gpu" },
+        { extra = "tpu" },
+    ],
+]  # Never solve for both GPU and TPU at the same time
