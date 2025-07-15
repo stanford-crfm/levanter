@@ -8,25 +8,15 @@ import equinox as eqx
 import jax
 from jax._src.tree_util import DictKey, FlattenedIndexKey, GetAttrKey, KeyEntry, PyTreeDef, SequenceKey
 from jaxtyping import PyTree
-
-try:
-    from haliax.util import StringHolderEnum
-except Exception:  # pragma: no cover - fallback for environments without haliax
-    from enum import Enum
-
-    class _StringHolderEnum(str, Enum):
-        """Simple fallback when haliax is unavailable."""
-
-    StringHolderEnum = _StringHolderEnum
+from enum import Enum
 
 
-T = TypeVar("T", bound=PyTree)
-
-
-class NonePolicy(StringHolderEnum):
+class NonePolicy(str, Enum):
     PRESERVE = "preserve"
     REPLACE = "replace"
     ERROR = "error"
+
+T = TypeVar("T", bound=PyTree)
 
 
 def inference_mode(tree: T, value: bool, none_policy: str = NonePolicy.REPLACE) -> T:
@@ -150,11 +140,13 @@ def key_path_to_str(path: Sequence) -> str:
     return out
 
 
-class PackedLeaf(eqx.Module):
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class PackedLeaf:
     """Metadata describing the location and shape of a packed leaf."""
 
-    offset: int = eqx.static_field()
-    shape: tuple[int, ...] = eqx.static_field()
+    offset: int = dataclasses.field(metadata={"static": True})
+    shape: tuple[int, ...] = dataclasses.field(metadata={"static": True})
 
 
 def pack_pytree(tree: PyTree, dtype=jnp.float32) -> tuple[PyTree, jnp.ndarray]:
