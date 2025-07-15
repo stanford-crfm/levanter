@@ -31,6 +31,7 @@ from levanter.utils.jax_utils import use_cpu_device
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class SampleLmConfig:
     """Configuration for simple text sampling."""
@@ -67,28 +68,45 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
     else:
         assert hasattr(config.model, "hf_checkpoint_converter"), "model config lacks HF loader"
         converter: HFCheckpointConverter = config.model.hf_checkpoint_converter()
-        converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=load_tokenizer(config.tokenizer))
+        converter = converter.replaced(reference_checkpoint=config.hf_checkpoint,
+                                       tokenizer=load_tokenizer(config.tokenizer))
         model = converter.load_pretrained(config.model.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype)
         return model
 
 
-@haliax.named_jit(donate_args=(False, True, True, False, False, True))
-def do_prefill(model, cache, page_table, tokens, sampler, temps, key):
-    """Prefill ``tokens`` and sample the next token."""
-    pos_axis = tokens.axes[0]
-    # TODO: actual batch
-    page_table, binfo = page_table.allocate_for_seq(
-        token_seq_ids=hax.zeros_like(tokens, dtype=jnp.int32)
-    )
+# @haliax.named_jit(donate_args=(False, True, True, False, False, True))
+# def do_prefill(model, cache, page_table, tokens, sampler, temps, key):
+#     """Prefill ``tokens`` and sample the next token."""
+#     pos_axis = tokens.axes[0]
+#     # TODO: actual batch
+#     page_table, binfo = page_table.allocate_for_seq(
+#         token_seq_ids=hax.zeros_like(tokens, dtype=jnp.int32)
+#     )
+#
+#     pos_ids = hax.arange(pos_axis, dtype=jnp.int32)
+#     logits, cache = model.decode(tokens, cache, binfo, pos_ids)
+#     next_tok, _ = sampler(logits["position", -1], temps, key=key)
+#     return next_tok, page_table, cache
 
-    pos_ids = hax.arange(pos_axis, dtype=jnp.int32)
+
+@haliax.named_jit(donate_args=(False, True, True, False, False, True))
+def do_prefill(model, cache, page_table: PageTable, tokens, seq_ids, sampler, temps, key):
+    """Prefill ``tokens`` and sample the next token."""
+    pos_ids = page_table.pos_ids_from_seq_ids(seq_ids)
+    page_table, binfo = page_table.allocate_for_seq(token_seq_ids=seq_ids)
+
+    jax.debug.print("this pos_ids={} computed={}", pos_ids, hax.arange(tokens.axes[0], dtype=jnp.int32))
+
     logits, cache = model.decode(tokens, cache, binfo, pos_ids)
     next_tok, _ = sampler(logits["position", -1], temps, key=key)
     return next_tok, page_table, cache
 
 
+
+
 def tree_byte_size(tree):
     """Calculate the total byte size of a JAX tree."""
+
     # TODO: take into account sharding
     def _leaf_size(x):
         if is_jax_array_like(x):
@@ -142,13 +160,13 @@ def main(config: SampleLmConfig):
             (model, cache, page_table, prompt_tokens, sampler, temps)
         )
 
-        print(f"Arg sizes for pre_fill {size / 1024**2:.2f} MB:\n"
-              f"  model: {model_size / 1024**2:.2f} MB\n"
-              f"  cache: {tree_byte_size(cache) / 1024**2:.2f} MB\n"
-              f"  page_table: {tree_byte_size(page_table) / 1024**2:.2f} MB\n"
-              f"  prompt_tokens: {tree_byte_size(prompt_tokens) / 1024**2:.2f} MB\n"
-              f"  sampler: {tree_byte_size(sampler) / 1024**2:.2f} MB\n"
-              f"  temps: {tree_byte_size(temps) / 1024**2:.2f} MB")
+        print(f"Arg sizes for pre_fill {size / 1024 ** 2:.2f} MB:\n"
+              f"  model: {model_size / 1024 ** 2:.2f} MB\n"
+              f"  cache: {tree_byte_size(cache) / 1024 ** 2:.2f} MB\n"
+              f"  page_table: {tree_byte_size(page_table) / 1024 ** 2:.2f} MB\n"
+              f"  prompt_tokens: {tree_byte_size(prompt_tokens) / 1024 ** 2:.2f} MB\n"
+              f"  sampler: {tree_byte_size(sampler) / 1024 ** 2:.2f} MB\n"
+              f"  temps: {tree_byte_size(temps) / 1024 ** 2:.2f} MB")
 
         for R in range(55):
             token_times = []
@@ -163,17 +181,18 @@ def main(config: SampleLmConfig):
                 levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
                 shutil.rmtree("/tmp/gen_profile")
 
+            seq_ids = hax.full_like(prompt_tokens, seq_id, dtype=jnp.int32)
+
             tok, page_table, cache = do_prefill(
-                model, cache, page_table, prompt_tokens, sampler, temps, prng_key
+                model, cache, page_table, prompt_tokens, seq_ids, sampler, temps, prng_key
             )
 
             generated = list(prompt_ids) + [int(tok.array)]
             time_in = time.time()
             prng_key = jrandom.PRNGKey(R)
             prev_token = jnp.array([generated[-1]], dtype=jnp.int32)
-            start = jnp.array(len(generated), dtype=jnp.int32)
 
-            toks, page_table, cache, = do_generate_n_times(config.max_new_tokens, model, cache, page_table, prev_token, sampler, start, temps, prng_key)
+            toks, page_table, cache, = do_generate_n_times(config.max_new_tokens, model, cache, page_table, prev_token, sampler, temps, prng_key)
             toks.block_until_ready()
             time_out = time.time()
             token_times.append(time_out - time_in)
@@ -185,32 +204,36 @@ def main(config: SampleLmConfig):
 
 
 
-
 # @hax.named_jit(donate_args=(False, True, True, False, False, False, True))
 # @equinox.debug.assert_max_traces(max_traces=4)
-def do_generate(model, cache, page_table, prev_token, sampler, start, temps, prng_key):
+@jax.profiler.annotate_function
+def do_generate(model, cache, page_table, prev_token, sampler, pos_ids, temps, prng_key):
     prev_token = hax.named(prev_token, "position")
 
     page_table, binfo = page_table.allocate_for_seq(token_seq_ids=hax.zeros({"position": 1}, dtype=jnp.int32))
-    pos_id = hax.arange(Axis("position", 1), start=start)
-    logits, cache = model.decode(prev_token, cache, binfo, pos_id)
+    logits, cache = model.decode(prev_token, cache, binfo, pos_ids)
     logits = logits["position", 0]
     tok, _ = sampler(logits, temps, key=prng_key)
     return tok, page_table, cache
 
+
 @haliax.named_jit(donate_args=(False, False, True, True, False, False, False))
-def do_generate_n_times(n, model, cache, page_table, prev_token, sampler, start, temps, prng_key):
+def do_generate_n_times(n, model, cache, page_table, prev_token, sampler, temps, prng_key):
     """Generate `n` tokens starting from `prev_token`."""
     generated_tokens = jnp.full(n, -1, dtype=jnp.int32)
 
     def do_block(i, gen_tokens, prev_token, page_table: PageTable, cache, prng_key):
         this_key, prng_key = jrandom.split(prng_key, 2)
-        tok, page_table, cache = do_generate(model, cache, page_table, prev_token, sampler, start + i, temps, this_key)
+        pos_id = page_table.pos_ids_from_seq_ids(hax.zeros({"position": 1}, dtype=jnp.int32))
+        # jax.debug.print("Generating token {i} with prev_token={prev_token}, pos_id={pos_id}, pt_lens={pt_lens}", i=i, prev_token=prev_token, pos_id=pos_id, pt_lens=page_table.seq_lens)
+        # tok, page_table, cache = do_generate(model, cache, page_table, prev_token, sampler, pos_id, temps, this_key)
+        tok, page_table, cache = do_generate(model, cache, page_table, prev_token, sampler, pos_id, temps, this_key)
         gen_tokens = gen_tokens.at[i].set(tok.scalar())
         return gen_tokens, tok.scalar().reshape((1,)), page_table, cache, prng_key
 
     gen_tokens, last_tok, page_table, cache, _ = jax.lax.fori_loop(0, n, lambda i, args: do_block(i, *args),
-                                                                   (generated_tokens, prev_token, page_table, cache, prng_key),
+                                                                   (generated_tokens, prev_token, page_table, cache,
+                                                                    prng_key),
                                                                    unroll=4)
     return gen_tokens, page_table, cache
 

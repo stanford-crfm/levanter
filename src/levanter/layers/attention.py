@@ -1720,6 +1720,8 @@ class KvPageCache(eqx.Module):
         t_pages = hax.where(token_dests >= 0, token_dests // page_size, num_pages)
         t_slots = hax.where(token_dests >= 0, token_dests % page_size, page_size)
 
+        new_k = new_k.astype(self.kv_pages.dtype)
+        new_v = new_v.astype(self.kv_pages.dtype)
         kv_pages = self.kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 0::2].set(new_k)
         kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 1::2].set(new_v)
 

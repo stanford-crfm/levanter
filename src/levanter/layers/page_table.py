@@ -10,6 +10,15 @@ from haliax import NamedArray
 __all__ = ["PageTable", "PageBatchInfo"]
 
 
+def _relative_positions(seg_ids: jnp.ndarray):
+    idx = jnp.arange(seg_ids.shape[0])
+    is_start = jnp.concatenate([jnp.array([True]),
+                                seg_ids[1:] != seg_ids[:-1]])
+    start_idx = idx * is_start.astype(idx.dtype)
+    seg_start = jnp.maximum.accumulate(start_idx)
+    return idx - seg_start  # 0,1,2,… inside each segment
+
+
 class PageTable(eqx.Module):
     """Tracks which pages are allocated to which sequences."""
 
@@ -188,6 +197,22 @@ class PageTable(eqx.Module):
             page_indices=new_page_indices,
             seq_lens=new_seq_lens,
         )
+
+    def pos_ids_from_seq_ids(self, seq_ids: ht.i32[NamedArray, "position"]) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
+        """
+        Given sequence IDs, compute the position IDs for each sequence.
+
+        seg_ids may be padded with negative numbers, which will be ignored in the output.
+        """
+        rel_pos = _relative_positions(seq_ids.array)
+        # We need to add the start position of the segment to the relative position
+        seg_pos_starts = self.seq_lens["seq", rel_pos].array
+
+        pos_ids = seg_pos_starts + rel_pos
+        # mask out the -1 segments
+        pos_ids = jnp.where(seq_ids.array < 0, -1, pos_ids)
+
+        return hax.named(pos_ids, "position")
 
 
 class PageBatchInfo(eqx.Module):
