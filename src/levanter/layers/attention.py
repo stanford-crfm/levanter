@@ -1805,12 +1805,12 @@ def _do_tpu_ragged_paged_attention(
         this_num_seqs = num_seqs
 
 
-    print(f"""Shardings:
-    q_flat: {q_flat.axes} {hax.partitioning.pspec_for_axis(q_flat.axes)}
-    kv_pages: {kv_pages.axes} {haliax.partitioning.pspec_for_axis(kv_pages.axes)}
-    kv_lens: {kv_lens.axes} {haliax.partitioning.pspec_for_axis(kv_lens.axes)}
-    page_indices: {page_indices.axes} {haliax.partitioning.pspec_for_axis(page_indices.axes)}
-    cu_q_lens: {cu_q_lens.axes} {haliax.partitioning.pspec_for_axis(cu_q_lens.axes)}""")
+    # print(f"""Shardings:
+    # q_flat: {q_flat.axes} {hax.partitioning.pspec_for_axis(q_flat.axes)}
+    # kv_pages: {kv_pages.axes} {haliax.partitioning.pspec_for_axis(kv_pages.axes)}
+    # kv_lens: {kv_lens.axes} {haliax.partitioning.pspec_for_axis(kv_lens.axes)}
+    # page_indices: {page_indices.axes} {haliax.partitioning.pspec_for_axis(page_indices.axes)}
+    # cu_q_lens: {cu_q_lens.axes} {haliax.partitioning.pspec_for_axis(cu_q_lens.axes)}""")
 
 
 
