@@ -42,6 +42,7 @@ def test_page_batch_info_shapes():
         cu_q_lens=hax.named(jnp.array([0, 1, 2], dtype=jnp.int32), hax.Axis("seq_plus_one", 3)),
         num_seqs=jnp.array(2, dtype=jnp.int32),
         new_token_dests=hax.full((hax.Axis("position", 2),), -1, dtype=jnp.int32),
+        pos_ids=hax.zeros({"position": 2}, dtype=jnp.int32),
         page_size=2,
     )
 
