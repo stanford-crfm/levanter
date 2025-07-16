@@ -1,5 +1,6 @@
 import dataclasses
 
+import equinox as eqx
 import jax.numpy as jnp
 
 import haliax as hax
@@ -69,7 +70,7 @@ def test_allocate_for_seqs_updates_only_valid_ids():
     pt = dataclasses.replace(pt, seq_lens=seq_lens)
 
     tokens = hax.named(jnp.array([2, 3, 3, 5, 5, 5], dtype=jnp.int32), hax.Axis("position", 6))
-    new_pt, batch_info = pt.allocate_for_seq(tokens)
+    new_pt, batch_info = eqx.filter_jit(pt.allocate_for_seq)(tokens)
 
     assert jnp.all(new_pt.seq_lens.array[:6] == jnp.array([0, 0, 1, 2, 0, 3]))
     assert jnp.all(new_pt.seq_lens.array[6:] == -1)
