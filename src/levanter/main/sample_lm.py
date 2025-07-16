@@ -139,12 +139,12 @@ def main(config: SampleLmConfig):
         prompt_tokens = hax.NamedArray(jnp.array(prompt_ids, dtype=jnp.int32), axes=(prompt_axis,))
 
         page_table = PageTable.init(
-            max_pages=10,
-            max_seqs=64,
+            max_pages=100,
+            max_seqs=16,
             page_size=16,
             max_pages_per_seq=32,
         )
-        cache = model.initial_cache(page_table, dtype=jnp.bfloat16)
+        cache = eqx.filteR_jit(model.initial_cache)(page_table, dtype=jnp.bfloat16)
 
         temps = hax.full((), config.temperature, dtype=jnp.float32)
 
@@ -204,14 +204,13 @@ def main(config: SampleLmConfig):
 # @hax.named_jit(donate_args=(False, True, True, False, False, False, True))
 # @equinox.debug.assert_max_traces(max_traces=4)
 @jax.profiler.annotate_function
-def do_generate(model, cache, page_table, prev_token, sampler, pos_ids, temps, prng_key):
+def do_generate(model, cache, binfo, prev_token, sampler, pos_ids, temps, prng_key):
     prev_token = hax.named(prev_token, "position")
 
-    page_table, binfo = page_table.allocate_for_seq(token_seq_ids=hax.zeros({"position": 1}, dtype=jnp.int32))
     logits, cache = model.decode(prev_token, cache, binfo, pos_ids)
     logits = logits["position", 0]
     tok, _ = sampler(logits, temps, key=prng_key)
-    return tok, page_table, cache
+    return tok, cache
 
 
 @haliax.named_jit(donate_args=(False, False, True, True, False, False, False))
@@ -220,11 +219,12 @@ def do_generate_n_times(n, model, cache, page_table, prev_token, sampler, temps,
     generated_tokens = jnp.full(n, -1, dtype=jnp.int32)
 
     def do_block(i, gen_tokens, prev_token, page_table: PageTable, cache, prng_key):
+        page_table, binfo = page_table.allocate_for_seq(token_seq_ids=hax.zeros({"position": 1}, dtype=jnp.int32))
         this_key, prng_key = jrandom.split(prng_key, 2)
         pos_id = page_table.pos_ids_from_seq_ids(hax.zeros({"position": 1}, dtype=jnp.int32))
         # jax.debug.print("Generating token {i} with prev_token={prev_token}, pos_id={pos_id}, pt_lens={pt_lens}", i=i, prev_token=prev_token, pos_id=pos_id, pt_lens=page_table.seq_lens)
         # tok, page_table, cache = do_generate(model, cache, page_table, prev_token, sampler, pos_id, temps, this_key)
-        tok, page_table, cache = do_generate(model, cache, page_table, prev_token, sampler, pos_id, temps, this_key)
+        tok, cache = do_generate(model, cache, binfo, prev_token, sampler, pos_id, temps, this_key)
         gen_tokens = gen_tokens.at[i].set(tok.scalar())
         return gen_tokens, tok.scalar().reshape((1,)), page_table, cache, prng_key
 

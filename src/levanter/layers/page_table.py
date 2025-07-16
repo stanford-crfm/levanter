@@ -32,7 +32,7 @@ class PageTable(eqx.Module):
     # ------------------------------------------------------------------
     @property
     def num_pages(self) -> int:
-        return self.page_indices.axis_size("page") * self.page_indices.axis_size("seq")
+        return self.page_owners.axis_size("page")
 
     @property
     def pages_per_seq(self) -> int:
