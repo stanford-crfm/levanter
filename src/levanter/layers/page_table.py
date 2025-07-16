@@ -9,6 +9,8 @@ from haliax import NamedArray
 
 __all__ = ["PageTable", "PageBatchInfo"]
 
+from haliax.jax_utils import named_call
+
 
 def _relative_positions(seg_ids: jnp.ndarray):
     idx = jnp.arange(seg_ids.shape[0])
@@ -80,28 +82,26 @@ class PageTable(eqx.Module):
         return dataclasses.replace(self, seq_lens=new_seq_lens), seq_id
 
     @eqx.filter_jit
+    @named_call
+    @jax.profiler.annotate_function
     def allocate_for_seq(
         self,
         token_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
     ) -> tuple["PageTable", "PageBatchInfo"]:
         """Allocate pages for new sequences and update ``seq_lens``."""
 
-        page_indices = self.page_indices
-        page_owners = self.page_owners
-        seq_lens = self.seq_lens
-
         token_seq_ids = hax.where(token_seq_ids < 0, self.max_seqs, token_seq_ids)
         updated_seqs, new_counts = hax.unique_counts(token_seq_ids, self.max_Seq, fill_value=self.max_seqs)
 
         new_counts = hax.where(updated_seqs >= self.max_seqs, 0, new_counts)
 
-        current_lens = hax.where(seq_lens < 0, 0, seq_lens)
+        current_lens = hax.where(self.seq_lens < 0, 0, self.seq_lens)
         new_lens = current_lens.at["seq", updated_seqs].add(new_counts, mode="drop")
         # anything that was -1 should still be -1
         new_lens = hax.where(self.seq_lens >= 0, new_lens, -1)
 
         new_num_pages_needed = (new_lens + self.page_size - 1) // self.page_size
-        old_num_pages_needed = (seq_lens + self.page_size - 1) // self.page_size
+        old_num_pages_needed = (self.seq_lens + self.page_size - 1) // self.page_size
 
         def _alloc_pages_for_seq(seq_id, carry):
             page_indices, page_owners = carry
@@ -132,7 +132,7 @@ class PageTable(eqx.Module):
             return page_indices, page_owners
 
         page_indices, page_owners = jax.lax.fori_loop(
-            0, updated_seqs.axis_size("seq"), outer, (page_indices, page_owners)
+            0, updated_seqs.axis_size("seq"), outer, ((self.page_indices), (self.page_owners))
         )
 
         new_table = dataclasses.replace(

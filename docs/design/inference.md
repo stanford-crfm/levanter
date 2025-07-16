@@ -28,11 +28,15 @@ torch, not much interesting here given jetstream. focused on batch inference I t
 
 ## Tasks
 
-- [ ] Attention: do prefill for a batch of inputs
-- [ ] Attention: do decode for a batch of inputs
-- [ ] Attention: unit test that decode gives same output as prefill
-- [ ] simple sampler
-- [ ] initialize cache for a model (add a method to the lmheadmodel class?)
-- [ ] make a main to test the above
-- [ ] use paged attention for simple kvcache decoding (should be doable)
-- [ ] add support for ragged paged attention
+- [x] Attention: do prefill for a batch of inputs
+- [x] Attention: do decode for a batch of inputs
+- [x] Attention: unit test that decode gives same output as prefill
+- [x] simple sampler
+- [x] initialize cache for a model (add a method to the lmheadmodel class?)
+- [x] make a main to test the above
+- [x] use paged attention for simple kvcache decoding (should be doable)
+- [x] add support for ragged paged attention
+- [ ] make an offline batch inference that does continuous decoding
+- [ ] make an online scheduler that handles new requests and does continuous decoding
+- [ ] implement OpenAI compatible API for inference
+- [ ] automatic prefix caching

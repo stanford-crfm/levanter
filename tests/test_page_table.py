@@ -44,6 +44,7 @@ def test_page_batch_info_shapes():
         num_seqs=jnp.array(2, dtype=jnp.int32),
         new_token_dests=hax.full((hax.Axis("position", 2),), -1, dtype=jnp.int32),
         page_size=2,
+        pos_ids=hax.full((seq,), -1, dtype=jnp.int32),
     )
 
     assert pb.page_indices.axes == (seq, page)

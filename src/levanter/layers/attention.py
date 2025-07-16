@@ -1425,6 +1425,7 @@ class Attention(eqx.Module):
         return attn_output, kv_cache
 
     @named_call
+    @jax.profiler.annotate_function
     def paged_decode(
         self,
         x: NamedArray,
@@ -1863,8 +1864,8 @@ def default_ragged_paged_attention(
     It does each sequence independently
     """
 
-    Q_BS = min(4, q.axis_size("position"))  # block size for query
-    KV_BS = min(32, page_indices.axis_size("page"))  # block size for key-value
+    Q_BS = min(1, q.axis_size("position"))  # block size for query
+    KV_BS = min(2, page_indices.axis_size("page"))  # block size for key-value
     Q_B = hax.Axis("position", Q_BS)
 
     H = q.resolve_axis("kv_head")

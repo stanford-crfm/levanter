@@ -1,3 +1,4 @@
+import shutil
 
 import jax
 import time
@@ -18,6 +19,7 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from haliax.jax_utils import is_jax_array_like
 
+from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.layers.page_table import PageTable
@@ -144,7 +146,8 @@ def main(config: SampleLmConfig):
             page_size=16,
             max_pages_per_seq=32,
         )
-        cache = eqx.filteR_jit(model.initial_cache)(page_table, dtype=jnp.bfloat16)
+        cache = eqx.filter_jit(model.initial_cache)(page_table, dtype=jnp.bfloat16)
+        cache = hax.auto_sharded(cache)
 
         temps = hax.full((), config.temperature, dtype=jnp.float32)
 
@@ -168,13 +171,13 @@ def main(config: SampleLmConfig):
             page_table = page_table.free_pages(0)
             page_table, seq_id = page_table.assign_seq_id_to_seq()
 
-            # if R == 5:
-            #     start_profiler("/tmp/gen_profile", create_perfetto_link=False)
-            # elif R == 50:
-            #     stop_profiler_and_maybe_wait(create_perfetto_link=False)
-            #     levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
-            #     shutil.rmtree("/tmp/gen_profile")
-            #
+            if R == 5:
+                start_profiler("/tmp/gen_profile", create_perfetto_link=False)
+            elif R == 9:
+                stop_profiler_and_maybe_wait(create_perfetto_link=False)
+                levanter.tracker.current_tracker().log_artifact("/tmp/gen_profile", type="jax_profile")
+                shutil.rmtree("/tmp/gen_profile")
+
             seq_ids = hax.full_like(prompt_tokens, seq_id, dtype=jnp.int32)
             time_in = time.time()
 
@@ -203,7 +206,6 @@ def main(config: SampleLmConfig):
 
 # @hax.named_jit(donate_args=(False, True, True, False, False, False, True))
 # @equinox.debug.assert_max_traces(max_traces=4)
-@jax.profiler.annotate_function
 def do_generate(model, cache, binfo, prev_token, sampler, pos_ids, temps, prng_key):
     prev_token = hax.named(prev_token, "position")
 
