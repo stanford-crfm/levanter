@@ -93,8 +93,6 @@ class PageTable(eqx.Module):
         token_seq_ids = hax.where(token_seq_ids < 0, self.max_seqs, token_seq_ids)
         updated_seqs, new_counts = hax.unique_counts(token_seq_ids, self.max_Seq, fill_value=self.max_seqs)
 
-        num_active = int(hax.sum(updated_seqs < self.max_seqs).scalar())
-
         new_counts = hax.where(updated_seqs >= self.max_seqs, 0, new_counts)
 
         current_lens = hax.where(seq_lens < 0, 0, seq_lens)
@@ -134,7 +132,7 @@ class PageTable(eqx.Module):
             return page_indices, page_owners
 
         page_indices, page_owners = jax.lax.fori_loop(
-            0, num_active, outer, (page_indices, page_owners)
+            0, updated_seqs.axis_size("seq"), outer, (page_indices, page_owners)
         )
 
         new_table = dataclasses.replace(
@@ -144,32 +142,11 @@ class PageTable(eqx.Module):
             seq_lens=new_lens,
         )
 
-        batch_info = self._slice_batch_info(
-            updated_seqs,
-            self.seq_lens,
-            new_table,
-            new_counts,
-            token_seq_ids,
-            num_active,
-        )
+        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts, token_seq_ids)
 
         return new_table, batch_info
 
-    def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts, tokens, num_active):
-        updated_seqs = hax.slice(
-            updated_seqs,
-            axis="seq",
-            start=0,
-            length=num_active,
-            new_axis=hax.Axis("seq", num_active),
-        )
-        new_token_counts = hax.slice(
-            new_token_counts,
-            axis="seq",
-            start=0,
-            length=num_active,
-            new_axis=hax.Axis("seq", num_active),
-        )
+    def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts, tokens):
         mask = hax.logical_and(updated_seqs >= 0, updated_seqs < self.max_seqs)
         safe_updated = hax.where(mask, updated_seqs, 0)
 
