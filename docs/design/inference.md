@@ -40,3 +40,5 @@ torch, not much interesting here given jetstream. focused on batch inference I t
 - [ ] make an online scheduler that handles new requests and does continuous decoding
 - [ ] implement OpenAI compatible API for inference
 - [ ] automatic prefix caching
+- [ ] microoptimize jit dispatch
+- [ ] figure out why the profiler isn't giving me anything useful
