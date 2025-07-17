@@ -136,7 +136,7 @@ def main(config: SampleLmConfig):
 
         sampler = Sampler(Vocab)
 
-        prompt_ids = tokenizer.encode(config.prompt, add_special_tokens=False)
+        prompt_ids = tokenizer.encode(config.prompt, add_special_tokens=False)  # type: ignore[attr-defined]
         prompt_axis = Axis("position", len(prompt_ids))
         prompt_tokens = hax.NamedArray(jnp.array(prompt_ids, dtype=jnp.int32), axes=(prompt_axis,))
 

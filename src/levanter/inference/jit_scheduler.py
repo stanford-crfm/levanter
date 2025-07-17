@@ -1,6 +1,7 @@
+import dataclasses
+
 import equinox as eqx
 import haliax as hax
-import jax
 from haliax import NamedArray, haxtyping as ht
 from jax import numpy as jnp, random as jrandom
 from jaxtyping import PRNGKeyArray
@@ -14,14 +15,11 @@ def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> Nam
     Probably faster to not use an arange (which lowers to a scatter)
     """
 
-    dest_size = dest.axis_size(axis)
-    dest_range = hax.arange(axis, start=start)
-    dest_range = hax.where(dest_range < dest_size, dest_range, dest_size)
-
-    axis = src.resolve_axis(axis)
-
-    setter = {**selector, axis: dest_range}
-    return dest.at[setter].set(src, mode="drop")
+    axis = dest.resolve_axis(axis)
+    src_axis = src.resolve_axis(axis.name)
+    src_slice = src[src_axis, hax.ds(0, num_to_copy)]
+    setter = {**selector, axis: hax.ds(start, num_to_copy)}
+    return dest.at[setter].set(src_slice, mode="drop")
 
 
 class JitScheduler(eqx.Module):
@@ -52,58 +50,130 @@ class JitScheduler(eqx.Module):
 
     # TODO: per-seq sampling params
 
+    @staticmethod
+    def init(max_tokens: int, max_seqs: int, key: PRNGKeyArray) -> "JitScheduler":
+        """Create a ``JitScheduler`` with empty buffers."""
+        Pos = hax.Axis("position", max_tokens)
+        Seq = hax.Axis("seq", max_seqs)
+        return JitScheduler(
+            generated_tokens=hax.full(Pos, -1, dtype=jnp.int32),
+            generated_seq_ids=hax.full(Pos, -1, dtype=jnp.int32),
+            num_generated_tokens=jnp.array(0, dtype=jnp.int32),
+            queued_tokens=hax.full(Pos, -1, dtype=jnp.int16),
+            queued_seq_ids=hax.full(Pos, -1, dtype=jnp.int32),
+            num_queued_tokens=jnp.array(0, dtype=jnp.int32),
+            finished=hax.zeros(Seq, dtype=jnp.bool_),
+            key=jrandom.split(key, max_seqs),
+        )
+
     @property
     def max_seqs(self) -> int:
-        """Maximum number of sequences in this batch. Raises if not batched over "seq" axis."""
-        return self.tokens.axis_size("seq")
+        """Maximum number of sequences in this batch."""
+        return self.finished.axis_size("seq")
 
-    def enqueue_tokens(self,
-                       new_tokens: ht.i32[NamedArray, "position"],
-                       new_seq_ids: ht.i32[NamedArray, "position"],
-                       num_new_tokens: int) -> "JitScheduler":
-        """
-        Enqueue new tokens to the scheduler to be processed.
+    def enqueue_tokens(
+        self,
+        new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        new_seq_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        num_new_tokens: int,
+    ) -> "JitScheduler":
+        """Append ``new_tokens`` and ``new_seq_ids`` to the queue."""
 
-        An unchecked assumption is that there are no already enqueued tokens for the sequences in `new_seq_ids`.
-        """
+        new_q_tokens = masked_set(
+            self.queued_tokens,
+            {},
+            "position",
+            self.num_queued_tokens,
+            new_tokens,
+            num_new_tokens,
+        )
+        new_q_seq_ids = masked_set(
+            self.queued_seq_ids,
+            {},
+            "position",
+            self.num_queued_tokens,
+            new_seq_ids,
+            num_new_tokens,
+        )
 
-
-
-    def update_after_sampling(self, new_tokens: ht.i32[NamedArray, "position"],
-                              new_token_seq_ids: ht.i32[NamedArray, "position"],
-                              num_new_tokens: int) -> "JitScheduler":
+        return dataclasses.replace(
+            self,
+            queued_tokens=new_q_tokens,
+            queued_seq_ids=new_q_seq_ids,
+            num_queued_tokens=self.num_queued_tokens + num_new_tokens,
+        )
+    def update_after_sampling(
+        self,
+        new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        new_token_seq_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        num_new_tokens: int,
+    ) -> "JitScheduler":
         """
         Append new tokens to generated tokens and update the scheduler state.
 
         generated tokens should also be enqueued in the scheduler for processing in the next round.
         """
 
-        # TODO: implement this
+        new_g_tokens = masked_set(
+            self.generated_tokens,
+            {},
+            "position",
+            self.num_generated_tokens,
+            new_tokens,
+            num_new_tokens,
+        )
+        new_g_seq_ids = masked_set(
+            self.generated_seq_ids,
+            {},
+            "position",
+            self.num_generated_tokens,
+            new_token_seq_ids,
+            num_new_tokens,
+        )
 
-        # We assume that new_tokens is a 1D array with one token per sequence
-        # dests = self.num_tokens.at["seq", new_token_seq_ids].get(mode="fill", fill_value=self.max_seqs)
-        # new_tokens = self.tokens.at["seq", new_token_seq_ids, "dests", dests].set(new_tokens)
-        #
-        # new_num_tokens = self.num_tokens.at["seq", new_token_seq_ids].add(1, mode="drop")
-        # new_queued_tokens = self.queued_tokens.at["seq", new_token_seq_ids].set(1, mode="drop")
-        #
-        # # update key for each updated sequence
-        # new_keys = jax.vmap(jrandom.split)(self.key)
-        # is_updated_seq = new_num_tokens != self.num_tokens
-        # new_keys = jnp.where(is_updated_seq, new_keys, self.key)
-        #
-        # return JitScheduler(
-        #     tokens=new_tokens,
-        #     num_tokens=new_num_tokens,
-        #     seq_ids=self.seq_ids,
-        #     queued_tokens=new_queued_tokens,
-        #     key=new_keys,
-        # )
+        updated = dataclasses.replace(
+            self,
+            generated_tokens=new_g_tokens,
+            generated_seq_ids=new_g_seq_ids,
+            num_generated_tokens=self.num_generated_tokens + num_new_tokens,
+        )
 
-    def pack_next_sequence(self,
-                           max_tokens: int
-                           ) -> tuple["JitScheduler", ht.i32[NamedArray, "position"], ht.i32[NamedArray, "position"]]:
-        """
-        Pack the next sequence to process.
-        This should dequeue the next sequence max_sequence to process, and return the tokens and seq_ids to process.
-        """
+        updated = updated.enqueue_tokens(new_tokens, new_token_seq_ids, num_new_tokens)
+
+        return updated
+
+    def pack_next_sequence(
+        self, max_tokens: int
+    ) -> tuple[
+        "JitScheduler",
+        NamedArray,
+        NamedArray,
+    ]:
+        """Remove up to ``max_tokens`` tokens from the queue and return them."""
+
+        pos_axis = self.queued_tokens.resolve_axis("position")
+        num = jnp.minimum(self.num_queued_tokens, max_tokens)
+
+        tokens = self.queued_tokens["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+        seq_ids = self.queued_seq_ids["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+
+        rolled_tokens = hax.roll(self.queued_tokens, -num, "position")
+        rolled_seq_ids = hax.roll(self.queued_seq_ids, -num, "position")
+        idx = hax.arange(pos_axis)
+        mask = idx >= (pos_axis.size - num)
+        filler_tokens = hax.where(mask, hax.full_like(idx, -1), rolled_tokens)
+        filler_seq_ids = hax.where(mask, hax.full_like(idx, -1), rolled_seq_ids)
+
+        new_q_tokens = filler_tokens
+        new_q_seq_ids = filler_seq_ids
+
+        return (
+            dataclasses.replace(
+                self,
+                queued_tokens=new_q_tokens,
+                queued_seq_ids=new_q_seq_ids,
+                num_queued_tokens=self.num_queued_tokens - num,
+            ),
+            tokens,
+            seq_ids,
+        )
