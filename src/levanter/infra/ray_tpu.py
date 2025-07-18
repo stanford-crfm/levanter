@@ -28,8 +28,6 @@ from ray.exceptions import (
     WorkerCrashedError,
 )
 from ray.remote_function import RemoteFunction
-from ray.util.placement_group import PlacementGroup
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from levanter.infra.docker import make_docker_run_command
 from levanter.utils.ray_utils import ser_exc_info
@@ -40,14 +38,13 @@ from levanter.utils.ray_utils import ser_exc_info
 
 # Basic flow:
 # 1. The controller creates a pool of SliceActors, each representing a slice of the TPU pod. SliceActor owns the
-#     tpu-XXX-head resource
-# 2. Each SliceActor creates a placement group with one bundle per host in the slice, each with 1 CPU and N
-#    TPUs (N=4 typically)
-# 3. Controller allocates tasks using the placement groups onto all slices
-# 4. If a slice fails, the controller gets a new slice
+#     tpu-XXX-head resource.
+# 2. Each SliceActor returns a list of resource dictionaries, one per host in the slice.
+# 3. Controller schedules worker tasks on all slices using those resource dictionaries.
+# 4. If a slice fails, the controller gets a new slice.
 
 # Challenges:
-# * Ray doesn't free placement groups when actors are killed, so we need to manage them ourselves.
+# * Ray doesn't always free resources promptly when actors are killed, so we need to manage them ourselves.
 # * JAX doesn't always seem to crash when another slice dies(?!?)
 # * Ray actor method calls **cannot** be canceled, so they cannot be heavy-weight. They should return quickly by forking
 #   another ray process (or some other mechanism) to do the heavy lifting.
@@ -163,31 +160,11 @@ class SliceInfo:
     num_hosts: int
     ip_address: str
     num_tpus_per_host: int
-    pg: Optional[PlacementGroup]
+    resources: list[dict]
 
-    def resources_per_job(self) -> dict:
-        """
-        Returns the resources required for a job on this slice.
-        This is used to set the resources for the remote function.
-        """
-        return {
-            self.slice_name: 1,
-            "CPU": 8,  # default number of CPUs per host
-            "TPU": self.num_tpus_per_host,
-            "memory": 20e9,  # default memory per host
-        }
-
-    def as_ray_resources_kwargs(self):
-        """Ray obnoxiously uses these resource dicts but you can't pass them to ray.remote"""
-        return dict(
-            resources={
-                self.slice_name: 1,
-                "TPU": self.num_tpus_per_host,
-            },
-            num_cpus=8,
-            num_gpus=0,
-            memory=20e9,
-        )
+    def resources_for_host(self, host: int) -> dict:
+        """Return the resource dict for a given host."""
+        return self.resources[host]
 
 
 def _multislice_info_from_head(head: SliceInfo, slice_id: int, num_slices: int) -> MultisliceInfo:
@@ -213,47 +190,6 @@ def _multislice_info_to_env_vars(multislice):
     else:
         mxla_env = {}
     return mxla_env
-
-
-def _ensure_pg(pod_name: str, num_hosts: int, num_tpus: int):
-    pg_name = f"tpu-slice-{pod_name}"
-
-    bundles = [
-        {
-            "CPU": 8,
-            "TPU": num_tpus,
-            "memory": 20e9,
-            pod_name: 1,  # your custom resource key
-        }
-        for _ in range(num_hosts)
-    ]
-
-    try:
-        pg = ray.util.placement_group(bundles=bundles, name=pg_name)
-    except RaySystemError as e:
-        if "already exists" in str(e):
-            logger.warning(f"Placement group {pg_name} already exists. Reusing it.")
-            # In theory this is fine since in order to use this PG we have to have the lock on the slice
-            pg = ray.util.get_placement_group(pg_name)
-        else:
-            try:
-                logger.exception(f"Failed to create placement group {pg_name}. Removing it. Error: {e}")
-                ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
-            except Exception as remove_pg_exception:
-                logger.exception(f"Failed to remove placement group {pg_name} after failure: {remove_pg_exception}")
-            raise RuntimeError(f"Failed to create placement group {pg_name}") from e
-
-    try:
-        ray.get(pg.ready(), timeout=300)
-    except Exception as e:
-        try:
-            logger.exception(f"Failed to create placement group {pg_name}. Removing it. Error: {e}")
-            ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
-        except Exception as remove_pg_exception:
-            logger.exception(f"Failed to remove placement group {pg_name} after failure: {remove_pg_exception}")
-        raise RuntimeError(f"Failed to create placement group {pg_name}") from e
-
-    return pg
 
 
 @ray.remote
@@ -292,17 +228,24 @@ class SliceActor:
             num_tpus_per_host = 4
             num_hosts = num_cores // 8
 
-        pg = _ensure_pg(pod_name, num_hosts, num_tpus_per_host)
+        resources = [
+            {
+                pod_name: 1,
+                "CPU": 8,
+                "TPU": num_tpus_per_host,
+                "memory": 20e9,
+            }
+            for _ in range(num_hosts)
+        ]
 
         self.slice_info = SliceInfo(
             slice_name=pod_name,
             num_hosts=num_hosts,
             num_tpus_per_host=num_tpus_per_host,
             ip_address=socket.gethostbyname(socket.gethostname()),
-            pg=pg,
+            resources=resources,
         )
 
-        ray.get(self.slice_info.pg.ready())
         return self.slice_info
 
 
@@ -536,14 +479,8 @@ def run_on_pod_ray(
         logger.exception("Unexpected error. This is a bug in Levanter. Please report it.", exc_info=e)
         raise
     finally:
-        # Cleanup actors and placement groups
-        logger.info("Cleaning up actors and placement groups")
-        for info in slice_infos.values():
-            pg = info.pg
-            try:
-                ray.util.remove_placement_group(pg)
-            except Exception as e:
-                logger.warning(f"Failed to remove placement group {pg}: {e}")
+        # Cleanup actors
+        logger.info("Cleaning up actors")
 
         for actor in slice_pool:
             try:
@@ -617,12 +554,7 @@ def _start_fn_on_slice(slice_info, remote_fn, mxla_env: dict | None) -> list[ray
     futures_for_slice = [
         remote_fn.options(
             runtime_env=runtime_env,
-            scheduling_strategy=PlacementGroupSchedulingStrategy(
-                placement_group=slice_info.pg,
-                placement_group_bundle_index=host,
-                placement_group_capture_child_tasks=False,
-            ),
-            **slice_info.as_ray_resources_kwargs(),
+            resources=slice_info.resources_for_host(host),
         ).remote()
         for host in range(slice_info.num_hosts)
     ]
@@ -654,18 +586,11 @@ def _prune_dead_slices(pool: list[ActorHandle], infos: dict[ActorHandle, SliceIn
             else:
                 logger.warning(f"Actor {actor} is unhealthy. Removing from pool.")
                 to_kill_futures.append(actor.shutdown.remote())
-                try:
-                    info = infos.get(actor)
-                    if info is not None and info.pg is not None:
-                        ray.util.remove_placement_group(info.pg)
-                except Exception:  # noqa: E722
-                    logger.exception(f"Failed to remove placement group for actor {actor}")
+                # nothing else to do here
         except (RayActorError, RayTaskError, ActorDiedError, ActorUnavailableError) as e:
             logger.warning(f"Actor {actor} is dead or unavailable. Removing from pool. Error: {e}")
             to_kill_futures.append(actor.shutdown.remote())
-            info = infos.get(actor)
-            if info is not None:
-                ray.util.remove_placement_group(info.pg)
+            # actor died before it returned slice info
 
     if to_kill_futures:
         try:
