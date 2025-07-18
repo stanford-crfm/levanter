@@ -12,8 +12,8 @@ import haliax as hax
 
 from levanter.layers.attention import AttentionMask, ragged_paged_attention, simple_attention_with_dropout
 
-PAGE = hax.Axis("page", 1)  # plenty of slack
 SLOT = hax.Axis("slot", 4)  # page size
+NUM_SLOTS = SLOT.size
 KV_HEADS = hax.Axis("kv_head", 1)
 QH = hax.Axis("q_heads_per_group", 1)
 D = hax.Axis("head_size", 128)
@@ -32,7 +32,7 @@ def _build_random_case(rng, seq_lens):
     cu_q_lens = hax.named(cu_q_lens, "seq")
 
     # allocate enough pages for the longest sequence, but give each sequence its own slice
-    pages_per_seq_raw = [(length + SLOT.size - 1) // SLOT.size for length in seq_lens]
+    pages_per_seq_raw = [(length + NUM_SLOTS - 1) // NUM_SLOTS for length in seq_lens]
     max_pages = KV_BS * ((max(pages_per_seq_raw) + KV_BS - 1) // KV_BS)  # pad to mult of 32
     page_indices = -jnp.ones((num_seqs, max_pages), dtype=jnp.int32)
 
@@ -47,12 +47,16 @@ def _build_random_case(rng, seq_lens):
         # fill those pages with random k/v
         kv_pages_for_seq = hax.random.normal(
             jr.fold_in(rng, sid),
-            (hax.Axis("page", p_raw), SLOT, KV_HEADS.resize(2 * KV_HEADS.size), D),
+            # (hax.Axis("page", p_raw), SLOT, KV_HEADS.resize(2 * KV_HEADS.size), D),
+            {"page": p_raw, "slot": NUM_SLOTS, "kv_head": 2 * KV_HEADS.size, "head_size": 128},
         )
         kv_data.append(kv_pages_for_seq)
 
     # stack pages, pad out to PAGE axis
-    kv_pages = hax.zeros((PAGE, SLOT, KV_HEADS.resize(2 * KV_HEADS.size), D))
+    # ensure we have enough pages
+    # kv_pages = hax.zeros(({PAGE, SLOT, KV_HEADS.resize(2 * KV_HEADS.size), D))
+    num_pages_needed = next_free_page + 4
+    kv_pages = hax.zeros({"page": num_pages_needed, "slot": 4, "kv_head": 2, "head_size": 128})
     kv_pages = kv_pages.at["page", :next_free_page].set(hax.concatenate("page", kv_data))
 
     # random queries for whole token axis
