@@ -4,6 +4,9 @@
 !!! note
     We only test on Ampere GPUs (e.g., A100s or 30xx series). If it works with JAX, it should work, though. We have done limited testing on H100 GPUs, but we do not have regular access to them.
 
+!!! tip "Deterministic Training"
+    If you want fully deterministic results when training on GPU, set `XLA_FLAGS="--xla_gpu_deterministic_ops=true"` in your environment before launching Levanter.
+
 We have two installation options for Levanter:
 
 1. [Using `uv` Virtual Environments](#using-uv-virtual-environments): This is the simplest way if you don't have root access to your machine (and don't have rootless docker installed).
