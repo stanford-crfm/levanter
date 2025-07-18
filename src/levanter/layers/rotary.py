@@ -26,7 +26,7 @@ class RotaryEmbeddings(eqx.Module):
 
 class DefaultRotaryEmbeddings(RotaryEmbeddings):
     HeadDim: Axis = eqx.field(static=True)
-    config: "DefaultRotaryEmbeddingsConfig"
+    config: "DefaultRotaryEmbeddingsConfig" = eqx.field(static=True)
 
     def __call__(self, q: NamedArray, position_ids: NamedArray) -> NamedArray:
         with jax.ensure_compile_time_eval():
@@ -93,7 +93,7 @@ RotaryEmbeddingsConfig.register_subclass("linear", DefaultRotaryEmbeddingsConfig
 
 class Llama3RotaryEmbeddings(RotaryEmbeddings):
     HeadDim: Axis = eqx.field(static=True)
-    config: "Llama3RotaryEmbeddingsConfig"
+    config: "Llama3RotaryEmbeddingsConfig" = eqx.field(static=True)
 
     def __call__(self, q: NamedArray, position_ids: NamedArray) -> NamedArray:
         inv_freq_llama = self._compute_inv_freq_llama()
@@ -182,7 +182,7 @@ RotaryEmbeddingsConfig.register_subclass("llama3", Llama3RotaryEmbeddingsConfig)
 
 class YarnRotaryEmbeddings(RotaryEmbeddings):
     HeadDim: Axis = eqx.field(static=True)
-    config: "YarnRotaryEmbeddingsConfig"
+    config: "YarnRotaryEmbeddingsConfig" = eqx.field(static=True)
 
     def __call__(self, q: NamedArray, position_ids: NamedArray) -> NamedArray:
         import math
