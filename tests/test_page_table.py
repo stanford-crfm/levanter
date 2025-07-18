@@ -43,8 +43,9 @@ def test_page_batch_info_shapes():
         cu_q_lens=hax.named(jnp.array([0, 1, 2], dtype=jnp.int32), hax.Axis("seq_plus_one", 3)),
         num_seqs=jnp.array(2, dtype=jnp.int32),
         new_token_dests=hax.full((hax.Axis("position", 2),), -1, dtype=jnp.int32),
+        pos_ids=hax.full((hax.Axis("position", 2),), -1, dtype=jnp.int32),
+        last_token_idx=hax.full((seq,), -1, dtype=jnp.int32),
         page_size=2,
-        pos_ids=hax.full((seq,), -1, dtype=jnp.int32),
     )
 
     assert pb.page_indices.axes == (seq, page)
@@ -62,6 +63,9 @@ def test_allocate_for_seqs_with_padding():
 
     assert new_pt.seq_lens.array[0] == 1
     assert batch_info.num_seqs == 1
+    # last token index for seq 0 should be 0, others -1
+    assert batch_info.last_token_idx.array[0] == 0
+    assert jnp.all(batch_info.last_token_idx.array[1:] == -1)
 
 
 def test_allocate_for_seqs_updates_only_valid_ids():
@@ -77,6 +81,9 @@ def test_allocate_for_seqs_updates_only_valid_ids():
     assert jnp.all(new_pt.seq_lens.array[6:] == -1)
     assert jnp.array_equal(batch_info.new_token_dests.array, jnp.array([0, 2, 3, 4, 5, 6], dtype=jnp.int32))
     assert batch_info.num_seqs == 3
+    # Last token indices check
+    expected_last = jnp.array([-1, -1, 0, 2, -1, 5, -1, -1], dtype=jnp.int32)
+    assert jnp.array_equal(batch_info.last_token_idx.array, expected_last)
 
 
 def test_free_pages_invalid_seq_id_noop():

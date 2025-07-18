@@ -188,6 +188,32 @@ class PageTable(eqx.Module):
             ],
         )
         pos_ids = self.pos_ids_from_seq_ids(tokens)
+
+        # --------------------------------------------------------------
+        # For sampling we often only need the *last* token per sequence.
+        # Build a lookup vector (size = max_seqs) that stores the position
+        # index of the last occurrence of each sequence id in `tokens`.
+        # Sequences not present get –1.
+        # --------------------------------------------------------------
+
+        # position indices 0,1,2,…
+        positions = jnp.arange(tokens.axis_size("position"), dtype=jnp.int32)
+        seq_id_arr = tokens.array
+
+        safe_seq_ids = jnp.where(seq_id_arr < 0, self.max_seqs, seq_id_arr)
+        pos_for_seg = jnp.where(seq_id_arr < 0, -1, positions)
+
+        # compute maximum (i.e., last index) per seq via segment_max
+        last_per_seq = jax.ops.segment_max(
+            pos_for_seg,
+            safe_seq_ids,
+            num_segments=self.max_seqs + 1,
+        )
+        # sequences not present get minimal value (<0); convert them to -1 sentinel
+        last_per_seq = jnp.where(last_per_seq < 0, -1, last_per_seq)
+        last_per_seq = last_per_seq[: self.max_seqs]
+        last_per_seq_named = hax.named(last_per_seq, self.max_Seq)
+
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
@@ -196,6 +222,7 @@ class PageTable(eqx.Module):
             new_token_dests=token_dests,
             pos_ids=pos_ids,
             page_size=self.page_size,
+            last_token_idx=last_per_seq_named,
         )
         return batch_info
 
@@ -238,6 +265,10 @@ class PageBatchInfo(eqx.Module):
     num_seqs: ht.i32[jnp.ndarray, ""]
     new_token_dests: ht.i32[NamedArray, "position"]
     pos_ids: ht.i32[NamedArray, "position"]
+    # Index (within the provided token array) of the **last token** for each sequence in the
+    # batch. Sequences that are not present receive –1. Shape matches the "seq" axis of
+    # the PageTable (``max_seqs``).
+    last_token_idx: ht.i32[NamedArray, " seq"]
     page_size: int = eqx.field(static=True)
 
     def __post_init__(self):
