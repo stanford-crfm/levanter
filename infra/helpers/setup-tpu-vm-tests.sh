@@ -91,35 +91,26 @@ retry sudo add-apt-repository -y ppa:git-core/ppa
 retry sudo apt-get -qq update
 retry sudo apt-get -qq install -y python3.10-full python3.10-dev git
 
-VENV=~/venv310
-# if the venv doesn't exist, make it
-if [ ! -d "$VENV" ]; then
-    echo "Creating virtualenv at $VENV"
-    python3.10 -m venv $VENV
-fi
 
-source $VENV/bin/activate
-
-pip install -U pip
-pip install -U wheel
-pip install uv
-
-# jax and jaxlib
-# libtpu sometimes has issues installing for clinical (probably firewall?)
-retry pip install -U "jax[tpu]==0.5.3" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+pip install -U pip uv wheel || exit 1
 
 # clone levanter
-git clone $REPO levanter
-echo $VENV > levanter/infra/venv_path.txt
-
-cd levanter
+if [ -d levanter ]; then
+  echo "Levanter directory already exists, Assuming git repo and fetching latest changes"
+  cd levanter || exit 1
+  git fetch origin || exit 1
+  if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+    git reset --hard "origin/$BRANCH" || exit 1
+  else
+    git reset --hard "$BRANCH" || exit 1
+  fi
+else
+  git clone $REPO levanter || exit 1
+  cd levanter || exit 1
+  git checkout $BRANCH || exit 1
+fi
 
 # checkout the branch we want
-
 echo "Checking out branch $BRANCH"
 
-git checkout $BRANCH
-
-# install levanter
-
-uv pip install -e ".[test]"
+uv sync --extras tpu

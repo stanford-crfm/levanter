@@ -55,6 +55,9 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * Always mark tests that depend on pytorch with `@skip_if_no_torch` to ensure they are skipped
   when PyTorch is not available. This is particularly important for tests that require PyTorch-specific
   functionality.
+* **CI Best Practice**: Use `astral-sh/setup-uv` to install `uv` in workflows and run `uv python install`
+  before installing dependencies with `uv sync` or `uv pip`. This ensures the expected Python
+  version is available during testing.
 
 
 ## Design Preferences
