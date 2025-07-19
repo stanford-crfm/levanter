@@ -91,6 +91,7 @@ retry sudo add-apt-repository -y ppa:git-core/ppa
 retry sudo apt-get -qq update
 retry sudo apt-get -qq install -y python3.10-full python3.10-dev git
 
+
 pip install -U pip uv wheel || exit 1
 
 # clone levanter
@@ -112,5 +113,4 @@ fi
 # checkout the branch we want
 echo "Checking out branch $BRANCH"
 
-# install levanter
 uv sync --extras tpu
