@@ -81,14 +81,15 @@ eval_harness = [
 [dependency-groups]
 test = [
     "pytest>=8.3.2",
-  "pytest-asyncio",
-  "pytest-xdist",
+    "pytest-asyncio",
+    "pytest-xdist",
     "pytest-cov",
+    "tensorboardX",
 ]
 
 lint = [
     "pre-commit",
-  "chex>=0.1.86",
+    "chex>=0.1.86",
 ]
 
 docs = [
