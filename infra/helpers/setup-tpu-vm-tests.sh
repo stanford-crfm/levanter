@@ -102,6 +102,7 @@ source $VENV/bin/activate
 
 pip install -U pip
 pip install -U wheel
+pip install uv
 
 # jax and jaxlib
 # libtpu sometimes has issues installing for clinical (probably firewall?)
@@ -121,6 +122,4 @@ git checkout $BRANCH
 
 # install levanter
 
-pip install -e ".[test]"
-
-pip install -r tests/requirements.txt
+uv pip install -e ".[test]"
