@@ -2,6 +2,7 @@ import dataclasses
 import functools
 import gc
 import logging
+import inspect
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
@@ -143,6 +144,26 @@ def main(config: TrainLmConfig):
 
         # Get the tagged evaluation datasets
         tagged_eval_datasets = config.data.tagged_eval_sets(Pos)
+
+        # start threads to log dataset token counts
+        try:
+            train_sets_kwargs = {"Pos": Pos, "monitors": False, "key": data_key, "epochs": config.epoch}
+            if "initial_batch_size" in inspect.signature(config.data.train_sets).parameters:
+                train_sets_kwargs["initial_batch_size"] = config.trainer.batch_schedule.batch_size_at_step(0)
+            train_sets_for_logging = config.data.train_sets(**train_sets_kwargs)
+        except Exception:
+            logger.exception("Failed to create train_sets for token logging")
+            train_sets_for_logging = {}
+
+        try:
+            val_sets_for_logging = config.data.validation_sets(Pos, monitors=False)
+        except Exception:
+            logger.exception("Failed to create validation_sets for token logging")
+            val_sets_for_logging = {}
+
+        ds_for_logging = {**train_sets_for_logging, **val_sets_for_logging}
+        if ds_for_logging:
+            trainer.add_hook(callbacks.log_dataset_token_counts(ds_for_logging, Pos.size), every=1)
 
         state = trainer.initial_state(training_key, model_init=lambda: config.model.build(Vocab, key=model_key))
 
