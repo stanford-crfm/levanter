@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 import draccus
-import mergedeep
 import ray
 from ray._private.accelerators import TPUAcceleratorManager
 from ray.actor import ActorHandle
@@ -30,7 +29,7 @@ from ray.exceptions import (
 from ray.remote_function import RemoteFunction
 
 from levanter.infra.docker import make_docker_run_command
-from levanter.utils.ray_utils import ser_exc_info
+from levanter.utils.ray_utils import RayResources, ser_exc_info
 
 
 # CF https://gist.github.com/allenwang28/e3400b9e9212b50aa1cda55ebeccea60
@@ -160,9 +159,9 @@ class SliceInfo:
     num_hosts: int
     ip_address: str
     num_tpus_per_host: int
-    resources: list[dict]
+    resources: list[RayResources]
 
-    def resources_for_host(self, host: int) -> dict:
+    def resources_for_host(self, host: int) -> RayResources:
         """Return the resource dict for a given host."""
         return self.resources[host]
 
@@ -229,12 +228,12 @@ class SliceActor:
             num_hosts = num_cores // 8
 
         resources = [
-            {
+            RayResources.from_resource_dict({
                 pod_name: 1,
                 "CPU": 8,
                 "TPU": num_tpus_per_host,
                 "memory": 20e9,
-            }
+            })
             for _ in range(num_hosts)
         ]
 
@@ -547,17 +546,26 @@ def _start_fn_on_slice(slice_info, remote_fn, mxla_env: dict | None) -> list[ray
     """
     Start the remote function on a slice of the TPU pod.
     """
-    runtime_env = remote_fn._runtime_env or {}
-    if mxla_env is not None:
-        mxla_env = dict(env_vars=mxla_env)
-        runtime_env = mergedeep.merge({}, runtime_env, mxla_env, strategy=mergedeep.Strategy.ADDITIVE)
-    futures_for_slice = [
-        remote_fn.options(
-            runtime_env=runtime_env,
-            resources=slice_info.resources_for_host(host),
-        ).remote()
-        for host in range(slice_info.num_hosts)
-    ]
+    # Build the futures – one per host on the slice.
+    futures_for_slice = []
+    for host in range(slice_info.num_hosts):
+        # Start from the host-specific resources
+        resources = slice_info.resources_for_host(host)
+
+        # First, merge the remote function's runtime environment with the resources
+        if remote_fn._runtime_env:
+            resources = resources.merge_runtime_env(remote_fn._runtime_env)
+
+        # Then, merge in MXLA environment variables if provided
+        if mxla_env is not None:
+            resources = resources.merge_env_vars(mxla_env)
+
+        futures_for_slice.append(
+            remote_fn.options(
+                **resources.to_kwargs(),
+            ).remote()
+        )
+
     return futures_for_slice
 
 
