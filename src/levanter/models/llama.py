@@ -142,7 +142,11 @@ class LlamaConfig(HFCompatConfig):
         if config_overrides is None:
             config_overrides = {}
 
-        rope_theta, rope_scaling = self.rope.to_hf_config()
+        if self.rope:
+            rope_theta, rope_scaling = self.rope.to_hf_config()
+        else:
+            rope_theta = None
+            rope_scaling = None
 
         return HfLlamaConfig(
             max_position_embeddings=self.seq_len,

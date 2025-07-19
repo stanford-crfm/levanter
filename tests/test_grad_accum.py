@@ -2,7 +2,7 @@ import equinox as eqx
 import jax
 import pytest
 from chex import assert_trees_all_close
-from jax.sharding import Mesh
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 import haliax
 import haliax as hax
@@ -49,7 +49,8 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
 
     x = hax.random.normal(jax.random.PRNGKey(0), (Batch, In))
 
-    x = jax.device_put(x, jax.sharding.PositionalSharding(jax.devices()).reshape((-1, 1)))
+    mesh_shard = Mesh(jax.devices(), ("data",))
+    x = jax.device_put(x, NamedSharding(mesh_shard, PartitionSpec("data", None)))
 
     axis_mapping = {"Batch": "data"}
 
