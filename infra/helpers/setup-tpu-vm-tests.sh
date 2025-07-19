@@ -98,7 +98,11 @@ if [ -d levanter ]; then
   echo "Levanter directory already exists, Assuming git repo and fetching latest changes"
   cd levanter || exit 1
   git fetch origin || exit 1
-  git reset --hard origin/$BRANCH || exit 1
+  if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+    git reset --hard "origin/$BRANCH" || exit 1
+  else
+    git reset --hard "$BRANCH" || exit 1
+  fi
 else
   git clone $REPO levanter || exit 1
   cd levanter || exit 1
