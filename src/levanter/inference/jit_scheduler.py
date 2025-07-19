@@ -13,14 +13,18 @@ def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> Nam
     jit-safe masked memcpy-like operation.
     Copy into dest[selector, axis, start:start+num_to_copy] the values from src[axis, :num_to_copy].
 
-    Probably faster to not use an arange (which lowers to a scatter)
+    Probably faster to not use an arange (which lowers to a scatter) and use blocks? Probably not a bottleneck
+
+    num_to_copy may be dynamic
     """
 
-    axis = dest.resolve_axis(axis)
-    src_axis = src.resolve_axis(axis.name)
-    src_slice = src[src_axis, hax.ds(0, num_to_copy)]
-    setter = {**selector, axis: hax.ds(start, num_to_copy)}
-    return dest.at[setter].set(src_slice, mode="drop")
+    src_arange = hax.arange(src.resolve_axis(axis))
+    dest_axis_size = dest.axis_size(axis)
+    # mask out the tail
+    dest_arange = hax.where(src_arange >= num_to_copy, dest_axis_size, src_arange + start)
+    src_arange = hax.where(src_arange >= num_to_copy, src_arange.size, src_arange)
+
+    return dest.at[{**selector, axis: dest_arange}].set(src[axis, src_arange], mode="drop")
 
 
 class JitScheduler(eqx.Module):
@@ -182,11 +186,7 @@ class JitScheduler(eqx.Module):
 
     def pack_next_sequence(
         self, max_tokens: int
-    ) -> tuple[
-        "JitScheduler",
-        ht.i32[NamedArray, "position"],
-        ht.i32[NamedArray, "position"],
-    ]:
+    ) -> tuple["JitScheduler", ht.i32[NamedArray, "position"], ht.i32[NamedArray, "position"]]:  # type: ignore[name-defined]
         """Remove up to ``max_tokens`` tokens from the queue and return them."""
 
         pos_axis = self.queued_tokens.resolve_axis("position")
@@ -218,7 +218,7 @@ class JitScheduler(eqx.Module):
 
     def extract_generated_tokens(
         self,
-        sequence_ids: ht.i32[NamedArray, "seq"],
+        sequence_ids: ht.i32[NamedArray, "seq"],  # type: ignore[name-defined]
         max_tokens: int,
     ) -> tuple["JitScheduler", ht.i32[NamedArray, "seq position"]]:
         """
@@ -228,7 +228,6 @@ class JitScheduler(eqx.Module):
         """
         # ---------- shorthands ----------
         P = self.generated_tokens.axis_size("position")  # buffer size
-        S = sequence_ids.axis_size("seq")  # # seqs requested
         num_valid = self.num_generated_tokens  # scalar
         tok_buf = self.generated_tokens.array  # (P,)
         id_buf = self.generated_seq_ids.array  # (P,)

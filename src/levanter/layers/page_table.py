@@ -188,32 +188,6 @@ class PageTable(eqx.Module):
             ],
         )
         pos_ids = self.pos_ids_from_seq_ids(tokens)
-
-        # --------------------------------------------------------------
-        # For sampling we often only need the *last* token per sequence.
-        # Build a lookup vector (size = max_seqs) that stores the position
-        # index of the last occurrence of each sequence id in `tokens`.
-        # Sequences not present get –1.
-        # --------------------------------------------------------------
-
-        # position indices 0,1,2,…
-        positions = jnp.arange(tokens.axis_size("position"), dtype=jnp.int32)
-        seq_id_arr = tokens.array
-
-        safe_seq_ids = jnp.where(seq_id_arr < 0, self.max_seqs, seq_id_arr)
-        pos_for_seg = jnp.where(seq_id_arr < 0, -1, positions)
-
-        # compute maximum (i.e., last index) per seq via segment_max
-        last_per_seq = jax.ops.segment_max(
-            pos_for_seg,
-            safe_seq_ids,
-            num_segments=self.max_seqs + 1,
-        )
-        # sequences not present get minimal value (<0); convert them to -1 sentinel
-        last_per_seq = jnp.where(last_per_seq < 0, -1, last_per_seq)
-        last_per_seq = last_per_seq[: self.max_seqs]
-        last_per_seq_named = hax.named(last_per_seq, self.max_Seq)
-
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
@@ -222,7 +196,6 @@ class PageTable(eqx.Module):
             new_token_dests=token_dests,
             pos_ids=pos_ids,
             page_size=self.page_size,
-            last_token_idx=last_per_seq_named,
         )
         return batch_info
 
@@ -259,17 +232,25 @@ class PageTable(eqx.Module):
 class PageBatchInfo(eqx.Module):
     """Page and length information for a batch of sequences."""
 
-    page_indices: ht.i32[NamedArray, " seq page"]
-    seq_lens: ht.i32[NamedArray, " seq"]
-    cu_q_lens: ht.i32[NamedArray, " seq"]
+    page_indices: ht.i32[NamedArray, " seq page"]  # type: ignore[name-defined]
+    seq_lens: ht.i32[NamedArray, " seq"]  # type: ignore[name-defined]
+    cu_q_lens: ht.i32[NamedArray, " seq"]  # type: ignore[name-defined]
     num_seqs: ht.i32[jnp.ndarray, ""]
-    new_token_dests: ht.i32[NamedArray, "position"]
-    pos_ids: ht.i32[NamedArray, "position"]
-    # Index (within the provided token array) of the **last token** for each sequence in the
-    # batch. Sequences that are not present receive –1. Shape matches the "seq" axis of
-    # the PageTable (``max_seqs``).
-    last_token_idx: ht.i32[NamedArray, " seq"]
+    new_token_dests: ht.i32[NamedArray, "position"]  # type: ignore[name-defined]
+    pos_ids: ht.i32[NamedArray, "position"]  # type: ignore[name-defined]
     page_size: int = eqx.field(static=True)
+
+    @property
+    def last_token_idx(self) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
+        """Last token index for each sequence, -1 if the sequence is not present."""
+        # TODO: this won't be useful if we do speculation, but for now it is useful
+        # this can be easily computed from cu_q_lens
+        # roll so we get the len for each seq, then subtract 1 to get the last index
+        rolled = hax.roll(self.cu_q_lens, shift=-1, axis="seq",)["seq", :-1] - 1
+        out = hax.where(self.seq_lens < 0, -1, rolled)
+        # rename to position since this is about token positions
+        out = out.rename({"seq": "position"})
+        return out
 
     def __post_init__(self):
         assert isinstance(self.num_seqs, jnp.ndarray), "num_seqs must be a JAX ndarray"

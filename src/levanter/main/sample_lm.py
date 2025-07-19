@@ -1,7 +1,5 @@
-import shutil
 
 import jax
-import time
 
 import logging
 from dataclasses import dataclass, field
@@ -19,7 +17,6 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from haliax.jax_utils import is_jax_array_like
 
-from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.layers.page_table import PageTable
@@ -90,14 +87,22 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
 #     return next_tok, page_table, cache
 
 
+
+
 @haliax.named_jit(donate_args=(False, True, True, False, False, True))
 def do_prefill(model, cache, page_table: PageTable, tokens, seq_ids, sampler, temps, key):
     """Prefill ``tokens`` and sample the next token."""
     page_table, binfo = page_table.allocate_for_seq(token_seq_ids=seq_ids)
     # TODO: this is potentially a bit wasteful since we don't need to compute logits for all but the last token
 
+    # jax.debug.callback(lambda tokens: print(f"Prefilling with tokens {tokenizer.decode([x for x in tokens.array if x != -1])}"), tokens=tokens)
+    # jax.debug.print("Prefilling with tokens {tokens}, seq_ids={seq_ids}, binfo={binfo}",
+    #                 tokens=tokens, seq_ids=seq_ids, binfo=binfo)
+
     logits, cache = model.decode(tokens, cache, binfo, binfo.pos_ids)
-    next_tok, _ = sampler(logits["position", -1], temps, key=key)
+    next_tok, _ = sampler(logits["position", binfo.last_token_idx], temps, key=key)
+    next_tok = next_tok["position", 0]  # we're only prefilling one seq at a time
+    # jax.debug.callback(lambda next_tok: print(f"Prefilling produced next token {tokenizer.decode(next_tok.array)}"), next_tok=next_tok)
     return next_tok, page_table, cache
 
 
@@ -140,23 +145,25 @@ def run_generation_loop(
         # Pack the next chunk from the queue
         sched, chunk_tokens, chunk_seq_ids = sched.pack_next_sequence(max_tokens_per_round)
 
-
         # Allocate cache pages for this chunk
         page_table, binfo = page_table.allocate_for_seq(token_seq_ids=chunk_seq_ids)
 
-        jax.debug.print("Running generation step {step} with chunk_tokens={chunk_tokens}, chunk_seq_ids={chunk_seq_ids}, binfo={binfo}",
-                        step=step, chunk_tokens=chunk_tokens, chunk_seq_ids=chunk_seq_ids, binfo=binfo)
+        # jax.debug.print("Running generation step {step} with chunk_tokens={chunk_tokens}, chunk_seq_ids={chunk_seq_ids}, binfo={binfo}",
+        #                 step=step, chunk_tokens=chunk_tokens, chunk_seq_ids=chunk_seq_ids, binfo=binfo)
 
         # Decode logits and sample new tokens
         logits, cache = model.decode(chunk_tokens, cache, binfo, binfo.pos_ids)
         sample_key, key = jrandom.split(key)
+        logits = logits["position", binfo.last_token_idx]
         new_tokens, _ = sampler(logits, temps, key=sample_key)
+
+        num_new_tokens = hax.sum(binfo.last_token_idx != -1).scalar()
 
         # Update scheduler with the freshly sampled tokens
         sched = sched.update_after_sampling(
             new_tokens=new_tokens,
             new_token_seq_ids=chunk_seq_ids,
-            num_new_tokens=max_tokens_per_round,
+            num_new_tokens=num_new_tokens,
         )
         return sched, page_table, cache, key, step + 1
 
@@ -206,7 +213,7 @@ def main(config: SampleLmConfig):
 
         # ----------------------- Scheduler init -----------------------
         MAX_TOKENS = 32    # per‐round chunk size
-        MAX_SEQS = 16      # hot‐set size (matches page_table.max_seqs)
+        MAX_SEQS = 1      # hot‐set size, for this we're only decoding 1 at a time so
         sched = JitScheduler.init(
             max_tokens=MAX_TOKENS,
             max_seqs=MAX_SEQS,
@@ -236,7 +243,6 @@ def main(config: SampleLmConfig):
         # enqueue the entire prompt into the scheduler
         seq_ids = hax.full_like(prompt_tokens, seq_id, dtype=jnp.int32)
         sched = sched.enqueue_tokens(prompt_tokens, seq_ids, prompt_tokens.size)
-        jax.debug.print("{queue}", queue=sched.queued_tokens)
 
         # do one macro-prefill round
         sched, chunk_tokens, chunk_seq_ids = sched.pack_next_sequence(MAX_TOKENS)
@@ -246,7 +252,7 @@ def main(config: SampleLmConfig):
             sampler, temps, prng_key
         )
         sched = sched.update_after_sampling(
-            new_tokens=hax.named(jnp.array([next_tok.array.item()], dtype=jnp.int32), axis="position"),
+            new_tokens=hax.named(jnp.array([next_tok.item()], dtype=jnp.int32), axis="position"),
             new_token_seq_ids=hax.named(jnp.array([chunk_seq_ids.array[0]], dtype=jnp.int32), axis="position"),
             num_new_tokens=1,
         )
@@ -260,7 +266,7 @@ def main(config: SampleLmConfig):
             sampler,
             temps,
             prng_key,
-            MAX_TOKENS,
+            1,
             config.max_new_tokens,
         )
 
