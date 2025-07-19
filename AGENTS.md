@@ -13,6 +13,8 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * **Playbooks.** Sometimes, there are repeatable tasks (e.g. porting models) for which we follow a standard set of steps.
   Please reference `.playbooks/` to see what playbooks are available, or see the list below. If you want to add a playbook
   write a markdown doc named e.g. `.playbooks/port-models.md` and add a pointer to it in the list below.
+* **Dependency management**: Use `uv` and the extras specified in `pyproject.toml` (e.g. `[test]`) instead of separate
+  `requirements.txt` files.
 
 ## Playbooks
 
