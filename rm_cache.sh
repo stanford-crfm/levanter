@@ -1,5 +1,6 @@
 TPU_NAME=$1
-ZONE=us-central2-b
+# ZONE=us-central2-b
+ZONE=europe-west4-b
 # gcloud compute tpus tpu-vm ssh $TPU_NAME --zone $ZONE --worker=all --command "rm -r .cache/huggingface"
 
 
@@ -9,8 +10,7 @@ gcloud compute tpus tpu-vm ssh $TPU_NAME --zone $ZONE --worker=all \
 
 for i in {1..3}
 do
-    gcloud compute tpus tpu-vm ssh $TPU_NAME --zone $ZONE --command="singularity instance stop -a; source ~/venv310/bin/activate; ray stop; killall repl; pkill -e -f -u kaiyue python" --worker=all
+    gcloud compute tpus tpu-vm ssh $TPU_NAME --zone $ZONE --command="singularity instance stop -a; source ~/venv310/bin/activate; ray stop; killall repl; pkill -e -9 -u kaiyue python" --worker=all
 done
 
 
-gcloud compute tpus tpu-vm ssh $TPU_NAME --zone $ZONE --worker=all --command "rm -rf ~/base_model"

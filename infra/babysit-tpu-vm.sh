@@ -78,11 +78,21 @@ while true; do
       # run the command
       echo "Running command on VM $VM_NAME"
       echo "gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command='$CMD_ARGS_STR' --worker=all"
-      # gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="cd ~/levanter && git checkout kaiyue/optimizer" --worker=all
+      gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="cd ~/levanter && git checkout kaiyue/optimizer" --worker=all
       gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="source ~/venv*/bin/activate && pip install jax[tpu]==0.4.38 jaxlib==0.4.38" --worker=all
       gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/models/llama.py $VM_NAME:~/levanter/src/levanter/models/llama.py --worker=all
       gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/mudam.py $VM_NAME:~/levanter/src/levanter/optim/mudam.py --worker=all
-      gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/muon_new.py $VM_NAME:~/levanter/src/levanter/optim/muon.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/mudam2.py $VM_NAME:~/levanter/src/levanter/optim/mudam2.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo.py $VM_NAME:~/levanter/src/levanter/optim/shampoo.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo2.py $VM_NAME:~/levanter/src/levanter/optim/shampoo2.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo3.py $VM_NAME:~/levanter/src/levanter/optim/shampoo3.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo4.py $VM_NAME:~/levanter/src/levanter/optim/shampoo4.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo5.py $VM_NAME:~/levanter/src/levanter/optim/shampoo5.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo6.py $VM_NAME:~/levanter/src/levanter/optim/shampoo6.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo8.py $VM_NAME:~/levanter/src/levanter/optim/shampoo8.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shampoo9.py $VM_NAME:~/levanter/src/levanter/optim/shampoo9.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/shamdan.py $VM_NAME:~/levanter/src/levanter/optim/shamdan.py --worker=all
+      # gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/mudam3.py $VM_NAME:~/levanter/src/levanter/optim/mudam3.py --worker=all
       gcloud compute tpus tpu-vm scp --zone=$ZONE src/levanter/optim/__init__.py $VM_NAME:~/levanter/src/levanter/optim/__init__.py --worker=all
       gcloud compute tpus tpu-vm scp --zone=$ZONE config/llama2_1b_adam.yaml $VM_NAME:~/levanter/config/llama2_1b_adam.yaml --worker=all
       gcloud compute tpus tpu-vm ssh --zone=$ZONE $VM_NAME --command="$CMD_ARGS_STR" --worker=all

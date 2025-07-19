@@ -1,15 +1,19 @@
 eval $(ssh-agent -s)
-bash infra/babysit-tpu-vm.sh debug -z us-central2-b -t v4-128 --preemptible -- \
+bash infra/babysit-tpu-vm.sh debug2 -z europe-west4-b -t v5litepod-128 --preemptible -- \
 WANDB_API_KEY=$WANDB_API_KEY \
 bash levanter/infra/run.sh python \
 levanter/src/levanter/main/train_lm.py \
 --config_path levanter/config/llama2_1b_adam.yaml  \
---trainer.checkpointer.base_path  gs://marin-us-central2/scratch/kaiyue/checkpoints/soap/lr4e-3_step10000_1b  \
---optimizer.type adam \
---trainer.wandb.name adam_baseline \
+--trainer.checkpointer.base_path  gs://marin-us-central2/scratch/kaiyue/checkpoints/debug_mudam/shampoo_implicit  \
+--optimizer.type shampoo6 \
+--optimizer.merge_small_dims True \
+--trainer.wandb.name shampoo_implicit_grafting \
 --trainer.num_train_steps 10001 \
 --optimizer.warmup 1000 \
+--optimizer.momentum 0.9 \
+--optimizer.shampoo_beta 0.98 \
 --optimizer.learning_rate 4e-3 \
+--optimizer.adam_lr 2e-3 \
 --optimizer.min_lr_ratio 0.0 \
 --optimizer.lr_schedule linear \
 --optimizer.cooldown 0.0 \

@@ -27,14 +27,15 @@ from haliax.nn import Linear
 jax.config.update("jax_enable_x64", False)
 
 
-@OptimizerConfig.register_subclass("mudam")
+@OptimizerConfig.register_subclass("shampoo3")
 @dataclass
-class MudamConfig(OptimizerConfig):
+class Shampoo3Config(OptimizerConfig):
     weight_decay: float = 0.0
     beta1: float = 0.95
     momentum: float = 0.95
     shampoo_beta: float = 0.95
     beta2: float = 0.95
+    adam_beta: float = 0.95
     epsilon: float = 1e-8
     max_grad_norm: Optional[float] = 1.0
     haps: Optional[list[int]] = None
@@ -48,12 +49,7 @@ class MudamConfig(OptimizerConfig):
     adam_lr: float = 6e-4
     block_size: int = 256
     steps: int = 5
-    use_mudam_for_embedding: bool = False
-    use_nesterov_in_second_moment: bool = False
-    use_nesterov_in_first_moment: bool = True
-    use_momentum_in_second_moment: bool = False
-    reduce_to_muon: bool = True
-    prefer_input_side: bool = False
+    grafting: bool = True
     
 
     def build(self, num_train_steps):
@@ -65,9 +61,10 @@ class MudamConfig(OptimizerConfig):
 
             def muon_transform():
                 components = []
-                components.append(scale_by_mudam(
+                components.append(scale_by_shampoo3(
                     b1=self.momentum,
                     b2=self.shampoo_beta,
+                    b_adam = self.adam_beta,
                     steps=self.steps,
                     epsilon=self.epsilon,
                     max_precond_dim=self.max_precond_dim,
@@ -77,11 +74,7 @@ class MudamConfig(OptimizerConfig):
                     precond_dtype=self.precond_dtype,
                     partition_grads_into_blocks=self.partition_grads_into_blocks,
                     block_size=self.block_size,
-                    use_nesterov_in_second_moment=self.use_nesterov_in_second_moment,
-                    use_nesterov_in_first_moment=self.use_nesterov_in_first_moment,
-                    use_momentum_in_second_moment=self.use_momentum_in_second_moment,
-                    prefer_input_side=self.prefer_input_side,
-                    reduce_to_muon=self.reduce_to_muon
+                    grafting=self.grafting
                 ))
                 if self.weight_decay > 0:
                     components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
@@ -105,11 +98,11 @@ class MudamConfig(OptimizerConfig):
                 "adamw": adamw_transform(),
             }
 
-            return optax.multi_transform(transformations, partial(self.create_mask, use_mudam_for_embedding=self.use_mudam_for_embedding))
+            return optax.multi_transform(transformations, self.create_mask)
 
         return optax.inject_hyperparams(optimizer)(learning_rate=learning_rate_schedule, adam_lr=adam_lr_schedule)
 
-    def create_mask(self, params, use_mudam_for_embedding: bool = False):
+    def create_mask(self, params):
         """
         Creates a mask that labels parameters as 'muon' or 'adamw' based on their
         dimensionality and module path, using AdamW for Embedding and lm_head parameters.
@@ -119,10 +112,7 @@ class MudamConfig(OptimizerConfig):
         def mask_fn(param, path):
             path_str = ".".join(path) if isinstance(path, (list, tuple)) else str(path)
             if "Embedding" in path_str or "lm_head" in path_str:
-                if use_mudam_for_embedding:
-                    return "muon"
-                else:
-                    return "adamw"
+                return "adamw"
             elif isinstance(param, Linear):
                 # muon for linear layers
                 return dataclasses.replace(param, weight="muon", bias="adamw" if param.bias is not None else None)
@@ -138,13 +128,6 @@ def _safe_sharding_constraint(x, sharding):
     else:
         return with_sharding_constraint(x, sharding)
 
-def p_over_x(b1, b2, use_nesterov_in_first_moment):
-    # denominator is g_t^2 + b2 * g_{t-1}^2 + b2^2 * g_{t-2}^2 + ...
-    # nominator is g_t +  b1 * g_{t-1} +  b1^2 * g_{t-2} + ...
-    if not use_nesterov_in_first_moment:
-        return jnp.maximum(2.0, jnp.sqrt(b2) / jnp.sqrt(b2 - b1 ** 2))
-    else:
-        return jnp.maximum(2.0, jnp.sqrt((1 + b1) ** 2 + b1 ** 4 / (b2 - b1 ** 2)))
 
 def _map_fn(lax_map, bs, n_maps, fn, *args):
     """Maybe map a fn along multiple leading axes."""
@@ -159,9 +142,10 @@ def _map_fn(lax_map, bs, n_maps, fn, *args):
         return vmap(mapped_fn)(*args)
 
 
-def scale_by_mudam(
+def scale_by_shampoo3(
     b1: float = 0.95,
     b2: float = 0.95,
+    b_adam: float = 0.95,
     steps: int = 5,
     epsilon: float = 1e-8,
     max_precond_dim: int = 10000,
@@ -174,11 +158,7 @@ def scale_by_mudam(
     lax_map_batch_size: Optional[int] = 4,
     merge_small_dims: bool = False,
     target_merged_dim_size: int = 2048,
-    use_nesterov_in_second_moment: bool = False,
-    use_nesterov_in_first_moment: bool = True,
-    use_momentum_in_second_moment: bool = False,
-    prefer_input_side: bool = True,
-    reduce_to_muon: bool = True,
+    grafting: bool = True,
 ) -> GradientTransformation:
     mu_dtype = canonicalize_dtype(mu_dtype) if mu_dtype is not None else None
     precond_dtype = canonicalize_dtype(precond_dtype) if precond_dtype is not None else None
@@ -202,6 +182,16 @@ def scale_by_mudam(
         )
 
         exp_avg = otu.tree_zeros_like(params, dtype=mu_dtype)
+        exp_avg_sq = otu.tree_zeros_like(params, dtype=mu_dtype)
+        null_dims = jax.tree.map(
+            lambda p, s: _get_preconditioner_types(p.shape[int(s) :], max_precond_dim),
+            params,
+            scanned_layers_,
+        )
+        null_dims_leaf = [
+            _get_preconditioner_types(p.shape[int(s) :], max_precond_dim)
+            for p, s in zip(jax.tree.leaves(params), jax.tree.leaves(scanned_layers_))
+        ]
         scanned_dim_sharding = [
             PartitionSpec(sh[0]) if s else None
             for sh, s in zip(jax.tree.leaves(params_sharding_), jax.tree.leaves(scanned_layers_))
@@ -210,30 +200,35 @@ def scale_by_mudam(
         merged_shapes = shapes
         merged_shapes_leaf = shapes_leaf
         if merge_small_dims:
-            merged_shapes = jax.tree.map(
-                lambda p, s: _merge_small_dims(p.shape[int(s) :], target_merged_dim_size),
+            output = jax.tree.map(
+                lambda p, s, dd: _merge_small_dims(p.shape[int(s) :], target_merged_dim_size, dd),
                 params,
                 scanned_layers_,
+                null_dims,
             )
+            merged_shapes, null_dims = [jax.tree.map(lambda _, x: x[i], params, output) for i in range(2)]
             merged_shapes_leaf = [
-                _merge_small_dims(p.shape[int(s) :], target_merged_dim_size)
-                for p, s in zip(
+                _merge_small_dims(p.shape[int(s) :], target_merged_dim_size, dd)[0]
+                for p, s, dd in zip(
                     jax.tree.leaves(params),
                     jax.tree.leaves(scanned_layers_),
+                    null_dims_leaf,
                 )
             ]
+            print("Shapes after merge small dims: ", merged_shapes_leaf)
+            print("Null dims: ", jax.tree.leaves(null_dims))
         partitioned_shapes = merged_shapes
         partitioned_shapes_leaf = merged_shapes_leaf
         if partition_grads_into_blocks:
             partitioners = jax.tree.map(
-                lambda _, ps: BlockPartitioner(ps, block_size),
+                lambda _, ps, dd: BlockPartitioner(ps, block_size, dd),
                 params,
                 partitioned_shapes,
+                null_dims,
             )
             # we can grab resulting shapes from partitioners
             partitioned_shapes = jax.tree.map(lambda _, p_cls: p_cls._padded_stacked_shape, params, partitioners)
             partitioned_shapes_leaf = [p_cls._padded_stacked_shape for p_cls in jax.tree.leaves(partitioners)]
-            print("Block partitioned shapes: ", partitioned_shapes_leaf)
 
         def broadcast_qs(_, ps, q, s):
             stack_n = ps[0]
@@ -255,7 +250,7 @@ def scale_by_mudam(
         scanned_sizes = jax.tree.map(lambda p, s: p.shape[0] if s else 0, params, scanned_layers_)
 
         GG_and_sharding = [
-            init_conditioner(t[1:] if partition_grads_into_blocks else t, max_precond_dim, precond_dtype, prefer_input_side)
+            init_conditioner(t[1:] if partition_grads_into_blocks else t, max_precond_dim, precond_dtype)
             for t in partitioned_shapes_leaf
         ]
         GG = [x[0] for x in GG_and_sharding]
@@ -270,6 +265,7 @@ def scale_by_mudam(
         return {
             "count": jnp.zeros([], jnp.int32),
             "exp_avg": exp_avg,
+            "exp_avg_sq": exp_avg_sq,
             "GG": GG,
         }
 
@@ -279,22 +275,29 @@ def scale_by_mudam(
         _, grads_structure = jax.tree.flatten(updates, is_leaf=lambda x: isinstance(x, jax.Array))
 
         exp_avg = state["exp_avg"]
-        gradient = updates
-        exp_avg = jax.tree.map(lambda m, g: None if g is None else b1 * m + g, exp_avg, updates)
-        updates = jax.tree.map(lambda m, g: None if g is None else b1 * m + g, exp_avg, updates)
+        exp_avg_sq = state["exp_avg_sq"]
+        exp_avg = jax.tree.map(lambda m, g: None if g is None else b1 * m + (1 - b1) * g, exp_avg, updates)
+        exp_avg_sq = jax.tree.map(lambda m, g: None if g is None else b_adam * m + (1 - b_adam) * g * g, exp_avg_sq, updates)
         shapes = jax.tree.map(lambda p, s: p.shape[int(s) :], updates, scanned_layers_)
         # block gradients, exp_avg
         n_dims_to_map = jax.tree.map(lambda s: int(s), scanned_layers_)
         dummy_updates_tree = jax.tree.map(lambda _: jnp.zeros([]), updates)
+        null_dims = jax.tree.map(
+            lambda p, s: _get_preconditioner_types(p.shape[int(s) :], max_precond_dim),
+            updates,
+            scanned_layers_,
+        )
         # merge small dims
         merged_shapes = shapes
         if merge_small_dims:
             original_shapes = shapes
-            merged_shapes = jax.tree.map(
-                lambda g, s: _merge_small_dims(g.shape[int(s) :], target_merged_dim_size),
+            output = jax.tree.map(
+                lambda g, dd, s: _merge_small_dims(g.shape[int(s) :], target_merged_dim_size, dd),
                 updates,
+                null_dims,
                 scanned_layers_,
             )
+            merged_shapes, null_dims = [jax.tree.map(lambda _, x: x[i], updates, output) for i in range(2)]
             # reshape
             updates = jax.tree.map(
                 lambda g, s, ns: _map_fn(False, 0, int(s), lambda x, shape=ns: jnp.reshape(x, shape), g),
@@ -308,9 +311,9 @@ def scale_by_mudam(
                 scanned_layers_,
                 merged_shapes,
             )
-            gradient = jax.tree.map(
+            exp_avg_sq = jax.tree.map(
                 lambda g, s, ns: _map_fn(False, 0, int(s), lambda x, shape=ns: jnp.reshape(x, shape), g),
-                gradient,
+                exp_avg_sq,
                 scanned_layers_,
                 merged_shapes,
             )
@@ -318,10 +321,16 @@ def scale_by_mudam(
         # partition
         partitioned_shapes = merged_shapes
         if partition_grads_into_blocks:
+            null_dims = jax.tree.map(
+                lambda p, s: _get_preconditioner_types(p.shape[int(s) :], max_precond_dim),
+                updates,
+                scanned_layers_,
+            )
             partitioners = jax.tree.map(
-                lambda _, ps: BlockPartitioner(ps, block_size),
+                lambda _, ps, dd: BlockPartitioner(ps, block_size, dd),
                 updates,
                 partitioned_shapes,
+                null_dims,
             )
             blocked_exp_avg = jax.tree.map(
                 lambda g, p_cls, s: _map_fn(False, 0, int(s), p_cls.partition, g),
@@ -329,15 +338,15 @@ def scale_by_mudam(
                 partitioners,
                 scanned_layers_,
             )
-            blocked_updates = jax.tree.map(
+            blocked_exp_avg_sq = jax.tree.map(
                 lambda g, p_cls, s: _map_fn(False, 0, int(s), p_cls.partition, g),
-                updates,
+                exp_avg_sq,
                 partitioners,
                 scanned_layers_,
             )
-            blocked_gradient = jax.tree.map(
+            blocked_updates = jax.tree.map(
                 lambda g, p_cls, s: _map_fn(False, 0, int(s), p_cls.partition, g),
-                gradient,
+                updates,
                 partitioners,
                 scanned_layers_,
             )
@@ -359,6 +368,18 @@ def scale_by_mudam(
                 blocked_exp_avg,
                 scanned_layers_,
             )
+            blocked_exp_avg_sq = jax.tree.map(
+                lambda _, g, s: _map_fn(
+                    False,
+                    0,
+                    int(s),
+                    lambda x, bs=block_size: _pad_and_stack_matrices(x, bs),
+                    g,
+                ),
+                dummy_updates_tree,
+                blocked_exp_avg_sq,
+                scanned_layers_,
+            )
             blocked_updates = jax.tree.map(
                 lambda _, g, s: _map_fn(
                     False,
@@ -371,61 +392,57 @@ def scale_by_mudam(
                 blocked_updates,
                 scanned_layers_,
             )
-            blocked_gradient = jax.tree.map(
-                lambda _, g, s: _map_fn(
-                    False,
-                    0,
-                    int(s),
-                    lambda x, bs=block_size: _pad_and_stack_matrices(x, bs),
-                    g,
-                ),
-                dummy_updates_tree,
-                blocked_gradient,
-                scanned_layers_,
-            )
             n_dims_to_map = jax.tree.map(lambda x: x + 1, n_dims_to_map)
         else:
             blocked_exp_avg = exp_avg
+            blocked_exp_avg_sq = exp_avg_sq
             blocked_updates = updates
-            blocked_gradient = gradient
 
-        if use_nesterov_in_first_moment:
-            bias_corrected_updates = jax.tree.map(lambda g: (1 - b1) * g / (1 - b1 ** (state["count"] + 1)) if g is not None else None, blocked_updates)
-        else:
-            bias_corrected_updates = jax.tree.map(lambda g: (1 - b1) * g / (1 - b1 ** state["count"]) if g is not None else None, blocked_exp_avg)
-        # first update denominator
-        if use_nesterov_in_second_moment:
-            denominator_updates = bias_corrected_updates
-        elif use_momentum_in_second_moment:
-            denominator_updates = jax.tree.map(lambda g: (1 - b1) * g / (1 - b1 ** state["count"]) if g is not None else None, blocked_exp_avg)
-        else:
-            denominator_updates = blocked_gradient
+        # Project gradients
+        # TBD: bias correction for b1 and b2, leave it for now
         new_GG = jax.tree.map(
-                lambda nm, grad, gg: _map_fn(False, 0, nm, partial(update_preconditioner, beta=b2), grad, gg),
-                jax.tree.leaves(n_dims_to_map),
-                jax.tree.leaves(denominator_updates),
-                state["GG"],
-            )
-        if reduce_to_muon:
-            include_nominator = True
-            denominator = state["GG"]
-            P_over_X = 1.0
-        else:
-            include_nominator = False
-            denominator = new_GG
-            assert b2 > b1 ** 2, "b2 must be greater than b1^2 for the shampoo to have bounded norm update"
-            P_over_X = p_over_x(b1, b2, use_nesterov_in_first_moment)
-
+            lambda nm, grad, gg: _map_fn(False, 0, nm, partial(update_preconditioner, beta=b2), grad, gg),
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_updates),
+            state["GG"],
+        )
         blocked_norm_updates_leaves = jax.tree.map(
-                lambda _, nm, e, gg: _map_fn(False, 0, nm, partial(ns_generalized, precision=precision, b2=b2, steps=steps, eps=epsilon, include_nominator = include_nominator, P_over_X = P_over_X), e, gg),
+            lambda _, nm, e, gg: _map_fn(False, 0, nm, partial(shampoo_update, precision=precision, steps=steps, eps=epsilon), e, gg),
+            jax.tree.leaves(dummy_updates_tree),
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_exp_avg),
+            new_GG,
+        )
+        blocked_adam_updates_leaves = jax.tree.map(
+            lambda _, nm, e, v: _map_fn(False, 0, nm, lambda e, v: e / (jnp.sqrt(v) + epsilon), e, v),
+            jax.tree.leaves(dummy_updates_tree),
+            jax.tree.leaves(n_dims_to_map),
+            jax.tree.leaves(blocked_exp_avg),
+            jax.tree.leaves(blocked_exp_avg_sq),
+        )
+
+        blocked_norm_updates_leaves = jax.tree.map(lambda g: g * jnp.sqrt(1 - b2 ** state["count"]) / ((1 - b1 ** state["count"])) , blocked_norm_updates_leaves)
+        blocked_adam_updates_leaves = jax.tree.map(lambda g: g * jnp.sqrt(1 - b_adam ** state["count"]) / ((1 - b1 ** state["count"])) , blocked_adam_updates_leaves)
+
+
+        blocked_norm_updates_leaves_norm = jax.tree.map(lambda g: jnp.linalg.norm(g) if g is not None else None, blocked_norm_updates_leaves)
+        blocked_adam_updates_leaves_norm = jax.tree.map(lambda g: jnp.linalg.norm(g) if g is not None else None, blocked_adam_updates_leaves)
+        # jax.debug.print("blocked_norm_updates_leaves_norm: {}", blocked_norm_updates_leaves_norm)
+        # jax.debug.print("blocked_adam_updates_leaves_norm: {}", blocked_adam_updates_leaves_norm)
+
+
+        # grafting, use adam's norm and shampoo's update
+        if grafting:
+            blocked_norm_updates_leaves = jax.tree.map(
+                lambda _, nm, u_1, u_2: _map_fn(False, 0, nm, lambda u_1, u_2: jnp.linalg.norm(u_2) / jnp.linalg.norm(u_1) * u_1, u_1, u_2),
                 jax.tree.leaves(dummy_updates_tree),
                 jax.tree.leaves(n_dims_to_map),
-                jax.tree.leaves(bias_corrected_updates),
-                denominator,
+                jax.tree.leaves(blocked_norm_updates_leaves),
+                jax.tree.leaves(blocked_adam_updates_leaves),
             )
-        blocked_norm_updates = grads_structure.unflatten(blocked_norm_updates_leaves)
-        blocked_norm_updates = jax.tree.map(lambda g: g * jnp.sqrt(1 - b2 ** state["count"]) / jnp.sqrt(1 - b2) , blocked_norm_updates)
 
+
+        blocked_norm_updates = grads_structure.unflatten(blocked_norm_updates_leaves)
 
 
         # revert blocking of everything
@@ -468,9 +485,24 @@ def scale_by_mudam(
                 scanned_layers_,
                 partitioners,
             )
+            exp_avg_sq = jax.tree.map(
+                lambda _, g, s, p_cls: _map_fn(False, 0, int(s), p_cls.merge_partitions, g),
+                dummy_updates_tree,
+                blocked_exp_avg_sq,
+                scanned_layers_,
+                partitioners,
+            )
+            exp_avg_sq = jax.tree.map(
+                lambda _, g, s, p_cls: _map_fn(False, 0, int(s), p_cls.merge_partitions, g),
+                dummy_updates_tree,
+                exp_avg_sq,
+                scanned_layers_,
+                partitioners,
+            )
         else:
             norm_updates = blocked_norm_updates
             exp_avg = blocked_exp_avg
+            exp_avg_sq = blocked_exp_avg_sq
 
         # unmerge
         if merge_small_dims:
@@ -486,14 +518,21 @@ def scale_by_mudam(
                 scanned_layers_,
                 original_shapes,
             )
+            exp_avg_sq = jax.tree.map(
+                lambda g, s, os: _map_fn(False, 0, int(s), lambda p, shape=os: jnp.reshape(p, shape), g),
+                exp_avg_sq,
+                scanned_layers_,
+                original_shapes,
+            )
 
         # precision
         new_GG = otu.tree_cast(new_GG, precond_dtype)
         exp_avg = otu.tree_cast(exp_avg, mu_dtype)
-
+        exp_avg_sq = otu.tree_cast(exp_avg_sq, mu_dtype)
         new_state = {
             "GG": new_GG,
             "exp_avg": exp_avg,
+            "exp_avg_sq": exp_avg_sq,
             "count": state["count"],
         }
 
@@ -526,7 +565,7 @@ def update_preconditioner(
     precision: jax.lax.PrecisionLike = jax.lax.Precision.HIGHEST,
 ) -> List[Union[Array, None]]:
     if grad.ndim == 1:
-        return [jnp.matmul(grad[:, None], grad[None, :], precision=precision) + beta * GG[0]]  # type: ignore
+        return [(1 - beta) * jnp.matmul(grad[:, None], grad[None, :], precision=precision) + beta * GG[0]]  # type: ignore
 
     def update_gg(idx, gg):
         if gg is None:
@@ -537,47 +576,43 @@ def update_preconditioner(
             axes=[[*chain(range(idx), range(idx + 1, len(grad.shape)))]] * 2,
             precision=precision,
         )
-        return outer_product + beta * gg
+        return (1 - beta) * outer_product + beta * gg
 
     new_GG = jax.tree.map(update_gg, list(range(len(GG))), GG)
 
     return new_GG
 
 
-def ns_generalized(
+
+
+def shampoo_update(
     X: Array,
     GG: List[Union[Array, None]],
     steps: int = 5,
-    b2: float = 0.0,
     eps: float = 1e-7,
     precision: jax.lax.PrecisionLike = jax.lax.Precision.HIGHEST,
-    include_nominator: bool = True,
-    P_over_X: float = 1.0,
 ) -> Array:
     idx = 0
     for i, mat in enumerate(GG):
         if mat is not None:  # noqa: SIM108
             idx = i
+    P = GG[idx] + eps * jnp.eye(GG[idx].shape[0])
     chex.assert_rank(X, 2)
     # a, b, c = (3.4445, -4.7750, 2.0315)
     a, b, c = (2.0, -1.5, 0.5)
     transpose = False
+    # if X.shape[0] > X.shape[1]:
+    #     X = X.T
+    #     transpose = True
     if idx == 1:
         X = X.T
         transpose = True
-    P = GG[idx]
-    if include_nominator:
-        P = P * b2
-    else:
-        # for nominator X, need to subtract XX.T from the denominator
-        X = X / P_over_X
-        P = P - X @ X.T
-    
+    P_over_X_factor = 2.0
+    X = X / P_over_X_factor
+    P = P - X @ X.T
     normalized_factor = (jnp.linalg.norm(X) + eps + jnp.sqrt(jnp.trace(P)))
     X /= normalized_factor # Ensure top singular value <= 1
     P /= (normalized_factor ** 2)
-
-
     for i in range(steps):
         A = X @ X.T + P
         B = b * A + c * A @ A
@@ -585,15 +620,16 @@ def ns_generalized(
         P = a * a * P + a * (B @ P + P @ B) + B @ P @ B
     if transpose:
         X = X.T
-    scale = jnp.sqrt(jnp.maximum(X.shape[0] , X.shape[1]))
-    return X * scale * P_over_X
+    scale = jnp.sqrt(jnp.maximum(1, X.shape[0] / X.shape[1]))
+    return X * scale * P_over_X_factor
 
 
 
 
 
 
-def _get_preconditioner_types(shape: Tuple[int, ...], max_precond_dim: int, prefer_input_side: bool = True) -> List[bool]:
+
+def _get_preconditioner_types(shape: Tuple[int, ...], max_precond_dim: int) -> List[bool]:
     if len(shape) == 0:
         return [False]
 
@@ -603,16 +639,12 @@ def _get_preconditioner_types(shape: Tuple[int, ...], max_precond_dim: int, pref
     min_dim = min(shape)
     new_result = []
     flag = True
-    if prefer_input_side:
-        shape = shape[::-1]
     for i in range(len(shape)):
         if shape[i] == min_dim and flag:
             flag = False
             new_result.append(False)
         else:
             new_result.append(True)
-    if prefer_input_side:
-        new_result = new_result[::-1]
     return new_result
 
 
@@ -631,7 +663,7 @@ def infer_conditioner_sharding(p_shape, max_precond_dim: int):
         fsdp_size = mesh.devices.shape[fsdp_axis]
 
     sharding_out = [PartitionSpec(None)] * len(p_shape)
-    preconditioner_types = _get_preconditioner_types(p_shape, max_precond_dim, prefer_input_side)
+    preconditioner_types = _get_preconditioner_types(p_shape, max_precond_dim)
     for i in range(len(preconditioner_types)):
         s = p_shape[i]
         if not preconditioner_types[i]:
@@ -646,7 +678,7 @@ def infer_conditioner_sharding(p_shape, max_precond_dim: int):
     return sharding_out
 
 
-def init_conditioner(p_shape, max_precond_dim: int, dtype: Optional[Union[str, jnp.dtype]], prefer_input_side: bool = True):
+def init_conditioner(p_shape, max_precond_dim: int, dtype: Optional[Union[str, jnp.dtype]]):
     if len(p_shape) == 1:
         return ([jnp.zeros((p_shape[0], p_shape[0]), dtype=dtype)], [PartitionSpec()])
 
@@ -661,7 +693,8 @@ def init_conditioner(p_shape, max_precond_dim: int, dtype: Optional[Union[str, j
         fsdp_size = mesh.devices.shape[fsdp_axis]
 
     sharding_out = [PartitionSpec(None)] * len(p_shape)
-    preconditioner_types = _get_preconditioner_types(p_shape, max_precond_dim, prefer_input_side)
+    preconditioner_types = _get_preconditioner_types(p_shape, max_precond_dim)
+    print("Preconditioner types: ", preconditioner_types)
     output = []
     for i in range(len(p_shape)):
         s = p_shape[i]
@@ -690,7 +723,7 @@ class BlockPartitioner:
     https://arxiv.org/abs/2002.09018
     """
 
-    def __init__(self, param_shape, block_size):
+    def __init__(self, param_shape, block_size, null_dims):
         self._shape = param_shape
         self._shape = tuple(int(_) for _ in self._shape)  # jnp value refuse to be equal to integer, manually convert
         self._splits = []
@@ -698,7 +731,7 @@ class BlockPartitioner:
         # We split params into smaller blocks. Here we store the metadata to make
         # that split.
         for i, d in enumerate(param_shape):
-            if 0 < block_size < d:
+            if 0 < block_size < d and not null_dims[i]:
                 # d-1, otherwise split appends a 0-size array.
                 nsplit = (d - 1) // block_size
                 indices = (np.arange(nsplit, dtype=np.int32) + 1) * block_size
@@ -837,7 +870,7 @@ def _unstack_matrices(stacked_arrays, revert_indices):
 
 
 def _merge_small_dims(
-    shape_to_merge, max_dim
+    shape_to_merge, max_dim, null_dims
 ) -> Tuple[List[int], List[bool], Optional[Tuple]] | Tuple[List[int], List[bool]]:
     if not shape_to_merge:  # handles scalar shape ()
         return [], [True]
@@ -880,7 +913,12 @@ def _merge_small_dims(
             best_partition = merged
 
     merged_shape = []
+    merged_diag = []
     for group in best_partition:
         merged_shape.append(np.prod([shape_to_merge[i] for i in group]))
+        merged_diag.append(all(null_dims[i] for i in group))
 
-    return merged_shape
+    return (
+        merged_shape,
+        merged_diag,
+    )

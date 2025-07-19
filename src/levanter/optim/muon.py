@@ -176,6 +176,7 @@ def zeropower_via_newtonschulz5(X, steps=5, eps=1e-7):
         # A = jax.lax.with_sharding_constraint(A, PartitionSpec(None, None))  # ensure it's desharded
         B = b * A + c * A @ A
         X = a * X + B @ X
+    
     if transpose:
         X = X.T
     return X

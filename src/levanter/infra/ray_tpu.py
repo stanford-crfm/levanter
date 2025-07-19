@@ -370,7 +370,8 @@ def run_on_pod_ray(
     elif not isinstance(remote_fn, RemoteFunction):
         remote_fn = ray.remote(max_calls=1)(remote_fn)
     elif remote_fn._default_options.get("max_calls") is None:
-        raise ValueError("Remote function must have max_calls set to 1 for TPU workloads.")
+        # raise ValueError("Remote function must have max_calls set to 1 for TPU workloads.")
+        remote_fn._default_options["max_calls"] = 1
 
     try:
         while num_failures <= max_retries_failure and num_preemptions <= max_retries_preemption:
