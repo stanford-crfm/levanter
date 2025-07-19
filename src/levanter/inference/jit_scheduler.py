@@ -187,20 +187,57 @@ class JitScheduler(eqx.Module):
     def pack_next_sequence(
         self, max_tokens: int
     ) -> tuple["JitScheduler", ht.i32[NamedArray, "position"], ht.i32[NamedArray, "position"]]:  # type: ignore[name-defined]
-        """Remove up to ``max_tokens`` tokens from the queue and return them."""
+        """Remove up to ``max_tokens`` tokens from the queue and return them.
+
+        Additional sequences are packed only if all their currently queued tokens
+        fit in ``max_tokens``. This keeps shapes static inside ``jit``.
+        """
 
         pos_axis = self.queued_tokens.resolve_axis("position")
-        num = jnp.minimum(self.num_queued_tokens, max_tokens)
+        P = pos_axis.size
+
+        def compute_num(q_num):
+            pos_idx = jnp.arange(P, dtype=jnp.int32)
+            valid = pos_idx < q_num
+            ids = self.queued_seq_ids.array
+            ids_masked = jnp.where(valid, ids, ids[0])
+            starts = jnp.concatenate([jnp.array([True]), ids_masked[1:] != ids_masked[:-1]])
+            starts = starts & valid
+            seg_idx = jnp.cumsum(starts.astype(jnp.int32)) - 1
+            weights = valid.astype(jnp.int32)
+            counts = jnp.bincount(seg_idx, weights=weights, length=P)
+            cum_len = jnp.cumsum(counts)
+            can_fit = (cum_len <= max_tokens) & (counts > 0)
+            num_seqs = can_fit.sum()
+            def tok():
+                return cum_len[num_seqs - 1]
+
+            num = jax.lax.cond(num_seqs > 0, tok, lambda: jnp.minimum(counts[0], max_tokens))
+            num = jnp.minimum(num, q_num)
+            num = jnp.minimum(num, max_tokens)
+            return num
+
+        num = jax.lax.cond(
+            self.num_queued_tokens > 0,
+            compute_num,
+            lambda q: jnp.array(0, dtype=jnp.int32),
+            self.num_queued_tokens,
+        )
 
         tokens = self.queued_tokens["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
         seq_ids = self.queued_seq_ids["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
 
+        idx = hax.arange(tokens.resolve_axis("position"))
+        mask_out = idx >= num
+        tokens = hax.where(mask_out, hax.full_like(idx, -1), tokens)
+        seq_ids = hax.where(mask_out, hax.full_like(idx, -1), seq_ids)
+
         rolled_tokens = hax.roll(self.queued_tokens, -num, "position")
         rolled_seq_ids = hax.roll(self.queued_seq_ids, -num, "position")
-        idx = hax.arange(pos_axis)
-        mask = idx >= (pos_axis.size - num)
-        filler_tokens = hax.where(mask, hax.full_like(idx, -1), rolled_tokens)
-        filler_seq_ids = hax.where(mask, hax.full_like(idx, -1), rolled_seq_ids)
+        idx_full = hax.arange(pos_axis)
+        mask = idx_full >= (pos_axis.size - num)
+        filler_tokens = hax.where(mask, hax.full_like(idx_full, -1), rolled_tokens)
+        filler_seq_ids = hax.where(mask, hax.full_like(idx_full, -1), rolled_seq_ids)
 
         new_q_tokens = filler_tokens
         new_q_seq_ids = filler_seq_ids
