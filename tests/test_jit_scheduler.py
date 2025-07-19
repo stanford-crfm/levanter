@@ -126,3 +126,31 @@ def test_extract_nonexistent_sequence_leaves_buffer():
         sched2.generated_seq_ids["position", hax.ds(0,4)].array,
         sched.generated_seq_ids["position", hax.ds(0,4)].array
     )
+
+
+def test_pack_skips_sequence_when_not_enough_room():
+    sched = JitScheduler.init(max_tokens=8, max_seqs=2, key=jax.random.PRNGKey(0))
+    toks = hax.named(jnp.array([1, 2, 3, 4], dtype=jnp.int32), "position")
+    seqs = hax.named(jnp.array([0, 0, 1, 1], dtype=jnp.int32), "position")
+    sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 4)
+
+    sched, ptoks, pseqs = eqx.filter_jit(lambda s: s.pack_next_sequence(3))(sched)
+
+    assert jnp.array_equal(ptoks.array, jnp.array([1, 2, -1], dtype=jnp.int32))
+    assert jnp.array_equal(pseqs.array, jnp.array([0, 0, -1], dtype=jnp.int32))
+    assert sched.num_queued_tokens == 2
+    assert jnp.array_equal(sched.queued_tokens["position", hax.ds(0, 2)].array, jnp.array([3, 4], dtype=jnp.int32))
+    assert jnp.array_equal(sched.queued_seq_ids["position", hax.ds(0, 2)].array, jnp.array([1, 1], dtype=jnp.int32))
+
+
+def test_pack_takes_second_sequence_if_it_fits():
+    sched = JitScheduler.init(max_tokens=8, max_seqs=2, key=jax.random.PRNGKey(0))
+    toks = hax.named(jnp.array([1, 2, 3, 4], dtype=jnp.int32), "position")
+    seqs = hax.named(jnp.array([0, 0, 1, 1], dtype=jnp.int32), "position")
+    sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 4)
+
+    sched, ptoks, pseqs = eqx.filter_jit(lambda s: s.pack_next_sequence(4))(sched)
+
+    assert jnp.array_equal(ptoks.array, jnp.array([1, 2, 3, 4], dtype=jnp.int32))
+    assert jnp.array_equal(pseqs.array, jnp.array([0, 0, 1, 1], dtype=jnp.int32))
+    assert sched.num_queued_tokens == 0
