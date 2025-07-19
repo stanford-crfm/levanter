@@ -4,6 +4,8 @@ __all__ = [
     "AttentionBackend",
     "AttentionConfig",
     "AttentionMask",
+    "PageTable",
+    "PageBatchInfo",
     "dot_product_attention",
     # normalization
     "LayerNormConfig",
@@ -12,4 +14,5 @@ __all__ = [
 ]
 
 from .attention import Attention, AttentionBackend, AttentionConfig, AttentionMask, dot_product_attention
+from .page_table import PageBatchInfo, PageTable
 from .normalization import LayerNormConfig, LayerNormConfigBase, RmsNormConfig
