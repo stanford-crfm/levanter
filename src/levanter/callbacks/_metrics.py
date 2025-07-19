@@ -1,8 +1,7 @@
 import copy
 import logging as pylogging
-from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Optional
+from typing import Mapping, Optional
 
 import jax
 from tqdm_loggable.auto import tqdm
@@ -13,7 +12,8 @@ from levanter.callbacks import StepInfo
 from levanter.data import AsyncDataset
 from levanter.schedule import BatchSchedule
 from levanter.tracker import log_optimizer_hyperparams
-from levanter.utils import flop_utils
+from levanter.utils import flop_utils, thread_utils
+import threading
 from levanter.utils.jax_utils import jnp_to_python
 
 
@@ -43,27 +43,6 @@ def log_epoch_progress(total_tokens_future, tokens_per_example, batch_size, max_
 
     return log_epoch
 
-
-def get_total_dataset_tokens(ds: AsyncDataset, seq_length: int):
-    def log_length():
-        # If ds.async_len() is the only option, run it in an event loop inside the thread
-        import asyncio
-
-        async def compute_length():
-            length = await ds.dataset.async_len()
-            return length
-
-        # Run the async function synchronously in this thread
-        length = asyncio.run(compute_length())
-        total_tokens = length * seq_length
-        levanter.tracker.log_summary({"dataset/total_tokens": total_tokens})
-        return total_tokens
-
-    # Create a ThreadPoolExecutor with a single worker thread
-    executor = ThreadPoolExecutor(max_workers=1)
-    # Submit the log_length function to be executed in a separate thread
-    future = executor.submit(log_length)
-    return future
 
 
 def log_step_info(total_steps: Optional[int]):
@@ -173,3 +152,66 @@ def _tqdm_logging_one_time_setup():
         return
     _did_tqdm_logging_one_time_setup = True
     tqdm_logging.set_log_rate(timedelta(seconds=60))
+
+
+def log_dataset_token_counts(datasets: Mapping[str, AsyncDataset], seq_length: int):
+    """Return a callback that logs token counts for ``datasets``."""
+
+    results: dict[str, int | Exception] = {}
+    threads: dict[str, threading.Thread] = {}
+
+    def _compute_length(name: str, ds: AsyncDataset) -> None:
+        try:
+            length = thread_utils.blocking_wait(ds.async_len())
+            results[name] = length * seq_length
+        except Exception as e:  # pragma: no cover - defensive
+            results[name] = e
+
+    def _maybe_start_threads() -> None:
+        for name, ds in datasets.items():
+            if name in results or name in threads:
+                continue
+            try:
+                if thread_utils.blocking_wait(ds.final_length_is_known()):
+                    length = thread_utils.blocking_wait(ds.async_len())
+                    results[name] = length * seq_length
+                else:
+                    t = threading.Thread(target=_compute_length, args=(name, ds), daemon=True)
+                    t.start()
+                    threads[name] = t
+            except Exception as e:  # pragma: no cover - defensive
+                results[name] = e
+
+    started = False
+
+    def cb(_: StepInfo) -> None:
+        nonlocal started
+        if not started:
+            _maybe_start_threads()
+            started = True
+
+        # Check for completed threads and log any finished results
+        for name, thread in list(threads.items()):
+            if not thread.is_alive():
+                thread.join()
+                threads.pop(name)
+
+        log_dict: dict[str, int] = {}
+        for name, res in list(results.items()):
+            if isinstance(res, Exception):
+                logger.exception("Error computing length for dataset %s", name, exc_info=res)
+                results.pop(name)
+                continue
+
+            tokens = res
+            if tokens == 0:
+                logger.error("Dataset %s is empty!", name)
+            else:
+                logger.info("Dataset %s tokens: %d", name, tokens)
+            log_dict[f"dataset/{name}/total_tokens"] = tokens
+            results.pop(name)
+
+        if log_dict:
+            levanter.tracker.log_summary(log_dict)
+
+    return cb
