@@ -113,4 +113,4 @@ fi
 echo "Checking out branch $BRANCH"
 
 # install levanter
-uv sync --extras tpu
+pip install -e .[tpu] --group dev
