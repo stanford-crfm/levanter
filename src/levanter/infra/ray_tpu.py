@@ -583,7 +583,6 @@ def _prune_dead_slices(pool: list[ActorHandle], infos: dict[ActorHandle, SliceIn
     """
     new_pool = []
     new_infos = {}
-    to_kill_futures = []
 
     actors_and_healthy = [(actor, actor.healthy.remote()) for actor in pool]
     for actor, healthy in actors_and_healthy:
@@ -593,18 +592,10 @@ def _prune_dead_slices(pool: list[ActorHandle], infos: dict[ActorHandle, SliceIn
                 new_infos[actor] = infos[actor]
             else:
                 logger.warning(f"Actor {actor} is unhealthy. Removing from pool.")
-                to_kill_futures.append(actor.shutdown.remote())
                 # nothing else to do here
         except (RayActorError, RayTaskError, ActorDiedError, ActorUnavailableError) as e:
             logger.warning(f"Actor {actor} is dead or unavailable. Removing from pool. Error: {e}")
-            to_kill_futures.append(actor.shutdown.remote())
             # actor died before it returned slice info
-
-    if to_kill_futures:
-        try:
-            ray.get(to_kill_futures)
-        except ray.exceptions.RayError as e:
-            logger.warning(f"Failed to kill some actors: {e}")
 
     return new_pool, new_infos
 
