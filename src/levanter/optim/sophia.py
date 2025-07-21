@@ -121,7 +121,7 @@ class ScaleBySophiaState(NamedTuple):
 #        return PartialSophiaG(self.objective, *self.args, *args, **self.kwargs, **kwargs)
 
 
-@dataclass
+@dataclass(frozen=True)
 class BaseSophiaConfig(HessianOptConfig):
     """Base class for sophia variants. Doesn't implement the state update"""
 
@@ -195,7 +195,7 @@ class BaseSophiaConfig(HessianOptConfig):
 
 
 @OptimizerConfig.register_subclass("sophia-h")
-@dataclass
+@dataclass(frozen=True)
 class SophiaHConfig(BaseSophiaConfig):
     gamma: float = GAMMA_SOPHIA_H
 
