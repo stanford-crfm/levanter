@@ -37,7 +37,7 @@ class MuonConfig(OptimizerConfig):
     epsilon: float = 1e-8
     muon_epsilon: float = 1e-8
     max_grad_norm: float = 1.0
-    # Kimi scale the learning rate for every d_1 * d_2 module by 0.2 * jnp.sqrt{\max{d_1, d_2}}, instead of the jnp.sqrt{\max{1, d_1/d_2}} as in the original nanogpt speedrun.
+    # Kimi scales the learning rate for every d_1 * d_2 module by 0.2 * jnp.sqrt{\max{d_1, d_2}}, instead of the jnp.sqrt{\max{1, d_1/d_2}} as in the original nanogpt speedrun.
     # When this scaling is enabled, it is recommended to use learning rate and weight decay similar to adam
     use_kimi_scaling: bool = False
 
