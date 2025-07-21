@@ -14,7 +14,7 @@ from levanter.utils.logging import init_logging
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RayCachedLMDatasetConfig(SingleDatasetLMConfigBase, RayConfig):
     tracker: TrackerConfig = field(default_factory=NoopConfig)
 
