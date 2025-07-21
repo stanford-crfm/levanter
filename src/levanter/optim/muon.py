@@ -37,6 +37,9 @@ class MuonConfig(OptimizerConfig):
     epsilon: float = 1e-8
     muon_epsilon: float = 1e-8
     max_grad_norm: float = 1.0
+    # Kimi scale the learning rate for every d_1 * d_2 module by 0.2 * jnp.sqrt{\max{d_1, d_2}}, instead of the jnp.sqrt{\max{1, d_1/d_2}} as in the original nanogpt speedrun.
+    # When this scaling is enabled, it is recommended to use learning rate and weight decay similar to adam
+    use_kimi_scaling: bool = False
 
     def build(self, num_train_steps):
         """
@@ -48,7 +51,7 @@ class MuonConfig(OptimizerConfig):
         def optimizer(learning_rate, adam_lr):
             def muon_transform():
                 components = []
-                components.append(scale_with_muon(self.momentum, self.nesterov, self.backend_steps, self.muon_epsilon))
+                components.append(scale_with_muon(self.momentum, self.nesterov, self.backend_steps, self.muon_epsilon, self.use_kimi_scaling))
                 if self.weight_decay > 0:
                     components.append(optax.add_decayed_weights(self.weight_decay, self.build_weight_decay_mask()))
                 components.append(optax.scale(-learning_rate))
@@ -101,7 +104,7 @@ class ScaleByMuonState(NamedTuple):
     momentum_buffer: optax.Updates
 
 
-def scale_with_muon(momentum=0.95, nesterov=True, steps=5, muon_eps=1e-8):
+def scale_with_muon(momentum=0.95, nesterov=True, steps=5, muon_eps=1e-8, use_kimi_scaling=False):
     # Convert steps to concrete int at function definition time
     steps = int(steps)
 
@@ -133,7 +136,10 @@ def scale_with_muon(momentum=0.95, nesterov=True, steps=5, muon_eps=1e-8):
             array = layer.weight.array
             updated_weight_array = zeropower_via_newtonschulz5(array, steps=steps, eps=muon_eps)
 
-            scale = jnp.sqrt(jnp.maximum(1, updated_weight_array.shape[0] / updated_weight_array.shape[1]))
+            if not use_kimi_scaling:
+                scale = jnp.sqrt(jnp.maximum(1, updated_weight_array.shape[0] / updated_weight_array.shape[1]))
+            else:
+                scale = 0.2 * jnp.sqrt(jnp.maximum(updated_weight_array.shape[0], updated_weight_array.shape[1]))
             updated_weight_array *= scale
 
             updated_weight = dataclasses.replace(layer.weight, array=updated_weight_array)
