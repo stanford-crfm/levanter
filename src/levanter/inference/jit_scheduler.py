@@ -187,34 +187,76 @@ class JitScheduler(eqx.Module):
     def pack_next_sequence(
         self, max_tokens: int
     ) -> tuple["JitScheduler", ht.i32[NamedArray, "position"], ht.i32[NamedArray, "position"]]:  # type: ignore[name-defined]
-        """Remove up to ``max_tokens`` tokens from the queue and return them."""
+        """Remove up to ``max_tokens`` tokens from the queue and return them.
 
-        pos_axis = self.queued_tokens.resolve_axis("position")
-        num = jnp.minimum(self.num_queued_tokens, max_tokens)
+        Additional sequences are packed only if all their currently queued tokens
+        fit in ``max_tokens``. Shapes stay static inside ``jit``.
+        """
 
-        tokens = self.queued_tokens["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
-        seq_ids = self.queued_seq_ids["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+        P = self.queued_tokens.axis_size("position")
 
-        rolled_tokens = hax.roll(self.queued_tokens, -num, "position")
-        rolled_seq_ids = hax.roll(self.queued_seq_ids, -num, "position")
-        idx = hax.arange(pos_axis)
-        mask = idx >= (pos_axis.size - num)
-        filler_tokens = hax.where(mask, hax.full_like(idx, -1), rolled_tokens)
-        filler_seq_ids = hax.where(mask, hax.full_like(idx, -1), rolled_seq_ids)
+        def compute_take(q_num: jax.Array) -> jax.Array:
+            # which slots currently contain queued tokens?
+            pos_idx = jnp.arange(P, dtype=jnp.int32)
+            valid_mask = pos_idx < q_num
 
-        new_q_tokens = filler_tokens
-        new_q_seq_ids = filler_seq_ids
+            ids = self.queued_seq_ids.array
+            ones = valid_mask.astype(jnp.int32)
 
-        return (
-            dataclasses.replace(
-                self,
-                queued_tokens=new_q_tokens,
-                queued_seq_ids=new_q_seq_ids,
-                num_queued_tokens=self.num_queued_tokens - num,
-            ),
-            tokens,
-            seq_ids,
+            seg_lens = jax.lax.segment_sum(ones, ids, num_segments=self.max_seqs)
+
+            first_pos = jnp.full(self.max_seqs, P, dtype=jnp.int32)
+            first_pos = first_pos.at[ids].min(pos_idx, where=valid_mask, mode="drop")
+
+            sorted_ids = jnp.argsort(first_pos)
+            lens_sorted = seg_lens[sorted_ids]
+            valid_sorted = lens_sorted > 0
+            lens_masked = jnp.where(valid_sorted, lens_sorted, 0)
+
+            cums = jnp.cumsum(lens_masked)
+            full_mask = (cums <= max_tokens) & valid_sorted
+            num_full = full_mask.sum()
+
+            first_len = lens_masked[0]
+            take_cnt = jnp.where(num_full > 0, cums[num_full - 1], jnp.minimum(first_len, max_tokens))
+            take_cnt = jnp.minimum(take_cnt, q_num)
+            take_cnt = jnp.minimum(take_cnt, max_tokens)
+            return take_cnt
+
+        take_cnt = jax.lax.cond(
+            self.num_queued_tokens > 0,
+            compute_take,
+            lambda q: jnp.array(0, dtype=jnp.int32),
+            self.num_queued_tokens,
         )
+
+        # Fixed-shape slice for return value
+        tokens_full = self.queued_tokens["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+        seq_ids_full = self.queued_seq_ids["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+
+        idx = hax.arange(tokens_full.resolve_axis("position"))
+        mask_out = idx >= take_cnt
+        tokens = hax.where(mask_out, hax.full_like(idx, -1), tokens_full)
+        seq_ids = hax.where(mask_out, hax.full_like(idx, -1), seq_ids_full)
+
+        to_take = take_cnt.astype(int)
+        rest_tokens = jnp.concatenate(
+            [self.queued_tokens.array[to_take:P], -1 * jnp.ones((to_take,), dtype=self.queued_tokens.dtype)],
+            axis=0,
+        )
+        rest_ids = jnp.concatenate(
+            [self.queued_seq_ids.array[to_take:P], -1 * jnp.ones((to_take,), dtype=self.queued_seq_ids.dtype)],
+            axis=0,
+        )
+
+        new_sched = dataclasses.replace(
+            self,
+            queued_tokens=hax.named(rest_tokens, axis=self.queued_tokens.axes),
+            queued_seq_ids=hax.named(rest_ids, axis=self.queued_seq_ids.axes),
+            num_queued_tokens=self.num_queued_tokens - take_cnt,
+        )
+
+        return new_sched, tokens, seq_ids
 
     def extract_generated_tokens(
         self,
