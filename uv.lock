@@ -1849,7 +1849,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "optax", specifier = ">=0.1.9" },
     { name = "peft", marker = "extra == 'torch-test'", specifier = ">=0.12.0" },
-    { name = "protobuf", specifier = "<6" },
+    { name = "protobuf", specifier = "<7" },
     { name = "pyarrow", specifier = ">=11.0.0" },
     { name = "pydantic", specifier = "<3" },
     { name = "pytimeparse", specifier = ">=1.1.8" },
