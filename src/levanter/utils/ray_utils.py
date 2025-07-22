@@ -9,6 +9,7 @@ from typing import Optional
 import ray
 import tblib
 from ray.runtime_env import RuntimeEnv
+import mergedeep
 
 
 @dataclass
@@ -30,7 +31,7 @@ class ExceptionInfo:
             raise Exception("Process failed with no exception").with_traceback(self.tb.as_traceback())
 
 
-@dataclass
+@dataclass(frozen=True)
 class RayResources:
     """
     A dataclass that represents the resources for a ray task or actor. It's main use is to be
@@ -41,6 +42,8 @@ class RayResources:
     num_gpus: int = 0
     resources: dict = dataclasses.field(default_factory=dict)
     runtime_env: RuntimeEnv = dataclasses.field(default_factory=RuntimeEnv)
+    memory: int | None = None
+    object_store_memory: int | None = None
     accelerator_type: Optional[str] = None
 
     def to_kwargs(self):
@@ -71,7 +74,81 @@ class RayResources:
 
     @staticmethod
     def from_resource_dict(resources: dict):
-        return RayResources(num_cpus=resources.get("CPU", 0), num_gpus=resources.get("GPU", 0), resources=resources)
+        resources = dict(resources)  # Ensure we have a mutable copy
+        num_cpus = resources.pop("CPU", 1)
+        num_gpus = resources.pop("GPU", 0)
+        memory = resources.pop("memory", None)
+        object_store_memory = resources.pop("object_store_memory", None)
+        return RayResources(num_cpus=num_cpus, num_gpus=num_gpus, memory=memory, object_store_memory=object_store_memory,
+                            resources=resources)
+
+    def merge_env_vars(self, env_vars: dict | None):
+        """
+        Return a new ``RayResources`` with the supplied ``env_vars`` merged into
+        its ``runtime_env``.  The merge strategy is additive – existing
+        environment variables are preserved unless explicitly overridden by the
+        provided ``env_vars``.  If ``env_vars`` is ``None`` or empty, the
+        original instance is returned unchanged.
+
+        This is a convenience method that calls ``merge_runtime_env`` with
+        a runtime environment containing only the specified environment variables.
+        """
+
+        # Short-circuit if there is nothing to merge.
+        if not env_vars:
+            return self
+
+        # Create a runtime environment dict with just the env_vars
+        runtime_env_with_vars = {"env_vars": env_vars}
+
+        # Delegate to the more general merge_runtime_env method
+        return self.merge_runtime_env(runtime_env_with_vars)
+
+    def merge_runtime_env(self, runtime_env: dict | RuntimeEnv | None):
+        """
+        Return a new ``RayResources`` with the supplied ``runtime_env`` merged into
+        its existing ``runtime_env``.  The merge strategy is additive – existing
+        runtime environment fields are preserved unless explicitly overridden by the
+        provided ``runtime_env``.  If ``runtime_env`` is ``None`` or empty, the
+        original instance is returned unchanged.
+
+        This handles merging of all runtime environment fields (env_vars, pip, conda, working_dir, etc.)
+        not just environment variables.
+        """
+
+        # Short-circuit if there is nothing to merge.
+        if not runtime_env:
+            return self
+
+        # Convert both runtime environments to plain dicts for merging.
+        if isinstance(self.runtime_env, RuntimeEnv):
+            base_runtime_env: dict = self.runtime_env.to_dict()
+        else:
+            base_runtime_env = dict(self.runtime_env or {})
+
+        if isinstance(runtime_env, RuntimeEnv):
+            merge_runtime_env: dict = runtime_env.to_dict()
+        else:
+            merge_runtime_env = dict(runtime_env or {})
+
+        # Perform an additive deep merge of the runtime environments.
+        merged_runtime_env = mergedeep.merge(
+            {},
+            base_runtime_env,
+            merge_runtime_env,
+            strategy=mergedeep.Strategy.ADDITIVE,
+        )
+
+        # Attempt to reconstruct a ``RuntimeEnv``; if this fails (e.g., because
+        # unsupported fields were introduced) fall back to the raw dict.
+        try:
+            new_runtime_env = RuntimeEnv(**merged_runtime_env)
+        except Exception:  # noqa: BLE001 – best-effort conversion only
+            new_runtime_env = merged_runtime_env
+
+        # Return a *new* RayResources instance with the updated runtime_env so
+        # that the original remains unchanged/immutable.
+        return dataclasses.replace(self, runtime_env=new_runtime_env)
 
 
 @dataclass
