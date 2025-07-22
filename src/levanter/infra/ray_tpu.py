@@ -20,6 +20,7 @@ from ray.dashboard.modules.job.sdk import JobSubmissionClient
 from ray.exceptions import (
     ActorDiedError,
     ActorUnavailableError,
+    GetTimeoutError,
     NodeDiedError,
     RayActorError,
     RayError,
@@ -258,7 +259,6 @@ class SliceActor:
     Actor that manages a single TPU slice.
     """
     def __init__(self):
-        self._slice_info: Optional[SliceInfo] = None
         self._failed = False
 
     def healthy(self) -> bool:
@@ -557,9 +557,17 @@ def run_on_pod_ray(
 
 def _stop_actor(actor: ActorHandle) -> None:
     try:
+        # This is recommended by https://docs.ray.io/en/latest/ray-core/api/doc/ray.kill.html
+        # 
+        # > If you want to kill the actor but let pending tasks finish, you can call actor.__ray_terminate__.remote()
+        # > instead to queue a termination task. Any atexit handlers installed in the actor will be run in this case.
+        #
+        # NOTE: Not sure if this always returns an exception (because the actor will terminate before finishing)
+        # but it doesn't really matter
         ray.get(actor.__ray_terminate__.remote(), timeout=_TERMINATE_ACTOR_TIMEOUT)
-    except ray.exceptions.RayError as e:
+    except GetTimeoutError as e:
         logger.warning(f"Failed to gracefully shut down actor in {_TERMINATE_ACTOR_TIMEOUT} seconds; killing it instead: {e}")
+    finally:
         ray.kill(actor)
 
 
@@ -567,7 +575,7 @@ def _release_slice_resource(slice_resource: SliceResource) -> None:
     _stop_actor(slice_resource.actor)
     try:
         ray.util.remove_placement_group(slice_resource.placement_group)
-    except ray.exceptions.RayError as e:
+    except Exception as e:
         logger.warning(f"Failed to remove placement group: {e}")
 
 
@@ -674,7 +682,7 @@ def _prune_dead_slices(pool: list[SliceResource]) -> list[SliceResource]:
             else:
                 logger.warning(f"Slice {tpu_slice.slice_info.slice_name} is unhealthy. Removing from pool.")
                 unhealthy_slices.append(tpu_slice)
-        except (RayActorError, RayTaskError, ActorDiedError, ActorUnavailableError) as e:
+        except (RayActorError, RayTaskError, ActorDiedError, ActorUnavailableError, GetTimeoutError) as e:
             logger.warning(f"Slice {tpu_slice.slice_info.slice_name} is dead or unavailable. Removing from pool. Error: {e}")
             unhealthy_slices.append(tpu_slice)
 
