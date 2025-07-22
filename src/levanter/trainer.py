@@ -437,8 +437,14 @@ class Trainer:
         """
         Performs training until the number of steps is reached.
         """
+        info: Optional[StepInfo[S]] = None
         for info in self.training_steps(state, train_loader):
             pass
+
+        if info is None:
+            raise RuntimeError(
+                "No training steps were executed. The dataset may be empty or there are no steps left to run."
+            )
 
         # force hooks to run at the end
         self.run_hooks(info, force=True)
