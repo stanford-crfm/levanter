@@ -23,9 +23,9 @@ def test_eval_lm():
     model_config = LlamaConfig(
         num_layers=2,
         num_heads=2,
+        num_kv_heads=2,
         seq_len=64,
         hidden_dim=32,
-        use_flash_attention=True,
     )
 
     with tempfile.TemporaryDirectory() as f:
@@ -67,9 +67,9 @@ def test_eval_lm_from_hf():
     model_config = LlamaConfig(
         num_layers=2,
         num_heads=2,
+        num_kv_heads=2,
         seq_len=1024,
         hidden_dim=32,
-        use_flash_attention=True,
     )
 
     with tempfile.TemporaryDirectory() as f:

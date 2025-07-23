@@ -23,6 +23,7 @@ def test_train_lm():
                 model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
+                    num_kv_heads=2,
                     seq_len=64,
                     hidden_dim=32,
                     attn_backend=None,  # use default for platform
@@ -55,6 +56,7 @@ def test_train_lm_fp8():
                 model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
+                    num_kv_heads=2,
                     seq_len=64,
                     hidden_dim=32,
                     attn_backend=None,  # use default for platform
