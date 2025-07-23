@@ -47,7 +47,7 @@ repository. Follow these notes when implementing new features or fixing bugs.
 ## Testing
 
 * Tests are executed with `pytest`. The default workflow runs
-  `pytest tests -m "not entry and not slow and not ray"`.
+  `uv run pytest tests -m "not entry and not slow and not ray"`.
 * In general, never relax tolerances in floating point tests unless specifically discussed with the
   team. Use `assert_allclose` with appropriate tolerances for numerical comparisons. We typically use
   1e-4 for more complex modules, and 1e-5 for simpler ones.
