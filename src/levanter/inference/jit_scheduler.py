@@ -27,6 +27,35 @@ def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> Nam
     return dest.at[{**selector, axis: dest_arange}].set(src[axis, src_arange], mode="drop")
 
 
+class PackedSequence(eqx.Module):
+    """
+    A sequence of tokens packed into a single array, with
+    This is used to pack sequences into a single array for efficient processing.
+
+    Sequence boundaries are stored as indices in the `boundary_idx` array, which is used to
+    determine sequence end points (which in turn are used for sampling)
+    Note that this is basically just wherever the sequence id changes, except that if the last sequence is not full,
+    it will not have a boundary index.
+
+    (Sequence can be not-full in the case of chunked prefill.)
+    """
+
+    tokens: ht.i32[NamedArray, "position"]  # packed tokens
+    seq_ids: ht.i32[NamedArray, "position"]  # sequence ids for each token
+    num_tokens: jax.Array  # number of tokens in the packed sequence
+    is_boundary: ht.bool_[NamedArray, "position"]  # boolean mask for sequence boundaries
+
+    def boundary_indices(self, max_boundaries: int) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
+        """
+        Returns the indices of the sequence boundaries in the packed sequence.
+        The boundaries are determined by the `is_boundary` mask.
+        """
+        # Get the positions where the boundary is True
+        axis = self.is_boundary.resolve_axis("position").resize(max_boundaries)
+        boundary_positions = hax.where(self.is_boundary, fill_value=-1, new_axis=axis)[0]
+        return boundary_positions
+
+
 class JitScheduler(eqx.Module):
     """
     inside-JIT scheduler for sequences. We assume there is an outer scheduler that manages all sequences, and this
@@ -45,39 +74,44 @@ class JitScheduler(eqx.Module):
             # add new sequences to the jit scheduler
             jit_scheduler = outer_scheduler.get_next_macro_round(jit_scheduler)
             # do iterative prefill/decode
-            jit_scheduler = do_generate(jit_scheduler)
+            jit_scheduler = do_generate(jit_scheduler, page_table, cache, MAX_STEPS)
             generated_tokens, generated_seq_ids = jit_scheduler.generated_tokens, jit_scheduler.generated_seq_ids
 
         do_generate might look like this:
-        def do_generate(sched: JitScheduler, max_steps: int) -> JitScheduler:
+        def do_generate(sched: JitScheduler, cache, page_table,  max_steps: int) -> JitScheduler:
+            def cond(state):
+                _sched, *_ , step = state
+                return (step < max_new_tokens) & (~jnp.all(_sched.finished.array))
 
             def body(state):
-                sched, tokens, seq_ids = state
-                # pack next sequence
-                sched, tokens, seq_ids, binfo = sched.pack_next_sequence(max_tokens=32)
-                # compute logits
-                logits, cache = model.decode(tokens, cache, binfo.pos_ids)
-                # sample new tokens
-                last_token_idxes_per_seq = get_last_tokens_per_seq(tokens, seq_ids) # padded with max_pos out to max_seq
-                new_seq_ids = seq_ids["position", last_token_idxes_per_seq]
-                keys = jnp.take(sched.key, new_seq_ids.array, axis=0)
-                new_tokens = sample(logits, last_token_idxes_per_seq)
-                # update the scheduler with the new tokens
-                actual_num_new_tokens = hax.sum(last_token_idxes_per_seq <= max_pos).scalar()
-                sched = sched.update_after_sampling(new_tokens, new_seq_ids, num_new_tokens= actual_num_new_tokens)
-                return sched, tokens, seq_ids
+                sched: JitScheduler
+                sched, page_table, cache, key, step = state
 
+                # Pack the next chunk from the queue
+                sched, chunk_tokens, chunk_seq_ids = sched.pack_next_sequence(max_tokens_per_round)
 
-            while not sched.finished.all():
-                # pack next sequence
-                sched, tokens, seq_ids, binfo = sched.pack_next_sequence(max_tokens=32)
-                # compute logits
-                logits = model.decode(tokens, cache, binfo.pos_ids)
-                # sample new tokens
-                new_tokens, new_seq_ids = sample(tokens, seq_ids)
-                # update the scheduler with the new tokens
-                sched = sched.update_after_sampling(new_tokens, new_seq_ids, num_new_tokens=len(new_tokens))
-            return sched, cache
+                # Allocate cache pages for this chunk
+                page_table, binfo = page_table.allocate_for_seq(token_seq_ids=chunk_seq_ids)
+
+                # Decode logits and sample new tokens
+                logits, cache = model.decode(chunk_tokens, cache, binfo, binfo.pos_ids)
+                sample_key, key = jrandom.split(key)
+                logits = logits["position", binfo.last_token_idx]
+                new_tokens, _ = sampler(logits, temps, key=sample_key)
+
+                num_new_tokens = hax.sum(binfo.last_token_idx != -1).scalar()
+
+                # Update scheduler with the freshly sampled tokens
+                sched = sched.update_after_sampling(
+                    new_tokens=new_tokens,
+                    new_token_seq_ids=chunk_seq_ids,
+                    num_new_tokens=num_new_tokens,
+                )
+                return sched, page_table, cache, key, step + 1
+
+            init_state = (sched, page_table, cache, key, jnp.array(0, dtype=jnp.int32))
+            sched, page_table, cache, key, _ = jax.lax.while_loop(cond, body, init_state)
+            return sched, cache, page_table, key
 
     """
     # Notes:
@@ -88,7 +122,6 @@ class JitScheduler(eqx.Module):
     queued_tokens: ht.i32[NamedArray, "position"]  # number of tokens ready to be processed in each sequence.
     queued_seq_ids: ht.i32[NamedArray, "position"]
     num_queued_tokens: jax.Array
-    finished: ht.bool_[NamedArray, "seq"]  # whether the sequence is finished
     key: PRNGKeyArray  # batched to seq
 
     # TODO: per-seq sampling params
@@ -103,14 +136,8 @@ class JitScheduler(eqx.Module):
             queued_tokens=hax.full({"position": max_tokens}, -1, dtype=jnp.int32),
             queued_seq_ids=hax.full({"position": max_tokens}, -1, dtype=jnp.int32),
             num_queued_tokens=jnp.array(0, dtype=jnp.int32),
-            finished=hax.zeros({"seq": max_seqs}, dtype=jnp.bool_),
             key=jrandom.split(key, max_seqs),
         )
-
-    @property
-    def max_seqs(self) -> int:
-        """Maximum number of sequences in this batch."""
-        return self.finished.axis_size("seq")
 
     def enqueue_tokens(
         self,
@@ -186,8 +213,12 @@ class JitScheduler(eqx.Module):
 
     def pack_next_sequence(
         self, max_tokens: int
-    ) -> tuple["JitScheduler", ht.i32[NamedArray, "position"], ht.i32[NamedArray, "position"]]:  # type: ignore[name-defined]
-        """Remove up to ``max_tokens`` tokens from the queue and return them."""
+    ) -> tuple["JitScheduler", PackedSequence]:  # type: ignore[name-defined]
+        """
+        Dequeue up to ``max_tokens`` tokens from the queue and return them.
+
+        Returns the updated scheduler, the tokens, sequence ids and number of actual tokens that were dequeued.
+        """
 
         pos_axis = self.queued_tokens.resolve_axis("position")
         num = jnp.minimum(self.num_queued_tokens, max_tokens)
@@ -205,16 +236,35 @@ class JitScheduler(eqx.Module):
         new_q_tokens = filler_tokens
         new_q_seq_ids = filler_seq_ids
 
-        return (
-            dataclasses.replace(
-                self,
-                queued_tokens=new_q_tokens,
-                queued_seq_ids=new_q_seq_ids,
-                num_queued_tokens=self.num_queued_tokens - num,
-            ),
-            tokens,
-            seq_ids,
+        new_scheduler = dataclasses.replace(
+            self,
+            queued_tokens=new_q_tokens,
+            queued_seq_ids=new_q_seq_ids,
+            num_queued_tokens=self.num_queued_tokens - num
         )
+
+        # boundary if seq_id changes and not -1
+        is_boundary: hax.NamedArray = (seq_ids != hax.roll(seq_ids, -1, "position")) & (seq_ids != -1)
+
+        last_idx = num - 1
+        next_after_last = rolled_seq_ids["position", 0]
+        boundary_last = (
+                (seq_ids["position", last_idx] != next_after_last)
+                & (seq_ids["position", last_idx] != -1)
+        )
+
+        is_boundary = is_boundary.at["position", last_idx].set(boundary_last)
+
+
+        sequence = PackedSequence(
+            tokens=tokens,
+            seq_ids=seq_ids,
+            num_tokens=num,
+            is_boundary=is_boundary
+        )
+
+
+        return new_scheduler, sequence
 
     def extract_generated_tokens(
         self,
@@ -274,74 +324,3 @@ class JitScheduler(eqx.Module):
         )
 
         return updated, out_named
-
-    # def extract_generated_tokens(
-    #     self,
-    #     sequence_ids: ht.i32[NamedArray, "seq"],
-    #     max_tokens: int,
-    # ) -> tuple["JitScheduler", ht.i32[NamedArray, "seq position"]]:
-    #     """
-    #     JIT‐safe: Extract up to `max_tokens` for each seq in `sequence_ids`,
-    #     remove exactly those tokens from the buffer, and return a [seq,position]
-    #     array (padded with -1).
-    #     """
-    #     # aliases
-    #     P       = self.generated_tokens.axis_size("position")
-    #     S       = sequence_ids.axis_size("seq")
-    #     num_raw = self.num_generated_tokens
-    #     tok_buf = self.generated_tokens.array    # shape (P,)
-    #     id_buf  = self.generated_seq_ids.array   # shape (P,)
-    #     req_ids = sequence_ids.array             # shape (S,)
-    #
-    #     # 1) compute per‐token “local position” within its sequence:
-    #     #    we do a segment‐cumsum of 1s, then subtract 1 to get 0-based indices.
-    #     ones    = jnp.where(positions < num_raw, 1, 0)
-    #     raw_cum = jax.lax.segment_sum(ones, id_buf, num_segments=self.max_seqs)
-    #     # BUT segment_sum gives total per-seq at each slot, not prefix sums.
-    #     # Instead we can do a trick: sort-by-(seq,id,position) then cumsum then undo the sort.
-    #     # For brevity here assume we have an efficient segment_cumsum in Haliax:
-    #     local_pos = hax.segment_cumsum(ones, id_buf) - 1      # shape (P,)
-    #
-    #     # 2) build a [P, max_tokens] one‐hot for each local_pos < max_tokens
-    #     in_req      = (id_buf[:,None] == req_ids[None,:]).any(axis=1)  # which slots *could* be extracted
-    #     can_extract = in_req & (local_pos < max_tokens)               # mask exactly the first `max_tokens`
-    #     # we’ll use this later for removal.
-    #
-    #     oh = jax.nn.one_hot(local_pos, max_tokens, dtype=tok_buf.dtype)  # (P, T)
-    #     masked = tok_buf[:,None] * oh                                     # (P, T)
-    #     # zero out any slots beyond num_raw
-    #     masked = jnp.where(positions[:,None] < num_raw, masked, 0)
-    #
-    #     # 3) segment_sum into a [max_seqs, max_tokens] matrix
-    #     dense = lax.segment_sum(masked, id_buf, num_segments=self.max_seqs)
-    #     # pick only the requested seqs and pad with -1
-    #     out = dense[req_ids]                     # (S, T)
-    #     out = jnp.where(out==0, -1, out)         # 0→-1 sentinel
-    #     out_named = hax.named(out, axes=("seq","position"))
-    #
-    #     # 4) remove exactly those slots we just extracted:
-    #     removal_mask = can_extract                # shape (P,)
-    #     keep_mask    = (positions < num_raw) & (~removal_mask)
-    #     # pack‐to‐front via argsort of a key
-    #     key          = jnp.where(keep_mask, positions, P+positions)
-    #     order        = jnp.argsort(key)
-    #     new_toks     = tok_buf[order]
-    #     new_ids      = id_buf[order]
-    #     new_num      = keep_mask.sum()
-    #
-    #     # zero out the tail
-    #     tail = positions >= new_num
-    #     new_toks = jnp.where(tail, -1, new_toks)
-    #     new_ids  = jnp.where(tail, -1, new_ids)
-    #
-    #     sched2 = dataclasses.replace(
-    #         self,
-    #         generated_tokens  = hax.named(new_toks,  axes=self.generated_tokens.axes),
-    #         generated_seq_ids = hax.named(new_ids,   axes=self.generated_seq_ids.axes),
-    #         num_generated_tokens = new_num,
-    #     )
-    #     return sched2, out_named
-    #
-    #
-    #
-    #

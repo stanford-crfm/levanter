@@ -1,3 +1,5 @@
+import numpy as np
+import time
 
 import jax
 
@@ -17,6 +19,7 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from haliax.jax_utils import is_jax_array_like
 
+from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.layers.page_table import PageTable
@@ -68,43 +71,8 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
         converter: HFCheckpointConverter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(reference_checkpoint=config.hf_checkpoint,
                                        tokenizer=load_tokenizer(config.tokenizer))
-        model = converter.load_pretrained(config.model.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype)
+        model = converter.load_pretrained(config.model.model_type, ref=config.hf_checkpoint, dtype=config.trainer.mp.compute_dtype)
         return model
-
-
-# @haliax.named_jit(donate_args=(False, True, True, False, False, True))
-# def do_prefill(model, cache, page_table, tokens, sampler, temps, key):
-#     """Prefill ``tokens`` and sample the next token."""
-#     pos_axis = tokens.axes[0]
-#     # TODO: actual batch
-#     page_table, binfo = page_table.allocate_for_seq(
-#         token_seq_ids=hax.zeros_like(tokens, dtype=jnp.int32)
-#     )
-#
-#     pos_ids = hax.arange(pos_axis, dtype=jnp.int32)
-#     logits, cache = model.decode(tokens, cache, binfo, pos_ids)
-#     next_tok, _ = sampler(logits["position", -1], temps, key=key)
-#     return next_tok, page_table, cache
-
-
-
-
-@haliax.named_jit(donate_args=(False, True, True, False, False, True))
-def do_prefill(model, cache, page_table: PageTable, tokens, seq_ids, sampler, temps, key):
-    """Prefill ``tokens`` and sample the next token."""
-    page_table, binfo = page_table.allocate_for_seq(token_seq_ids=seq_ids)
-    # TODO: this is potentially a bit wasteful since we don't need to compute logits for all but the last token
-
-    # jax.debug.callback(lambda tokens: print(f"Prefilling with tokens {tokenizer.decode([x for x in tokens.array if x != -1])}"), tokens=tokens)
-    # jax.debug.print("Prefilling with tokens {tokens}, seq_ids={seq_ids}, binfo={binfo}",
-    #                 tokens=tokens, seq_ids=seq_ids, binfo=binfo)
-
-    logits, cache = model.decode(tokens, cache, binfo, binfo.pos_ids)
-    next_tok, _ = sampler(logits["position", binfo.last_token_idx], temps, key=key)
-    next_tok = next_tok["position", 0]  # we're only prefilling one seq at a time
-    # jax.debug.callback(lambda next_tok: print(f"Prefilling produced next token {tokenizer.decode(next_tok.array)}"), next_tok=next_tok)
-    return next_tok, page_table, cache
-
 
 
 def tree_byte_size(tree):
@@ -119,7 +87,7 @@ def tree_byte_size(tree):
     return sum(_leaf_size(x) for x in jax.tree.leaves(tree))
 
 
-@eqx.filter_jit
+@haliax.named_jit(donate_args=(True, True, True))
 def run_generation_loop(
     sched: JitScheduler,
     page_table: PageTable,
@@ -135,34 +103,33 @@ def run_generation_loop(
     produced *per sequence* or all sequences report finished."""
 
     def cond(state):
+        _sched: JitScheduler
         _sched, *_ , step = state
-        return (step < max_new_tokens) & (~jnp.all(_sched.finished.array))
+        return (step < max_new_tokens) & (_sched.num_queued_tokens > 0)
 
     def body(state):
         sched: JitScheduler
         sched, page_table, cache, key, step = state
 
         # Pack the next chunk from the queue
-        sched, chunk_tokens, chunk_seq_ids = sched.pack_next_sequence(max_tokens_per_round)
+        sched, packed_seq = sched.pack_next_sequence(max_tokens_per_round)
 
-        # Allocate cache pages for this chunk
-        page_table, binfo = page_table.allocate_for_seq(token_seq_ids=chunk_seq_ids)
-
-        # jax.debug.print("Running generation step {step} with chunk_tokens={chunk_tokens}, chunk_seq_ids={chunk_seq_ids}, binfo={binfo}",
-        #                 step=step, chunk_tokens=chunk_tokens, chunk_seq_ids=chunk_seq_ids, binfo=binfo)
+        page_table, binfo = page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
 
         # Decode logits and sample new tokens
-        logits, cache = model.decode(chunk_tokens, cache, binfo, binfo.pos_ids)
+        logits, cache = model.decode(packed_seq.tokens, cache, binfo, binfo.pos_ids)
         sample_key, key = jrandom.split(key)
-        logits = logits["position", binfo.last_token_idx]
+        boundaries = packed_seq.boundary_indices(page_table.max_seqs)
+        # jax.debug.print("Boundaries: {boundaries} {ids} {toks} {bound2}", boundaries=boundaries, ids=packed_seq.seq_ids, toks=packed_seq.tokens, bound2=packed_seq.is_boundary)
+        logits = logits["position", boundaries]
         new_tokens, _ = sampler(logits, temps, key=sample_key)
 
-        num_new_tokens = hax.sum(binfo.last_token_idx != -1).scalar()
+        num_new_tokens = hax.sum(boundaries != -1).scalar()
 
         # Update scheduler with the freshly sampled tokens
         sched = sched.update_after_sampling(
             new_tokens=new_tokens,
-            new_token_seq_ids=chunk_seq_ids,
+            new_token_seq_ids=packed_seq.seq_ids["position", boundaries],
             num_new_tokens=num_new_tokens,
         )
         return sched, page_table, cache, key, step + 1
@@ -197,125 +164,94 @@ def main(config: SampleLmConfig):
         sampler = Sampler(Vocab)
 
         prompt_ids = tokenizer.encode(config.prompt, add_special_tokens=False)
-        prompt_axis = Axis("position", len(prompt_ids))
-        prompt_tokens = hax.NamedArray(jnp.array(prompt_ids, dtype=jnp.int32), axes=(prompt_axis,))
+        # print(f"Prompt: {config.prompt}")
+        # print(f"Tokens: {prompt_ids}")
 
         page_table = PageTable.init(
-            max_pages=100,
-            max_seqs=16,
+            max_pages=4,
+            max_seqs=1,
             page_size=16,
-            max_pages_per_seq=32,
+            max_pages_per_seq=4,
         )
-        cache = eqx.filter_jit(model.initial_cache)(page_table, dtype=jnp.bfloat16)
+        cache = eqx.filter_jit(model.initial_cache)(page_table, dtype=config.trainer.mp.compute_dtype)
         cache = hax.auto_sharded(cache)
 
         temps = hax.full((), config.temperature, dtype=jnp.float32)
 
-        # ----------------------- Scheduler init -----------------------
         MAX_TOKENS = 32    # per‐round chunk size
         MAX_SEQS = 1      # hot‐set size, for this we're only decoding 1 at a time so
-        sched = JitScheduler.init(
-            max_tokens=MAX_TOKENS,
-            max_seqs=MAX_SEQS,
-            key=key,
-        )
-        # --------------------------------------------------------------
-
-        model_size = tree_byte_size(model)
-
-        size = tree_byte_size(
-            (model, cache, page_table, prompt_tokens, sampler, temps)
-        )
-
-        print(f"Arg sizes for pre_fill {size / 1024 ** 2:.2f} MB:\n"
-              f"  model: {model_size / 1024 ** 2:.2f} MB\n"
-              f"  cache: {tree_byte_size(cache) / 1024 ** 2:.2f} MB\n"
-              f"  page_table: {tree_byte_size(page_table) / 1024 ** 2:.2f} MB\n"
-              f"  prompt_tokens: {tree_byte_size(prompt_tokens) / 1024 ** 2:.2f} MB\n"
-              f"  sampler: {tree_byte_size(sampler) / 1024 ** 2:.2f} MB\n"
-              f"  temps: {tree_byte_size(temps) / 1024 ** 2:.2f} MB")
 
         # -------------------------------- Scheduler-based generation --------------------------------
-        prng_key = jrandom.PRNGKey(0)
-        page_table = page_table.free_pages(0)
-        page_table, seq_id = page_table.assign_seq_id_to_seq()
+        for R in range(10):
+            if R == 10:
+                start_profiler("/tmp/gen-profile")
+            elif R == 20:
+                stop_profiler_and_maybe_wait(create_perfetto_link=False)
+                levanter.current_tracker().log_artifact("/tmp/gen-profile", type="jax_profile")
+            time_in = time.time()
+            prng_key = jrandom.PRNGKey(0)
+            page_table = page_table.free_pages(0)
+            page_table, seq_id = page_table.assign_seq_id_to_seq()
 
-        # enqueue the entire prompt into the scheduler
-        seq_ids = hax.full_like(prompt_tokens, seq_id, dtype=jnp.int32)
-        sched = sched.enqueue_tokens(prompt_tokens, seq_ids, prompt_tokens.size)
+            sched = JitScheduler.init(max_tokens=MAX_TOKENS, max_seqs=MAX_SEQS, key=key)
 
-        # do one macro-prefill round
-        sched, chunk_tokens, chunk_seq_ids = sched.pack_next_sequence(MAX_TOKENS)
-        next_tok, page_table, cache = do_prefill(
-            model, cache, page_table,
-            chunk_tokens, chunk_seq_ids,
-            sampler, temps, prng_key
-        )
-        sched = sched.update_after_sampling(
-            new_tokens=hax.named(jnp.array([next_tok.item()], dtype=jnp.int32), axis="position"),
-            new_token_seq_ids=hax.named(jnp.array([chunk_seq_ids.array[0]], dtype=jnp.int32), axis="position"),
-            num_new_tokens=1,
-        )
+            # enqueue the entire prompt into the scheduler
+            prompts_tokens_to_enqueue = np.asarray(prompt_ids, dtype=jnp.int32)
+            while len(prompts_tokens_to_enqueue):
+                next_queue = prompts_tokens_to_enqueue[:MAX_TOKENS]
+                prompts_tokens_to_enqueue = prompts_tokens_to_enqueue[MAX_TOKENS:]
+                this_tokens = hax.named(next_queue, axis="position")
+                seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
+                sched = sched.enqueue_tokens(this_tokens, seq_ids, next_queue.size)
 
-        # run the fully JIT-compiled generation loop
-        sched, cache, page_table, prng_key = run_generation_loop(
-            sched,
-            page_table,
-            cache,
-            model,
-            sampler,
-            temps,
-            prng_key,
-            1,
-            config.max_new_tokens,
-        )
+                # do one macro-prefill round
+                sched, cache, page_table, prng_key = run_generation_loop(
+                    sched,
+                    page_table,
+                    cache,
+                    model,
+                    sampler,
+                    temps,
+                    prng_key,
+                    next_queue.size,
+                    1,
+                )
 
-        # extract up to `max_new_tokens` tokens for this sequence
-        out_ids = hax.named(jnp.array([seq_id], dtype=jnp.int32), axis="seq")
-        sched, output_matrix = sched.extract_generated_tokens(out_ids, max_tokens=config.max_new_tokens)
+            sched = jax.block_until_ready(sched)
+            time_mid = time.time()
+            print(f"Prefill took {time_mid - time_in:.2f} seconds, ")
 
-        # Flatten, drop padding, and decode
-        generated_token_ids = [int(t) for t in prompt_ids]
-        generated_token_ids.extend([int(tok) for tok in output_matrix.array[0] if tok != -1])
-        text = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
-        print(f"Generated text: {text}")
-        # -------------------------------------------------------------------------------------------
+            # run the fully JIT-compiled generation loop
+            sched, cache, page_table, prng_key = run_generation_loop(
+                sched,
+                page_table,
+                cache,
+                model,
+                sampler,
+                temps,
+                prng_key,
+                1,
+                min(config.max_new_tokens, MAX_TOKENS),
+            )
+            sched = jax.block_until_ready(sched)
+            time_out = time.time()
+            print(f"Gen loop took {time_out - time_mid:.2f} seconds, ")
+
+            # extract up to `max_new_tokens` tokens for this sequence
+            out_ids = hax.named(jnp.array([seq_id], dtype=jnp.int32), axis="seq")
+            sched, output_matrix = sched.extract_generated_tokens(out_ids, max_tokens=config.max_new_tokens)
+
+            # Flatten, drop padding, and decode
+            generated_token_ids = [int(t) for t in prompt_ids]
+            generated_token_ids.extend([int(tok) for tok in output_matrix.array[0] if tok != -1])
+            text = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
+            print(f"Generated text: {text}")
+            print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
+                  f"generated {len(generated_token_ids) - len(prompt_ids)} tokens, ")
+            page_table = page_table.free_pages(0)
 
         return text
 
-
-
-# @hax.named_jit(donate_args=(False, True, True, False, False, False, True))
-# @equinox.debug.assert_max_traces(max_traces=4)
-def do_generate(model, cache, binfo, prev_token, sampler, pos_ids, temps, prng_key):
-    prev_token = hax.named(prev_token, "position")
-
-    logits, cache = model.decode(prev_token, cache, binfo, pos_ids)
-    logits = logits["position", 0]
-    tok, _ = sampler(logits, temps, key=prng_key)
-    return tok, cache
-
-
-@haliax.named_jit(donate_args=(False, False, True, True, False, False, False))
-def do_generate_n_times(n, model, cache, page_table, prev_token, sampler, temps, prng_key):
-    """Generate `n` tokens starting from `prev_token`."""
-    generated_tokens = jnp.full(n, -1, dtype=jnp.int32)
-
-    def do_block(i, gen_tokens, prev_token, page_table: PageTable, cache, prng_key):
-        page_table, binfo = page_table.allocate_for_seq(token_seq_ids=hax.zeros({"position": 1}, dtype=jnp.int32))
-        this_key, prng_key = jrandom.split(prng_key, 2)
-        pos_id = page_table.pos_ids_from_seq_ids(hax.zeros({"position": 1}, dtype=jnp.int32))
-        # jax.debug.print("Generating token {i} with prev_token={prev_token}, pos_id={pos_id}, pt_lens={pt_lens}", i=i, prev_token=prev_token, pos_id=pos_id, pt_lens=page_table.seq_lens)
-        # tok, page_table, cache = do_generate(model, cache, page_table, prev_token, sampler, pos_id, temps, this_key)
-        tok, cache = do_generate(model, cache, binfo, prev_token, sampler, pos_id, temps, this_key)
-        gen_tokens = gen_tokens.at[i].set(tok.scalar())
-        return gen_tokens, tok.scalar().reshape((1,)), page_table, cache, prng_key
-
-    gen_tokens, last_tok, page_table, cache, _ = jax.lax.fori_loop(0, n, lambda i, args: do_block(i, *args),
-                                                                   (generated_tokens, prev_token, page_table, cache,
-                                                                    prng_key),
-                                                                   unroll=4)
-    return gen_tokens, page_table, cache
 
 
 if __name__ == "__main__":

@@ -22,7 +22,13 @@ def _relative_positions(seg_ids: jnp.ndarray):
 
 
 class PageTable(eqx.Module):
-    """Tracks which pages are allocated to which sequences."""
+    """
+    Tracks which pages are allocated to which sequences.
+
+    This page table data structure is pretty dumb. It doesn't support automatic prefix caching or any
+    of that fanciness.
+
+    """
 
     page_indices: NamedArray  # i32[Seq, PagePerSeq]
     page_owners: NamedArray  # i32[Page]
