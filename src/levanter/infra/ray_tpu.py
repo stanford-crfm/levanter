@@ -617,7 +617,7 @@ def _scale_slice_pool(slice_pool: list[SliceResource], tpu_type: str, num_slices
             logger.exception(f"Could not create placement group for slice {slice_info.slice_name}: {e}")
             _stop_actor(actor)
             continue
-        logging.info(f"Actor {actor} for slice {slice_info.slice_name} started.")
+        logger.info(f"Actor {actor} for slice {slice_info.slice_name} started.")
         started_slices.append(SliceResource(actor, slice_info, placement_group))
 
     slices_and_placement_group_ready_awaitables = [(tpu_slice, tpu_slice.placement_group.ready()) for tpu_slice in started_slices]
