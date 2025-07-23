@@ -11,7 +11,7 @@ from levanter.optim.config import OptimizerConfig
 
 
 @OptimizerConfig.register_subclass("cautious")
-@dataclass
+@dataclass(frozen=True)
 class CautiousConfig(OptimizerConfig):
     """
     Cautious optimizer configuration

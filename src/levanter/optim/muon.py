@@ -18,7 +18,7 @@ from levanter.utils.jax_utils import leaf_key_paths
 
 
 @OptimizerConfig.register_subclass("muon")
-@dataclass
+@dataclass(frozen=True)
 class MuonConfig(OptimizerConfig):
     """
     Muon optimizer configuration: Momentum Orthogonalized by Newton-Schulz.

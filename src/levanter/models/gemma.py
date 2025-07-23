@@ -45,7 +45,7 @@ from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
 @LayerNormConfigBase.register_subclass("gemma")
-@dataclass
+@dataclass(frozen=True)
 class GemmaNormConfig(LayerNormConfigBase):
     """Configuration for Gemma's custom RMS normalization."""
 
