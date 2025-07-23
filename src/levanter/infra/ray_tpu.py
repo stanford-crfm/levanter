@@ -293,7 +293,7 @@ class SliceActor:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class SliceResource:
     """A collection of all resources associated with a single TPU slice."""
 
