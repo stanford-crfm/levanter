@@ -22,8 +22,8 @@ def test_multihead_latent_attention_shapes(q_lora_rank):
     config = MultiHeadLatentAttentionConfig(
         Embed=Embed,
         num_heads=2,
+        kv_lora_rank=Embed.size // 16,
         q_lora_rank=q_lora_rank,
-        kv_lora_rank=2,
         qk_rope_head_dim=4,
         qk_nope_head_dim=4,
         v_head_dim=8,

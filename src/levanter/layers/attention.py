@@ -1346,8 +1346,8 @@ class MultiHeadLatentAttentionConfig:
 
     Embed: Axis
     num_heads: int
+    kv_lora_rank: int
     q_lora_rank: int | None = None
-    kv_lora_rank: int = 0
     qk_rope_head_dim: int = 64
     qk_nope_head_dim: int = 128
     v_head_dim: int = 128
