@@ -262,7 +262,7 @@ You should probably reduce the learning rate by a factor of 10 or so. TODO: figu
 
 #### Llama 2
 
-For Llama 2 specifically (or other gated models), you'll need a few extra steps. Fortunately `NousResearch/Llama-2-7b-hf` is freely accessible on the Hub, so no gating is required. You can initialize like so:
+While some versions of Llama (and other gated models) require extra steps, `NousResearch/Llama-2-7b-hf` is freely accessible on the Hub, so no gating is required. You can initialize like so:
 
 ```yaml
 model:
