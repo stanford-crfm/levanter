@@ -500,8 +500,8 @@ def run_on_pod_ray(
 
             # try to cleanup lockfiles
             cleanup_futs = []
-            for slice in slice_infos.values():
-                cleanup_futs.extend(_cleanup_lockfiles(slice))
+            for tpu_slice in slice_pool:
+                cleanup_futs.extend(_cleanup_lockfiles(tpu_slice))
 
             if cleanup_futs:
                 try:
