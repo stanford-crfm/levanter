@@ -59,7 +59,7 @@ jobs:
               --run_id ${{ github.run_id }} \
               --docker_registry ghcr --github_user ${{ github.actor }} \
               python -m levanter.main.train_lm \
-              --config_path config/gpt2_small_fast_itest.yaml \
+              --config_path config/llama_small_fast_itest.yaml \
               --trainer.checkpointer.base_path gs://levanter-checkpoints/gpt-itest/ --trainer.checkpointer.save_interval 30m $*
         env:
           USER: ci-runner-${{ github.run_id }} # Set a unique user for TPU naming in the script

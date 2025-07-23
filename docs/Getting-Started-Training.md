@@ -20,11 +20,11 @@ Please see the [Installation Guide](Installation.md) for more information on how
 
 To launch the training of a GPT2 model, run the following command:
 ```bash
-python src/levanter/main/train_lm.py --config_path config/gpt2_small.yaml
+python src/levanter/main/train_lm.py --config_path config/llama_small_fast.yaml
 ```
 
 This will execute the training pipeline pre-defined in the [train_lm.py](https://github.com/stanford-crfm/levanter/tree/main/src/levanter/main/train_lm.py) and set model and training configuration
-set in [gpt2_small.yaml](https://github.com/stanford-crfm/levanter/tree/main/config/gpt2_small.yaml). You can find more template configurations in the [config](https://github.com/stanford-crfm/levanter/tree/main/config/) directory.
+set in [llama_small_fast.yaml](https://github.com/stanford-crfm/levanter/tree/main/config/llama_small_fast.yaml). You can find more template configurations in the [config](https://github.com/stanford-crfm/levanter/tree/main/config/) directory.
 
 Configuration files are processed using [Draccus](https://github.com/dlwh/draccus). Draccus is yet-another yaml-to-dataclass library.
 It should mostly work like you would expect. Arguments may be passed in via the command line using arg-parse style
@@ -39,7 +39,7 @@ To change the dimensions of your GPT2 model and increase the number of training 
 
 ```
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml \
+    --config_path config/llama_small_fast.yaml \
     --model.num_heads 20 \
     --model.num_layers 36 \
     --model.hidden_dim 1280 \
@@ -61,7 +61,7 @@ To change the frequency of saving checkpoints, you can use the following command
 
 ```
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml \
+    --config_path config/llama_small_fast.yaml \
     --trainer.checkpointer.base_path checkpoints/gpt2/ \
     --trainer.checkpointer.save_interval 20m
 ```
@@ -83,7 +83,7 @@ To change how often the model is evaluated during training, you can use the foll
 
 ```
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml \
+    --config_path config/llama_small_fast.yaml \
     --trainer.steps_per_eval 500
 ```
 
@@ -95,7 +95,7 @@ To set explicit number of examples to process on each device during training and
 
 ```
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml \
+    --config_path config/llama_small_fast.yaml \
     --trainer.batch_size 256 \
     --trainer.per_device_parallelism 64 \
     --trainer.eval_per_device_parallelism 64
@@ -115,7 +115,7 @@ Suppose you want to set more control on your WandB logging, you can use the foll
 
 ```
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml \
+    --config_path config/llama_small_fast.yaml \
     --trainer.wandb.project my_project \
     --trainer.wandb.name my_run \
     --trainer.wandb.group my_new_exp_group
@@ -164,7 +164,7 @@ To do so, you can use the following command. The `trainer.wandb.resume true` is 
 
 ```
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml \
+    --config_path config/llama_small_fast.yaml \
     --trainer.wandb.resume true \
     --trainer.id asdf1234
 ```

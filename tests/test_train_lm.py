@@ -20,7 +20,7 @@ def test_train_lm():
         try:
             config = train_lm.TrainLmConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
+                model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
                     seq_len=64,
@@ -52,7 +52,7 @@ def test_train_lm_fp8():
         try:
             config = train_lm.TrainLmConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
+                model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
                     seq_len=64,
