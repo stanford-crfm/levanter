@@ -262,7 +262,7 @@ class SliceActor:
         self._failed = False
 
     def healthy(self) -> bool:
-        return not self._failed and not self.is_being_preempted() and self.slice_info is not None
+        return not self._failed and not self.is_being_preempted()
 
     def is_being_preempted(self) -> bool:
         """
@@ -402,9 +402,7 @@ def run_on_pod_ray(
                 else:
                     mxla_env = {}
 
-                slice_info = tpu_slice.slice_info
-
-                futures_for_slice = _start_fn_on_slice(slice_info, remote_fn, mxla_env)
+                futures_for_slice = _start_fn_on_slice(tpu_slice, remote_fn, mxla_env)
 
                 futures.extend(futures_for_slice)
                 for future in futures_for_slice:
@@ -539,6 +537,7 @@ def run_on_pod_ray(
         # Cleanup actors and placement groups
         logger.info("Cleaning up actors and placement groups")
         for tpu_slice in slice_pool:
+            logger.info(f"Removing {tpu_slice.slice_info.slice_name} from pool.")
             _release_slice_resource(tpu_slice)
         slice_pool.clear()
 
@@ -565,6 +564,10 @@ def _stop_actor(actor: ActorHandle) -> None:
         # NOTE: Not sure if this always returns an exception (because the actor will terminate before finishing)
         # but it doesn't really matter
         ray.get(actor.__ray_terminate__.remote(), timeout=_TERMINATE_ACTOR_TIMEOUT)
+    except ActorDiedError as e:
+        # This is expected because the actor will terminate within  __ray_terminate__() task,
+        # so the task will never succeed.
+        pass
     except GetTimeoutError as e:
         logger.warning(f"Failed to gracefully shut down actor in {_TERMINATE_ACTOR_TIMEOUT} seconds; killing it instead: {e}")
     finally:
@@ -590,10 +593,11 @@ def _scale_slice_pool(slice_pool: list[SliceResource], tpu_type: str, num_slices
     # NOTE: Do not add a retry loop, as this function will be run in an outer retry loop.
     healthy_slices = _prune_dead_slices(slice_pool)
     del slice_pool  # Defensively prevent mutations to slice_pool
-    if len(slice_pool) >= healthy_slices:
+    if len(healthy_slices) >= num_slices:
         return healthy_slices
     
-    # if we don't have enough slides, create more
+    # if we don't have enough slices, create more
+    logger.info(f"Pool slices: {[tpu_slice.slice_info.slice_name for tpu_slice in healthy_slices]}")
     logger.info(f"Pool has {len(healthy_slices)} slices, but we want {num_slices}. Creating more slices.")
     actors = [SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote() for _ in range(num_slices - len(healthy_slices))]
     
@@ -629,6 +633,7 @@ def _scale_slice_pool(slice_pool: list[SliceResource], tpu_type: str, num_slices
         healthy_slices.append(tpu_slice)
         logger.info(f"Added {tpu_slice.slice_info.slice_name} to pool.")
 
+    logger.info(f"Pool slices: {[tpu_slice.slice_info.slice_name for tpu_slice in healthy_slices]}")
     logger.info(f"Pool ready with {len(healthy_slices)} actors.")
 
     if len(healthy_slices) < num_slices:
@@ -673,7 +678,7 @@ def _prune_dead_slices(pool: list[SliceResource]) -> list[SliceResource]:
     Returns a new pool. Does not mutate `pool`."""
     healthy_slices = []
     unhealthy_slices = []
-    slices_and_health = [(tpu_slice, tpu_slice.healthy.remote()) for tpu_slice in pool]
+    slices_and_health = [(tpu_slice, tpu_slice.actor.healthy.remote()) for tpu_slice in pool]
     del pool  # Defensively prevent pool from being mutated
     for tpu_slice, health in slices_and_health:
         try:
