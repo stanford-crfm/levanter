@@ -118,7 +118,7 @@ If your dataset is a [Hugging Face dataset](https://huggingface.co/docs/datasets
 python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext
 
 # optionally, you may specify a tokenizer and/or a cache directory, which may be local or on gcs
-python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext --data.tokenizer "meta-llama/Llama-2-70b-hf" --data.cache_dir "gs://path/to/cache/dir"
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext --data.tokenizer "NousResearch/Llama-2-7b-hf" --data.cache_dir "gs://path/to/cache/dir"
 ```
 
 If instead your data is a list of URLs, you can use the `data.train_urls` and `data.validation_urls` fields to specify them.
