@@ -24,10 +24,10 @@ from test_utils import (
 
 
 @skip_if_no_torch
-@skip_if_hf_model_not_accessible("meta-llama/Llama-2-7b-hf")
+@skip_if_hf_model_not_accessible("NousResearch/Llama-2-7b-hf")
 def test_llama_config():
     # load HF config and convert to levanter config
-    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
     llama_config = LlamaConfig.from_hf_config(hf_config)
 
     # convert back to HF config

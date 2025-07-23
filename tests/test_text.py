@@ -87,9 +87,9 @@ def test_merge_split_encodings(local_gpt2_tokenizer):
     assert short_out == reg_out
 
 
-@skip_if_hf_model_not_accessible("meta-llama/Llama-2-7b-hf")
+@skip_if_hf_model_not_accessible("NousResearch/Llama-2-7b-hf")
 def test_llama_tokenizer_needs_long_sequence_workaround():
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+    tokenizer = AutoTokenizer.from_pretrained("NousResearch/Llama-2-7b-hf")
     batch_tokenizer = BatchTokenizer(tokenizer)
     assert batch_tokenizer._needs_long_sequence_workaround
 

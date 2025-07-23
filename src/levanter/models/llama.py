@@ -73,7 +73,7 @@ class LlamaConfig(HFCompatConfig):
     use_layer_norm_weight: bool = True
     rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
 
-    reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
+    reference_checkpoint: str = "NousResearch/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
 
     # Axis
