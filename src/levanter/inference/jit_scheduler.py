@@ -3,9 +3,8 @@ import dataclasses
 import equinox as eqx
 import haliax as hax
 from haliax import NamedArray, haxtyping as ht
-from jax import numpy as jnp, random as jrandom
+from jax import numpy as jnp
 import jax
-from jaxtyping import PRNGKeyArray
 
 
 def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> NamedArray:
@@ -122,21 +121,29 @@ class JitScheduler(eqx.Module):
     queued_tokens: ht.i32[NamedArray, "position"]  # number of tokens ready to be processed in each sequence.
     queued_seq_ids: ht.i32[NamedArray, "position"]
     num_queued_tokens: jax.Array
-    key: PRNGKeyArray  # batched to seq
 
     # TODO: per-seq sampling params
 
+    @property
+    def empty_queue_space(self) -> jnp.ndarray:
+        """How many tokens can be enqueued in the queue."""
+        return self.queued_tokens.axis_size("position") - self.num_queued_tokens
+
+    @property
+    def max_queued_tokens(self) -> int:
+        """Maximum number of tokens that can be buffered in the queue."""
+        return self.queued_tokens.axis_size("position")
+
     @staticmethod
-    def init(max_tokens: int, max_seqs: int, key: PRNGKeyArray) -> "JitScheduler":
+    def init(max_queued_tokens: int, max_buffered_tokens: int) -> "JitScheduler":
         """Create a ``JitScheduler`` with empty buffers."""
         return JitScheduler(
-            generated_tokens=hax.full({"position": max_tokens}, -1, dtype=jnp.int32),
-            generated_seq_ids=hax.full({"position": max_tokens}, -1, dtype=jnp.int32),
+            generated_tokens=hax.full({"position": max_buffered_tokens}, -1, dtype=jnp.int32),
+            generated_seq_ids=hax.full({"position": max_buffered_tokens}, -1, dtype=jnp.int32),
             num_generated_tokens=jnp.array(0, dtype=jnp.int32),
-            queued_tokens=hax.full({"position": max_tokens}, -1, dtype=jnp.int32),
-            queued_seq_ids=hax.full({"position": max_tokens}, -1, dtype=jnp.int32),
+            queued_tokens=hax.full({"position": max_queued_tokens}, -1, dtype=jnp.int32),
+            queued_seq_ids=hax.full({"position": max_queued_tokens}, -1, dtype=jnp.int32),
             num_queued_tokens=jnp.array(0, dtype=jnp.int32),
-            key=jrandom.split(key, max_seqs),
         )
 
     def enqueue_tokens(
@@ -255,7 +262,6 @@ class JitScheduler(eqx.Module):
 
         is_boundary = is_boundary.at["position", last_idx].set(boundary_last)
 
-
         sequence = PackedSequence(
             tokens=tokens,
             seq_ids=seq_ids,
@@ -265,6 +271,32 @@ class JitScheduler(eqx.Module):
 
 
         return new_scheduler, sequence
+
+    @eqx.filter_jit(donate="all")
+    def extract_all_generated_tokens(self) -> tuple["JitScheduler", PackedSequence]:
+        """
+        Extract all generated tokens and sequence ids, returning a new scheduler with empty buffers.
+        This is used to finalize the generation process and retrieve all generated tokens.
+        """
+        out = PackedSequence(
+            tokens=self.generated_tokens,
+            seq_ids=self.generated_seq_ids,
+            num_tokens=self.num_generated_tokens,
+            is_boundary=hax.where(
+                self.generated_seq_ids != hax.roll(self.generated_seq_ids, -1, "position"),
+                fill_value=True,
+                new_axis=self.generated_seq_ids.resolve_axis("position")
+            )
+        )
+
+        updated = dataclasses.replace(
+            self,
+            generated_tokens=hax.full_like(self.generated_tokens, -1),
+            generated_seq_ids=hax.full_like(self.generated_seq_ids, -1),
+            num_generated_tokens=jnp.zeros(()),
+        )
+
+        return updated, out
 
     def extract_generated_tokens(
         self,

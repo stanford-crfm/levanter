@@ -28,7 +28,7 @@ from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.inference.jit_scheduler import JitScheduler
+from levanter.inference.jit_scheduler import JitScheduler, PackedSequence
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class SampleLmConfig:
 
     tokenizer: str | None = None
 
-    prompt: str = "Four score and seven years ago, our"
+    prompts: list[str] | str = "Four score and seven years ago, our"
     max_new_tokens: int = 100
     temperature: float = 1e-4
 
@@ -163,23 +163,26 @@ def main(config: SampleLmConfig):
 
         sampler = Sampler(Vocab)
 
-        prompt_ids = tokenizer.encode(config.prompt, add_special_tokens=False)
-        # print(f"Prompt: {config.prompt}")
-        # print(f"Tokens: {prompt_ids}")
+        prompts = config.prompts
+
+        if isinstance(prompts, str):
+            prompts = [prompts]
+
+        prompt_ids = tokenizer(prompts, add_special_tokens=False)
 
         page_table = PageTable.init(
-            max_pages=4,
-            max_seqs=1,
+            max_pages=64,
+            max_seqs=len(prompt_ids),
             page_size=16,
             max_pages_per_seq=4,
         )
         cache = eqx.filter_jit(model.initial_cache)(page_table, dtype=config.trainer.mp.compute_dtype)
-        cache = hax.auto_sharded(cache)
 
         temps = hax.full((), config.temperature, dtype=jnp.float32)
 
-        MAX_TOKENS = 32    # per‐round chunk size
-        MAX_SEQS = 1      # hot‐set size, for this we're only decoding 1 at a time so
+        total_prompt_tokens = sum(len(tokens) for tokens in prompt_ids)
+
+        MAX_NEW_TOKENS = 32
 
         # -------------------------------- Scheduler-based generation --------------------------------
         for R in range(10):
@@ -193,16 +196,65 @@ def main(config: SampleLmConfig):
             page_table = page_table.free_pages(0)
             page_table, seq_id = page_table.assign_seq_id_to_seq()
 
-            sched = JitScheduler.init(max_tokens=MAX_TOKENS, max_seqs=MAX_SEQS, key=key)
+            sched = JitScheduler.init(max_queued_tokens=64, max_buffered_tokens=MAX_NEW_TOKENS)
 
-            # enqueue the entire prompt into the scheduler
-            prompts_tokens_to_enqueue = np.asarray(prompt_ids, dtype=jnp.int32)
-            while len(prompts_tokens_to_enqueue):
-                next_queue = prompts_tokens_to_enqueue[:MAX_TOKENS]
-                prompts_tokens_to_enqueue = prompts_tokens_to_enqueue[MAX_TOKENS:]
-                this_tokens = hax.named(next_queue, axis="position")
+            finished = [False] * len(prompt_ids)
+
+            outputs = [list(t) for t in prompt_ids]  # start with the prompts
+
+            # do one prefill at a time, but we do continuous batching, so decode is happening all the while
+            for tokens in prompt_ids:
+                # enqueue the entire prompt into the scheduler
+                prompts_tokens_to_enqueue = np.asarray(tokens, dtype=jnp.int32)
+                if len(tokens) > sched.max_queued_tokens:
+                    raise ValueError(
+                        f"Prompt is too long ({len(tokens)} tokens), "
+                        f"max allowed is {MAX_NEW_TOKENS} tokens."
+                    )
+
+                target_len = len(prompts_tokens_to_enqueue)
+                if target_len > sched.max_queued_tokens:
+                    print(f"Queue is full ({sched.num_queued_tokens} tokens), running generation loop to free up space.")
+                while target_len > sched.empty_queue_space:
+                    # if the queue is too full, we run generation loop to free up space
+                    # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
+                    sched, cache, page_table, prng_key = run_generation_loop(
+                        sched,
+                        page_table,
+                        cache,
+                        model,
+                        sampler,
+                        temps,
+                        prng_key,
+                        # TODO: tune/configure
+                        64,
+                        32,
+                    )
+
+                    # drain generated tokens
+                    # TODO: offload this and detokenization to a separate thread
+                    out_seq: PackedSequence
+                    sched, out_seq = sched.extract_all_generated_tokens()
+                    out_seq = jax.device_get(out_seq)
+                    for i in range(out_seq.num_tokens):
+                        seq_id = int(out_seq.seq_ids.array[i])
+                        tok_id = int(out_seq.tokens.array[i])
+
+                        if seq_id >= len(outputs) or seq_id < 0:
+                            continue
+                        if finished[seq_id]:
+                            continue
+                        outputs[seq_id].append(tok_id)
+                        if len(outputs[seq_id]) >= config.max_new_tokens + total_prompt_tokens:
+                            finished[seq_id] = True
+                            print(f"Sequence {seq_id} finished with {len(outputs[seq_id])} tokens.")
+
+
+
+
+                this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
                 seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
-                sched = sched.enqueue_tokens(this_tokens, seq_ids, next_queue.size)
+                sched = sched.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
 
                 # do one macro-prefill round
                 sched, cache, page_table, prng_key = run_generation_loop(
@@ -213,7 +265,7 @@ def main(config: SampleLmConfig):
                     sampler,
                     temps,
                     prng_key,
-                    next_queue.size,
+                    prompts_tokens_to_enqueue.size,
                     1,
                 )
 
@@ -231,7 +283,7 @@ def main(config: SampleLmConfig):
                 temps,
                 prng_key,
                 1,
-                min(config.max_new_tokens, MAX_TOKENS),
+                min(config.max_new_tokens, MAX_NEW_TOKENS),
             )
             sched = jax.block_until_ready(sched)
             time_out = time.time()

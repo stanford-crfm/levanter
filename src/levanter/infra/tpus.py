@@ -151,7 +151,6 @@ def start_tpu_vm_queued_resources(tpu_name, *, tpu_type, capacity_type, version,
     if capacity_type in ["best-effort", "preemptible"]:
         command.append("--best-effort")
         command.extend(["--provisioning-model", "spot"])
-        command.extend(["--provisioning-model", "spot"])
     elif capacity_type == "reserved":
         command.append("--reserved")
     elif capacity_type == "spot":

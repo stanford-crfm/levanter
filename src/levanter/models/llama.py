@@ -573,7 +573,7 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         Creates an initial cache for this model. Note that in order to create a decoder state, you
         need to couple the KvPageCache to the PageTable's state with a BatchInfo object.
         """
-        return self.transformer.initial_cache(page_table, dtype=dtype)
+        return hax.auto_sharded(self.transformer.initial_cache(page_table, dtype=dtype))
 
     @named_call
     def decode(

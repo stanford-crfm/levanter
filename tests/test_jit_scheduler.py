@@ -7,7 +7,7 @@ from levanter.inference.jit_scheduler import JitScheduler
 
 
 def test_enqueue_and_pack():
-    sched = JitScheduler.init(max_tokens=8, max_seqs=2, key=jax.random.PRNGKey(0))
+    sched = JitScheduler.init(max_queued_tokens=8, max_seqs=2, key=jax.random.PRNGKey(0))
     toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0, 1], dtype=jnp.int32), "position")
     sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 2)
@@ -20,7 +20,7 @@ def test_enqueue_and_pack():
 
 
 def test_update_after_sampling():
-    sched = JitScheduler.init(max_tokens=8, max_seqs=1, key=jax.random.PRNGKey(0))
+    sched = JitScheduler.init(max_queued_tokens=8, max_seqs=1, key=jax.random.PRNGKey(0))
     toks = hax.named(jnp.array([5], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0], dtype=jnp.int32), "position")
 
@@ -31,7 +31,7 @@ def test_update_after_sampling():
 
 
 def test_partial_dequeue():
-    sched = JitScheduler.init(max_tokens=8, max_seqs=1, key=jax.random.PRNGKey(0))
+    sched = JitScheduler.init(max_queued_tokens=8, max_seqs=1, key=jax.random.PRNGKey(0))
     toks = hax.named(jnp.array([1, 2, 3], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0, 0, 0], dtype=jnp.int32), "position")
     sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 3)
@@ -50,7 +50,7 @@ def _make_scheduler_with_tokens(max_tokens=8, max_seqs=2):
     # Build a scheduler and push four tokens: [10,20,30,40]
     # with seq‐ids [0,1,0,1].
     key = jax.random.PRNGKey(123)
-    sched = JitScheduler.init(max_tokens=max_tokens, max_seqs=max_seqs, key=key)
+    sched = JitScheduler.init(max_queued_tokens=max_tokens, max_seqs=max_seqs, key=key)
     toks = hax.named(jnp.array([10, 20, 30, 40], dtype=jnp.int32), axis=("position",))
     seqs = hax.named(jnp.array([ 0,  1,  0,  1], dtype=jnp.int32), axis=("position",))
     return eqx.filter_jit(sched.update_after_sampling)(toks, seqs, 4)
