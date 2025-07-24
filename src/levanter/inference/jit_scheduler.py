@@ -125,14 +125,14 @@ class JitScheduler(eqx.Module):
     # TODO: per-seq sampling params
 
     @property
-    def empty_queue_space(self) -> jnp.ndarray:
-        """How many tokens can be enqueued in the queue."""
-        return self.queued_tokens.axis_size("position") - self.num_queued_tokens
-
-    @property
     def empty_generated_space(self) -> jnp.ndarray:
         """How many tokens can be generated in the generated tokens buffer."""
         return self.generated_tokens.axis_size("position") - self.num_generated_tokens
+
+    @property
+    def empty_queue_space(self) -> jnp.ndarray:
+        """How many tokens can be enqueued in the queue."""
+        return self.queued_tokens.axis_size("position") - self.num_queued_tokens
 
     @property
     def max_queued_tokens(self) -> int:

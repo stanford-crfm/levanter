@@ -119,7 +119,7 @@ def run_generation_loop(
 
     def cond(state: tuple[GenState, jax.Array]):
         _gen_state, step = state
-        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (_gen_state.sched.empty_generated_space > 0)
+        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (_gen_state.sched.empty_generated_space >= max_tokens_per_round)
 
     def body(state):
         gen_state: GenState
@@ -134,7 +134,6 @@ def run_generation_loop(
         logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
         sample_key, key = jrandom.split(gen_state.prng_key)
         boundaries = packed_seq.boundary_indices(page_table.max_seqs)
-        # jax.debug.print("Boundaries: {boundaries} {ids} {toks} {bound2}", boundaries=boundaries, ids=packed_seq.seq_ids, toks=packed_seq.tokens, bound2=packed_seq.is_boundary)
         logits = logits["position", boundaries]
         new_tokens, _ = sampler(logits, temps, key=sample_key)
 
