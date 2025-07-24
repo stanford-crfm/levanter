@@ -293,7 +293,7 @@ class JitScheduler(eqx.Module):
             self,
             generated_tokens=hax.full_like(self.generated_tokens, -1),
             generated_seq_ids=hax.full_like(self.generated_seq_ids, -1),
-            num_generated_tokens=jnp.zeros(()),
+            num_generated_tokens=jnp.zeros((), dtype=jnp.int32),
         )
 
         return updated, out

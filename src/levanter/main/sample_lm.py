@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import time
 
@@ -29,8 +31,21 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.inference.jit_scheduler import JitScheduler, PackedSequence
+from levanter.layers.attention import KvPageCache
+from jaxtyping import PRNGKeyArray
 
 logger = logging.getLogger(__name__)
+
+
+class GenState(eqx.Module):
+    """
+    Plain Old Data type for generation state.
+    Contains all the components needed for language model generation.
+    """
+    sched: JitScheduler
+    cache: KvPageCache
+    page_table: PageTable
+    prng_key: PRNGKeyArray
 
 
 @dataclass
@@ -45,8 +60,8 @@ class SampleLmConfig:
 
     tokenizer: str | None = None
 
-    prompts: list[str] | str = "Four score and seven years ago, our"
-    max_new_tokens: int = 100
+    prompts: list[str] | str | tuple[str, ...] = ("Four score and seven years ago, our", "Now is the time for")
+    max_new_tokens: int = 32
     temperature: float = 1e-4
 
 
@@ -87,44 +102,40 @@ def tree_byte_size(tree):
     return sum(_leaf_size(x) for x in jax.tree.leaves(tree))
 
 
-@haliax.named_jit(donate_args=(True, True, True))
+@haliax.named_jit(donate_args=(True, False, False))
 def run_generation_loop(
-    sched: JitScheduler,
-    page_table: PageTable,
-    cache,
+    gen_state: GenState,
     model,
     sampler,
     temps,
-    key,
     max_tokens_per_round: int,
-    max_new_tokens: int,
+    max_rounds: int,
 ):
     """Generate tokens using ``JitScheduler`` until either ``max_new_tokens`` have been
     produced *per sequence* or all sequences report finished."""
 
-    def cond(state):
-        _sched: JitScheduler
-        _sched, *_ , step = state
-        return (step < max_new_tokens) & (_sched.num_queued_tokens > 0)
+    def cond(state: tuple[GenState, jax.Array]):
+        _gen_state, step = state
+        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0)
 
     def body(state):
-        sched: JitScheduler
-        sched, page_table, cache, key, step = state
+        gen_state: GenState
+        gen_state, step = state
 
         # Pack the next chunk from the queue
-        sched, packed_seq = sched.pack_next_sequence(max_tokens_per_round)
+        sched, packed_seq = gen_state.sched.pack_next_sequence(max_tokens_per_round)
 
-        page_table, binfo = page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
+        page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
 
         # Decode logits and sample new tokens
-        logits, cache = model.decode(packed_seq.tokens, cache, binfo, binfo.pos_ids)
-        sample_key, key = jrandom.split(key)
+        logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
+        sample_key, key = jrandom.split(gen_state.prng_key)
         boundaries = packed_seq.boundary_indices(page_table.max_seqs)
         # jax.debug.print("Boundaries: {boundaries} {ids} {toks} {bound2}", boundaries=boundaries, ids=packed_seq.seq_ids, toks=packed_seq.tokens, bound2=packed_seq.is_boundary)
         logits = logits["position", boundaries]
         new_tokens, _ = sampler(logits, temps, key=sample_key)
 
-        num_new_tokens = hax.sum(boundaries != -1).scalar()
+        num_new_tokens = hax.sum(boundaries != -1).scalar().astype(jnp.int32)
 
         # Update scheduler with the freshly sampled tokens
         sched = sched.update_after_sampling(
@@ -132,11 +143,21 @@ def run_generation_loop(
             new_token_seq_ids=packed_seq.seq_ids["position", boundaries],
             num_new_tokens=num_new_tokens,
         )
-        return sched, page_table, cache, key, step + 1
 
-    init_state = (sched, page_table, cache, key, jnp.array(0, dtype=jnp.int32))
-    sched, page_table, cache, key, _ = jax.lax.while_loop(cond, body, init_state)
-    return sched, cache, page_table, key
+        # Update the gen_state with all the new components
+        new_gen_state = dataclasses.replace(
+            gen_state,
+            sched=sched,
+            page_table=page_table,
+            cache=cache,
+            prng_key=key
+        )
+
+        return new_gen_state, step + 1
+
+    init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
+    final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
+    return final_gen_state
 
 
 def main(config: SampleLmConfig):
@@ -168,15 +189,18 @@ def main(config: SampleLmConfig):
         if isinstance(prompts, str):
             prompts = [prompts]
 
-        prompt_ids = tokenizer(prompts, add_special_tokens=False)
+        prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
 
-        page_table = PageTable.init(
-            max_pages=64,
-            max_seqs=len(prompt_ids),
-            page_size=16,
-            max_pages_per_seq=4,
+        table = PageTable.init(64, len(prompt_ids), 16, 4)
+        kv_cache = model.initial_cache(table, dtype=config.trainer.mp.compute_dtype)
+
+        # Initialize GenState with all components
+        gen_state = GenState(
+            sched=JitScheduler.init(64, 32),
+            cache=kv_cache,
+            page_table=table,
+            prng_key=jrandom.PRNGKey(0)
         )
-        cache = eqx.filter_jit(model.initial_cache)(page_table, dtype=config.trainer.mp.compute_dtype)
 
         temps = hax.full((), config.temperature, dtype=jnp.float32)
 
@@ -192,11 +216,13 @@ def main(config: SampleLmConfig):
                 stop_profiler_and_maybe_wait(create_perfetto_link=False)
                 levanter.current_tracker().log_artifact("/tmp/gen-profile", type="jax_profile")
             time_in = time.time()
-            prng_key = jrandom.PRNGKey(0)
-            page_table = page_table.free_pages(0)
-            page_table, seq_id = page_table.assign_seq_id_to_seq()
 
-            sched = JitScheduler.init(max_queued_tokens=64, max_buffered_tokens=MAX_NEW_TOKENS)
+            # Reset gen_state for this round
+            import dataclasses
+            gen_state = dataclasses.replace(gen_state, prng_key=jrandom.PRNGKey(0))
+            gen_state = dataclasses.replace(gen_state, page_table=gen_state.page_table.free_pages(0))
+            page_table, seq_id = gen_state.page_table.assign_seq_id_to_seq()
+            gen_state = dataclasses.replace(gen_state, page_table=page_table)
 
             finished = [False] * len(prompt_ids)
 
@@ -206,104 +232,120 @@ def main(config: SampleLmConfig):
             for tokens in prompt_ids:
                 # enqueue the entire prompt into the scheduler
                 prompts_tokens_to_enqueue = np.asarray(tokens, dtype=jnp.int32)
-                if len(tokens) > sched.max_queued_tokens:
+                if len(tokens) > gen_state.sched.max_queued_tokens:
                     raise ValueError(
                         f"Prompt is too long ({len(tokens)} tokens), "
                         f"max allowed is {MAX_NEW_TOKENS} tokens."
                     )
 
                 target_len = len(prompts_tokens_to_enqueue)
-                if target_len > sched.max_queued_tokens:
-                    print(f"Queue is full ({sched.num_queued_tokens} tokens), running generation loop to free up space.")
-                while target_len > sched.empty_queue_space:
+                if target_len > gen_state.sched.max_queued_tokens:
+                    print(f"Queue is full ({gen_state.sched.num_queued_tokens} tokens), running generation loop to free up space.")
+                while target_len > gen_state.sched.empty_queue_space:
                     # if the queue is too full, we run generation loop to free up space
                     # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
-                    sched, cache, page_table, prng_key = run_generation_loop(
-                        sched,
-                        page_table,
-                        cache,
+                    gen_state = run_generation_loop(
+                        gen_state,
                         model,
                         sampler,
                         temps,
-                        prng_key,
                         # TODO: tune/configure
                         64,
                         32,
                     )
 
-                    # drain generated tokens
-                    # TODO: offload this and detokenization to a separate thread
-                    out_seq: PackedSequence
-                    sched, out_seq = sched.extract_all_generated_tokens()
-                    out_seq = jax.device_get(out_seq)
-                    for i in range(out_seq.num_tokens):
-                        seq_id = int(out_seq.seq_ids.array[i])
-                        tok_id = int(out_seq.tokens.array[i])
-
-                        if seq_id >= len(outputs) or seq_id < 0:
-                            continue
-                        if finished[seq_id]:
-                            continue
-                        outputs[seq_id].append(tok_id)
-                        if len(outputs[seq_id]) >= config.max_new_tokens + total_prompt_tokens:
-                            finished[seq_id] = True
-                            print(f"Sequence {seq_id} finished with {len(outputs[seq_id])} tokens.")
-
-
-
+                    gen_state = extract_outputs(gen_state, outputs, finished, total_prompt_tokens,
+                                                config.max_new_tokens)
 
                 this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
                 seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
-                sched = sched.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
+                new_sched = gen_state.sched.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
+                gen_state = dataclasses.replace(gen_state, sched=new_sched)
+                del new_sched
 
                 # do one macro-prefill round
-                sched, cache, page_table, prng_key = run_generation_loop(
-                    sched,
-                    page_table,
-                    cache,
+                gen_state = run_generation_loop(
+                    gen_state,
                     model,
                     sampler,
                     temps,
-                    prng_key,
                     prompts_tokens_to_enqueue.size,
                     1,
                 )
+                gen_state = extract_outputs(gen_state, outputs, finished, total_prompt_tokens,
+                                            config.max_new_tokens)
 
-            sched = jax.block_until_ready(sched)
+            gen_state = jax.block_until_ready(gen_state)
             time_mid = time.time()
             print(f"Prefill took {time_mid - time_in:.2f} seconds, ")
 
             # run the fully JIT-compiled generation loop
-            sched, cache, page_table, prng_key = run_generation_loop(
-                sched,
-                page_table,
-                cache,
-                model,
-                sampler,
-                temps,
-                prng_key,
-                1,
-                min(config.max_new_tokens, MAX_NEW_TOKENS),
-            )
-            sched = jax.block_until_ready(sched)
+            while not all(finished):
+                # if the queue is too full, we run generation loop to free up space
+                # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
+                gen_state = run_generation_loop(
+                    gen_state,
+                    model,
+                    sampler,
+                    temps,
+                    # TODO: tune/configure
+                    len(prompt_ids),
+                    32,
+                )
+
+                gen_state = extract_outputs(gen_state, outputs, finished, total_prompt_tokens,
+                                            config.max_new_tokens)
+
+            gen_state = jax.block_until_ready(gen_state)
             time_out = time.time()
             print(f"Gen loop took {time_out - time_mid:.2f} seconds, ")
 
-            # extract up to `max_new_tokens` tokens for this sequence
-            out_ids = hax.named(jnp.array([seq_id], dtype=jnp.int32), axis="seq")
-            sched, output_matrix = sched.extract_generated_tokens(out_ids, max_tokens=config.max_new_tokens)
 
             # Flatten, drop padding, and decode
-            generated_token_ids = [int(t) for t in prompt_ids]
-            generated_token_ids.extend([int(tok) for tok in output_matrix.array[0] if tok != -1])
-            text = tokenizer.decode(generated_token_ids, skip_special_tokens=True)
+            total_generated = sum(len(seq_outputs) for seq_outputs in outputs)
+            total_generated -= sum(len(p) for p in prompt_ids)  # remove prompt tokens
+            for seq_id, seq_outputs in enumerate(outputs):
+                if finished[seq_id]:
+                    # remove padding tokens
+                    seq_outputs = [tok for tok in seq_outputs if tok != tokenizer.pad_token_id and tok >= 0]
+                    outputs[seq_id] = seq_outputs
+                else:
+                    print(f"Sequence {seq_id} did not finish, skipping decoding.")
+
+                text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
             print(f"Generated text: {text}")
             print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
-                  f"generated {len(generated_token_ids) - len(prompt_ids)} tokens, ")
-            page_table = page_table.free_pages(0)
+                  f"generated {total_generated} tokens in {len(outputs)} sequences.")
+            # free everything
+            page_table = PageTable.init(64, len(prompt_ids), 16, 4)
+            kv_cache = model.initial_cache(page_table, dtype=config.trainer.mp.compute_dtype)
+            gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=kv_cache)
 
-        return text
 
+def extract_outputs(gen_state, outputs, finished, total_prompt_tokens, max_new_tokens):
+    """
+    drain generated tokens and append them to the outputs.
+
+    MUTATES outputs and finished lists.
+    """
+    # TODO: offload this and detokenization to a separate thread
+    out_seq: PackedSequence
+    sched, out_seq = gen_state.sched.extract_all_generated_tokens()
+    gen_state = dataclasses.replace(gen_state, sched=sched)
+    out_seq = jax.device_get(out_seq)
+    for i in range(out_seq.num_tokens):
+        seq_id = int(out_seq.seq_ids.array[i])
+        tok_id = int(out_seq.tokens.array[i])
+
+        if seq_id >= len(outputs) or seq_id < 0:
+            continue
+        if finished[seq_id]:
+            continue
+        outputs[seq_id].append(tok_id)
+
+        if len(outputs[seq_id]) >= max_new_tokens + total_prompt_tokens:
+            finished[seq_id] = True
+    return gen_state
 
 
 if __name__ == "__main__":

@@ -227,6 +227,13 @@ class LlamaConfig(HFCompatConfig):
             rope=self.rope,
         )
 
+    @property
+    def actual_head_size(self):
+        """Returns the actual head size based on the head_dim or calculated from hidden_dim and num_heads."""
+        if self.head_dim is not None:
+            return self.head_dim
+        return self.hidden_dim // self.num_heads
+
 
 class LlamaMlp(eqx.Module):
     """Multi-layer Perceptron
