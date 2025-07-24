@@ -163,6 +163,36 @@ class SliceInfo:
         )
 
 
+@dataclass(frozen=True)
+class SliceResource:
+    """A collection of all resources associated with a single TPU slice."""
+
+    actor: ActorHandle
+    """Actor handle for the SliceActor"""
+
+    slice_info: SliceInfo
+    """Information about the slice"""
+
+
+@dataclass(frozen=True)
+class TPUHostInfo:
+    slice_name: str
+    worker_index: int
+    node_id: str
+    num_tpus: int
+
+
+@dataclass(frozen=True)
+class TPUHostResource:
+    """A collection of all resources associated with a single TPU host."""
+
+    actor: ActorHandle
+    """Actor handle for the SliceActor"""
+
+    host_info: TPUHostInfo
+
+
+
 # Timeouts (in seconds)
 _HEALTH_CHECK_TIMEOUT = 60
 _TEARDOWN_ACTOR_TIMEOUT = 300
@@ -240,14 +270,14 @@ class SliceActor:
         )
         return self._slice_info
 
-    def run_remote_fn(self, remote_fn: RemoteFunction) -> list[ray.ObjectRef]:
-        """Run the remote function on this host.
+    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> list[ray.ObjectRef]:
+        """Run the remote function on this slice.
 
         NOTE: This runs the remote function in a different task. It does not block on the remote function call.
-        NOTE: This returns a Ray future. If calling this method on a remote Actor, you will get a future of a future."""
+        NOTE: This returns a list of Ray futures. If calling this method on a remote Actor, you will get a future of a list of futures."""
         if not self._slice_info or len(self._hosts) < self._slice_info.num_hosts:
             raise Exception("Insufficient host actors; call setup() before calling run_remote_fn()")
-        futures_of_futures: list[ray.ObjectRef] = [host.actor.run_remote_fn.remote(remote_fn) for host in self._hosts]
+        futures_of_futures: list[ray.ObjectRef] = [host.actor.run_remote_fn.remote(remote_fn, runtime_env) for host in self._hosts]
         return [ray.get(future_of_future) for future_of_future in futures_of_futures]
 
     def teardown(self):
@@ -290,7 +320,7 @@ class TPUHostActor:
         )
         return self._host_info
 
-    def run_remote_fn(self, remote_fn: RemoteFunction) -> ray.ObjectRef:
+    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> ray.ObjectRef:
         """Run the remote function on this host.
 
         NOTE: This runs the remote function in a different task. It does not block on the remote function call.
@@ -308,6 +338,7 @@ class TPUHostActor:
             num_cpus=8,
             num_gpus=0,
             memory=20e9,
+            runtime_env=runtime_env,
         ).remote()
         return self._awaitable
 
@@ -317,34 +348,6 @@ class TPUHostActor:
         self._awaitable = None
         self._host_info = None
 
-
-@dataclass(frozen=True)
-class SliceResource:
-    """A collection of all resources associated with a single TPU slice."""
-
-    actor: ActorHandle
-    """Actor handle for the SliceActor"""
-
-    slice_info: SliceInfo
-    """Information about the slice"""
-
-
-@dataclass(frozen=True)
-class TPUHostInfo:
-    slice_name: str
-    worker_index: int
-    node_id: str
-    num_tpus: int
-
-
-@dataclass(frozen=True)
-class TPUHostResource:
-    """A collection of all resources associated with a single TPU host."""
-
-    actor: ActorHandle
-    """Actor handle for the SliceActor"""
-
-    host_info: TPUHostInfo
 
 
 
@@ -669,7 +672,6 @@ def _scale_host_pool(host_pool: list[TPUHostResource], slice_name: str, desired_
     logger.info(f"Hosts in slice {slice_name}: {[host.host_info.worker_index for host in healthy_hosts]}")
     logger.info(f"Slice {slice_name} has {len(healthy_hosts)} hosts, but we want {desired_num_hosts}. Creating more hosts.")
 
-    # TODO: Fix this!!!!!
     actors = [TPUHostActor.options(resources={slice_name: 1}, num_cpus=0.0).remote(slice_name) for _ in range(desired_num_hosts - len(healthy_hosts))]  # type: ignore
 
     actors_and_host_info_awaitables = [(actor, actor.get_host_info.remote()) for actor in actors]
@@ -700,7 +702,8 @@ def _start_fn_on_slice(tpu_slice: SliceResource, remote_fn: RemoteFunction, mxla
     if mxla_env is not None:
         mxla_env = dict(env_vars=mxla_env)
         runtime_env = mergedeep.merge({}, runtime_env, mxla_env, strategy=mergedeep.Strategy.ADDITIVE)
-    futures_for_slice = ray.get(tpu_slice.actor.run_remote_fn.remote(remote_fn))
+    futures_for_slice = ray.get(tpu_slice.actor.run_remote_fn.remote(remote_fn, runtime_env))
+    logger.info(f"Futures for slice: {futures_for_slice}")
     return futures_for_slice
 
 
