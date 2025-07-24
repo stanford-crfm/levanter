@@ -15,8 +15,8 @@ from levanter.infra.ray_tpu import run_on_pod
 
 
 # Store whether TPUs are available and if multislice is possible
-_TPU_AVAILABLE = True
-_MULTISLICE_POSSIBLE = True
+_TPU_AVAILABLE = False
+_MULTISLICE_POSSIBLE = False
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -31,8 +31,9 @@ def setup_ray_tpu_tests():
     available_resources = ray.cluster_resources()
     tpu_v4_8_head_count = available_resources.get("TPU-v4-8-head", 0)
 
-    # if tpu_v4_8_head_count < 1:
-    #     pytest.skip("No TPU-v4-8-head resources available", allow_module_level=True)
+    if tpu_v4_8_head_count < 1:
+        pass
+        # pytest.skip("No TPU-v4-8-head resources available", allow_module_level=True)
 
     _TPU_AVAILABLE = True  # At least one TPU is available
 
