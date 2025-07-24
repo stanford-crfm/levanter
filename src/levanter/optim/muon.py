@@ -74,11 +74,11 @@ class MuonConfig(OptimizerConfig):
                 "adamw": adamw_transform(),
             }
 
-            return optax.multi_transform(transformations, self.create_mask)
+            return optax.multi_transform(transformations, partial(self.create_mask, use_kimi_scaling = use_kimi_scaling))
 
         return optax.inject_hyperparams(optimizer)(learning_rate=learning_rate_schedule, adam_lr=adam_lr_schedule)
 
-    def create_mask(self, params):
+    def create_mask(self, params, use_kimi_scaling = True):
         """
         Creates a mask that labels parameters as 'muon' or 'adamw' based on their
         dimensionality and module path, using AdamW for Embedding and lm_head parameters.
@@ -91,6 +91,7 @@ class MuonConfig(OptimizerConfig):
                 return "adamw"
             elif isinstance(param, Linear):
                 # muon for linear layers
+                assert (param._out_first or use_kimi_scaling) # if we don't use kimi's version of scaling, then we need to assume out_first to ensure we are scaling like Out/In
                 return dataclasses.replace(param, weight="muon", bias="adamw" if param.bias is not None else None)
             else:
                 return "adamw"
