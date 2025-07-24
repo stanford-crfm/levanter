@@ -60,9 +60,12 @@ class SampleLmConfig:
 
     tokenizer: str | None = None
 
-    prompts: list[str] | str | tuple[str, ...] = ("Four score and seven years ago, our", "Now is the time for")
+    prompts: list[str] | str | tuple[str, ...] = (
+        "Four score and seven years ago, our",
+        # "Now is the time for"
+    )
     max_new_tokens: int = 32
-    temperature: float = 1e-4
+    temperature: float = 0.0
 
 
 def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
@@ -287,8 +290,7 @@ def main(config: SampleLmConfig):
 
             # run the fully JIT-compiled generation loop
             while not all(finished):
-                # if the queue is too full, we run generation loop to free up space
-                # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
+                time_gen_in = time.time()
                 gen_state, this_outputs = run_generation_loop(
                     gen_state,
                     model,
@@ -298,8 +300,12 @@ def main(config: SampleLmConfig):
                     len(prompt_ids),
                     32,
                 )
+                gen_state = jax.block_until_ready(gen_state)
+                print(f"Generation loop iter took {time.time() - time_gen_in:.3f} seconds, ")
+                time_gen_in = time.time()
 
                 extract_outputs(this_outputs, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+                print(f"Extracted outputs took {time.time() - time_gen_in:.3f} seconds, ")
 
             gen_state = jax.block_until_ready(gen_state)
             time_out = time.time()
@@ -324,7 +330,7 @@ def main(config: SampleLmConfig):
             # free everything
             page_table = PageTable.init(64, len(prompt_ids), 16, 4)
             kv_cache = model.initial_cache(page_table, dtype=config.trainer.mp.compute_dtype)
-            gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=kv_cache)
+            gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=kv_cache, prng_key=jrandom.PRNGKey(0))
 
 
 # @haliax.named_jit(donate_args=(True,))

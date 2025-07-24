@@ -69,6 +69,8 @@ class Sampler(eqx.Module):
         # Where temperature == 0, fall back to greedy choice
         tokens = hax.where(temperatures == 0, greedy, samples)
 
+        return greedy, None
+
         # Compute log-prob of each sampled token: logit - log_sum_exp(logits)
         oh = hnn.one_hot(tokens, self.Vocab)
         selected_logits = hax.sum(scaled_logits * oh, axis=self.Vocab)
