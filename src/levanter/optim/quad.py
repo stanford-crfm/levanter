@@ -29,24 +29,24 @@ PartitionSpecTree = TypeVar(
 
 
 @OptimizerConfig.register_subclass("quad")
-@dataclass
+@dataclass(frozen=True)
 class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     """Configuration for PSGD-QUAD optimizer.
 
     Notes:
         - LR is usually 3x smaller than adam, weight decay at least 3x larger.
-        - use with ~100 steps of LR warmup.
+        - might be able to use with no LR warmup, otherwise a little warmup of about 100 steps.
         - max_skew_dense default is 1.0 making larger dimensions have diagonal preconditioners, but this 
-          can be set to float('inf') to make all preconditioners dense (more memory use but might be more stable).
+          can be set to float('inf') to make all preconditioners dense (more memory use but might be more stronger).
           For example, for layer shape (256, 128) default preconditioners will be (256,) and (128, 128), but if 
-          max_skew_dense is set to float('inf'), then preconditioners will be (256, 256) and (128, 128).
+          max_skew_dense is set to float('inf'), then preconditioners will be (256, 256) and (128, 128). (A layer 
+          with shape (128, 128) would have preconditioners of shape (128, 128) and (128, 128) with max_skew_dense set 
+          to 1.0.)
 
     Attributes:
         beta1: Momentum parameter. 0.9 or 0.95 are common values.
         weight_decay: Weight decay coefficient.
         max_grad_norm: Optional gradient norm clipping value.
-        normalize_grads: Whether to normalize the incoming gradients to unit norm layer-wise.
-            Can help with stability.
         max_size_dense: Dimensions larger than this will have diagonal preconditioners,
             otherwise dense.
         max_skew_dense: Dimensions with skew larger than this compared to the other
@@ -73,19 +73,18 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
 
     # some of these are changed from quad defaults to better suit levanter
     beta1: float = 0.95
-    weight_decay: float = 0.3
-    max_grad_norm: Optional[float] = 1.0
-    normalize_grads: bool = False
+    weight_decay: float = 0.5
+    max_grad_norm: Optional[float] = None
     max_size_dense: int = 8192
     max_skew_dense: float = 1.0
-    preconditioner_lr: float = 0.9
+    preconditioner_lr: float = 0.7
     preconditioner_init_scale: float = 1.0
-    mu_dtype: Optional[Union[str, jnp.dtype]] = None
-    precond_dtype: Optional[Union[str, jnp.dtype]] = None
+    mu_dtype: Optional[Union[str, jnp.dtype]] = jnp.bfloat16
+    precond_dtype: Optional[Union[str, jnp.dtype]] = jnp.bfloat16
     lax_map_scanned_layers: bool = False
     lax_map_batch_size: int = 8
-    merge_small_dims: bool = True
-    target_merged_dim_size: int = 8192
+    merge_small_dims: bool = False
+    target_merged_dim_size: int = 4096
     partition_grads_into_blocks: bool = False
     block_size: int = 512
     params_sharding: Optional[PartitionSpecTree] = None
@@ -99,12 +98,11 @@ class QUADConfig(OptimizerConfig, Generic[PartitionSpecTree]):
                 PartitionSpec(*self.preconditioner_sharding) if self.preconditioner_sharding is not None else None
             )
             components = []
-            if self.max_grad_norm and not self.normalize_grads:
+            if self.max_grad_norm:
                 components.append(optax.clip_by_global_norm(self.max_grad_norm))
             components.append(
                 scale_by_quad(
                     b1=self.beta1,
-                    normalize_grads=self.normalize_grads,
                     max_size_dense=self.max_size_dense,
                     max_skew_dense=self.max_skew_dense,
                     preconditioner_lr=self.preconditioner_lr,
@@ -147,17 +145,16 @@ except ImportError:
 
 def scale_by_quad(
     b1: float = 0.95,
-    normalize_grads: bool = False,
     max_size_dense: int = 8192,
     max_skew_dense: float = 1.0,
-    preconditioner_lr: float = 0.9,
+    preconditioner_lr: float = 0.7,
     preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
     scanned_layers: Optional[base.Params] = None,
     lax_map_scanned_layers: bool = False,
     lax_map_batch_size: int = 8,
-    merge_small_dims: bool = True,
+    merge_small_dims: bool = False,
     target_merged_dim_size: int = 8192,
     partition_grads_into_blocks: bool = False,
     block_size: int = 512,
@@ -171,8 +168,6 @@ def scale_by_quad(
 
             Args:
         b1: float, momentum parameter. 0.9 or 0.95 are common values.
-        normalize_grads: bool, whether to normalize the incoming gradients to unit
-            norm layer-wise. Can help with stability.
         max_size_dense: int, dimensions larger than this will have diagonal preconditioners,
             otherwise dense.
         max_skew_dense: float, dimensions with skew larger than this compared to the other
@@ -422,6 +417,8 @@ def scale_by_quad(
     def update_fn(updates: base.Updates, state: dict, params: base.Params = None):
         del params
         count_inc = safe_int32_increment(state["count"])
+        precond_lr_t = get_precond_lr(preconditioner_lr, count_inc)
+        b1_t = get_l_beta(count_inc)
 
         # unbox if haliax style partitioned
         scanned_layers_ = scanned_layers
@@ -490,21 +487,18 @@ def scale_by_quad(
         if scanned_layers_ is None:
             scanned_layers_ = jax.tree.map(lambda _: False, updates)
 
-        # normalize grads
-        def norm_grads(g):
-            return g / (jnp.linalg.norm(g) + 1e-6)
-
-        if normalize_grads:
-            updates = jax.tree.map(norm_grads, updates)
-
         # momentum
         mu = None
         momentum_updates = updates
         if state["mu"] is not None:
-            mu = otu.tree_update_moment(updates, state["mu"], b1, 1)
+            mu = otu.tree_update_moment(updates, state["mu"], b1_t, 1)
             if have_params_sharding:
                 mu = _safe_sharding_constraint(mu, params_sharding_)
-            momentum_updates = otu.tree_bias_correction(mu, b1, count_inc)
+            momentum_updates = otu.tree_bias_correction(mu, b1_t, count_inc)
+        # cast mu back to mu_dtype
+        mu = otu.tree_cast(mu, mu_dtype)
+        # cast momentum_updates to precond_dtype
+        momentum_updates = otu.tree_cast(momentum_updates, precond_dtype)
 
         # which preconditioners will be diagonal
         dim_diag = jax.tree.map(
@@ -694,7 +688,7 @@ def scale_by_quad(
                     partial(
                         _update_precond,
                         exprs=expr,
-                        precond_lr=preconditioner_lr,
+                        precond_lr=precond_lr_t,
                         qs_sharding=qss,
                         params_sharding=sh,
                     ),
@@ -718,6 +712,7 @@ def scale_by_quad(
             Qs = _safe_sharding_constraint(Qs, Qs_sharding)
         if have_params_sharding:
             precond_gs = _safe_sharding_constraint(precond_gs, partitioned_sharding)
+        # cast Qs back to precond_dtype
         Qs = otu.tree_cast(Qs, precond_dtype)
 
         # unpartition grads
@@ -775,6 +770,7 @@ def scale_by_quad(
         # dtypes and new state
         mu = otu.tree_cast(mu, mu_dtype)
         Qs = otu.tree_cast(Qs, precond_dtype)
+        Ls = otu.tree_cast(Ls, jnp.float32)
         state = dict(
             count=count_inc,
             mu=mu,
@@ -790,19 +786,18 @@ def scale_by_quad(
 def quad(
     learning_rate: Union[float, Callable[[int], float]] = 0.0003,
     b1: float = 0.95,
-    weight_decay: float = 0.3,
+    weight_decay: float = 0.5,
     weight_decay_mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
-    normalize_grads: bool = False,
     max_size_dense: int = 8192,
     max_skew_dense: float = 1.0,
-    preconditioner_lr: float = 0.9,
+    preconditioner_lr: float = 0.7,
     preconditioner_init_scale: float = 1.0,
     mu_dtype: Optional[Union[str, jnp.dtype]] = None,
     precond_dtype: Optional[Union[str, jnp.dtype]] = None,
     scanned_layers: Optional[base.Params] = None,
     lax_map_scanned_layers: bool = False,
     lax_map_batch_size: int = 8,
-    merge_small_dims: bool = True,
+    merge_small_dims: bool = False,
     target_merged_dim_size: int = 8192,
     partition_grads_into_blocks: bool = False,
     block_size: int = 512,
@@ -819,9 +814,6 @@ def quad(
         weight_decay_mask: optional pytree same structure as params, or callable
             returning a pytree, that masks weight decay. Weight decay is applied to
             leaves that are True.
-        normalize_grads: bool, whether to normalize the incoming gradients to unit
-            norm layer-wise. Can help with stability.
-
         max_size_dense: int, dimensions larger than this will have diagonal preconditioners,
             otherwise dense.
         max_skew_dense: float, dimensions with skew larger than this compared to the other
@@ -858,7 +850,6 @@ def quad(
     optimizer = [
         scale_by_quad(
             b1=b1,
-            normalize_grads=normalize_grads,
             max_size_dense=max_size_dense,
             max_skew_dense=max_skew_dense,
             preconditioner_lr=preconditioner_lr,
@@ -993,7 +984,7 @@ def _init_Q_exprs(
                         fsdp_axis_name = hax.partitioning.ResourceAxis.DATA
                         fsdp_axis = mesh.axis_names.index(fsdp_axis_name)
                         fsdp_size = mesh.devices.shape[fsdp_axis]
-                        if size % fsdp_size == 0:
+                        if size % fsdp_size == 0 and size > 512:
                             q_sharding = PartitionSpec(fsdp_axis_name, None)
                         else:
                             q_sharding = PartitionSpec(None, None)
@@ -1030,19 +1021,27 @@ def _init_Q_exprs(
     return Q, L, (exprP, exprGs), sharding_out
 
 
-def _norm_lower_bound(A: jax.Array):
-    def calc(A):
-        # a little faster than xilin's but still pretty accurate
-        aa = A * A
-        row_norms_sq = jnp.sum(aa, axis=0)
-        i = jnp.argmax(row_norms_sq, 0)
-        max_row_norm_sq = jax.lax.dynamic_index_in_dim(row_norms_sq, i, 0, keepdims=False)
-        max_row_norm = jnp.sqrt(max_row_norm_sq)
-        v_r = jax.lax.dynamic_index_in_dim(A, i, 1, keepdims=False) / max_row_norm
-        u_r = A @ v_r
-        return jnp.linalg.norm(u_r)
+def get_precond_lr(base_lr: float, step: jax.Array):
+    return jnp.maximum(base_lr * jax.lax.rsqrt(1.0 + step / 10000.0), 0.1)
 
-    return jnp.where(jnp.max(jnp.abs(A)) > 0, calc(A), 0.0)
+
+def get_l_beta(step: jax.Array):
+    return 0.95
+
+
+def _norm_lower_bound(A: jax.Array):
+    max_abs = jnp.max(jnp.abs(jnp.diag(A)))
+    
+    def _inner():
+        A_normalized = A / max_abs
+        row_norms_sq = jnp.sum(A_normalized * A_normalized, axis=1)
+        j = jnp.argmax(row_norms_sq)
+        x = jax.lax.dynamic_index_in_dim(A_normalized, j, 0, keepdims=False)
+        x = A_normalized @ x
+        x = x / jnp.linalg.norm(x)
+        return jnp.linalg.norm(A_normalized @ x) * max_abs
+    
+    return jax.lax.cond(max_abs > 0, _inner, lambda: max_abs)
 
 
 def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
@@ -1060,23 +1059,18 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
             term2 = total_numel / q.size
             ell = jnp.max(jnp.real(term1)) + term2
             l_new = jnp.maximum(betaL * l + (1 - betaL) * ell, ell)
-            gain = 1 - precond_lr / 2 / l_new * (term1 - term2)
+            lr_over_2l = (precond_lr / (2 * l_new)).astype(q.dtype)
+            gain = 1 - lr_over_2l * (term1 - term2)
             q_new = q * gain * gain
         else:
-            if qs_sharding is not None:
-                sharding = qs_sharding[i]
-                if len(sharding) < 2:
-                    sharding = PartitionSpec(*((None,) + sharding))
-                else:
-                    assert len(sharding) == 2
-                    sharding = PartitionSpec(*(sharding[1:] + sharding[:1]))
-                term1 = _safe_sharding_constraint(term1, sharding)
-            
-            term2 = total_numel / q.shape[0]  # times I
+            term2 = total_numel / q.shape[0]
             ell = _norm_lower_bound(term1) + term2
             l_new = jnp.maximum(betaL * l + (1 - betaL) * ell, ell)
-            p = q - precond_lr / 2 / l_new * (term1 @ q - term2 * q)
-            p = p - precond_lr / 2 / l_new * (p @ term1 - p * term2)
+            lr_over_2l = (precond_lr / (2 * l_new)).astype(q.dtype)
+            # multiplicative update
+            scale1 = 1 + lr_over_2l * term2
+            p = scale1 * q - lr_over_2l * (term1 @ q)
+            p = scale1 * p - lr_over_2l * (p @ term1)
             q_new = (p + p.T) / 2
             
         return q_new, l_new
@@ -1084,6 +1078,12 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
     Q_L_new = [_update_single_q_l(i, q, l) for i, (q, l) in enumerate(zip(Q, L))]
     Q_new = [ql[0] for ql in Q_L_new]
     L_new = [ql[1] for ql in Q_L_new]
+
+    # recalculate Pg with new Qs
+    # Pg = jnp.einsum(exprP, *Q_new, *Q_new, G)
+
+    # normalize to energy of 1
+    Pg = Pg / (jnp.sqrt(jnp.mean(Pg * Pg)) + 1e-7)
     
     return Q_new, L_new, Pg
 
