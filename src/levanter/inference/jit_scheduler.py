@@ -130,6 +130,11 @@ class JitScheduler(eqx.Module):
         return self.queued_tokens.axis_size("position") - self.num_queued_tokens
 
     @property
+    def empty_generated_space(self) -> jnp.ndarray:
+        """How many tokens can be generated in the generated tokens buffer."""
+        return self.generated_tokens.axis_size("position") - self.num_generated_tokens
+
+    @property
     def max_queued_tokens(self) -> int:
         """Maximum number of tokens that can be buffered in the queue."""
         return self.queued_tokens.axis_size("position")
@@ -269,7 +274,6 @@ class JitScheduler(eqx.Module):
             is_boundary=is_boundary
         )
 
-
         return new_scheduler, sequence
 
     @eqx.filter_jit(donate="all")
@@ -282,11 +286,7 @@ class JitScheduler(eqx.Module):
             tokens=self.generated_tokens,
             seq_ids=self.generated_seq_ids,
             num_tokens=self.num_generated_tokens,
-            is_boundary=hax.where(
-                self.generated_seq_ids != hax.roll(self.generated_seq_ids, -1, "position"),
-                fill_value=True,
-                new_axis=self.generated_seq_ids.resolve_axis("position")
-            )
+            is_boundary=hax.zeros_like(self.generated_tokens, dtype=jnp.bool_),
         )
 
         updated = dataclasses.replace(

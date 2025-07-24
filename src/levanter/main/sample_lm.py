@@ -110,13 +110,13 @@ def run_generation_loop(
     temps,
     max_tokens_per_round: int,
     max_rounds: int,
-):
+) -> tuple[GenState, PackedSequence]:
     """Generate tokens using ``JitScheduler`` until either ``max_new_tokens`` have been
     produced *per sequence* or all sequences report finished."""
 
     def cond(state: tuple[GenState, jax.Array]):
         _gen_state, step = state
-        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0)
+        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (_gen_state.sched.empty_generated_space > 0)
 
     def body(state):
         gen_state: GenState
@@ -157,7 +157,13 @@ def run_generation_loop(
 
     init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
     final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
-    return final_gen_state
+
+    # Extract the packed sequence from the scheduler
+    sched, out_seq = final_gen_state.sched.extract_all_generated_tokens()
+
+    final_gen_state = dataclasses.replace(final_gen_state, sched=sched)
+
+    return final_gen_state, out_seq
 
 
 def main(config: SampleLmConfig):
@@ -221,8 +227,6 @@ def main(config: SampleLmConfig):
             import dataclasses
             gen_state = dataclasses.replace(gen_state, prng_key=jrandom.PRNGKey(0))
             gen_state = dataclasses.replace(gen_state, page_table=gen_state.page_table.free_pages(0))
-            page_table, seq_id = gen_state.page_table.assign_seq_id_to_seq()
-            gen_state = dataclasses.replace(gen_state, page_table=page_table)
 
             finished = [False] * len(prompt_ids)
 
@@ -231,6 +235,9 @@ def main(config: SampleLmConfig):
             # do one prefill at a time, but we do continuous batching, so decode is happening all the while
             for tokens in prompt_ids:
                 # enqueue the entire prompt into the scheduler
+                page_table, seq_id = gen_state.page_table.assign_seq_id_to_seq()
+                gen_state = dataclasses.replace(gen_state, page_table=page_table)
+
                 prompts_tokens_to_enqueue = np.asarray(tokens, dtype=jnp.int32)
                 if len(tokens) > gen_state.sched.max_queued_tokens:
                     raise ValueError(
@@ -244,7 +251,7 @@ def main(config: SampleLmConfig):
                 while target_len > gen_state.sched.empty_queue_space:
                     # if the queue is too full, we run generation loop to free up space
                     # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
-                    gen_state = run_generation_loop(
+                    gen_state, packed_out = run_generation_loop(
                         gen_state,
                         model,
                         sampler,
@@ -254,8 +261,7 @@ def main(config: SampleLmConfig):
                         32,
                     )
 
-                    gen_state = extract_outputs(gen_state, outputs, finished, total_prompt_tokens,
-                                                config.max_new_tokens)
+                    extract_outputs(packed_out, outputs, finished, total_prompt_tokens, config.max_new_tokens)
 
                 this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
                 seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
@@ -264,16 +270,16 @@ def main(config: SampleLmConfig):
                 del new_sched
 
                 # do one macro-prefill round
-                gen_state = run_generation_loop(
+                gen_state, packed_out = run_generation_loop(
                     gen_state,
                     model,
                     sampler,
                     temps,
-                    prompts_tokens_to_enqueue.size,
+                    16,
                     1,
                 )
-                gen_state = extract_outputs(gen_state, outputs, finished, total_prompt_tokens,
-                                            config.max_new_tokens)
+
+                extract_outputs(packed_out, outputs, finished, total_prompt_tokens, config.max_new_tokens)
 
             gen_state = jax.block_until_ready(gen_state)
             time_mid = time.time()
@@ -283,7 +289,7 @@ def main(config: SampleLmConfig):
             while not all(finished):
                 # if the queue is too full, we run generation loop to free up space
                 # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
-                gen_state = run_generation_loop(
+                gen_state, this_outputs = run_generation_loop(
                     gen_state,
                     model,
                     sampler,
@@ -293,8 +299,7 @@ def main(config: SampleLmConfig):
                     32,
                 )
 
-                gen_state = extract_outputs(gen_state, outputs, finished, total_prompt_tokens,
-                                            config.max_new_tokens)
+                extract_outputs(this_outputs, outputs, finished, total_prompt_tokens, config.max_new_tokens)
 
             gen_state = jax.block_until_ready(gen_state)
             time_out = time.time()
@@ -313,7 +318,7 @@ def main(config: SampleLmConfig):
                     print(f"Sequence {seq_id} did not finish, skipping decoding.")
 
                 text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
-            print(f"Generated text: {text}")
+                print(f"Generated text for {seq_id}: {text}")
             print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
                   f"generated {total_generated} tokens in {len(outputs)} sequences.")
             # free everything
@@ -322,16 +327,14 @@ def main(config: SampleLmConfig):
             gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=kv_cache)
 
 
-def extract_outputs(gen_state, outputs, finished, total_prompt_tokens, max_new_tokens):
+# @haliax.named_jit(donate_args=(True,))
+def extract_outputs(out_seq: PackedSequence, outputs, finished, total_prompt_tokens, max_new_tokens):
     """
     drain generated tokens and append them to the outputs.
 
     MUTATES outputs and finished lists.
     """
     # TODO: offload this and detokenization to a separate thread
-    out_seq: PackedSequence
-    sched, out_seq = gen_state.sched.extract_all_generated_tokens()
-    gen_state = dataclasses.replace(gen_state, sched=sched)
     out_seq = jax.device_get(out_seq)
     for i in range(out_seq.num_tokens):
         seq_id = int(out_seq.seq_ids.array[i])
@@ -345,7 +348,6 @@ def extract_outputs(gen_state, outputs, finished, total_prompt_tokens, max_new_t
 
         if len(outputs[seq_id]) >= max_new_tokens + total_prompt_tokens:
             finished[seq_id] = True
-    return gen_state
 
 
 if __name__ == "__main__":
