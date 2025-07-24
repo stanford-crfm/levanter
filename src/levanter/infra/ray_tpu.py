@@ -8,7 +8,7 @@ import tempfile
 import time
 from asyncio import QueueEmpty
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Callable, Optional, Sequence
 
 import draccus
 import mergedeep
@@ -557,14 +557,14 @@ def run_on_pod_ray(
 def _stop_actor(actor: ActorHandle) -> None:
     try:
         # This is recommended by https://docs.ray.io/en/latest/ray-core/api/doc/ray.kill.html
-        # 
+        #
         # > If you want to kill the actor but let pending tasks finish, you can call actor.__ray_terminate__.remote()
         # > instead to queue a termination task. Any atexit handlers installed in the actor will be run in this case.
         #
         # NOTE: Not sure if this always returns an exception (because the actor will terminate before finishing)
         # but it doesn't really matter
         ray.get(actor.__ray_terminate__.remote(), timeout=_TERMINATE_ACTOR_TIMEOUT)
-    except ActorDiedError as e:
+    except ActorDiedError:
         # This is expected because the actor will terminate within  __ray_terminate__() task,
         # so the task will never succeed.
         pass
@@ -586,7 +586,7 @@ def _scale_slice_pool(slice_pool: list[SliceResource], tpu_type: str, num_slices
     """Scale the slice pool to the desired number of slices.
 
     Terminate unhealth slices, then allocate new slices to fill up the shortfall.
-    
+
     This function expects to be called repeatedly in an outer retry loop until it succeeds.
 
     Returns a new pool. Does not mutate `slice_pool`."""
@@ -595,12 +595,12 @@ def _scale_slice_pool(slice_pool: list[SliceResource], tpu_type: str, num_slices
     del slice_pool  # Defensively prevent mutations to slice_pool
     if len(healthy_slices) >= num_slices:
         return healthy_slices
-    
+
     # if we don't have enough slices, create more
     logger.info(f"Pool slices: {[tpu_slice.slice_info.slice_name for tpu_slice in healthy_slices]}")
     logger.info(f"Pool has {len(healthy_slices)} slices, but we want {num_slices}. Creating more slices.")
-    actors = [SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote() for _ in range(num_slices - len(healthy_slices))]
-    
+    actors = [SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote() for _ in range(num_slices - len(healthy_slices))]  # type: ignore
+
     actors_and_slice_info_awaitables = [(actor, actor.get_slice_info.remote()) for actor in actors]
     started_slices: list[SliceResource] = []
     logger.info(f"Waiting for {len(actors)} new actors to start...")
@@ -695,7 +695,7 @@ def _prune_dead_slices(pool: list[SliceResource]) -> list[SliceResource]:
     for unhealthy_slice in unhealthy_slices:
         # This is a synchronous blocking call.
         _release_slice_resource(unhealthy_slice)
-    
+
     return healthy_slices
 
 
