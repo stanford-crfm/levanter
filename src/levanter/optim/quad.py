@@ -418,7 +418,6 @@ def scale_by_quad(
         del params
         count_inc = safe_int32_increment(state["count"])
         precond_lr_t = get_precond_lr(preconditioner_lr, count_inc)
-        b1_t = get_l_beta(count_inc)
 
         # unbox if haliax style partitioned
         scanned_layers_ = scanned_layers
@@ -491,10 +490,10 @@ def scale_by_quad(
         mu = None
         momentum_updates = updates
         if state["mu"] is not None:
-            mu = otu.tree_update_moment(updates, state["mu"], b1_t, 1)
+            mu = otu.tree_update_moment(updates, state["mu"], b1, 1)
             if have_params_sharding:
                 mu = _safe_sharding_constraint(mu, params_sharding_)
-            momentum_updates = otu.tree_bias_correction(mu, b1_t, count_inc)
+            momentum_updates = otu.tree_bias_correction(mu, b1, count_inc)
         # cast mu back to mu_dtype
         mu = otu.tree_cast(mu, mu_dtype)
         # cast momentum_updates to precond_dtype
@@ -1025,10 +1024,6 @@ def get_precond_lr(base_lr: float, step: jax.Array):
     return jnp.maximum(base_lr * jax.lax.rsqrt(1.0 + step / 10000.0), 0.1)
 
 
-def get_l_beta(step: jax.Array):
-    return 0.95
-
-
 def _norm_lower_bound(A: jax.Array):
     max_abs = jnp.max(jnp.abs(jnp.diag(A)))
     
@@ -1067,10 +1062,8 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
             ell = _norm_lower_bound(term1) + term2
             l_new = jnp.maximum(betaL * l + (1 - betaL) * ell, ell)
             lr_over_2l = (precond_lr / (2 * l_new)).astype(q.dtype)
-            # multiplicative update
-            scale1 = 1 + lr_over_2l * term2
-            p = scale1 * q - lr_over_2l * (term1 @ q)
-            p = scale1 * p - lr_over_2l * (p @ term1)
+            p = q - lr_over_2l * (term1 @ q - term2 * q)
+            p = p - lr_over_2l * (p @ term1 - p * term2)
             q_new = (p + p.T) / 2
             
         return q_new, l_new
@@ -1080,7 +1073,7 @@ def _update_precond(Q, L, G, exprs, precond_lr, qs_sharding, params_sharding):
     L_new = [ql[1] for ql in Q_L_new]
 
     # recalculate Pg with new Qs
-    # Pg = jnp.einsum(exprP, *Q_new, *Q_new, G)
+    Pg = jnp.einsum(exprP, *Q_new, *Q_new, G)
 
     # normalize to energy of 1
     Pg = Pg / (jnp.sqrt(jnp.mean(Pg * Pg)) + 1e-7)
