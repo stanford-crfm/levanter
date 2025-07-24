@@ -45,15 +45,26 @@ class TreeNode:
     example, prefixes used by in-flight requests).  A node with
     ``lock_ref > 0`` is *protected* and will not be evicted when
     :meth:`RadixCache.evict` is called.
+
+    ``is_partial`` indicates that the node represents an incomplete page
+    (``len(key) < page_size``).  Such nodes can later be extended when more
+    tokens become available.
     """
 
     counter = 0
 
-    def __init__(self, key: Optional[List[int]] = None, value: Optional[List[int]] = None):
+    def __init__(
+        self,
+        key: Optional[List[int]] = None,
+        value: Optional[List[int]] = None,
+        *,
+        is_partial: bool = False,
+    ):
         self.children: Dict[Tuple[int, ...], TreeNode] = {}
         self.parent: Optional[TreeNode] = None
         self.key: List[int] = key or []
         self.value: List[int] = value or []
+        self.is_partial = is_partial
         # number of active references that pin this node in memory
         # and protect it from eviction
         self.lock_ref: int = 0
@@ -77,12 +88,7 @@ class RadixCache:
             raise ValueError("page_size must be > 0")
         self.page_size = page_size
         self.disable = disable
-        if self.page_size == 1:
-            self._key_match_fn = self._key_match_page_size1
-            self._child_key_fn = lambda k: k[0]
-        else:
-            self._key_match_fn = lambda k0, k1: self._key_match_paged(k0, k1)
-            self._child_key_fn = lambda k: tuple(k[: self.page_size])
+        self._key_match_fn = self._key_match_seq
         self.reset()
 
     # ------------------------------------------------------------------
@@ -90,7 +96,7 @@ class RadixCache:
     # ------------------------------------------------------------------
     def reset(self) -> None:
         """Clear the cache in place."""
-        self.root_node = TreeNode([])
+        self.root_node = TreeNode([], is_partial=False)
         self.root_node.lock_ref = 1
         self.evictable_size_ = 0
         self.protected_size_ = 0
@@ -152,65 +158,114 @@ class RadixCache:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _match_prefix_page(self, node: TreeNode, key: List[int]) -> Tuple[List[int], TreeNode]:
+    def _match_prefix_helper(self, node: TreeNode, key: List[int]) -> Tuple[List[int], TreeNode]:
         node.last_access_time = time.monotonic()
-        child_key = self._child_key_fn(key)
         value: List[int] = []
-        while key and child_key in node.children:
-            child = node.children[child_key]
-            child.last_access_time = time.monotonic()
-            prefix_len = self._key_match_fn(child.key, key)
-            if prefix_len < len(child.key):
-                new_node = self._split_node(child, prefix_len)
-                value.extend(new_node.value)
-                node = new_node
+
+        while key:
+            best_child = None
+            best_prefix = 0
+            for child in node.children.values():
+                prefix_len = self._key_match_fn(child.key, key)
+                if prefix_len > best_prefix:
+                    best_prefix = prefix_len
+                    best_child = child
+                    if best_prefix == len(child.key):
+                        break
+
+            if not best_child or best_prefix == 0:
+                break
+
+            best_child.last_access_time = time.monotonic()
+            if best_prefix < len(best_child.key):
+                node = self._split_node(best_child, best_prefix)
+                value.extend(node.value)
                 break
             else:
-                value.extend(child.value)
-                node = child
-                key = key[prefix_len:]
-                if key:
-                    child_key = self._child_key_fn(key)
+                value.extend(best_child.value)
+                node = best_child
+                key = key[best_prefix:]
+
         return value, node
 
-    def _match_prefix_helper(self, node: TreeNode, key: List[int]) -> Tuple[List[int], TreeNode]:
-        return self._match_prefix_page(node, key)
-
     def _split_node(self, child: TreeNode, split_len: int) -> TreeNode:
-        new_node = TreeNode(child.key[:split_len], child.value[:split_len])
-        new_node.parent = child.parent
+        parent = child.parent
+        new_node = TreeNode(
+            child.key[:split_len],
+            child.value[:split_len],
+            is_partial=len(child.key[:split_len]) < self.page_size,
+        )
+        new_node.parent = parent
         new_node.lock_ref = child.lock_ref
         child.key = child.key[split_len:]
         child.value = child.value[split_len:]
+        child.is_partial = len(child.key) < self.page_size
         child.parent = new_node
-        new_node.children[self._child_key_fn(child.key)] = child
-        if new_node.parent:
-            new_node.parent.children[self._child_key_fn(new_node.key)] = new_node
+        new_node.children[tuple(child.key)] = child
+        if parent is not None:
+            for k, v in list(parent.children.items()):
+                if v is child:
+                    del parent.children[k]
+                    break
+            parent.children[tuple(new_node.key)] = new_node
         return new_node
 
     def _insert_helper(self, node: TreeNode, key: List[int], value: List[int]) -> int:
         node.last_access_time = time.monotonic()
         if not key:
             return 0
-        child_key = self._child_key_fn(key)
-        total_prefix_length = 0
-        while key and child_key in node.children:
-            node = node.children[child_key]
+
+        matched = 0
+        while key:
+            best_child = None
+            best_prefix = 0
+            for child in node.children.values():
+                prefix_len = self._key_match_fn(child.key, key)
+                if prefix_len > best_prefix:
+                    best_prefix = prefix_len
+                    best_child = child
+                    if best_prefix == len(child.key):
+                        break
+
+            if best_child is None or best_prefix == 0:
+                break
+
+            node = best_child
             node.last_access_time = time.monotonic()
-            prefix_len = self._key_match_fn(node.key, key)
-            total_prefix_length += prefix_len
-            key = key[prefix_len:]
-            value = value[prefix_len:]
-            if prefix_len < len(node.key):
-                node = self._split_node(node, prefix_len)
-            if key:
-                child_key = self._child_key_fn(key)
-        if key:
-            new_node = TreeNode(list(key), list(value))
+            matched += best_prefix
+            key = key[best_prefix:]
+            value = value[best_prefix:]
+
+            if best_prefix < len(node.key):
+                node = self._split_node(node, best_prefix)
+
+            if key and node.is_partial and len(node.key) < self.page_size:
+                extend_len = min(self.page_size - len(node.key), len(key))
+                old_key = tuple(node.key)
+                node.key.extend(key[:extend_len])
+                node.value.extend(value[:extend_len])
+                node.is_partial = len(node.key) < self.page_size
+                if node.parent:
+                    del node.parent.children[old_key]
+                    node.parent.children[tuple(node.key)] = node
+                matched += extend_len
+                key = key[extend_len:]
+                value = value[extend_len:]
+
+        while key:
+            chunk = key[: self.page_size]
+            chunk_val = value[: len(chunk)]
+            is_partial = len(chunk) < self.page_size
+            new_node = TreeNode(list(chunk), list(chunk_val), is_partial=is_partial)
             new_node.parent = node
-            node.children[child_key] = new_node
-            self.evictable_size_ += len(value)
-        return total_prefix_length
+            node.children[tuple(new_node.key)] = new_node
+            self.evictable_size_ += len(chunk_val)
+            node = new_node
+            matched += len(chunk_val)
+            key = key[len(chunk):]
+            value = value[len(chunk):]
+
+        return matched
 
     def _delete_leaf(self, node: TreeNode) -> None:
         parent = node.parent
@@ -234,23 +289,13 @@ class RadixCache:
         return leaves
 
     # ------------------------------------------------------------------
-    # Key matching helpers
+    # Key matching helper
     # ------------------------------------------------------------------
     @staticmethod
-    def _key_match_page_size1(k0: Sequence[int], k1: Sequence[int]) -> int:
+    def _key_match_seq(k0: Sequence[int], k1: Sequence[int]) -> int:
         i = 0
         for a, b in zip(k0, k1):
             if a != b:
                 break
             i += 1
-        return i
-
-    def _key_match_paged(self, k0: Sequence[int], k1: Sequence[int]) -> int:
-        min_len = min(len(k0), len(k1))
-        i = 0
-        while i < min_len:
-            step = min(self.page_size, min_len - i)
-            if list(k0[i : i + step]) != list(k1[i : i + step]):
-                break
-            i += step
         return i

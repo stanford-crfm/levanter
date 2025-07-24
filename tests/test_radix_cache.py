@@ -19,7 +19,7 @@ def test_insert_and_match():
     cache.insert([1, 2, 3], [10, 20, 30])
     res = cache.match_prefix([1, 2, 3, 4])
     assert res.indices == [10, 20, 30]
-    assert res.last_node.key == [1, 2, 3]
+    assert res.last_node.key == [3]
 
 
 def test_partial_match_and_split():
@@ -27,7 +27,7 @@ def test_partial_match_and_split():
     cache.insert([1, 2, 3], [10, 20, 30])
     res = cache.match_prefix([1, 2, 4, 5])
     assert res.indices == [10, 20]
-    assert res.last_node.key == [1, 2]
+    assert res.last_node.key == [2]
 
 
 def test_lru_eviction():
@@ -65,15 +65,15 @@ def test_pagesize_two_almost_common_prefix():
     cache = RadixCache(page_size=2)
     cache.insert([1, 2, 3, 4])
 
-    # first page differs so no prefix should match
+    # first page differs, so only the first token matches
     res = cache.match_prefix([1, 3, 5, 6])
-    assert res.indices == []
-    assert res.last_node is cache.root_node
+    assert res.indices == [1]
+    assert res.last_node.key == [1]
 
     cache.insert([1, 3, 5, 6])
     res = cache.match_prefix([1, 3, 5, 6, 7])
     assert res.indices == [1, 3, 5, 6]
-    assert res.last_node.key == [1, 3, 5, 6]
+    assert res.last_node.key == [5, 6]
 
 
 def test_pagesize_two_partial_page():
@@ -82,13 +82,13 @@ def test_pagesize_two_partial_page():
 
     res = cache.match_prefix([1, 3, 5])
     assert res.indices == [1, 3, 5]
-    assert res.last_node.key == [1, 3, 5]
+    assert res.last_node.key == [5]
 
     # extending should keep the entire prefix
     cache.insert([1, 3, 5, 7])
     res = cache.match_prefix([1, 3, 5, 7])
     assert res.indices == [1, 3, 5, 7]
-    assert res.last_node.key == [7]
+    assert res.last_node.key == [5, 7]
 
 
 def test_lock_ref_protection():
