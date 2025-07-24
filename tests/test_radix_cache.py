@@ -55,6 +55,11 @@ def test_pagesize_two_and_split():
     assert res.indices == [1, 2]
     assert res.last_node.key == [1, 2]
 
+    # the query is truncated to the page boundary so only the first page matches
+    res = cache.match_prefix([1, 2, 5])
+    assert res.indices == [1, 2]
+    assert res.last_node.key == [1, 2]
+
     cache.insert([1, 2, 5, 6])
     res = cache.match_prefix([1, 2, 5, 6, 7])
     assert res.indices == [1, 2, 5, 6]
@@ -81,8 +86,9 @@ def test_pagesize_two_partial_page():
     cache.insert([1, 3, 5])
 
     res = cache.match_prefix([1, 3, 5])
-    assert res.indices == [1, 3, 5]
-    assert res.last_node.key == [5]
+    # query length is truncated to 2 so only the first page is returned
+    assert res.indices == [1, 3]
+    assert res.last_node.key == [1, 3]
 
     # extending should keep the entire prefix
     cache.insert([1, 3, 5, 7])

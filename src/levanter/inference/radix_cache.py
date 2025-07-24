@@ -102,9 +102,22 @@ class RadixCache:
         self.protected_size_ = 0
 
     def match_prefix(self, key: Sequence[int]) -> MatchResult:
-        """Return the longest cached prefix of ``key`` and update LRU state."""
+        """Return the longest cached prefix of ``key`` and update LRU state.
+
+        This call may mutate the tree. If ``key`` partially matches a node
+        but ends before the node's stored value, that node is split so that the
+        returned ``last_node`` corresponds exactly to the matching prefix.
+
+        When ``page_size`` is greater than one the provided ``key`` is truncated
+        to the largest multiple of ``page_size`` before matching, mirroring the
+        behavior of the original SGLang implementation.
+        """
         if self.disable or not key:
             return MatchResult([], self.root_node)
+
+        if self.page_size != 1:
+            page_aligned_len = len(key) // self.page_size * self.page_size
+            key = key[:page_aligned_len]
 
         value, node = self._match_prefix_helper(self.root_node, list(key))
         return MatchResult(value, node)
