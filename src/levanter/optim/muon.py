@@ -137,7 +137,7 @@ def scale_with_muon(momentum=0.95, nesterov=True, steps=5, muon_eps=1e-8, use_ki
             updated_weight_array = zeropower_via_newtonschulz5(array, steps=steps, eps=muon_eps)
 
             if not use_kimi_scaling:
-                scale = jnp.sqrt(jnp.maximum(1, updated_weight_array.shape[0] / updated_weight_array.shape[1]))
+                scale = jnp.sqrt(jnp.maximum(1, updated_weight_array.shape[0] / updated_weight_array.shape[1])) # sqrt(Out/In)
             else:
                 scale = 0.2 * jnp.sqrt(jnp.maximum(updated_weight_array.shape[0], updated_weight_array.shape[1]))
             updated_weight_array *= scale
