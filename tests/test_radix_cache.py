@@ -76,6 +76,21 @@ def test_pagesize_two_almost_common_prefix():
     assert res.last_node.key == [1, 3, 5, 6]
 
 
+def test_pagesize_two_partial_page():
+    cache = RadixCache(page_size=2)
+    cache.insert([1, 3, 5])
+
+    res = cache.match_prefix([1, 3, 5])
+    assert res.indices == [1, 3, 5]
+    assert res.last_node.key == [1, 3, 5]
+
+    # extending should keep the entire prefix
+    cache.insert([1, 3, 5, 7])
+    res = cache.match_prefix([1, 3, 5, 7])
+    assert res.indices == [1, 3, 5, 7]
+    assert res.last_node.key == [7]
+
+
 def test_lock_ref_protection():
     cache = RadixCache(page_size=1)
     cache.insert([1, 2, 3])

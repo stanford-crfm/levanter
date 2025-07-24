@@ -100,8 +100,6 @@ class RadixCache:
         if self.disable or not key:
             return MatchResult([], self.root_node)
 
-        if self.page_size != 1:
-            key = key[: len(key) // self.page_size * self.page_size]
         value, node = self._match_prefix_helper(self.root_node, list(key))
         return MatchResult(value, node)
 
@@ -251,7 +249,8 @@ class RadixCache:
         min_len = min(len(k0), len(k1))
         i = 0
         while i < min_len:
-            if list(k0[i : i + self.page_size]) != list(k1[i : i + self.page_size]):
+            step = min(self.page_size, min_len - i)
+            if list(k0[i : i + step]) != list(k1[i : i + step]):
                 break
-            i += self.page_size
+            i += step
         return i
