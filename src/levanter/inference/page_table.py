@@ -193,7 +193,7 @@ class PageTable(eqx.Module):
                 hax.cumsum(new_token_counts, "seq", dtype=jnp.int32),
             ],
         )
-        pos_ids = self.pos_ids_from_seq_ids(tokens)
+        pos_ids = self._pos_ids_from_seq_ids(tokens)
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
@@ -218,7 +218,7 @@ class PageTable(eqx.Module):
             seq_lens=new_seq_lens,
         )
 
-    def pos_ids_from_seq_ids(self, seq_ids: ht.i32[NamedArray, "position"]) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
+    def _pos_ids_from_seq_ids(self, seq_ids: ht.i32[NamedArray, "position"]) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
         """
         Given sequence IDs, compute the position IDs for each sequence.
 
@@ -259,7 +259,6 @@ class PageBatchInfo(eqx.Module):
 
     def __post_init__(self):
         assert isinstance(self.num_seqs, jnp.ndarray), "num_seqs must be a JAX ndarray"
-
 
     def pages_and_slots(self):
         token_dests = self.new_token_dests
