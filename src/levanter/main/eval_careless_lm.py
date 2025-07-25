@@ -74,7 +74,7 @@ class EvalCarelessLmConfig:
     max_examples: Optional[int] = None  # cap for quick debug; None → all
 
     # Output -------------------------------------------------------------------
-    plot_path: str = "char_max_pz.png"
+    plot_path: str = "bar_plot_char_max_pz_70b.png"
     eval_batch_size: int = 32
 
 
@@ -156,15 +156,6 @@ def main(cfg: EvalCarelessLmConfig):
     total_chunks = len(chunks)
     print(f"Total sliding windows: {total_chunks}", flush=True)
 
-    def iter_examples():
-        for ch in chunks:
-            yield from sliding_lm_examples(
-                ch[
-                    "text"
-                ],  # incorrect: we need original text slice? actually sliding_lm_examples expects full text not single chunk.
-            )
-
-    # Instead, reuse chunks list directly
     def chunk_to_example(chunk):
         ids = chunk["input_ids"]
         if len(ids) < Pos.size:
@@ -222,13 +213,30 @@ def main(cfg: EvalCarelessLmConfig):
     for pz, (c0, c1) in zip(pz_list, char_ranges):
         char_max[c0 : c1 + 1] = np.maximum(char_max[c0 : c1 + 1], pz)
 
-    plt.figure(figsize=(12, 3))
-    plt.plot(char_max)
-    plt.title("Maximum suffix probability per character")
-    plt.xlabel("Character index")
-    plt.ylabel("max P(z)")
+    # ------------------------------------------------------------------
+    # Visualization: show a *single-row* heat-map so each character      
+    # column is a vertical bar whose colour encodes max-P(z).            
+    # Darker = closer to 1, lighter = closer to 0 (see Blues colormap).  
+    # ------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(14, 2))
+    im = ax.imshow(
+        char_max[np.newaxis, :],  # shape (1, text_len)
+        cmap="Blues",
+        aspect="auto",
+        vmin=0.0,
+        vmax=1.0,
+        interpolation="nearest",
+    )
+
+    ax.set_title("The Great Gatsby: Maximum per-character probability")
+    ax.set_xlabel("Book position (character)")
+    ax.set_yticks([])  # Hide y-axis (only one row)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.04)
+    cbar.set_label("Max. probability")
+
     plt.tight_layout()
-    plt.savefig(cfg.plot_path)
+    plt.savefig(cfg.plot_path, dpi=300)
     levanter.tracker.current_tracker().log_artifact(cfg.plot_path, name=cfg.plot_path, type="plot")
 
     npy_path = pathlib.Path(cfg.plot_path).with_suffix(".npy")
