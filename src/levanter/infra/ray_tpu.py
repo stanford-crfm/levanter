@@ -338,7 +338,7 @@ def run_on_pod(
 
 @ray.remote(num_cpus=0.01)
 def run_on_pod_ray(
-    remote_fn: RemoteFunction,
+    remote_fn: RemoteFunction | Callable,
     tpu_type: str,
     num_slices: int = 1,
     max_retries_preemption: int = 10000,
@@ -371,7 +371,6 @@ def run_on_pod_ray(
         remote_fn = ray.remote(max_calls=1)(remote_fn)
     elif remote_fn._default_options.get("max_calls") is None:
         raise ValueError("Remote function must have max_calls set to 1 for TPU workloads.")
-
     try:
         while num_failures <= max_retries_failure and num_preemptions <= max_retries_preemption:
             logger.info(f"Running on {num_slices} x TPU {tpu_type}. Attempt {attempt}")

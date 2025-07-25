@@ -12,11 +12,11 @@ from __future__ import annotations
 import argparse
 import time
 from dataclasses import dataclass
-from functools import partial
 from typing import Iterable
 
 import jax
 import jax.numpy as jnp
+import wandb
 from jax.experimental import multihost_utils
 from jax.experimental import transfer as jax_transfer
 import ray
@@ -37,8 +37,9 @@ class TransferStats:
 class AddressHolder:
     """Stores the weight server address for other actors."""
 
-    def __init__(self) -> None:
+    def __init__(self, **wandb_args) -> None:
         self.address: str | None = None
+        wandb.init(**wandb_args)
 
     def set(self, addr: str) -> None:
         self.address = addr
@@ -46,61 +47,109 @@ class AddressHolder:
     def get(self) -> str | None:
         return self.address
 
+    def log(self, metrics):
+        wandb.log(metrics)
 
-def _all_gather(weights: jax.Array) -> jax.Array:
-    @partial(jax.pmap, axis_name="d")
-    def gather(x):
-        return jax.lax.all_gather(x, "d", tiled=True)
 
-    return gather(weights)
+@jax.jit
+def deshard(arr):
+    """Deshard the array to a single device."""
+    # TODO: right now we insist it fit on a single device. ideally it would be up to X devices
+    # using a process mesh
+    return jax.lax.with_sharding_constraint(arr, jax.sharding.PartitionSpec())
+
 
 
 def large_slice_loop(size: int, rounds: int, holder: ActorHandle) -> None:
     """Run on the large slice; serves weights and simulates updates."""
 
     num_devices = jax.device_count()
-    per_device = size // num_devices
-    key = jax.random.key(0)
-    arr = jax.random.normal(key, (num_devices, per_device), dtype=jnp.float32)
-    weights = jax.device_put_sharded(list(arr), jax.devices())
+    mesh = jax.make_mesh((num_devices,), ("d",))
+    with jax.sharding.use_mesh(mesh):
+        @jax.jit
+        def make_arr(key):
+            """Create a random array of the given size."""
+            out = jax.random.normal(key, (size,), dtype=jnp.float32)
+            return jax.lax.with_sharding_constraint(out, jax.sharding.PartitionSpec("d",))
+        arr = make_arr(jax.random.PRNGKey(0))
 
-    server = None
-    if jax.process_index() == 0:
-        server = jax_transfer.start_transfer_server(jax.devices()[0].client)
-        ray.get(holder.set.remote(server.address()))
+        server = None
+        if jax.process_index() == 0:
+            server = jax_transfer.start_transfer_server(jax.devices()[0].client)
+            ray.get(holder.set.remote(server.address()))
 
-    for step in range(rounds):
-        multihost_utils.broadcast_one_to_all(
-            jnp.array(step, dtype=jnp.int32),
-            is_source=jax.process_index() == 0,
-        )
-        gathered = _all_gather(weights)
-        if jax.process_index() == 0 and server is not None:
-            server.await_pull(step, gathered)
+        for step in range(rounds):
+            multihost_utils.broadcast_one_to_all(
+                jnp.array(step, dtype=jnp.int32),
+                is_source=jax.process_index() == 0,
+            )
+            if jax.process_index() == 0 and server is not None:
+
+                time_in = time.time()
+                gathered = deshard(arr)
+                gathered = jax.block_until_ready(gathered)
+                gather_elapsed = time.time() - time_in
+
+                time_in = time.time()
+                server.await_pull(step, gathered)
+                pull_elapsed = time.time() - time_in
+
+                nbytes = gathered.nbytes
+                del gathered
+                metrics = {
+                    "host/gather_time": gather_elapsed,
+                    "hot/pull_time": pull_elapsed,
+                    "bytes_transferred": nbytes,
+                    "host/step": step,
+                }
+                ray.get(holder.log.remote(metrics))
 
 
-@ray.remote(max_calls=1)
-def small_slice_worker(server_address: str, uuid: int, shape: Iterable[int]) -> TransferStats:
+def small_slice_worker(server_holder: ActorHandle, uuid: int, shape: Iterable[int]) -> TransferStats:
     """Connect to the weight server, pull the parameters, and place them on this slice's TPUs."""
 
     # connect to the remote transfer server from the small slice
     client_server = jax_transfer.start_transfer_server(jax.devices()[0].client)
     connection = client_server.connect(server_address)
+    server_address = ray.get(server_holder.get.remote())
 
-    placeholder = jax.ShapeDtypeStruct(shape=tuple(shape), dtype=jnp.float32)
+    mesh = jax.make_mesh((jax.device_count(),), ("d",))
+    with jax.sharding.use_mesh(mesh):
+        # create a placeholder for the weights to be pulled into
+        # placeholder = jnp.zeros(shape, dtype=jnp.float32)
+        @jax.jit
+        def make_placeholder():
+            """Create a placeholder array with the given shape."""
+            out = jnp.zeros(shape, dtype=jnp.float32)
+            return jax.lax.with_sharding_constraint(out, jax.sharding.PartitionSpec("d",))
 
-    start = time.time()
-    result = connection.pull(uuid, placeholder)
+        placeholder = make_placeholder()
 
-    # shard the weights across the devices of the small slice so each device
-    # holds a distinct slice.
-    num_devices = jax.device_count()
-    shards = jnp.reshape(result, (num_devices, -1))
-    sharded = jax.device_put_sharded([shards[i] for i in range(num_devices)], jax.devices())
-    jax.block_until_ready(sharded)
+        start = time.time()
+        result = connection.pull(uuid, placeholder)
+        pull_complete = time.time()
 
-    elapsed = time.time() - start
-    return TransferStats(bytes_transferred=result.nbytes, latency_s=elapsed)
+        @jax.jit
+        def reshard(arr):
+            """Reshard the array to the current device."""
+            return jax.lax.with_sharding_constraint(arr, jax.sharding.PartitionSpec("d",))
+
+        result = reshard(result)
+        jax.block_until_ready(result)
+
+        elapsed = time.time() - start
+
+        # log the transfer stats
+        metrics = {
+            "client/pull_time": pull_complete - start,
+            "client/reshard_time": elapsed - (pull_complete - start),
+            "bytes_transferred": result.nbytes,
+            "host/uuid": uuid,
+        }
+
+        ray.get(server_holder.log.remote(metrics))
+
+        return TransferStats(bytes_transferred=result.nbytes, latency_s=elapsed)
 
 
 def run_benchmark(
@@ -109,7 +158,9 @@ def run_benchmark(
     holder: ActorHandle = AddressHolder.remote()  # type: ignore[attr-defined]
 
     large_future = ray_tpu.run_on_pod_ray.remote(
-        partial(large_slice_loop, size, rounds, holder),
+        # ray doesn't support partial
+        # partial(large_slice_loop, size, rounds, holder),
+        lambda : large_slice_loop(size, rounds, holder),
         large_type,
     )
 
@@ -124,7 +175,7 @@ def run_benchmark(
     for i in range(rounds):
         workers = [
             ray_tpu.run_on_pod_ray.remote(
-                partial(small_slice_worker, server_address, i, shape),
+                lambda : small_slice_worker(holder, i, shape),
                 small_type,
             )
             for _ in range(num_small)
@@ -140,7 +191,7 @@ def main() -> None:
     parser.add_argument("--large-type", default="v5p-128", help="Shape of the large slice")
     parser.add_argument("--small-type", default="v5p-8", help="Shape of the small slices")
     parser.add_argument("--num-small", type=int, default=1, help="Number of small slices")
-    parser.add_argument("--size", type=int, default=int(32e9), help="Number of fp32 weights")
+    parser.add_argument("--size", type=int, default=int(8e9), help="Number of fp32 weights")
     parser.add_argument("--rounds", type=int, default=1, help="Number of transfer rounds")
     args = parser.parse_args()
 
