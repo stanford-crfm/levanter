@@ -307,6 +307,15 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
         self._add_members_to_actor_pool(desired_num_actors)  # TODO: Clean this up
         # TODO: Add retry logic
 
+    def drain_actor_pool(self) -> None:
+        logger.info(f"{self.get_actor_pool_name()} actor pool members before draining: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+        for member in self._actor_pool:
+            logger.info(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} stopping.")
+            _stop_actor(member.actor)
+        self._actor_pool = []
+        logger.info(f"{self.get_actor_pool_name()} actor pool drained.")
+
+
 
 @ray.remote
 class SliceActor(ResourcePoolManager[TPUHostInfo]):
@@ -334,7 +343,7 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
         return f"slice {self._slice_info.slice_name}"
     
     def get_actor_name_from_actor_info(self, actor_info: TPUHostInfo) -> str:
-        return str(actor_info.node_id)
+        return str(actor_info.worker_index)
     
     def create_actor(self) -> ActorHandle:
         #TODO: Rename
@@ -376,8 +385,7 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
         return [ray.get(future_of_future) for future_of_future in futures_of_futures]
 
     def teardown(self):
-        for actor in self.get_all_actors_in_pool():  # TODO: Clean this up
-            _stop_actor(actor)
+        self.drain_actor_pool()
         self._slice_info = None
 
 
