@@ -12,6 +12,12 @@ prompt_tokens: 50
 # Slide the character cursor by this many chars between windows.
 cursor_inc_chars: 10
 
+# slice length
+slice_length: 2000
+
+# chunk size
+chunk_size: 100
+
 # Hugging Face tokenizer to load
 tokenizer_name: meta-llama/Llama-3.1-8B
 

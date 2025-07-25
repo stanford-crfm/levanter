@@ -42,7 +42,7 @@ from levanter.utils.jax_utils import use_cpu_device
 import math
 
 # Helpers -----------------------------------------------------------------
-from levanter.books.util import compute_max_extraction_rates, sliding_lm_examples
+from levanter.books.util import compute_max_extraction_rates
 
 # -----------------------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
@@ -63,6 +63,8 @@ class EvalCarelessLmConfig:
 
     # Data ---------------------------------------------------------------------
     txt_path: str | pathlib.Path = "src/levanter/data/books/gatsby.txt"
+    chunk_size: int = 100
+    slice_length: int = 2000
     prompt_tokens: int = 50
     cursor_inc_chars: int = 10  # stride in characters
 
@@ -148,8 +150,8 @@ def main(cfg: EvalCarelessLmConfig):
     chunks = chunk_text_to_sliding_window_token_chunks(
         raw_text,
         tokenizer,
-        chunk_size=100,
-        slice_length=2000,
+        chunk_size=cfg.chunk_size,
+        slice_length=cfg.slice_length,
         cursor_inc=cfg.cursor_inc_chars,
     )
 
@@ -161,8 +163,7 @@ def main(cfg: EvalCarelessLmConfig):
         if len(ids) < Pos.size:
             ids = ids + [pad_id] * (Pos.size - len(ids))
         tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
-        half = 50
-        ex = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=half)
+        ex = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=cfg.prompt_tokens, ignore_id=pad_id)
         return ex, (chunk["start_idx"], chunk["end_idx"])
 
     examples_iter = map(chunk_to_example, chunks)
