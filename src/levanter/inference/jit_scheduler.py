@@ -287,6 +287,26 @@ class JitScheduler(eqx.Module):
 
         return updated, out
 
+    def purge_queue_of_seq(self, seq_id) -> "JitScheduler":
+        """
+        Remove all tokens from the queue that belong to the given sequence ID.
+        Slides remaining tokens to the front of the queue.
+        """
+
+        is_seq_id = self.queued_seq_ids == seq_id
+        new_seq_ids = hax.where(is_seq_id, fill_value=INVALID, new_axis=self.queued_seq_ids.resolve_axis("position"))
+        new_tokens = hax.where(is_seq_id, fill_value=INVALID, new_axis=self.queued_tokens.resolve_axis("position"))
+
+        new_num_queued_tokens = self.num_queued_tokens - hax.sum(is_seq_id).scalar()
+
+        return dataclasses.replace(
+            self,
+            queued_tokens=new_tokens,
+            queued_seq_ids=new_seq_ids,
+            num_queued_tokens=new_num_queued_tokens,
+        )
+
+
     def extract_generated_tokens(
         self,
         sequence_ids: ht.i32[NamedArray, "seq"],  # type: ignore[name-defined]
@@ -294,7 +314,7 @@ class JitScheduler(eqx.Module):
     ) -> tuple["JitScheduler", ht.i32[NamedArray, "seq position"]]:
         """
         Extract *at most* `max_tokens` tokens for each requested sequence, pad with
-        –1, and remove exactly those tokens from `generated_tokens` / `generated_seq_ids`.
+        INVALID, and remove exactly those tokens from `generated_tokens` / `generated_seq_ids`.
         Shapes stay static, so the method is fully JIT-safe.
         """
         # ---------- shorthands ----------

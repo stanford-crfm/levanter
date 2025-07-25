@@ -145,3 +145,35 @@ def test_extract_nonexistent_sequence_leaves_buffer():
         sched2.generated_seq_ids["position", hax.ds(0,4)].array,
         sched.generated_seq_ids["position", hax.ds(0,4)].array
     )
+
+
+def test_purge_queue_of_seq():
+    sched = JitScheduler.init(max_queued_tokens=8, max_buffered_tokens=8)
+    # Enqueue tokens with seq_ids: [0, 1, 0, 2, 1, 2]
+    toks = hax.named(jnp.array([10, 20, 30, 40, 50, 60], dtype=jnp.int32), "position")
+    seqs = hax.named(jnp.array([0, 1, 0, 2, 1, 2], dtype=jnp.int32), "position")
+    sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 6)
+
+    # Purge seq_id 1
+    sched2 = eqx.filter_jit(sched.purge_queue_of_seq)(1)
+    # After purge, tokens with seq_id 1 (positions 1 and 4) should be INVALID
+    expected_tokens = jnp.array([10, 30, 40, 60, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    expected_seqids = jnp.array([0, 0, 2, 2, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    assert jnp.array_equal(sched2.queued_tokens.array, expected_tokens)
+    assert jnp.array_equal(sched2.queued_seq_ids.array, expected_seqids)
+    # num_queued_tokens should be 4 (6 - 2 purged)
+    assert sched2.num_queued_tokens == 4
+
+    # Purge seq_id 0
+    sched3 = eqx.filter_jit(sched2.purge_queue_of_seq)(0)
+    expected_tokens2 = jnp.array([40, 60, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    expected_seqids2 = jnp.array([2, 2, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    assert jnp.array_equal(sched3.queued_tokens.array, expected_tokens2)
+    assert jnp.array_equal(sched3.queued_seq_ids.array, expected_seqids2)
+    assert sched3.num_queued_tokens == 2
+
+    # Purge seq_id 2 (should clear all remaining tokens)
+    sched4 = eqx.filter_jit(sched3.purge_queue_of_seq)(2)
+    assert jnp.all(sched4.queued_tokens.array == INVALID)
+    assert jnp.all(sched4.queued_seq_ids.array == INVALID)
+    assert sched4.num_queued_tokens == 0
