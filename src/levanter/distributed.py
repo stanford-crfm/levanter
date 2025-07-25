@@ -370,7 +370,7 @@ class DistributedConfig:
             )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RayConfig:
     address: Optional[str] = None
     start_workers: bool = True

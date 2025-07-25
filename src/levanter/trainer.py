@@ -437,8 +437,14 @@ class Trainer:
         """
         Performs training until the number of steps is reached.
         """
+        info: Optional[StepInfo[S]] = None
         for info in self.training_steps(state, train_loader):
             pass
+
+        if info is None:
+            raise RuntimeError(
+                "No training steps were executed. The dataset may be empty or there are no steps left to run."
+            )
 
         # force hooks to run at the end
         self.run_hooks(info, force=True)
@@ -569,9 +575,10 @@ class Trainer:
                     hook_infos = self.hooks.run_jit_hooks(state, jit_info, force=False)
 
         if _no_hooks:
-            return loss, new_state, metrics, None
+            return hax.shard_with_axis_mapping( (loss, new_state, metrics, None), self.parameter_axis_mapping)
         else:
-            return loss, new_state, metrics, hook_infos
+            # return loss, new_state, metrics, hook_infos
+            return hax.shard_with_axis_mapping( (loss, new_state, metrics, hook_infos), self.parameter_axis_mapping)
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         Batch = _resolve_axis_in_tree((batch, batch_kwargs), self.config.batch_axis)

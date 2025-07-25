@@ -52,7 +52,7 @@ class ModelAveragingConfig(abc.ABC, draccus.ChoiceRegistry, Generic[M]):
 
 
 @ModelAveragingConfig.register_subclass("ema")
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class EmaModelAveragingConfig(ModelAveragingConfig[M]):
     beta: float = 0.999
 

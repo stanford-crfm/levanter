@@ -13,6 +13,8 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * **Playbooks.** Sometimes, there are repeatable tasks (e.g. porting models) for which we follow a standard set of steps.
   Please reference `.playbooks/` to see what playbooks are available, or see the list below. If you want to add a playbook
   write a markdown doc named e.g. `.playbooks/port-models.md` and add a pointer to it in the list below.
+* **Make a plan before giving up.** When a request seems too large to complete in one go, create a markdown file in `.agents/projects/` that outlines a step-by-step plan. Break the work into agent-sized checklist items.
+  If later asked to continue the task, read the file, complete an item, and mark it off. If you can't finish a step, split it into smaller tasks and update the checklist accordingly.
 
 ## Playbooks
 
@@ -45,7 +47,7 @@ repository. Follow these notes when implementing new features or fixing bugs.
 ## Testing
 
 * Tests are executed with `pytest`. The default workflow runs
-  `pytest tests -m "not entry and not slow and not ray"`.
+  `uv run pytest tests -m "not entry and not slow and not ray"`.
 * In general, never relax tolerances in floating point tests unless specifically discussed with the
   team. Use `assert_allclose` with appropriate tolerances for numerical comparisons. We typically use
   1e-4 for more complex modules, and 1e-5 for simpler ones.

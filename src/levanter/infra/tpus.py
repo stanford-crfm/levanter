@@ -146,6 +146,7 @@ def start_tpu_vm_queued_resources(tpu_name, *, tpu_type, capacity_type, version,
         f"--zone={zone}",
         "--quiet",
     ]
+
     if version is not None:
         command.append(f"--runtime-version={version}")
     if capacity_type in ["best-effort", "preemptible"]:
