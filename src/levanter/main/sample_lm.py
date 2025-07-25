@@ -62,12 +62,12 @@ class SampleLmConfig:
     tokenizer: str | None = None
 
     prompts: list[str] | str | tuple[str, ...] = (
-        "Four score and seven years ago, our",
-        "On the first day of Christmas, my true love gave to me",
+        # "Four score and seven years ago, our",
+        # "On the first day of Christmas, my true love gave to me",
         "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
     )
-    max_new_tokens: int = 32
-    temperature: float = 0.0
+    max_new_tokens: int = 192
+    temperature: float = 0.7
 
 
 def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
