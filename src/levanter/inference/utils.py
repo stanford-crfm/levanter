@@ -1,20 +1,22 @@
 import haliax as hax
+import haliax.haxtyping as ht
 from haliax import NamedArray
 
 
-def is_invalid(x):
-    return (x < 0) | (x == INVALID)
+INVALID = 2_000_000
+
+def is_invalid(x, invalid=INVALID):
+    return (x < 0) | (x == invalid)
 
 
-def is_valid(x):
+def is_valid(x, invalid=INVALID):
     """
     Returns a boolean array indicating whether each token in the input is valid.
     A token is considered valid if it is not negative and not equal to INVALID.
     """
-    return (x >= 0) & (x != INVALID)
+    return (x >= 0) & (x != invalid)
 
 
-INVALID = 2_000_000
 
 
 def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> NamedArray:
@@ -34,3 +36,22 @@ def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> Nam
     src_arange = hax.where(src_arange >= num_to_copy, src_arange.size, src_arange)
 
     return dest.at[{**selector, axis: dest_arange}].set(src[axis, src_arange], mode="drop")
+
+
+def is_stop_signal(tail_tokens: ht.i32[NamedArray, "position"], stop_sequences: ht.i32[NamedArray, "seq position"], invalid=INVALID) -> ht.bool_[NamedArray, ""]:  # type: ignore
+    """
+    Check if tail_tokens ends with any of the stop sequences.
+    Stop sequences are **left padded** to the tokens.
+    """
+    if stop_sequences.size == 0:
+        return hax.zeros((), dtype=bool)
+
+    # first, which stop sequences are even valid?
+    valid_stop_sequences = hax.any(is_valid(stop_sequences, invalid), axis="position")
+
+    # next, count up the number of valid tokens in each stop sequence
+    total_stop_tokens = hax.sum(is_valid(stop_sequences, invalid), axis="position")
+
+    count_match = hax.sum(tail_tokens == stop_sequences, axis="position") == total_stop_tokens
+
+    return hax.any(valid_stop_sequences & count_match)
