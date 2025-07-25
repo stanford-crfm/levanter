@@ -32,7 +32,7 @@ UpdateProbSchedule = Union[float, Callable[[int], float]]
 
 
 @OptimizerConfig.register_subclass("kron")
-@dataclass
+@dataclass(frozen=True)
 class KronConfig(OptimizerConfig, Generic[PartitionSpecTree]):
     """Configuration for PSGD Kron optimizer.
 

@@ -37,14 +37,14 @@ class LrSchedule(draccus.ChoiceRegistry, abc.ABC):
 
 
 @LrSchedule.register_subclass("constant")
-@dataclass
+@dataclass(frozen=True)
 class ConstantLrSchedule(LrSchedule):
     def build(self, ctx: LrScheduleContext):
         return optax.constant_schedule(ctx.learning_rate)
 
 
 @LrSchedule.register_subclass("cosine")
-@dataclass
+@dataclass(frozen=True)
 class CosineLrSchedule(LrSchedule):
     exponent: float = 1.0
 
@@ -53,14 +53,14 @@ class CosineLrSchedule(LrSchedule):
 
 
 @LrSchedule.register_subclass("linear")
-@dataclass
+@dataclass(frozen=True)
 class LinearLrSchedule(LrSchedule):
     def build(self, ctx: LrScheduleContext):
         return optax.linear_schedule(ctx.learning_rate, ctx.min_lr, ctx.decay_steps)
 
 
 @LrSchedule.register_subclass("inv_sqrt")
-@dataclass
+@dataclass(frozen=True)
 class InvSqrtLrSchedule(LrSchedule):
     timescale: float = 10000
 
@@ -69,14 +69,14 @@ class InvSqrtLrSchedule(LrSchedule):
 
 
 @LrSchedule.register_subclass("inv")
-@dataclass
+@dataclass(frozen=True)
 class InvLrSchedule(LrSchedule):
     def build(self, ctx: LrScheduleContext):
         return _inv_decay_schedule(ctx.learning_rate, ctx.min_lr, ctx.decay_steps)
 
 
 @LrSchedule.register_subclass("power")
-@dataclass
+@dataclass(frozen=True)
 class PowerLrSchedule(LrSchedule):
     # Power Scheduler: A Batch Size and Token Number Agnostic Learning Rate Scheduler (Shen et al., 2024)
     # https://arxiv.org/abs/2408.13359
@@ -104,7 +104,7 @@ class PowerLrSchedule(LrSchedule):
         return schedule
 
 
-@dataclass
+@dataclass(frozen=True)
 class OptimizerConfig(draccus.ChoiceRegistry, abc.ABC):
     learning_rate: float = 6e-4
     weight_decay: float = 0.1
@@ -390,14 +390,14 @@ def _convert_frac_or_steps(frac_or_steps: float | int, num_train_steps: int):
     return int(frac_or_steps)
 
 
-@dataclass
+@dataclass(frozen=True)
 class HessianOptConfig(OptimizerConfig, abc.ABC):
     update_interval: int = 10
     """How often to update the hessian approximation."""
 
 
 @OptimizerConfig.register_subclass("adam")
-@dataclass
+@dataclass(frozen=True)
 class AdamConfig(OptimizerConfig):
     beta1: float = 0.9
     # cf https://docs.mosaicml.com/projects/composer/en/latest/api_reference/generated/composer.optim.DecoupledAdamW.html
@@ -492,7 +492,7 @@ class AdamConfig(OptimizerConfig):
 
 
 @OptimizerConfig.register_subclass("lion")
-@dataclass
+@dataclass(frozen=True)
 class LionConfig(OptimizerConfig):
     """
     Lion optimizer configuration
