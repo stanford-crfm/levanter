@@ -29,12 +29,8 @@ from ray.exceptions import (
     WorkerCrashedError,
 )
 from ray.remote_function import RemoteFunction
-from ray.util import state as ray_state
 from ray.util.placement_group import PlacementGroup
-from ray.util.scheduling_strategies import (
-    PlacementGroupSchedulingStrategy,
-    NodeAffinitySchedulingStrategy,
-)
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from levanter.infra.docker import make_docker_run_command
 from levanter.utils.ray_utils import ser_exc_info
