@@ -48,3 +48,5 @@ initialize_from_hf: "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"
 
 # We keep our custom model block above, so set this to False.
 use_hf_model_config: False
+# uncomment to run on a subset of the data / debug
+# max_examples: 1000
