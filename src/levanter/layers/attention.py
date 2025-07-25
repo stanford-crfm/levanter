@@ -12,6 +12,9 @@ import equinox as eqx
 import jax
 import jax.random as jrandom
 from jax import numpy as jnp
+
+from ..inference.utils import is_valid
+
 try:
     from jax.experimental.pallas.ops.tpu.ragged_paged_attention import (
         ragged_paged_attention as tpu_ragged_paged_attention,
@@ -35,7 +38,7 @@ from haliax.nn.normalization import LayerNormBase
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
 
-from .page_table import PageBatchInfo, PageTable
+from ..inference.page_table import PageBatchInfo, PageTable
 
 from .normalization import LayerNormConfigBase
 from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
@@ -757,10 +760,9 @@ class AttentionMask(eqx.Module):
     def __and__(self, other) -> "AttentionMask":
         # Merge causal offsets – if both masks are causal we require they agree
         if self.causal_offset is not None and other.causal_offset is not None:
-            eqx.error_if(
-                self, self.causal_offset != other.causal_offset, "Mismatched causal offsets cannot be combined with &"
+            causal_offset = eqx.error_if(
+                self.causal_offset, self.causal_offset != other.causal_offset, "Mismatched causal offsets cannot be combined with &"
             )
-            causal_offset = self.causal_offset
         else:
             causal_offset = self.causal_offset if self.causal_offset is not None else other.causal_offset
         explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
@@ -1382,7 +1384,7 @@ class Attention(eqx.Module):
         q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
 
         # Determine how many new, non-padded tokens we are adding for each batch element
-        new_tokens_per_batch = hax.sum(pos_ids >= 0, axis="position", dtype=jnp.int32)
+        new_tokens_per_batch = hax.sum(is_valid(pos_ids), axis="position", dtype=jnp.int32)
 
         kv_cache = kv_cache.extend(k, v, lengths=new_tokens_per_batch)
 
@@ -1391,7 +1393,7 @@ class Attention(eqx.Module):
 
         # TODO: for now we only support causal masks in this mode
         mask = AttentionMask.causal(offset=pos_ids["position", 0])
-        q_segment_ids = pos_ids >= 0
+        q_segment_ids = is_valid(pos_ids)
         # TODO: really should just allow auto-broadcasting
         kv_segment_ids = (
             hax.arange(kv_cache.keys.resolve_axis("position")).broadcast_axis(kv_cache.lengths.axes) < kv_cache.lengths
@@ -1713,18 +1715,25 @@ class KvPageCache(eqx.Module):
     ) -> "KvPageCache":
         """Append keys and values to the paged cache using *batch_info* to locate pages."""
 
-        num_pages = self.kv_pages.array.shape[0]
         page_size = self.kv_pages.array.shape[1]
 
-        token_dests = batch_info.new_token_dests
+        assert page_size == batch_info.page_size, (
+            f"Page size mismatch: {page_size} != {batch_info.page_size}. "
+            "Ensure that the page size in batch_info matches the kv_pages."
+        )
 
-        t_pages = hax.where(token_dests >= 0, token_dests // page_size, num_pages)
-        t_slots = hax.where(token_dests >= 0, token_dests % page_size, page_size)
+        t_pages, t_slots = batch_info.pages_and_slots()
+
+        # jax.debug.print("Updating kv_pages at pages {t_pages} and slots {t_slots}",
+        #                 t_pages=t_pages, t_slots=t_slots)
 
         new_k = new_k.astype(self.kv_pages.dtype)
         new_v = new_v.astype(self.kv_pages.dtype)
-        kv_pages = self.kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 0::2].set(new_k)
-        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 1::2].set(new_v)
+        kv_pages = eqx.error_if(self.kv_pages, hax.any(hax.isnan(self.kv_pages)).scalar(), "NaN in kv_pages pre")
+        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 0::2].set(new_k, mode="drop")
+        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 1::2].set(new_v, mode="drop")
+
+        kv_pages = eqx.error_if(kv_pages, hax.any(hax.isnan(kv_pages)).scalar(), "NaN in kv_pages")
 
         return dataclasses.replace(self, kv_pages=kv_pages)
 
@@ -1803,13 +1812,6 @@ def _do_tpu_ragged_paged_attention(
         this_num_seqs = num_seqs.reshape((1,))
     else:
         this_num_seqs = num_seqs
-
-    # print(f"""Shardings:
-    # q_flat: {q_flat.axes} {hax.partitioning.pspec_for_axis(q_flat.axes)}
-    # kv_pages: {kv_pages.axes} {haliax.partitioning.pspec_for_axis(kv_pages.axes)}
-    # kv_lens: {kv_lens.axes} {haliax.partitioning.pspec_for_axis(kv_lens.axes)}
-    # page_indices: {page_indices.axes} {haliax.partitioning.pspec_for_axis(page_indices.axes)}
-    # cu_q_lens: {cu_q_lens.axes} {haliax.partitioning.pspec_for_axis(cu_q_lens.axes)}""")
 
     o = shard_map(
         functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale, soft_cap=soft_cap),

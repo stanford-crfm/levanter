@@ -24,13 +24,14 @@ from haliax.jax_utils import is_jax_array_like
 from levanter.callbacks import start_profiler, stop_profiler_and_maybe_wait
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
-from levanter.layers.page_table import PageTable
+from levanter.inference.page_table import PageTable
 from levanter.layers.sampler import Sampler
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.inference.jit_scheduler import JitScheduler, PackedSequence
+from levanter.inference.utils import INVALID, is_invalid
 from levanter.layers.attention import KvPageCache
 from jaxtyping import PRNGKeyArray
 
@@ -62,7 +63,8 @@ class SampleLmConfig:
 
     prompts: list[str] | str | tuple[str, ...] = (
         "Four score and seven years ago, our",
-        "Now is the time for"
+        "On the first day of Christmas, my true love gave to me",
+        "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
     )
     max_new_tokens: int = 32
     temperature: float = 0.0
@@ -130,19 +132,29 @@ def run_generation_loop(
 
         page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
 
+        boundaries = packed_seq.boundary_indices(page_table.max_seqs)
+
+        # jax.debug.print("Next tokens: {toks}, seq_ids: {seq_ids}, boundaries: {boundaries}",
+        #                 toks=packed_seq.tokens, seq_ids=packed_seq.seq_ids, boundaries=boundaries)
         # Decode logits and sample new tokens
+        # jax.debug.print("cache kvs: {cache_kvs}", cache_kvs=hax.nn.logsumexp(gen_state.cache.kv_pages, axis=("kv_head", "head_size")))
         logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
         sample_key, key = jrandom.split(gen_state.prng_key)
-        boundaries = packed_seq.boundary_indices(page_table.max_seqs)
         logits = logits["position", boundaries]
+        # jax.debug.print("Logits: {logits}, boundaries: {boundaries}",logits=logits, boundaries=boundaries)
+        cache = eqx.error_if(cache, hax.any(hax.isnan(cache.kv_pages)).scalar(), "New Cache contains NaNs")
+        logits = eqx.error_if(logits, hax.any(hax.isnan(logits) & ~is_invalid(boundaries)).scalar(), "Logits contain NaNs")
         new_tokens, _ = sampler(logits, temps, key=sample_key)
 
-        num_new_tokens = hax.sum(boundaries != -1).scalar().astype(jnp.int32)
+        num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
+        new_seq_ids = packed_seq.seq_ids["position", boundaries]
+        # jax.debug.print("Sampled new tokens: {new_tokens}, num_new_tokens: {num_new_tokens}, seq_ids: {new_seq_ids}",
+        #                 new_tokens=new_tokens, num_new_tokens=num_new_tokens, new_seq_ids=new_seq_ids)
 
         # Update scheduler with the freshly sampled tokens
         sched = sched.update_after_sampling(
             new_tokens=new_tokens,
-            new_token_seq_ids=packed_seq.seq_ids["position", boundaries],
+            new_token_seq_ids=new_seq_ids,
             num_new_tokens=num_new_tokens,
         )
 
@@ -204,8 +216,15 @@ def main(config: SampleLmConfig):
         total_prompt_tokens = sum(len(tokens) for tokens in prompt_ids)
 
         MAX_NEW_TOKENS = 32
-        table = PageTable.init(64, len(prompt_ids), 16, 4)
+        table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
+        sched = JitScheduler.init(256, 128)
+        gen_state = GenState(
+            sched=sched,
+            cache=cache,
+            page_table=table,
+            prng_key=key
+        )
 
         # -------------------------------- Scheduler-based generation --------------------------------
         for R in range(10):
@@ -215,22 +234,29 @@ def main(config: SampleLmConfig):
                 stop_profiler_and_maybe_wait(create_perfetto_link=False)
                 levanter.current_tracker().log_artifact("/tmp/gen-profile", type="jax_profile")
 
-            # Initialize GenState with all components
-            table = PageTable.init(64, len(prompt_ids), 16, 4)
-            gen_state = GenState(
-                sched=JitScheduler.init(64, 32),
-                # in theory, we can just reuse the cache and not recreate it every time
-                cache=cache,
-                page_table=table,
-                prng_key=jrandom.PRNGKey(0)
-            )
+            for i, toks in enumerate(prompt_ids):
+                print(f"Prompt {i}: {toks}")
 
             time_in = time.time()
             outputs, gen_state, total_generated = _one_round(config, gen_state, model, prompt_ids, sampler, temps,
                                                   tokenizer, total_prompt_tokens, MAX_NEW_TOKENS)
-            cache = gen_state.cache  # keep the cache for the next round
             print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
                   f"generated {total_generated} tokens in {len(outputs)} sequences.")
+
+            # clear page table
+            page_table = gen_state.page_table
+            for seq_id in range(len(prompt_ids)):
+                page_table = page_table.free_pages(seq_id)
+
+            # Initialize GenState with all components
+            gen_state = dataclasses.replace(
+                gen_state,
+                # in theory, we can just reuse the cache and not recreate it every time
+                page_table=page_table,
+                sched=sched.cleared(),
+                prng_key=jrandom.PRNGKey(0)
+            )
+            del page_table
 
 
 def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, total_prompt_tokens, MAX_NEW_TOKENS):
@@ -286,6 +312,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         )
 
         extract_outputs(packed_out, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+
     gen_state = jax.block_until_ready(gen_state)
     time_mid = time.time()
     print(f"Prefill took {time_mid - time_in:.2f} seconds, ")
@@ -299,7 +326,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             temps,
             # TODO: tune/configure
             len(prompt_ids),
-            32,
+            64,
         )
         gen_state = jax.block_until_ready(gen_state)
         print(f"Generation loop iter took {time.time() - time_gen_in:.3f} seconds, ")
@@ -317,12 +344,13 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
     for seq_id, seq_outputs in enumerate(outputs):
         if finished[seq_id]:
             # remove padding tokens
-            seq_outputs = [tok for tok in seq_outputs if tok != tokenizer.pad_token_id and tok >= 0]
+            seq_outputs = [tok for tok in seq_outputs if tok != tokenizer.pad_token_id and tok != INVALID]
             outputs[seq_id] = seq_outputs
         else:
             print(f"Sequence {seq_id} did not finish, skipping decoding.")
 
         text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
+        print(f"Tokens for sequence {seq_id}: {seq_outputs}")
         print(f"Generated text for {seq_id}: {text}")
     return outputs, gen_state, total_generated
 

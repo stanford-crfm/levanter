@@ -6,24 +6,7 @@ from haliax import NamedArray, haxtyping as ht
 from jax import numpy as jnp
 import jax
 
-
-def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> NamedArray:
-    """
-    jit-safe masked memcpy-like operation.
-    Copy into dest[selector, axis, start:start+num_to_copy] the values from src[axis, :num_to_copy].
-
-    Probably faster to not use an arange (which lowers to a scatter) and use blocks? Probably not a bottleneck
-
-    num_to_copy may be dynamic
-    """
-
-    src_arange = hax.arange(src.resolve_axis(axis))
-    dest_axis_size = dest.axis_size(axis)
-    # mask out the tail
-    dest_arange = hax.where(src_arange >= num_to_copy, dest_axis_size, src_arange + start)
-    src_arange = hax.where(src_arange >= num_to_copy, src_arange.size, src_arange)
-
-    return dest.at[{**selector, axis: dest_arange}].set(src[axis, src_arange], mode="drop")
+from levanter.inference.utils import INVALID, masked_set
 
 
 class PackedSequence(eqx.Module):
@@ -51,7 +34,7 @@ class PackedSequence(eqx.Module):
         """
         # Get the positions where the boundary is True
         axis = self.is_boundary.resolve_axis("position").resize(max_boundaries)
-        boundary_positions = hax.where(self.is_boundary, fill_value=-1, new_axis=axis)[0]
+        boundary_positions = hax.where(self.is_boundary, fill_value=INVALID, new_axis=axis)[0]
         return boundary_positions
 
 
@@ -143,11 +126,11 @@ class JitScheduler(eqx.Module):
     def init(max_queued_tokens: int, max_buffered_tokens: int) -> "JitScheduler":
         """Create a ``JitScheduler`` with empty buffers."""
         return JitScheduler(
-            generated_tokens=hax.full({"position": max_buffered_tokens}, -1, dtype=jnp.int32),
-            generated_seq_ids=hax.full({"position": max_buffered_tokens}, -1, dtype=jnp.int32),
+            generated_tokens=hax.full({"position": max_buffered_tokens}, INVALID, dtype=jnp.int32),
+            generated_seq_ids=hax.full({"position": max_buffered_tokens}, INVALID, dtype=jnp.int32),
             num_generated_tokens=jnp.array(0, dtype=jnp.int32),
-            queued_tokens=hax.full({"position": max_queued_tokens}, -1, dtype=jnp.int32),
-            queued_seq_ids=hax.full({"position": max_queued_tokens}, -1, dtype=jnp.int32),
+            queued_tokens=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
+            queued_seq_ids=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             num_queued_tokens=jnp.array(0, dtype=jnp.int32),
         )
 
@@ -242,8 +225,8 @@ class JitScheduler(eqx.Module):
         rolled_seq_ids = hax.roll(self.queued_seq_ids, -num, "position")
         idx = hax.arange(pos_axis)
         mask = idx >= (pos_axis.size - num)
-        filler_tokens = hax.where(mask, hax.full_like(idx, -1), rolled_tokens)
-        filler_seq_ids = hax.where(mask, hax.full_like(idx, -1), rolled_seq_ids)
+        filler_tokens = hax.where(mask, hax.full_like(idx, INVALID), rolled_tokens)
+        filler_seq_ids = hax.where(mask, hax.full_like(idx, INVALID), rolled_seq_ids)
 
         new_q_tokens = filler_tokens
         new_q_seq_ids = filler_seq_ids
@@ -255,17 +238,23 @@ class JitScheduler(eqx.Module):
             num_queued_tokens=self.num_queued_tokens - num
         )
 
-        # boundary if seq_id changes and not -1
-        is_boundary: hax.NamedArray = (seq_ids != hax.roll(seq_ids, -1, "position")) & (seq_ids != -1)
+        # boundary if seq_id changes and not INVALID
+        is_boundary: hax.NamedArray = (seq_ids != hax.roll(seq_ids, -1, "position")) & (seq_ids != INVALID)
 
         last_idx = num - 1
         next_after_last = rolled_seq_ids["position", 0]
         boundary_last = (
                 (seq_ids["position", last_idx] != next_after_last)
-                & (seq_ids["position", last_idx] != -1)
+                & (seq_ids["position", last_idx] != INVALID)
         )
-
         is_boundary = is_boundary.at["position", last_idx].set(boundary_last)
+
+        # now ensure seqids are sorted
+
+        seqids_sort_order = hax.argsort(seq_ids, axis="position")
+        tokens = tokens["position", seqids_sort_order]
+        seq_ids = seq_ids["position", seqids_sort_order]
+        is_boundary = is_boundary["position", seqids_sort_order]
 
         sequence = PackedSequence(
             tokens=tokens,
@@ -291,8 +280,8 @@ class JitScheduler(eqx.Module):
 
         updated = dataclasses.replace(
             self,
-            generated_tokens=hax.full_like(self.generated_tokens, -1),
-            generated_seq_ids=hax.full_like(self.generated_seq_ids, -1),
+            generated_tokens=hax.full_like(self.generated_tokens, INVALID),
+            generated_seq_ids=hax.full_like(self.generated_seq_ids, INVALID),
             num_generated_tokens=jnp.zeros((), dtype=jnp.int32),
         )
 
@@ -332,7 +321,7 @@ class JitScheduler(eqx.Module):
             idx = jnp.argsort(key)[:max_tokens]  # indices of taken tokens
             vals = tok_buf[idx]
             good = mask_row[idx]
-            return jnp.where(good, vals, -1)
+            return jnp.where(good, vals, INVALID)
 
         gathered = jax.vmap(gather_row)(take_mask_per_seq)  # (S, max_tokens)
         out_named = hax.named(gathered, axis=("seq", "position"))
@@ -345,8 +334,8 @@ class JitScheduler(eqx.Module):
 
         new_num = keep_mask.sum()  # how many kept tokens
         tail_mask = pos_idx >= new_num
-        new_toks = jnp.where(tail_mask, -1, new_toks)
-        new_ids = jnp.where(tail_mask, -1, new_ids)
+        new_toks = jnp.where(tail_mask, INVALID, new_toks)
+        new_ids = jnp.where(tail_mask, INVALID, new_ids)
 
         updated = dataclasses.replace(
             self,
@@ -356,3 +345,27 @@ class JitScheduler(eqx.Module):
         )
 
         return updated, out_named
+
+    def cleared(self) -> "JitScheduler":
+        """
+        Returns a new JitScheduler with all buffers cleared.
+        This is useful for resetting the scheduler state.
+        """
+        return JitScheduler.init(
+            max_queued_tokens=self.queued_tokens.axis_size("position"),
+            max_buffered_tokens=self.generated_tokens.axis_size("position"),
+        )
+
+
+    def debug_print(self, prefix: str = ""):
+
+        def callback(self):
+            print(f"{prefix}JitScheduler State:")
+            print(f"{prefix}Generated Tokens: {self.generated_tokens}")
+            print(f"{prefix}Generated Seq IDs: {self.generated_seq_ids}")
+            print(f"{prefix}Num Generated Tokens: {self.num_generated_tokens}")
+            print(f"{prefix}Queued Tokens: {self.queued_tokens}")
+            print(f"{prefix}Queued Seq IDs: {self.queued_seq_ids}")
+            print(f"{prefix}Num Queued Tokens: {self.num_queued_tokens}")
+
+        jax.experimental.io_callback(callback,  None, ordered=True, self=self)

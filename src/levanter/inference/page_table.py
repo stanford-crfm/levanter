@@ -9,7 +9,7 @@ from haliax import NamedArray
 
 __all__ = ["PageTable", "PageBatchInfo"]
 
-from haliax.jax_utils import named_call
+from levanter.inference.utils import INVALID, is_invalid, is_valid
 
 
 def _relative_positions(seg_ids: jnp.ndarray):
@@ -68,9 +68,9 @@ class PageTable(eqx.Module):
     # ------------------------------------------------------------------
     @staticmethod
     def init(max_pages: int, max_seqs: int, page_size: int, max_pages_per_seq: int) -> "PageTable":
-        page_indices = hax.full({"seq": max_seqs, "page": max_pages_per_seq}, -1, dtype=jnp.int32)
-        page_owners = hax.full({"page": max_pages}, -1, dtype=jnp.int32)
-        seq_lens = hax.full({"seq": max_seqs}, -1, dtype=jnp.int32)
+        page_indices = hax.full({"seq": max_seqs, "page": max_pages_per_seq}, INVALID, dtype=jnp.int32)
+        page_owners = hax.full({"page": max_pages}, INVALID, dtype=jnp.int32)
+        seq_lens = hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32)
         return PageTable(page_indices, page_owners, seq_lens, page_size)
 
     # ------------------------------------------------------------------
@@ -78,9 +78,9 @@ class PageTable(eqx.Module):
     # ------------------------------------------------------------------
     @eqx.filter_jit(donate="all")
     def assign_seq_id_to_seq(self) -> tuple["PageTable", int]:
-        seq_id = hax.argmin(self.seq_lens, "seq").scalar()
-        # Error handling: if there are no sequences available, return -1
-        seq_id = hax.where(self.seq_lens["seq", seq_id] < 0, seq_id, -1)
+        seq_id = hax.argmax(self.seq_lens, "seq").scalar()
+        # Error handling: if there are no sequences available, return INVALID
+        seq_id = hax.where(is_invalid(self.seq_lens["seq", seq_id]), seq_id, INVALID)
         new_seq_lens = hax.where(
             seq_id >= 0,
             self.seq_lens.at["seq", seq_id].set(0),
@@ -88,8 +88,7 @@ class PageTable(eqx.Module):
         return dataclasses.replace(self, seq_lens=new_seq_lens), seq_id
 
     @eqx.filter_jit
-    @named_call
-    @jax.profiler.annotate_function
+    # @named_call
     def allocate_for_seq(
         self,
         token_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
@@ -97,14 +96,14 @@ class PageTable(eqx.Module):
         """Allocate pages for new sequences and update ``seq_lens``."""
 
         token_seq_ids = hax.where(token_seq_ids < 0, self.max_seqs, token_seq_ids)
-        updated_seqs, new_counts = hax.unique_counts(token_seq_ids, self.max_Seq, fill_value=self.max_seqs)
+        updated_seqs, new_counts = hax.unique_counts(token_seq_ids, self.max_Seq, fill_value=INVALID)
 
         new_counts = hax.where(updated_seqs >= self.max_seqs, 0, new_counts)
 
-        current_lens = hax.where(self.seq_lens < 0, 0, self.seq_lens)
+        current_lens = hax.where(is_invalid(self.seq_lens), 0, self.seq_lens)
         new_lens = current_lens.at["seq", updated_seqs].add(new_counts, mode="drop")
-        # anything that was -1 should still be -1
-        new_lens = hax.where(self.seq_lens >= 0, new_lens, -1)
+        # anything that was INVALID should remain INVALID
+        new_lens = hax.where(~is_invalid(self.seq_lens), new_lens, INVALID)
 
         new_num_pages_needed = (new_lens + self.page_size - 1) // self.page_size
         old_num_pages_needed = (self.seq_lens + self.page_size - 1) // self.page_size
@@ -116,7 +115,7 @@ class PageTable(eqx.Module):
 
             def body(page_idx, state):
                 page_indices, page_owners = state
-                free_page_idx = hax.argmin(page_owners, "page")
+                free_page_idx = hax.argmax(page_owners, "page")
                 page_owners = page_owners.at["page", free_page_idx].set(seq_id)
                 page_indices = page_indices.at["seq", seq_id, "page", page_idx].set(free_page_idx)
                 return page_indices, page_owners
@@ -133,7 +132,8 @@ class PageTable(eqx.Module):
             def do_alloc(carry):
                 return _alloc_pages_for_seq(seq_id, carry)
 
-            cond = jnp.logical_and(seq_id >= 0, seq_id < self.max_seqs)
+            # cond = jnp.logical_and(seq_id >= 0, seq_id < self.max_seqs)
+            cond = is_valid(seq_id)
             page_indices, page_owners = jax.lax.cond(cond, do_alloc, lambda c: c, (page_indices, page_owners))
             return page_indices, page_owners
 
@@ -153,19 +153,19 @@ class PageTable(eqx.Module):
         return new_table, batch_info
 
     def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts, tokens):
-        mask = hax.logical_and(updated_seqs >= 0, updated_seqs < self.max_seqs)
+        mask = is_valid(updated_seqs)
         safe_updated = hax.where(mask, updated_seqs, 0)
 
         gathered_page_indices = new_table.page_indices["seq", safe_updated]
-        page_indices = hax.where(mask, gathered_page_indices, -1)
+        page_indices = hax.where(mask, gathered_page_indices, INVALID)
 
         seq_lens = new_table.seq_lens["seq", safe_updated]
-        seq_lens = hax.where(mask, seq_lens, -1)
+        seq_lens = hax.where(mask, seq_lens, INVALID)
 
         num_seqs = hax.sum(mask).scalar()
 
-        token_dests = hax.full(tokens.shape, -1, dtype=jnp.int32)
-        seq_cursors = jnp.where(old_seq_lens.array < 0, 0, old_seq_lens.array)
+        token_dests = hax.full(tokens.shape, INVALID, dtype=jnp.int32)
+        seq_cursors = jnp.where(is_invalid(old_seq_lens.array), 0, old_seq_lens.array)
 
         def token_body(i, carry):
             token_dests, seq_cursors = carry
@@ -176,12 +176,12 @@ class PageTable(eqx.Module):
                 page_idx = seq_cursors[seq_id] // self.page_size
                 page_offset = seq_cursors[seq_id] % self.page_size
                 page = new_table.page_indices["seq", seq_id, "page", page_idx]
-                dest = hax.where(page < 0, -1, page * self.page_size + page_offset)
+                dest = hax.where(is_invalid(page), INVALID, page * self.page_size + page_offset)
                 token_dests = token_dests.at["position", i].set(dest)
                 seq_cursors = seq_cursors.at[seq_id].add(1)
                 return token_dests, seq_cursors
 
-            token_dests, seq_cursors = jax.lax.cond(seq_id >= 0, assign, lambda c: c, (token_dests, seq_cursors))
+            token_dests, seq_cursors = jax.lax.cond(is_valid(seq_id), assign, lambda c: c, (token_dests, seq_cursors))
             return token_dests, seq_cursors
 
         token_dests, _ = jax.lax.fori_loop(0, tokens.axis_size("position"), token_body, (token_dests, seq_cursors))
@@ -207,9 +207,9 @@ class PageTable(eqx.Module):
 
     @eqx.filter_jit(donate="all")
     def free_pages(self, seq_id: int) -> "PageTable":
-        new_page_owners = hax.where(self.page_owners == seq_id, -1, self.page_owners)
-        new_page_indices = self.page_indices.at["seq", seq_id].set(-1)
-        new_seq_lens = self.seq_lens.at["seq", seq_id].set(-1)
+        new_page_owners = hax.where(self.page_owners == seq_id, INVALID, self.page_owners)
+        new_page_indices = self.page_indices.at["seq", seq_id].set(INVALID)
+        new_seq_lens = self.seq_lens.at["seq", seq_id].set(INVALID)
 
         return dataclasses.replace(
             self,
@@ -229,8 +229,7 @@ class PageTable(eqx.Module):
         seg_pos_starts = self.seq_lens["seq", seq_ids].array
 
         pos_ids = seg_pos_starts + rel_pos
-        # mask out the -1 segments
-        pos_ids = jnp.where(seq_ids.array < 0, -1, pos_ids)
+        pos_ids = jnp.where(is_invalid(seq_ids.array), INVALID, pos_ids)
 
         return hax.named(pos_ids, "position")
 
@@ -248,12 +247,12 @@ class PageBatchInfo(eqx.Module):
 
     @property
     def last_token_idx(self) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
-        """Last token index for each sequence, -1 if the sequence is not present."""
+        """Last token index for each sequence, INVALID if the sequence is not present."""
         # TODO: this won't be useful if we do speculation, but for now it is useful
         # this can be easily computed from cu_q_lens
         # roll so we get the len for each seq, then subtract 1 to get the last index
         rolled = hax.roll(self.cu_q_lens, shift=-1, axis="seq",)["seq", :-1] - 1
-        out = hax.where(self.seq_lens < 0, -1, rolled)
+        out = hax.where(is_invalid(self.seq_lens), INVALID, rolled)
         # rename to position since this is about token positions
         out = out.rename({"seq": "position"})
         return out
@@ -262,8 +261,10 @@ class PageBatchInfo(eqx.Module):
         assert isinstance(self.num_seqs, jnp.ndarray), "num_seqs must be a JAX ndarray"
 
 
+    def pages_and_slots(self):
+        token_dests = self.new_token_dests
 
-def _find_first(arr, value, axis):
-    mask = arr == value
-    first = hax.argmax(mask, axis=axis)
-    return hax.where(mask.any(), first, -1)
+        t_pages = hax.where(is_valid(token_dests), token_dests // self.page_size, INVALID)
+        t_slots = hax.where(is_valid(token_dests), token_dests % self.page_size, INVALID)
+
+        return t_pages, t_slots
