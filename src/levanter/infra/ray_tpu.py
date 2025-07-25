@@ -212,11 +212,11 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
     @abstractmethod
     def get_actor_pool_name(self) -> str:
         return str(self)
-    
+
     @abstractmethod
     def get_actor_name_from_actor_info(self, actor_info: ActorInfoT) -> str:
         raise NotImplementedError()
-    
+
     @abstractmethod
     def create_actor(self) -> ActorHandle:
         raise NotImplementedError()
@@ -227,7 +227,7 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
 
     def get_all_actors_in_pool(self) -> list[ActorHandle]:
         return [member.actor for member in self._actor_pool]
-    
+
     def get_all_pool_members(self) -> list[ActorPoolMember[ActorInfoT]]:
         return self._actor_pool.copy()
 
@@ -251,7 +251,7 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
         for unhealthy_member in unhealthy_members:
             # This is a synchronous blocking call.
             _stop_actor(unhealthy_member.actor)
-        
+
         self._actor_pool = healthy_members
         logger.info(f"{self.get_actor_pool_name()} actor pool members after unhealthy members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
 
@@ -283,7 +283,6 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
 
         if len(self._actor_pool) < desired_num_actors:
             raise Exception(f"Wanted {desired_num_actors} hosts in slice {self.get_actor_pool_name()} but only acquired {len(self._actor_pool)} hosts.")
-        return self._actor_pool
 
     def scale_actor_pool(self, desired_num_actors: int) -> None:
         self._remove_unhealthy_members_from_actor_pool()
@@ -307,12 +306,12 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
 
     def get_actor_pool_name(self) -> str:
         return f"{self._tpu_type} slices"
-    
+
     def get_actor_name_from_actor_info(self, actor_info: SliceInfo) -> str:
         return str(actor_info.slice_name)
-    
+
     def create_actor(self) -> ActorHandle:
-        return SliceActor.options(resources={f"TPU-{self._tpu_type}-head": 1}).remote()
+        return SliceActor.options(resources={f"TPU-{self._tpu_type}-head": 1}).remote()  # type: ignore
 
     def get_actor_info_future(self, actor: ActorHandle) -> ray.ObjectRef:
         return actor.get_slice_info.remote()
@@ -340,14 +339,16 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
         from levanter.infra.tpus import get_current_tpu_is_preempted
 
         return get_current_tpu_is_preempted()
-    
+
     def get_actor_pool_name(self) -> str:
+        assert self._slice_info
         return f"slice {self._slice_info.slice_name}"
-    
+
     def get_actor_name_from_actor_info(self, actor_info: TPUHostInfo) -> str:
         return str(actor_info.worker_index)
-    
+
     def create_actor(self) -> ActorHandle:
+        assert self._slice_info
         slice_name = self._slice_info.slice_name
         return TPUHostActor.options(resources={slice_name: 1}, num_cpus=0.0).remote(slice_name)  # type: ignore
 
