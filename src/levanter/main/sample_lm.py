@@ -220,7 +220,7 @@ def main(config: SampleLmConfig):
         MAX_NEW_TOKENS = 32
         table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
-        sched = JitScheduler.init(256, 128)
+        sched = JitScheduler.init(table.max_seqs, 256, 128)
         gen_state = GenState(
             sched=sched,
             cache=cache,

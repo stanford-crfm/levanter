@@ -6,7 +6,7 @@ from haliax import NamedArray, haxtyping as ht
 from jax import numpy as jnp
 import jax
 
-from levanter.inference.utils import INVALID, masked_set
+from levanter.inference.utils import INVALID, masked_set, is_valid
 
 
 class PackedSequence(eqx.Module):
@@ -57,7 +57,7 @@ class JitScheduler(eqx.Module):
             jit_scheduler = outer_scheduler.get_next_macro_round(jit_scheduler)
             # do iterative prefill/decode
             jit_scheduler = do_generate(jit_scheduler, page_table, cache, MAX_STEPS)
-            generated_tokens, generated_seq_ids = jit_scheduler.generated_tokens, jit_scheduler.generated_seq_ids
+            generated_tokens = jit_scheduler.generated_tokens
 
         do_generate might look like this:
         def do_generate(sched: JitScheduler, cache, page_table,  max_steps: int) -> JitScheduler:
@@ -98,9 +98,8 @@ class JitScheduler(eqx.Module):
     """
     # Notes:
     # - generate_tokens and queued_tokens is stored "flat" with seq_ids per token
-    generated_tokens: ht.i32[NamedArray, "position"]  # all tokens we have generated so far
-    generated_seq_ids: ht.i32[NamedArray, "position"]  # seq ids for each token in generated_tokens
-    num_generated_tokens: jax.Array  # total number of tokens generated so far
+    generated_tokens: ht.i32[NamedArray, "seq position"]  # tokens generated per sequence
+    num_generated_tokens: ht.i32[NamedArray, "seq"]  # number of generated tokens per sequence
     queued_tokens: ht.i32[NamedArray, "position"]  # number of tokens ready to be processed in each sequence.
     queued_seq_ids: ht.i32[NamedArray, "position"]
     num_queued_tokens: jax.Array
@@ -110,7 +109,8 @@ class JitScheduler(eqx.Module):
     @property
     def empty_generated_space(self) -> jnp.ndarray:
         """How many tokens can be generated in the generated tokens buffer."""
-        return self.generated_tokens.axis_size("position") - self.num_generated_tokens
+        total_cap = self.generated_tokens.axis_size("position") * self.generated_tokens.axis_size("seq")
+        return total_cap - hax.sum(self.num_generated_tokens).array
 
     @property
     def empty_queue_space(self) -> jnp.ndarray:
@@ -123,12 +123,11 @@ class JitScheduler(eqx.Module):
         return self.queued_tokens.axis_size("position")
 
     @staticmethod
-    def init(max_queued_tokens: int, max_buffered_tokens: int) -> "JitScheduler":
+    def init(max_seqs: int, max_queued_tokens: int, max_buffered_tokens: int) -> "JitScheduler":
         """Create a ``JitScheduler`` with empty buffers."""
         return JitScheduler(
-            generated_tokens=hax.full({"position": max_buffered_tokens}, INVALID, dtype=jnp.int32),
-            generated_seq_ids=hax.full({"position": max_buffered_tokens}, INVALID, dtype=jnp.int32),
-            num_generated_tokens=jnp.array(0, dtype=jnp.int32),
+            generated_tokens=hax.full({"seq": max_seqs, "position": max_buffered_tokens}, INVALID, dtype=jnp.int32),
+            num_generated_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             queued_tokens=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             queued_seq_ids=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             num_queued_tokens=jnp.array(0, dtype=jnp.int32),
@@ -178,28 +177,31 @@ class JitScheduler(eqx.Module):
         generated tokens will also be enqueued in the scheduler for processing in the next round.
         """
 
-        new_g_tokens = masked_set(
-            self.generated_tokens,
-            {},
-            "position",
-            self.num_generated_tokens,
-            new_tokens,
-            num_new_tokens,
-        )
-        new_g_seq_ids = masked_set(
-            self.generated_seq_ids,
-            {},
-            "position",
-            self.num_generated_tokens,
-            new_token_seq_ids,
-            num_new_tokens,
-        )
+        # first sort tokens by seq id so we can append them per sequence
+        sort_order = hax.argsort(new_token_seq_ids, axis="position")
+        tokens = new_tokens["position", sort_order]
+        seq_ids = new_token_seq_ids["position", sort_order]
+
+        def body(i, state):
+            g_tokens, g_counts = state
+            seq_id = seq_ids["position", i].scalar()
+
+            def update(state):
+                g_tokens, g_counts = state
+                pos = g_counts["seq", seq_id].scalar()
+                g_tokens = g_tokens.at["seq", seq_id, "position", pos].set(tokens["position", i])
+                g_counts = g_counts.at["seq", seq_id].add(1)
+                return g_tokens, g_counts
+
+            return jax.lax.cond(is_valid(seq_id), update, lambda s: s, state)
+
+        init_state = (self.generated_tokens, self.num_generated_tokens)
+        new_g_tokens, new_counts = jax.lax.fori_loop(0, num_new_tokens, body, init_state)
 
         updated = dataclasses.replace(
             self,
             generated_tokens=new_g_tokens,
-            generated_seq_ids=new_g_seq_ids,
-            num_generated_tokens=self.num_generated_tokens + num_new_tokens,
+            num_generated_tokens=new_counts,
         )
 
         updated = updated.enqueue_tokens(new_tokens, new_token_seq_ids, num_new_tokens)
@@ -271,18 +273,40 @@ class JitScheduler(eqx.Module):
         Extract all generated tokens and sequence ids, returning a new scheduler with empty buffers.
         This is used to finalize the generation process and retrieve all generated tokens.
         """
+        P = self.generated_tokens.axis_size("position")
+        S = self.generated_tokens.axis_size("seq")
+
+        out_tokens = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
+        out_seq_ids = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
+
+        def body(i, state):
+            toks, ids, start = state
+            count = self.num_generated_tokens["seq", i].scalar()
+
+            def tok_loop(j, carry):
+                toks, ids = carry
+                tok = self.generated_tokens["seq", i, "position", j]
+                toks = toks.at["position", start + j].set(tok)
+                ids = ids.at["position", start + j].set(jnp.array(i, dtype=jnp.int32))
+                return toks, ids
+
+            toks, ids = jax.lax.fori_loop(0, count, tok_loop, (toks, ids))
+            return toks, ids, start + count
+
+        init = (out_tokens, out_seq_ids, 0)
+        out_tokens, out_seq_ids, total = jax.lax.fori_loop(0, S, body, init)
+
         out = PackedSequence(
-            tokens=self.generated_tokens,
-            seq_ids=self.generated_seq_ids,
-            num_tokens=self.num_generated_tokens,
-            is_boundary=hax.zeros_like(self.generated_tokens, dtype=jnp.bool_),
+            tokens=out_tokens,
+            seq_ids=out_seq_ids,
+            num_tokens=total,
+            is_boundary=hax.zeros_like(out_tokens, dtype=jnp.bool_),
         )
 
         updated = dataclasses.replace(
             self,
             generated_tokens=hax.full_like(self.generated_tokens, INVALID),
-            generated_seq_ids=hax.full_like(self.generated_seq_ids, INVALID),
-            num_generated_tokens=jnp.zeros((), dtype=jnp.int32),
+            num_generated_tokens=hax.zeros_like(self.num_generated_tokens),
         )
 
         return updated, out
@@ -314,58 +338,51 @@ class JitScheduler(eqx.Module):
         max_tokens: int,
     ) -> tuple["JitScheduler", ht.i32[NamedArray, "seq position"]]:
         """
-        Extract *at most* `max_tokens` tokens for each requested sequence, pad with
-        INVALID, and remove exactly those tokens from `generated_tokens` / `generated_seq_ids`.
-        Shapes stay static, so the method is fully JIT-safe.
+        Extract *at most* ``max_tokens`` tokens for each requested sequence, pad with
+        INVALID, and clear them from ``generated_tokens``.
         """
-        # ---------- shorthands ----------
-        P = self.generated_tokens.axis_size("position")  # buffer size
-        num_valid = self.num_generated_tokens  # scalar
-        tok_buf = self.generated_tokens.array  # (P,)
-        id_buf = self.generated_seq_ids.array  # (P,)
-        req_ids = sequence_ids.array  # (S,)
-        pos_idx = jnp.arange(P, dtype=jnp.int32)  # (P,)
-        valid_mask = pos_idx < num_valid  # (P,)
+        out_shape = {"seq": sequence_ids.axis_size("seq"), "position": max_tokens}
+        out = hax.full(out_shape, INVALID, dtype=jnp.int32)
 
-        # ---------- 1. mark tokens to TAKE (first `max_tokens` per seq) ----------
-        # seq_matches[s, p] == True  iff  slot p belongs to req_ids[s] and is valid
-        seq_matches = (id_buf[None, :] == req_ids[:, None]) & valid_mask[None, :]  # (S,P)
-        # rank within its sequence: 0,1,2,… via prefix-sum
-        prefix = jnp.cumsum(seq_matches.astype(jnp.int32), axis=1) - 1  # (S,P)
-        take_mask_per_seq = seq_matches & (prefix < max_tokens)  # (S,P)
-        removal_mask = jnp.any(take_mask_per_seq, axis=0)  # (P,)
-        keep_mask = valid_mask & (~removal_mask)  # (P,)
+        def body(i, state):
+            g_tokens, g_counts, out_tokens = state
+            seq_id = sequence_ids["seq", i].scalar()
 
-        # ---------- 2. build the [seq, position] output ----------
-        def gather_row(mask_row):
-            key = jnp.where(mask_row, pos_idx, P + pos_idx)  # stable order
-            idx = jnp.argsort(key)[:max_tokens]  # indices of taken tokens
-            vals = tok_buf[idx]
-            good = mask_row[idx]
-            return jnp.where(good, vals, INVALID)
+            def do(state):
+                g_tokens, g_counts, out_tokens = state
+                available = g_counts["seq", seq_id].scalar()
+                n = jnp.minimum(available, max_tokens)
 
-        gathered = jax.vmap(gather_row)(take_mask_per_seq)  # (S, max_tokens)
-        out_named = hax.named(gathered, axis=("seq", "position"))
+                def tok_loop(j, carry):
+                    g_tokens, out_tokens = carry
+                    tok = g_tokens["seq", seq_id, "position", j]
+                    out_tokens = out_tokens.at["seq", i, "position", j].set(tok)
+                    g_tokens = g_tokens.at["seq", seq_id, "position", j].set(INVALID)
+                    return g_tokens, out_tokens
 
-        # ---------- 3. repack remaining tokens ----------
-        key_keep = jnp.where(keep_mask, pos_idx, P + pos_idx)
-        order_keep = jnp.argsort(key_keep)  # moves kept → front
-        new_toks = tok_buf[order_keep]
-        new_ids = id_buf[order_keep]
+                g_tokens, out_tokens = jax.lax.fori_loop(0, n, tok_loop, (g_tokens, out_tokens))
+                # shift remaining tokens to the front
+                total_pos = g_tokens.axis_size("position")
+                rolled = hax.roll(g_tokens["seq", seq_id], -n, "position")
+                idx = hax.arange(g_tokens.resolve_axis("position"))
+                mask = idx >= (total_pos - n)
+                rolled = hax.where(mask, hax.full_like(idx, INVALID), rolled)
+                g_tokens = g_tokens.at["seq", seq_id].set(rolled)
+                g_counts = g_counts.at["seq", seq_id].add(-n)
+                return g_tokens, g_counts, out_tokens
 
-        new_num = keep_mask.sum()  # how many kept tokens
-        tail_mask = pos_idx >= new_num
-        new_toks = jnp.where(tail_mask, INVALID, new_toks)
-        new_ids = jnp.where(tail_mask, INVALID, new_ids)
+            return jax.lax.cond(is_valid(seq_id), do, lambda s: s, state)
+
+        init_state = (self.generated_tokens, self.num_generated_tokens, out)
+        new_tokens, new_counts, out = jax.lax.fori_loop(0, sequence_ids.axis_size("seq"), body, init_state)
 
         updated = dataclasses.replace(
             self,
-            generated_tokens=hax.named(new_toks, axis=self.generated_tokens.axes),
-            generated_seq_ids=hax.named(new_ids, axis=self.generated_seq_ids.axes),
-            num_generated_tokens=new_num,
+            generated_tokens=new_tokens,
+            num_generated_tokens=new_counts,
         )
 
-        return updated, out_named
+        return updated, out
 
     def cleared(self) -> "JitScheduler":
         """
@@ -373,6 +390,7 @@ class JitScheduler(eqx.Module):
         This is useful for resetting the scheduler state.
         """
         return JitScheduler.init(
+            max_seqs=self.generated_tokens.axis_size("seq"),
             max_queued_tokens=self.queued_tokens.axis_size("position"),
             max_buffered_tokens=self.generated_tokens.axis_size("position"),
         )
@@ -383,7 +401,6 @@ class JitScheduler(eqx.Module):
         def callback(self):
             print(f"{prefix}JitScheduler State:")
             print(f"{prefix}Generated Tokens: {self.generated_tokens}")
-            print(f"{prefix}Generated Seq IDs: {self.generated_seq_ids}")
             print(f"{prefix}Num Generated Tokens: {self.num_generated_tokens}")
             print(f"{prefix}Queued Tokens: {self.queued_tokens}")
             print(f"{prefix}Queued Seq IDs: {self.queued_seq_ids}")
