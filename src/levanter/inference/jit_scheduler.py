@@ -294,10 +294,11 @@ class JitScheduler(eqx.Module):
         """
 
         is_seq_id = self.queued_seq_ids == seq_id
-        new_seq_ids = hax.where(is_seq_id, fill_value=INVALID, new_axis=self.queued_seq_ids.resolve_axis("position"))
-        new_tokens = hax.where(is_seq_id, fill_value=INVALID, new_axis=self.queued_tokens.resolve_axis("position"))
-
         new_num_queued_tokens = self.num_queued_tokens - hax.sum(is_seq_id).scalar()
+        remaining_seq_id_pos = hax.where(~is_seq_id, fill_value=INVALID, new_axis=self.queued_seq_ids.resolve_axis("position"))[0]
+        new_seq_ids = self.queued_seq_ids.at["position", remaining_seq_id_pos].get(mode="fill", fill_value=INVALID)
+        new_tokens = self.queued_tokens.at["position", remaining_seq_id_pos].get(mode="fill", fill_value=INVALID)
+
 
         return dataclasses.replace(
             self,
