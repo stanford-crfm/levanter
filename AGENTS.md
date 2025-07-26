@@ -78,6 +78,16 @@ repository. Follow these notes when implementing new features or fixing bugs.
   nondeterminism unless explicitly required.
 * Prefer Stacked with fold or scan over writing custom loops, for better compile times and gradient checkpointing support
 
+## JIT Safety
+
+* Avoid data-dependent Python control flow inside jitted code.
+* Do not rely on dynamic shapes.
+* Do not use dynamic lengths when indexing.
+* Use `debug.print` if you need to inspect values.
+* Use jit-safe versions of `jnp.where`, `hax.where`, or similar operations where the number of returns depends on data.
+
+Any method inside an `equinox.Module`, any function decorated with `jax.jit` or one of its variants (e.g. `eqx.filter_jit` or `jax.named_jit`), and any helpers they call must follow these jit-safety rules.
+
 ## Additional Tips
 
 * Use `NamedArray` and `Axis` for model parameters and activations.
