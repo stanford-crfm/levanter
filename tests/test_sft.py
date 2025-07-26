@@ -9,7 +9,7 @@ from levanter.main.sft import reinitialize_some_tokens
 from levanter.models.llama import LlamaEmbedding
 
 
-class TestModel(equinox.Module):
+class DummyModel(equinox.Module):
     Vocab: hax.Axis
     embeddings: LlamaEmbedding
     lm_head: hax.nn.Linear
@@ -36,7 +36,7 @@ def test_reinitialize_some_tokens(local_gpt2_tokenizer):
     lm_head = hax.nn.Linear.init(In=Embed, Out=Vocab, key=key3)
 
     # Create a mock model with LlamaEmbedding
-    model = TestModel(
+    model = DummyModel(
         Vocab=Vocab,
         embeddings=LlamaEmbedding(token_embeddings=hax.nn.Embedding(weight=embeddings, Vocab=Vocab, Embed=Embed)),
         lm_head=lm_head,
