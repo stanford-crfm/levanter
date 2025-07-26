@@ -42,7 +42,7 @@ trainer:
     type: wandb
     project: "marin"
     tags: ["llama3", "eval"]
-  mp: p=f32,c=bfloat16
+  mp: p=f32,c=f32
   per_device_eval_parallelism: -1
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"

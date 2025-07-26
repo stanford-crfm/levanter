@@ -17,6 +17,7 @@ print the (n, p) discoverability statistics used in memorisation studies.
 
 import itertools
 import logging
+import math
 import pathlib
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Tuple
@@ -33,16 +34,16 @@ from haliax.nn import log_softmax
 from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
+
+# Helpers -----------------------------------------------------------------
+from levanter.books.util import compute_max_extraction_rates, create_pz_histogram
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-import math
 
-# Helpers -----------------------------------------------------------------
-from levanter.books.util import compute_max_extraction_rates
 
 # -----------------------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ class EvalCarelessLmConfig:
     # Output -------------------------------------------------------------------
     plot_path: str = "bar_plot_char_max_pz_70b.png"
     eval_batch_size: int = 32
+    histogram_path: str = "pz_distribution_histogram.png"
+    pz_threshold: float = 0.0001
+    book_title: str = "Book"
 
 
 # -----------------------------------------------------------------------------------------
@@ -208,6 +212,15 @@ def main(cfg: EvalCarelessLmConfig):
     stats = compute_max_extraction_rates(pz_list)
     logger.info("First few (n,p) extraction entries: %s", stats[0][:5])
 
+    # Create and save histogram ------------------------------------------------
+    hist_stats = create_pz_histogram(
+        pz_list=pz_list, threshold=cfg.pz_threshold, save_path=cfg.histogram_path, book_title=cfg.book_title
+    )
+    if hist_stats:
+        logger.info("P_z histogram statistics: %s", hist_stats)
+        # Log the histogram as an artifact
+        levanter.tracker.current_tracker().log_artifact(cfg.histogram_path, name=cfg.histogram_path, type="plot")
+
     # Character-level max-P(z) curve -------------------------------------------
     text_len = len(raw_text)
     char_max = np.zeros(text_len, dtype=np.float32)
@@ -215,9 +228,9 @@ def main(cfg: EvalCarelessLmConfig):
         char_max[c0 : c1 + 1] = np.maximum(char_max[c0 : c1 + 1], pz)
 
     # ------------------------------------------------------------------
-    # Visualization: show a *single-row* heat-map so each character      
-    # column is a vertical bar whose colour encodes max-P(z).            
-    # Darker = closer to 1, lighter = closer to 0 (see Blues colormap).  
+    # Visualization: show a *single-row* heat-map so each character
+    # column is a vertical bar whose colour encodes max-P(z).
+    # Darker = closer to 1, lighter = closer to 0 (see Blues colormap).
     # ------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(14, 2))
     im = ax.imshow(
@@ -229,7 +242,7 @@ def main(cfg: EvalCarelessLmConfig):
         interpolation="nearest",
     )
 
-    ax.set_title("The Great Gatsby: Maximum per-character probability")
+    ax.set_title(f"{cfg.book_title}: Maximum per-character probability")
     ax.set_xlabel("Book position (character)")
     ax.set_yticks([])  # Hide y-axis (only one row)
 
