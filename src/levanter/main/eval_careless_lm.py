@@ -24,10 +24,13 @@ from typing import Iterable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 import matplotlib.pyplot as plt
 import numpy as np
 from jax.experimental.multihost_utils import process_allgather
+
+from levanter.data import DataLoader, ListAsyncDataset
 
 import haliax as hax
 from haliax.nn import log_softmax
@@ -43,6 +46,11 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+
+
+class ExampleWithRange(eqx.Module):
+    example: LmExample
+    char_range: np.ndarray
 
 
 # -----------------------------------------------------------------------------------------
@@ -82,6 +90,11 @@ class EvalCarelessLmConfig:
     histogram_path: str = "pz_distribution_histogram.png"
     pz_threshold: float = 0.0001
     book_title: str = "Book"
+
+    # Performance trade-offs ---------------------------------------------------
+    use_dataloader: bool = True
+    gather_every_n_batches: int = 1
+    """Number of batches to accumulate on device before gathering to host."""
 
 
 # -----------------------------------------------------------------------------------------
@@ -168,45 +181,68 @@ def main(cfg: EvalCarelessLmConfig):
             ids = ids + [pad_id] * (Pos.size - len(ids))
         tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
         ex = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=cfg.prompt_tokens, ignore_id=pad_id)
-        return ex, (chunk["start_idx"], chunk["end_idx"])
-
-    examples_iter = map(chunk_to_example, chunks)
+        rng = np.array([chunk["start_idx"], chunk["end_idx"]], dtype=np.int32)
+        return ExampleWithRange(example=ex, char_range=rng)
 
     batch_size = cfg.eval_batch_size if (cfg.eval_batch_size and cfg.eval_batch_size > 0) else 32
 
-    def batches(it):
-        while True:
-            block = list(itertools.islice(it, batch_size))
-            if not block:
-                break
-            exs, ranges = zip(*block)
-            B = hax.Axis(cfg.trainer.batch_axis, len(exs))
-            # Tokens and loss_mask are stacked across the new batch axis.
-            tokens_b = hax.stack(B, [e.tokens for e in exs])
-            loss_b = hax.stack(B, [e.loss_mask for e in exs])
+    if cfg.use_dataloader:
+        dataset = ListAsyncDataset(chunks, is_complete=True).map(chunk_to_example)
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            axis_resources=cfg.trainer.compute_axis_mapping,
+            mesh=cfg.trainer.device_mesh,
+        )
+    else:
+        examples_iter = map(chunk_to_example, chunks)
 
-            # All examples currently use the same causal AttentionMask, so we
-            # can reuse the mask from the first example (no stacking needed).
-            batch = LmExample(tokens=tokens_b, loss_mask=loss_b, attn_mask=exs[0].attn_mask)
-            yield batch, ranges
+        def loader():
+            while True:
+                block = list(itertools.islice(examples_iter, batch_size))
+                if not block:
+                    break
+                exs = [e.example for e in block]
+                ranges = [e.char_range for e in block]
+                B = hax.Axis(cfg.trainer.batch_axis, len(exs))
+                tokens_b = hax.stack(B, [e.tokens for e in exs])
+                loss_b = hax.stack(B, [e.loss_mask for e in exs])
+                batch = LmExample(tokens=tokens_b, loss_mask=loss_b, attn_mask=exs[0].attn_mask)
+                ranges = np.stack(ranges, axis=0)
+                yield ExampleWithRange(example=batch, char_range=ranges)
 
     # Evaluation loop -----------------------------------------------------------
     pz_list: List[float] = []
     char_ranges: List[Tuple[int, int]] = []
 
     total_batches = math.ceil(total_chunks / batch_size)
+    buffer: List[jax.Array] = []
 
-    for idx, (batch_ex, ranges) in enumerate(batches(examples_iter)):
+    for idx, batch in enumerate(loader):
         if cfg.max_examples and idx * batch_size >= cfg.max_examples:
             break
+
+        batch_ex = batch.example
+        ranges = np.array(batch.char_range)
+
         lp = sequence_log_prob(model, batch_ex).array  # shape (batch,)
-        lp = process_allgather(lp)
-        pz = np.exp(lp)
-        pz_list.extend(pz.tolist())
-        char_ranges.extend(ranges)
+        buffer.append(jnp.exp(lp))
+        char_ranges.extend([tuple(r) for r in ranges.tolist()])
+
+        if len(buffer) >= cfg.gather_every_n_batches:
+            stacked = jnp.concatenate(buffer, axis=0)
+            gathered = process_allgather(stacked)
+            pz_list.extend(gathered.tolist())
+            buffer = []
+
         done = min((idx + 1) * batch_size, total_chunks)
         pct = 100 * done / total_chunks
         print(f"Batch {idx+1}/{total_batches} – {done}/{total_chunks} windows ({pct:.1f} %)", flush=True)
+
+    if buffer:
+        stacked = jnp.concatenate(buffer, axis=0)
+        gathered = process_allgather(stacked)
+        pz_list.extend(gathered.tolist())
 
     # Extraction statistics -----------------------------------------------------
     stats = compute_max_extraction_rates(pz_list)
