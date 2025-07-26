@@ -31,6 +31,8 @@ __all__ = [
     "ScaleBySophiaState",
     "SophiaHConfig",
     "scale_by_sophia_h",
+    # skipstep
+    "SkipStepConfig",
 ]
 
 from .adam_mini import MiniConfig, ScaleByMiniState
@@ -48,3 +50,4 @@ from .sophia import (  # SophiaGConfig,; SophiaGObjective,; scale_by_sophia_g,
     SophiaHConfig,
     scale_by_sophia_h,
 )
+from .skipstep import SkipStepConfig
