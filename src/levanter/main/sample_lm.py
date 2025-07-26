@@ -174,8 +174,43 @@ def run_generation_loop(
     init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
     final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
 
-    # Extract the packed sequence from the scheduler
-    sched, out_seq = final_gen_state.sched.extract_all_generated_tokens()
+    # Extract generated tokens per sequence and convert to ``PackedSequence``
+    max_pos = final_gen_state.sched.generated_tokens.axis_size("position")
+    seq_axis = final_gen_state.sched.num_generated_tokens.resolve_axis("seq")
+    all_seq_ids = hax.arange(seq_axis)
+
+    prior_counts = final_gen_state.sched.num_generated_tokens
+    sched, tokens = final_gen_state.sched.extract_generated_tokens(all_seq_ids, max_pos)
+
+    P = max_pos
+    S = seq_axis.size
+
+    out_tokens = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
+    out_seq_ids = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
+
+    def gather_body(i, state):
+        toks, ids, start = state
+        count = prior_counts["seq", i].scalar()
+
+        def tok_loop(j, carry):
+            tks, sids = carry
+            tok = tokens["seq", i, "position", j]
+            tks = tks.at["position", start + j].set(tok)
+            sids = sids.at["position", start + j].set(jnp.array(i, dtype=jnp.int32))
+            return tks, sids
+
+        toks, ids = jax.lax.fori_loop(0, count, tok_loop, (toks, ids))
+        return toks, ids, start + count
+
+    init = (out_tokens, out_seq_ids, 0)
+    out_tokens, out_seq_ids, total = jax.lax.fori_loop(0, S, gather_body, init)
+
+    out_seq = PackedSequence(
+        tokens=out_tokens,
+        seq_ids=out_seq_ids,
+        num_tokens=total,
+        is_boundary=hax.zeros_like(out_tokens, dtype=jnp.bool_),
+    )
 
     final_gen_state = dataclasses.replace(final_gen_state, sched=sched)
 
