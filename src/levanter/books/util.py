@@ -16,13 +16,17 @@ Two groups of helpers live here:
 """
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence, Tuple, Dict, Generator, Any
-
-import numpy as np
 import logging
+from typing import Any, Dict, Generator, Iterable, List, Sequence, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
 from tqdm import tqdm
+
 import haliax as hax
+
 from levanter.models.lm_model import LmExample
+
 
 __all__ = [
     "compute_extraction_rates",
@@ -38,6 +42,73 @@ __all__ = [
 # -----------------------------------------------------------------------------
 # Core metric helpers ---------------------------------------------------------
 # -----------------------------------------------------------------------------
+
+# Add this function after the main function or before it
+def create_pz_histogram(pz_list: List[float], threshold: float, save_path: str, book_title: str = "Book"):
+    """
+    Create a histogram of p_z values with a threshold filter.
+
+    Args:
+        pz_list: List of suffix probabilities
+        threshold: Minimum p_z value to include (e.g., 0.0001 for 0.01%)
+        save_path: Path to save the histogram
+        book_title: Title for the plot
+    """
+    # Filter p_z values above threshold
+    filtered_pz = [pz for pz in pz_list if pz >= threshold]
+
+    print(f"Total sequences: {len(pz_list)}")
+    print(f"Sequences above {threshold*100:.3f}% threshold: {len(filtered_pz)}")
+
+    if len(filtered_pz) == 0:
+        print(f"No sequences above threshold {threshold}. Skipping histogram.")
+        return
+
+    # Convert to percentages for plotting
+    filtered_pz_percent = [pz * 100 for pz in filtered_pz]
+
+    # Create histogram
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Use log scale for y-axis to match the reference plot
+    bins = np.logspace(np.log10(threshold * 100), np.log10(max(filtered_pz_percent)), 50)
+    counts, bin_edges, patches = ax.hist(
+        filtered_pz_percent, bins=bins, alpha=0.8, color="steelblue", edgecolor="black", linewidth=0.5
+    )
+
+    # Set log scale for y-axis
+    ax.set_yscale("log")
+    ax.set_ylabel("Frequency", fontsize=12)
+    ax.set_xlabel("Probability of extraction (p_z)", fontsize=12)
+
+    # Format x-axis as percentages
+    ax.set_xticklabels([f"{x:.1f}%" for x in ax.get_xticks()])
+
+    # Set title
+    threshold_percent = threshold * 100
+    ax.set_title(f"{book_title}: Distribution of p_z (≥ {threshold_percent:.3f}%)", fontsize=14, fontweight="bold")
+
+    # Add grid for better readability
+    ax.grid(True, alpha=0.3)
+
+    # Tight layout
+    plt.tight_layout()
+
+    # Save the plot
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    print(f"Histogram saved to: {save_path}")
+
+    # Return some statistics
+    stats = {
+        "total_sequences": len(pz_list),
+        "above_threshold": len(filtered_pz),
+        "mean_pz": np.mean(filtered_pz),
+        "median_pz": np.median(filtered_pz),
+        "max_pz": max(filtered_pz),
+        "threshold_used": threshold,
+    }
+
+    return stats
 
 
 def compute_extraction_rates(
