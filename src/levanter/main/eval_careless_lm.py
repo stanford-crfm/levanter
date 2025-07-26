@@ -10,6 +10,11 @@ Compared with ``eval_sliding_lm.py`` this script:
 
 It also calls ``levanter.books.util.compute_max_extraction_rates`` to
 print the (n, p) discoverability statistics used in memorisation studies.
+
+Newer versions of this script optionally use ``DataLoader`` for faster
+prefetching and can accumulate the character-level maxima entirely on the
+device.  These behaviours are controlled by the ``use_dataloader`` and
+``device_char_max`` config options respectively.
 """
 # NOTE: Do *not* enable postponed evaluation of annotations here because
 # levanter.config.main relies on `inspect.getfullargspec(fn).annotations`
@@ -24,10 +29,13 @@ from typing import Iterable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jmp
 import matplotlib.pyplot as plt
 import numpy as np
 from jax.experimental.multihost_utils import process_allgather
+
+from levanter.data import DataLoader, ListAsyncDataset
 
 import haliax as hax
 from haliax.nn import log_softmax
@@ -82,6 +90,14 @@ class EvalCarelessLmConfig:
     histogram_path: str = "pz_distribution_histogram.png"
     pz_threshold: float = 0.0001
     book_title: str = "Book"
+
+    # Performance --------------------------------------------------------------
+    use_dataloader: bool = True
+    """If True, load examples via ``DataLoader`` with prefetching."""
+
+    device_char_max: bool = False
+    """If True, accumulate the per-character maxima on device. This uses more
+    device memory but reduces host synchronization."""
 
 
 # -----------------------------------------------------------------------------------------
@@ -162,33 +178,47 @@ def main(cfg: EvalCarelessLmConfig):
     total_chunks = len(chunks)
     print(f"Total sliding windows: {total_chunks}", flush=True)
 
-    def chunk_to_example(chunk):
+    def chunk_to_example_ds(chunk):
         ids = chunk["input_ids"]
         if len(ids) < Pos.size:
             ids = ids + [pad_id] * (Pos.size - len(ids))
         tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
-        ex = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=cfg.prompt_tokens, ignore_id=pad_id)
-        return ex, (chunk["start_idx"], chunk["end_idx"])
+        ex = LmExample.from_prompt_and_completion(
+            Pos,
+            tokens_named,
+            prompt_length=cfg.prompt_tokens,
+            ignore_id=pad_id,
+        )
+        rng = np.array([chunk["start_idx"], chunk["end_idx"]], dtype=np.int32)
+        return ex, rng
 
-    examples_iter = map(chunk_to_example, chunks)
+    dataset = ListAsyncDataset(chunks, is_complete=True).map(chunk_to_example_ds)
 
     batch_size = cfg.eval_batch_size if (cfg.eval_batch_size and cfg.eval_batch_size > 0) else 32
 
-    def batches(it):
-        while True:
-            block = list(itertools.islice(it, batch_size))
-            if not block:
-                break
-            exs, ranges = zip(*block)
-            B = hax.Axis(cfg.trainer.batch_axis, len(exs))
-            # Tokens and loss_mask are stacked across the new batch axis.
-            tokens_b = hax.stack(B, [e.tokens for e in exs])
-            loss_b = hax.stack(B, [e.loss_mask for e in exs])
+    if cfg.use_dataloader:
+        loader: Iterable[Tuple[LmExample, np.ndarray]] = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            axis_resources=cfg.trainer.compute_axis_mapping,
+            mesh=cfg.trainer.device_mesh,
+        )
+    else:
+        def _manual_batches(it):
+            it = map(chunk_to_example_ds, chunks)
+            while True:
+                block = list(itertools.islice(it, batch_size))
+                if not block:
+                    break
+                exs, ranges = zip(*block)
+                B = hax.Axis(cfg.trainer.batch_axis, len(exs))
+                tokens_b = hax.stack(B, [e.tokens for e in exs])
+                loss_b = hax.stack(B, [e.loss_mask for e in exs])
+                batch = LmExample(tokens=tokens_b, loss_mask=loss_b, attn_mask=exs[0].attn_mask)
+                rng = np.stack(ranges)
+                yield batch, rng
 
-            # All examples currently use the same causal AttentionMask, so we
-            # can reuse the mask from the first example (no stacking needed).
-            batch = LmExample(tokens=tokens_b, loss_mask=loss_b, attn_mask=exs[0].attn_mask)
-            yield batch, ranges
+        loader = _manual_batches(chunks)
 
     # Evaluation loop -----------------------------------------------------------
     pz_list: List[float] = []
@@ -196,14 +226,15 @@ def main(cfg: EvalCarelessLmConfig):
 
     total_batches = math.ceil(total_chunks / batch_size)
 
-    for idx, (batch_ex, ranges) in enumerate(batches(examples_iter)):
+    for idx, (batch_ex, ranges) in enumerate(loader):
         if cfg.max_examples and idx * batch_size >= cfg.max_examples:
             break
         lp = sequence_log_prob(model, batch_ex).array  # shape (batch,)
         lp = process_allgather(lp)
+        ranges_np = process_allgather(np.asarray(ranges))
         pz = np.exp(lp)
         pz_list.extend(pz.tolist())
-        char_ranges.extend(ranges)
+        char_ranges.extend([tuple(r) for r in ranges_np])
         done = min((idx + 1) * batch_size, total_chunks)
         pct = 100 * done / total_chunks
         print(f"Batch {idx+1}/{total_batches} – {done}/{total_chunks} windows ({pct:.1f} %)", flush=True)
@@ -223,9 +254,15 @@ def main(cfg: EvalCarelessLmConfig):
 
     # Character-level max-P(z) curve -------------------------------------------
     text_len = len(raw_text)
-    char_max = np.zeros(text_len, dtype=np.float32)
-    for pz, (c0, c1) in zip(pz_list, char_ranges):
-        char_max[c0 : c1 + 1] = np.maximum(char_max[c0 : c1 + 1], pz)
+    if cfg.device_char_max:
+        char_max = jnp.zeros(text_len, dtype=jnp.float32)
+        for pz, (c0, c1) in zip(pz_list, char_ranges):
+            char_max = char_max.at[c0 : c1 + 1].max(pz)
+        char_max = np.array(char_max)
+    else:
+        char_max = np.zeros(text_len, dtype=np.float32)
+        for pz, (c0, c1) in zip(pz_list, char_ranges):
+            char_max[c0 : c1 + 1] = np.maximum(char_max[c0 : c1 + 1], pz)
 
     # ------------------------------------------------------------------
     # Visualization: show a *single-row* heat-map so each character
