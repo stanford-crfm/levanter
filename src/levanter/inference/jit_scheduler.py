@@ -341,40 +341,36 @@ class JitScheduler(eqx.Module):
         Extract *at most* ``max_tokens`` tokens for each requested sequence, pad with
         INVALID, and clear them from ``generated_tokens``.
         """
-        out_shape = {"seq": sequence_ids.axis_size("seq"), "position": max_tokens}
-        out = hax.full(out_shape, INVALID, dtype=jnp.int32)
+        # gather tokens and counts for the requested sequences
+        gathered_tokens = self.generated_tokens["seq", sequence_ids]
+        gathered_counts = self.num_generated_tokens["seq", sequence_ids]
 
-        def body(i, state):
-            g_tokens, g_counts, out_tokens = state
-            seq_id = sequence_ids["seq", i].scalar()
+        out_array = gathered_tokens.array[:, :max_tokens]
+        mask = jnp.arange(max_tokens) < gathered_counts.array[:, None]
+        out_array = jnp.where(mask, out_array, INVALID)
+        out = hax.named(out_array, axis=("seq", "position"))
 
-            def do(state):
-                g_tokens, g_counts, out_tokens = state
-                available = g_counts["seq", seq_id].scalar()
-                n = jnp.minimum(available, max_tokens)
+        # how many tokens we will remove from each sequence
+        to_take = jnp.minimum(gathered_counts.array, max_tokens)
+        to_take_full = jnp.zeros_like(self.num_generated_tokens.array)
+        to_take_full = to_take_full.at[sequence_ids.array].add(to_take)
 
-                def tok_loop(j, carry):
-                    g_tokens, out_tokens = carry
-                    tok = g_tokens["seq", seq_id, "position", j]
-                    out_tokens = out_tokens.at["seq", i, "position", j].set(tok)
-                    g_tokens = g_tokens.at["seq", seq_id, "position", j].set(INVALID)
-                    return g_tokens, out_tokens
+        idx = jnp.arange(self.generated_tokens.axis_size("position"))
 
-                g_tokens, out_tokens = jax.lax.fori_loop(0, n, tok_loop, (g_tokens, out_tokens))
-                # shift remaining tokens to the front
-                total_pos = g_tokens.axis_size("position")
-                rolled = hax.roll(g_tokens["seq", seq_id], -n, "position")
-                idx = hax.arange(g_tokens.resolve_axis("position"))
-                mask = idx >= (total_pos - n)
-                rolled = hax.where(mask, hax.full_like(idx, INVALID), rolled)
-                g_tokens = g_tokens.at["seq", seq_id].set(rolled)
-                g_counts = g_counts.at["seq", seq_id].add(-n)
-                return g_tokens, g_counts, out_tokens
+        def shift_row(tokens, count, n):
+            rolled = jnp.roll(tokens, -n, axis=0)
+            mask = idx >= (count - n)
+            rolled = jnp.where(mask, INVALID, rolled)
+            return rolled, count - n
 
-            return jax.lax.cond(is_valid(seq_id), do, lambda s: s, state)
+        new_tokens, new_counts = jax.vmap(shift_row)(
+            self.generated_tokens.array,
+            self.num_generated_tokens.array,
+            to_take_full,
+        )
 
-        init_state = (self.generated_tokens, self.num_generated_tokens, out)
-        new_tokens, new_counts, out = jax.lax.fori_loop(0, sequence_ids.axis_size("seq"), body, init_state)
+        new_tokens = hax.named(new_tokens, axis=self.generated_tokens.axes)
+        new_counts = hax.named(new_counts, axis=self.num_generated_tokens.axes)
 
         updated = dataclasses.replace(
             self,
