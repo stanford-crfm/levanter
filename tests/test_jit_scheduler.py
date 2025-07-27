@@ -7,7 +7,7 @@ from levanter.inference.utils import INVALID
 
 
 def test_enqueue_and_pack():
-    sched = JitScheduler.init(max_queued_tokens=8, max_buffered_tokens=8)
+    sched = JitScheduler.init(max_seqs=4, max_queued_tokens=8, max_buffered_tokens=8)
     toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0, 1], dtype=jnp.int32), "position")
     sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 2)
@@ -22,7 +22,7 @@ def test_enqueue_and_pack():
 
 
 def test_enqueue_and_pack_over_length():
-    sched = JitScheduler.init(max_queued_tokens=8, max_buffered_tokens=8)
+    sched = JitScheduler.init(max_seqs=4, max_queued_tokens=8, max_buffered_tokens=8)
     toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0, 1], dtype=jnp.int32), "position")
     sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 2)
@@ -38,18 +38,18 @@ def test_enqueue_and_pack_over_length():
 
 
 def test_update_after_sampling():
-    sched = JitScheduler.init(max_queued_tokens=8, max_buffered_tokens=16)
+    sched = JitScheduler.init(max_seqs=4, max_queued_tokens=8, max_buffered_tokens=16)
     toks = hax.named(jnp.array([5], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0], dtype=jnp.int32), "position")
 
     sched = eqx.filter_jit(sched.update_after_sampling)(toks, seqs, 1)
-    assert jnp.array_equal(sched.generated_tokens["position", hax.ds(0, 1)].array, jnp.array([5], dtype=jnp.int32))
-    assert sched.num_generated_tokens == 1
+    assert jnp.array_equal(sched.generated_tokens["seq", 0, "position", hax.ds(0, 1)].array, jnp.array([5], dtype=jnp.int32))
+    assert jnp.array_equal(sched.num_generated_tokens.array, jnp.array([1,0,0,0], dtype=jnp.int32))
     assert sched.num_queued_tokens == 1
 
 
 def test_partial_dequeue():
-    sched = JitScheduler.init(max_queued_tokens=8, max_buffered_tokens=16)
+    sched = JitScheduler.init(max_seqs=4, max_queued_tokens=8, max_buffered_tokens=16)
     toks = hax.named(jnp.array([1, 2, 3], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0, 0, 0], dtype=jnp.int32), "position")
     sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 3)
@@ -69,7 +69,7 @@ def test_partial_dequeue():
 def _make_scheduler_with_tokens(max_tokens=8, max_buffered_tokens=16):
     # Build a scheduler and push four tokens: [10,20,30,40]
     # with seq‐ids [0,1,0,1].
-    sched = JitScheduler.init(max_queued_tokens=max_tokens, max_buffered_tokens=max_buffered_tokens)
+    sched = JitScheduler.init(max_seqs=4, max_queued_tokens=max_tokens, max_buffered_tokens=max_buffered_tokens)
     toks = hax.named(jnp.array([10, 20, 30, 40], dtype=jnp.int32), axis=("position",))
     seqs = hax.named(jnp.array([ 0,  1,  0,  1], dtype=jnp.int32), axis=("position",))
     return eqx.filter_jit(sched.update_after_sampling)(toks, seqs, 4)
@@ -86,12 +86,10 @@ def test_extract_single_sequence():
     assert jnp.array_equal(out.array, expected)
 
     # buffer should now only have the tokens for seq=1 in order [20,40]
-    remaining = sched2.generated_tokens["position", hax.ds(0,2)].array
-    remaining_ids = sched2.generated_seq_ids["position", hax.ds(0,2)].array
+    remaining = sched2.generated_tokens["seq", 1, "position", hax.ds(0,2)].array
     assert jnp.array_equal(remaining, jnp.array([20, 40], dtype=jnp.int32))
-    assert jnp.array_equal(remaining_ids, jnp.array([1, 1], dtype=jnp.int32))
     # count updated
-    assert sched2.num_generated_tokens == 2
+    assert jnp.array_equal(sched2.num_generated_tokens.array, jnp.array([0,2,0,0], dtype=jnp.int32))
 
 
 def test_extract_multiple_sequences():
@@ -105,9 +103,8 @@ def test_extract_multiple_sequences():
     assert jnp.array_equal(out.array, expected)
 
     # buffer now empty
-    assert sched2.num_generated_tokens == 0
+    assert jnp.all(sched2.num_generated_tokens.array == 0)
     assert jnp.all(sched2.generated_tokens.array == INVALID)
-    assert jnp.all(sched2.generated_seq_ids.array == INVALID)
 
 
 def test_extract_partial_sequence():
@@ -120,10 +117,10 @@ def test_extract_partial_sequence():
     assert jnp.array_equal(out.array, expected)
 
     # buffer should now have 1 token for seq 0 and 2 for seq 1
-    remaining = sched2.generated_tokens["position", hax.ds(0,3)].array
-    remaining_ids = sched2.generated_seq_ids["position", hax.ds(0,3)].array
-    assert jnp.array_equal(remaining, jnp.array([20, 30, 40], dtype=jnp.int32))
-    assert jnp.array_equal(remaining_ids, jnp.array([1, 0, 1], dtype=jnp.int32))
+    remaining0 = sched2.generated_tokens["seq", 0, "position", hax.ds(0,1)].array
+    remaining1 = sched2.generated_tokens["seq", 1, "position", hax.ds(0,2)].array
+    assert jnp.array_equal(remaining0, jnp.array([30], dtype=jnp.int32))
+    assert jnp.array_equal(remaining1, jnp.array([20, 40], dtype=jnp.int32))
 
 
 def test_extract_nonexistent_sequence_leaves_buffer():
@@ -136,19 +133,15 @@ def test_extract_nonexistent_sequence_leaves_buffer():
     assert jnp.array_equal(out.array, jnp.full((1,3), INVALID, dtype=jnp.int32))
 
     # buffer remains exactly as before
-    assert sched2.num_generated_tokens == sched.num_generated_tokens
+    assert jnp.array_equal(sched2.num_generated_tokens.array, sched.num_generated_tokens.array)
     assert jnp.array_equal(
-        sched2.generated_tokens["position", hax.ds(0,4)].array,
-        sched.generated_tokens["position", hax.ds(0,4)].array
-    )
-    assert jnp.array_equal(
-        sched2.generated_seq_ids["position", hax.ds(0,4)].array,
-        sched.generated_seq_ids["position", hax.ds(0,4)].array
+        sched2.generated_tokens.array,
+        sched.generated_tokens.array
     )
 
 
 def test_purge_queue_of_seq():
-    sched = JitScheduler.init(max_queued_tokens=8, max_buffered_tokens=8)
+    sched = JitScheduler.init(max_seqs=4, max_queued_tokens=8, max_buffered_tokens=8)
     # Enqueue tokens with seq_ids: [0, 1, 0, 2, 1, 2]
     toks = hax.named(jnp.array([10, 20, 30, 40, 50, 60], dtype=jnp.int32), "position")
     seqs = hax.named(jnp.array([0, 1, 0, 2, 1, 2], dtype=jnp.int32), "position")
