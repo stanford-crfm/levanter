@@ -23,7 +23,7 @@ from levanter.layers.attention import (
     _tpu_splash_attention,
     dot_product_attention,
 )
-from levanter.layers.page_table import PageBatchInfo, PageTable
+from levanter.inference.page_table import PageBatchInfo, PageTable
 from test_utils import skip_if_module_missing
 
 

@@ -19,7 +19,7 @@ def is_valid(x, invalid=INVALID):
 
 
 
-def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> NamedArray:
+def masked_set(dest: NamedArray, axis, start, src, num_to_copy) -> NamedArray:
     """
     jit-safe masked memcpy-like operation.
     Copy into dest[selector, axis, start:start+num_to_copy] the values from src[axis, :num_to_copy].
@@ -35,7 +35,7 @@ def masked_set(dest: NamedArray, selector, axis, start, src, num_to_copy) -> Nam
     dest_arange = hax.where(src_arange >= num_to_copy, dest_axis_size, src_arange + start)
     src_arange = hax.where(src_arange >= num_to_copy, src_arange.size, src_arange)
 
-    return dest.at[{**selector, axis: dest_arange}].set(src[axis, src_arange], mode="drop")
+    return dest.at[{axis: dest_arange}].set(src[axis, src_arange], mode="drop")
 
 
 def is_stop_signal(tail_tokens: ht.i32[NamedArray, "position"], stop_sequences: ht.i32[NamedArray, "seq position"], invalid=INVALID) -> ht.bool_[NamedArray, ""]:  # type: ignore

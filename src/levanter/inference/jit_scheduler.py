@@ -101,6 +101,7 @@ class JitScheduler(eqx.Module):
     # - ``queued_tokens`` are stored "flat" with accompanying ``queued_seq_ids``
     generated_tokens: ht.i32[NamedArray, "seq position"]  # tokens generated per sequence
     num_generated_tokens: ht.i32[NamedArray, "seq"]  # number of generated tokens per sequence
+
     queued_tokens: ht.i32[NamedArray, "position"]  # number of tokens ready to be processed in each sequence.
     queued_seq_ids: ht.i32[NamedArray, "position"]
     num_queued_tokens: jax.Array
@@ -144,7 +145,6 @@ class JitScheduler(eqx.Module):
 
         new_q_tokens = masked_set(
             self.queued_tokens,
-            {},
             "position",
             self.num_queued_tokens,
             new_tokens,
@@ -152,7 +152,6 @@ class JitScheduler(eqx.Module):
         )
         new_q_seq_ids = masked_set(
             self.queued_seq_ids,
-            {},
             "position",
             self.num_queued_tokens,
             new_seq_ids,
@@ -184,7 +183,6 @@ class JitScheduler(eqx.Module):
         seq_ids = new_token_seq_ids["position", sort_order]
 
         def body(i, state):
-            g_tokens, g_counts = state
             seq_id = seq_ids["position", i].scalar()
 
             def update(state):
@@ -268,7 +266,6 @@ class JitScheduler(eqx.Module):
 
         return new_scheduler, sequence
 
-
     def purge_queue_of_seq(self, seq_id) -> "JitScheduler":
         """
         Remove all tokens from the queue that belong to the given sequence ID.
@@ -281,7 +278,6 @@ class JitScheduler(eqx.Module):
         new_seq_ids = self.queued_seq_ids.at["position", remaining_seq_id_pos].get(mode="fill", fill_value=INVALID)
         new_tokens = self.queued_tokens.at["position", remaining_seq_id_pos].get(mode="fill", fill_value=INVALID)
 
-
         return dataclasses.replace(
             self,
             queued_tokens=new_tokens,
@@ -289,6 +285,18 @@ class JitScheduler(eqx.Module):
             num_queued_tokens=new_num_queued_tokens,
         )
 
+    @eqx.filter_jit(donate="all")
+    def extract_all_generated_tokens(self) -> tuple["JitScheduler", ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
+        """
+        Extract all generated tokens from the scheduler, clearing the buffers.
+        Returns a tuple of the updated scheduler, the extracted tokens, and the number of tokens extracted per sequence.
+        """
+        updated = dataclasses.replace(
+            self,
+            generated_tokens=hax.full_like(self.generated_tokens, INVALID),
+            num_generated_tokens=hax.zeros_like(self.num_generated_tokens),
+        )
+        return updated, self.generated_tokens, self.num_generated_tokens
 
     def extract_generated_tokens(
         self,

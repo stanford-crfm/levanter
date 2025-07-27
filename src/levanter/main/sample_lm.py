@@ -15,7 +15,8 @@ import jax.random as jrandom
 
 import haliax
 import haliax as hax
-from haliax import Axis
+import haliax.haxtyping as ht
+from haliax import Axis, NamedArray
 from haliax.partitioning import round_axis_for_partitioning
 
 import levanter
@@ -30,7 +31,7 @@ from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.inference.jit_scheduler import JitScheduler, PackedSequence
+from levanter.inference.jit_scheduler import JitScheduler
 from levanter.inference.utils import INVALID, is_invalid
 from levanter.layers.attention import KvPageCache
 from jaxtyping import PRNGKeyArray
@@ -117,7 +118,7 @@ def run_generation_loop(
     temps,
     max_tokens_per_round: int,
     max_rounds: int,
-) -> tuple[GenState, PackedSequence]:
+) -> tuple[GenState, ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
     """Generate tokens using ``JitScheduler`` until either ``max_new_tokens`` have been
     produced *per sequence* or all sequences report finished."""
 
@@ -125,7 +126,7 @@ def run_generation_loop(
         _gen_state, step = state
         return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (_gen_state.sched.empty_generated_space >= max_tokens_per_round)
 
-    def body(state):
+    def body(state: tuple[GenState, jax.Array]) -> tuple[GenState, jax.Array]:
         gen_state: GenState
         gen_state, step = state
 
@@ -174,47 +175,11 @@ def run_generation_loop(
     init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
     final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
 
-    # Extract generated tokens per sequence and convert to ``PackedSequence``
-    max_pos = final_gen_state.sched.generated_tokens.axis_size("position")
-    seq_axis = final_gen_state.sched.num_generated_tokens.resolve_axis("seq")
-    all_seq_ids = hax.arange(seq_axis)
-
-    prior_counts = final_gen_state.sched.num_generated_tokens
-    sched, tokens = final_gen_state.sched.extract_generated_tokens(all_seq_ids, max_pos)
-
-    P = max_pos
-    S = seq_axis.size
-
-    out_tokens = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
-    out_seq_ids = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
-
-    def gather_body(i, state):
-        toks, ids, start = state
-        count = prior_counts["seq", i].scalar()
-
-        def tok_loop(j, carry):
-            tks, sids = carry
-            tok = tokens["seq", i, "position", j]
-            tks = tks.at["position", start + j].set(tok)
-            sids = sids.at["position", start + j].set(jnp.array(i, dtype=jnp.int32))
-            return tks, sids
-
-        toks, ids = jax.lax.fori_loop(0, count, tok_loop, (toks, ids))
-        return toks, ids, start + count
-
-    init = (out_tokens, out_seq_ids, 0)
-    out_tokens, out_seq_ids, total = jax.lax.fori_loop(0, S, gather_body, init)
-
-    out_seq = PackedSequence(
-        tokens=out_tokens,
-        seq_ids=out_seq_ids,
-        num_tokens=total,
-        is_boundary=hax.zeros_like(out_tokens, dtype=jnp.bool_),
-    )
+    sched, tokens, token_counts = final_gen_state.sched.extract_all_generated_tokens()
 
     final_gen_state = dataclasses.replace(final_gen_state, sched=sched)
 
-    return final_gen_state, out_seq
+    return final_gen_state, tokens, token_counts
 
 
 def main(config: SampleLmConfig):
@@ -320,7 +285,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         while target_len > gen_state.sched.empty_queue_space:
             # if the queue is too full, we run generation loop to free up space
             # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
-            gen_state, packed_out = run_generation_loop(
+            gen_state, new_tokens, new_counts = run_generation_loop(
                 gen_state,
                 model,
                 sampler,
@@ -330,7 +295,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
                 32,
             )
 
-            extract_outputs(packed_out, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+            extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, config.max_new_tokens)
 
         this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
         seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
@@ -339,7 +304,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         del new_sched
 
         # do one macro-prefill round
-        gen_state, packed_out = run_generation_loop(
+        gen_state, new_tokens, new_counts = run_generation_loop(
             gen_state,
             model,
             sampler,
@@ -348,15 +313,17 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             1,
         )
 
-        extract_outputs(packed_out, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+        extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, config.max_new_tokens)
 
     gen_state = jax.block_until_ready(gen_state)
     time_mid = time.time()
     print(f"Prefill took {time_mid - time_in:.2f} seconds, ")
-    # run the fully JIT-compiled generation loop
+
+    # finish chunked prefills and run autoregressive generation
+
     while not all(finished):
         time_gen_in = time.time()
-        gen_state, this_outputs = run_generation_loop(
+        gen_state, new_tokens, new_counts = run_generation_loop(
             gen_state,
             model,
             sampler,
@@ -369,7 +336,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         print(f"Generation loop iter took {time.time() - time_gen_in:.3f} seconds, ")
         time_gen_in = time.time()
 
-        extract_outputs(this_outputs, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+        extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, config.max_new_tokens)
         print(f"Extracted outputs took {time.time() - time_gen_in:.3f} seconds, ")
 
     gen_state = jax.block_until_ready(gen_state)
@@ -392,27 +359,27 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
     return outputs, gen_state, total_generated
 
 
-# @haliax.named_jit(donate_args=(True,))
-def extract_outputs(out_seq: PackedSequence, outputs, finished, total_prompt_tokens, max_new_tokens):
+def extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, max_new_tokens):
     """
     drain generated tokens and append them to the outputs.
 
     MUTATES outputs and finished lists.
     """
-    # TODO: offload this and detokenization to a separate thread
-    out_seq = jax.device_get(out_seq)
-    for i in range(out_seq.num_tokens):
-        seq_id = int(out_seq.seq_ids.array[i])
-        tok_id = int(out_seq.tokens.array[i])
-
-        if seq_id >= len(outputs) or seq_id < 0:
-            continue
+    num_seqs = new_tokens.axis_size("seq")
+    for seq_id in range(num_seqs):
         if finished[seq_id]:
             continue
-        outputs[seq_id].append(tok_id)
+        count = new_counts.array[seq_id]
+        seq_tokens = new_tokens["seq", seq_id].array[:count]
+        if seq_id >= len(outputs) or seq_id < 0:
+            continue
 
-        if len(outputs[seq_id]) >= max_new_tokens + total_prompt_tokens:
+        if len(outputs[seq_id]) + count >= max_new_tokens + total_prompt_tokens:
+            # if we have enough tokens, mark this sequence as finished
             finished[seq_id] = True
+            seq_tokens = seq_tokens[:max_new_tokens + total_prompt_tokens - len(outputs[seq_id])]
+
+        outputs[seq_id].extend(seq_tokens)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import haliax as hax
 from haliax import Axis
 
 from levanter.layers.attention import AttentionMask, KvPageCache, AttentionBackend
-from levanter.layers.page_table import PageTable, PageBatchInfo
+from levanter.inference.page_table import PageTable, PageBatchInfo
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 
 
