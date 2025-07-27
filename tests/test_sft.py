@@ -10,6 +10,7 @@ from levanter.models.llama import LlamaEmbedding
 
 
 class TestModel(equinox.Module):
+    __test__ = False
     Vocab: hax.Axis
     embeddings: LlamaEmbedding
     lm_head: hax.nn.Linear
