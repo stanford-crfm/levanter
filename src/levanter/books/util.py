@@ -17,7 +17,7 @@ Two groups of helpers live here:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Generator, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Generator, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np

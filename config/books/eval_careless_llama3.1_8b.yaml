@@ -20,10 +20,11 @@ chunk_size: 100
 
 # Hugging Face tokenizer to load
 tokenizer_name: meta-llama/Llama-3.1-8B
+use_dataloader: true
 
 model:  # 8B llama3 model
   type: llama
-  seq_len: 4096
+  seq_len: 101
   hidden_dim: 8192
   intermediate_dim: 28672
   num_layers: 80
@@ -47,7 +48,7 @@ trainer:
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
-eval_batch_size: 16
+eval_batch_size: 64
 
 # Load weights directly from the original HF checkpoint.
 initialize_from_hf: "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"

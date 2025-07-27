@@ -21,7 +21,7 @@ import logging
 import math
 import pathlib
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -35,19 +35,20 @@ import haliax as hax
 from haliax.nn import log_softmax
 from haliax.partitioning import round_axis_for_partitioning
 
-from levanter.data import DataLoader
-from levanter.data.dataset import ListAsyncDataset
-
 import levanter
+import levanter.tracker
 
 # Helpers -----------------------------------------------------------------
 from levanter.books.util import compute_max_extraction_rates, create_pz_histogram
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
+from levanter.data import DataLoader
+from levanter.data.dataset import ListAsyncDataset
 from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+
 
 # -----------------------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
@@ -98,7 +99,6 @@ class EvalCarelessLmConfig:
 
 def main(cfg: EvalCarelessLmConfig):
     levanter.initialize(cfg)
-
     # Tokenizer & axes ---------------------------------------------------------
     if cfg.tokenizer_name is not None:
         from transformers import AutoTokenizer
@@ -169,7 +169,6 @@ def main(cfg: EvalCarelessLmConfig):
 
     examples: list[LmExample] = []
     char_ranges_list: list[Tuple[int, int]] = []
-
     for chunk in chunks:
         ids = chunk["input_ids"]
         if len(ids) < Pos.size:
@@ -234,6 +233,16 @@ def main(cfg: EvalCarelessLmConfig):
         done = min((idx + 1) * batch_size, total_chunks)
         pct = 100 * done / total_chunks
         print(f"Batch {idx+1}/{total_batches} – {done}/{total_chunks} windows ({pct:.1f} %)", flush=True)
+        levanter.tracker.log(
+            {
+                "eval/batch_number": idx + 1,
+                "eval/total_batches": total_batches,
+                "eval/windows_processed": done,
+                "eval/total_windows": total_chunks,
+                "eval/progress_percent": pct,
+            },
+            step=idx,
+        )
 
     # Extraction statistics -----------------------------------------------------
     stats = compute_max_extraction_rates(pz_list)
@@ -254,6 +263,17 @@ def main(cfg: EvalCarelessLmConfig):
     for pz, (c0, c1) in zip(pz_list, char_ranges):
         char_max[c0 : c1 + 1] = np.maximum(char_max[c0 : c1 + 1], pz)
 
+    levanter.tracker.log(
+        {
+            "char_analysis/mean_max_pz": float(np.mean(char_max)),
+            "char_analysis/median_max_pz": float(np.median(char_max)),
+            "char_analysis/max_max_pz": float(np.max(char_max)),
+            "char_analysis/chars_above_0.5": int(np.sum(char_max > 0.5)),
+            "char_analysis/chars_above_0.9": int(np.sum(char_max > 0.9)),
+            "char_analysis/total_chars": len(char_max),
+        },
+        step=0,
+    )
     # ------------------------------------------------------------------
     # Visualization: show a *single-row* heat-map so each character
     # column is a vertical bar whose colour encodes max-P(z).

@@ -34,7 +34,7 @@ tokenizer_name: meta-llama/Llama-3.1-8B
 # ---------------------------------------------------------------------------
 model:  # 70B Llama-3.1 architecture (same hyper-params as HF release)
   type: llama
-  seq_len: 4096
+  seq_len: 101
   hidden_dim: 8192        # HF release uses 8192 dim for 70B as well
   intermediate_dim: 28672
   num_layers: 80
@@ -56,7 +56,7 @@ trainer:
     type: wandb
     project: "marin"
     tags: ["llama3", "eval", "70b"]
-  mp: p=f32,c=bfloat16
+  mp: p=f32,c=f32
   per_device_eval_parallelism: -1
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
@@ -64,7 +64,7 @@ trainer:
 
 # Evaluation-specific overrides
 # Reduce batch size to avoid OOM on 70B.
-eval_batch_size: 8
+eval_batch_size: 64
 
 # ---------------------------------------------------------------------------
 # Checkpoint -----------------------------------------------------------------
