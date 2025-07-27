@@ -97,7 +97,8 @@ class JitScheduler(eqx.Module):
 
     """
     # Notes:
-    # - generate_tokens and queued_tokens is stored "flat" with seq_ids per token
+    # - ``generated_tokens`` are stored per sequence in a fixed-size circular buffer
+    # - ``queued_tokens`` are stored "flat" with accompanying ``queued_seq_ids``
     generated_tokens: ht.i32[NamedArray, "seq position"]  # tokens generated per sequence
     num_generated_tokens: ht.i32[NamedArray, "seq"]  # number of generated tokens per sequence
     queued_tokens: ht.i32[NamedArray, "position"]  # number of tokens ready to be processed in each sequence.
@@ -267,49 +268,6 @@ class JitScheduler(eqx.Module):
 
         return new_scheduler, sequence
 
-    @eqx.filter_jit(donate="all")
-    def extract_all_generated_tokens(self) -> tuple["JitScheduler", PackedSequence]:
-        """
-        Extract all generated tokens and sequence ids, returning a new scheduler with empty buffers.
-        This is used to finalize the generation process and retrieve all generated tokens.
-        """
-        P = self.generated_tokens.axis_size("position")
-        S = self.generated_tokens.axis_size("seq")
-
-        out_tokens = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
-        out_seq_ids = hax.full({"position": P * S}, INVALID, dtype=jnp.int32)
-
-        def body(i, state):
-            toks, ids, start = state
-            count = self.num_generated_tokens["seq", i].scalar()
-
-            def tok_loop(j, carry):
-                toks, ids = carry
-                tok = self.generated_tokens["seq", i, "position", j]
-                toks = toks.at["position", start + j].set(tok)
-                ids = ids.at["position", start + j].set(jnp.array(i, dtype=jnp.int32))
-                return toks, ids
-
-            toks, ids = jax.lax.fori_loop(0, count, tok_loop, (toks, ids))
-            return toks, ids, start + count
-
-        init = (out_tokens, out_seq_ids, 0)
-        out_tokens, out_seq_ids, total = jax.lax.fori_loop(0, S, body, init)
-
-        out = PackedSequence(
-            tokens=out_tokens,
-            seq_ids=out_seq_ids,
-            num_tokens=total,
-            is_boundary=hax.zeros_like(out_tokens, dtype=jnp.bool_),
-        )
-
-        updated = dataclasses.replace(
-            self,
-            generated_tokens=hax.full_like(self.generated_tokens, INVALID),
-            num_generated_tokens=hax.zeros_like(self.num_generated_tokens),
-        )
-
-        return updated, out
 
     def purge_queue_of_seq(self, seq_id) -> "JitScheduler":
         """
