@@ -6,7 +6,7 @@ from haliax import NamedArray, haxtyping as ht
 from jax import numpy as jnp
 import jax
 
-from levanter.inference.utils import INVALID, masked_set, is_valid
+from levanter.inference.utils import INVALID, masked_set, is_valid, is_stop_signal
 
 
 class PackedSequence(eqx.Module):
@@ -72,6 +72,8 @@ class DecodeState(eqx.Module):
     prefix_len: ht.i32[NamedArray, "seq"]
     """ offset into tokens for each sequence, i.e. how many tokens were generated before the current round """
 
+    finished: ht.bool_[NamedArray, "seq"]  # whether each sequence is finished
+
     # Per sequence sampling parameters
     max_num_tokens: ht.i32[NamedArray, "seq"]
     """
@@ -93,7 +95,41 @@ class DecodeState(eqx.Module):
                    tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
                    prefix_len: int,
                    seq_params: SeqDecodingParams | None = None) -> "DecodeState":
-        raise NotImplementedError
+        """Assign a new sequence to the given local slot."""
+
+        num = tokens.axis_size("position")
+
+        row_tokens = self.tokens["seq", local_seq_id]
+        row_tokens = masked_set(row_tokens, "position", 0, tokens, num)
+        new_tokens = self.tokens.at["seq", local_seq_id].set(row_tokens)
+
+        new_state = dataclasses.replace(
+            self,
+            kv_pages=self.kv_pages.at["seq", local_seq_id].set(kv_pages),
+            seq_id=self.seq_id.at["seq", local_seq_id].set(global_seq_id),
+            tokens=new_tokens,
+            num_tokens=self.num_tokens.at["seq", local_seq_id].set(jnp.array(num, dtype=jnp.int32)),
+            prefix_len=self.prefix_len.at["seq", local_seq_id].set(prefix_len),
+            finished=self.finished.at["seq", local_seq_id].set(False),
+        )
+
+        if seq_params is not None:
+            new_state = dataclasses.replace(
+                new_state,
+                max_num_tokens=new_state.max_num_tokens.at["seq", local_seq_id].set(seq_params.max_num_tokens),
+                temperature=new_state.temperature.at["seq", local_seq_id].set(seq_params.temperature),
+            )
+            if new_state.stop_tokens is not None and seq_params.stop_tokens is not None:
+                n_stop = seq_params.stop_tokens.axis_size("stop_seq")
+                st_len = seq_params.stop_tokens.axis_size("position")
+                st = new_state.stop_tokens
+                for i in range(n_stop):
+                    row = st["seq", local_seq_id, "stop_seq", i]
+                    row = masked_set(row, "position", 0, seq_params.stop_tokens["stop_seq", i], st_len)
+                    st = st.at["seq", local_seq_id, "stop_seq", i].set(row)
+                new_state = dataclasses.replace(new_state, stop_tokens=st)
+
+        return new_state
 
     def update_tokens(self,
                       local_seq_ids:  ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
@@ -105,7 +141,28 @@ class DecodeState(eqx.Module):
         Update the tokens and (optional) log probabilities for the given local sequence IDs.
         Needs to do the scatter/set operation in a JIT-safe way, similar to update_after_sampling in JitScheduler.
         """
-        raise NotImplementedError
+        tokens = self.tokens
+        logprobs = self.logprobs
+        counts = self.num_tokens
+
+        def body(i, state):
+            tkns, lps, cnts = state
+            sid = local_seq_ids["position", i].scalar()
+
+            def update(state):
+                tkns, lps, cnts = state
+                pos = cnts["seq", sid].scalar()
+                tkns = tkns.at["seq", sid, "position", pos].set(new_tokens["position", i])
+                if lps is not None:
+                    lps = lps.at["seq", sid, "position", pos].set(new_log_probs["position", i])
+                cnts = cnts.at["seq", sid].add(1)
+                return tkns, lps, cnts
+
+            return jax.lax.cond(is_valid(sid), update, lambda s: s, state)
+
+        tokens, logprobs, counts = jax.lax.fori_loop(0, num_new_tokens, body, (tokens, logprobs, counts))
+
+        return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, num_tokens=counts)
 
     def is_finished(self, seq_id: jnp.ndarray):
         """
@@ -118,7 +175,34 @@ class DecodeState(eqx.Module):
         Returns jnp.ndarray with the same shape as seq_id, where each entry is True if the sequence is finished.
         """
 
-        raise NotImplementedError
+        sid_flat = jnp.reshape(seq_id, (-1,))
+        result = jnp.zeros_like(sid_flat, dtype=bool)
+
+        def body(i, acc):
+            sid = sid_flat[i]
+            done = self.finished["seq", sid].array
+            total = self.num_tokens["seq", sid].scalar() + self.prefix_len["seq", sid].scalar()
+            done |= total >= self.max_num_tokens["seq", sid].scalar()
+
+            if self.stop_tokens is not None:
+                stop_len = self.stop_tokens.axis_size("position")
+                num = self.num_tokens["seq", sid].scalar()
+                tokens_row = self.tokens["seq", sid].array
+                padded_tokens = jnp.concatenate([
+                    jnp.full((stop_len,), INVALID, dtype=jnp.int32),
+                    tokens_row,
+                ])
+                tail = jax.lax.dynamic_slice(padded_tokens, (num,), (stop_len,))
+                stop = is_stop_signal(
+                    hax.named(tail, axis=("position",)),
+                    self.stop_tokens["seq", sid],
+                ).array
+                done |= stop
+
+            return acc.at[i].set(done)
+
+        result = jax.lax.fori_loop(0, sid_flat.shape[0], body, result)
+        return jnp.reshape(result, seq_id.shape)
 
 
     @staticmethod
@@ -141,7 +225,7 @@ class DecodeState(eqx.Module):
             logprobs=None,
             prefix_len=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             num_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
-            is_finished=hax.zeros({"seq": max_seqs}, dtype=bool),
+            finished=hax.zeros({"seq": max_seqs}, dtype=bool),
             max_num_tokens=hax.full({"seq": max_seqs}, 0, dtype=jnp.int32),
             stop_tokens=hax.full(
                 {"seq": max_seqs, "stop_seq": max_stop_tokens, "position": max_tokens},
