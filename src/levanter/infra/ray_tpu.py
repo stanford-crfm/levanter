@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import dataclasses
 import logging
 import multiprocessing
@@ -8,7 +9,7 @@ import tempfile
 import time
 from asyncio import QueueEmpty
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Generic, Optional, Sequence, TypeVar
 
 import draccus
 import mergedeep
@@ -29,8 +30,7 @@ from ray.exceptions import (
     WorkerCrashedError,
 )
 from ray.remote_function import RemoteFunction
-from ray.util.placement_group import PlacementGroup
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from levanter.infra.docker import make_docker_run_command
 from levanter.utils.ray_utils import ser_exc_info
@@ -89,20 +89,6 @@ from levanter.utils.ray_utils import ser_exc_info
 #  can avoid crashing (probably doing some kind of diloco thing) Or we just go full parameter server
 
 logger = logging.getLogger("ray")
-
-
-@dataclass
-class HostInfo:
-    """
-    Information about a TPU host.
-
-    This is used to pass information about a TPU host to the worker tasks.
-    """
-
-    pod_name: str
-    worker_id: int
-    ip_address: str
-    num_tpus: int
 
 
 # My kingdom for ADTs
@@ -165,36 +151,20 @@ class SliceInfo:
     ip_address: str
     num_tpus_per_host: int
 
-    def resources_per_job(self) -> dict:
-        """
-        Returns the resources required for a job on this slice.
-        This is used to set the resources for the remote function.
-        """
-        return {
-            self.slice_name: 1,
-            "CPU": 8,  # default number of CPUs per host
-            "TPU": self.num_tpus_per_host,
-            "memory": 20e9,  # default memory per host
-        }
 
-    def as_ray_resources_kwargs(self):
-        """Ray obnoxiously uses these resource dicts but you can't pass them to ray.remote"""
-        return dict(
-            resources={
-                self.slice_name: 1,
-                "TPU": self.num_tpus_per_host,
-            },
-            num_cpus=8,
-            num_gpus=0,
-            memory=20e9,
-        )
+@dataclass(frozen=True)
+class TPUHostInfo:
+    slice_name: str
+    worker_index: int
+    node_id: str
+    num_tpus: int
 
 
 # Timeouts (in seconds)
 _HEALTH_CHECK_TIMEOUT = 60
+_TEARDOWN_ACTOR_TIMEOUT = 300
 _TERMINATE_ACTOR_TIMEOUT = 300
-_START_ACTOR_TIMEOUT = 300
-_PLACEMENT_GROUP_READY_TIMEOUT = 300
+_START_ACTOR_TIMEOUT = 7 * 24 * 60 * 60  # 1 week
 
 
 def _multislice_info_from_head(head: SliceInfo, slice_id: int, num_slices: int) -> MultisliceInfo:
@@ -222,44 +192,140 @@ def _multislice_info_to_env_vars(multislice: MultisliceInfo) -> dict[str, str]:
     return mxla_env
 
 
-def _create_placement_group(pod_name: str, num_hosts: int, num_tpus: int) -> PlacementGroup:
-    pg_name = f"tpu-slice-{pod_name}"
+ActorInfoT = TypeVar('ActorInfoT')
 
-    bundles = [
-        {
-            "CPU": 8,
-            "TPU": num_tpus,
-            "memory": 20e9,
-            pod_name: 1,  # your custom resource key
-        }
-        for _ in range(num_hosts)
-    ]
 
-    try:
-        pg = ray.util.placement_group(bundles=bundles, name=pg_name)
-    except RaySystemError as e:
-        if "already exists" in str(e):
-            logger.warning(f"Placement group {pg_name} already exists. Reusing it.")
-            # In theory this is fine since in order to use this PG we have to have the lock on the slice
-            pg = ray.util.get_placement_group(pg_name)
-        else:
+@dataclass(frozen=True)
+class ActorPoolMember(Generic[ActorInfoT]):
+    actor: ActorHandle
+    actor_info: ActorInfoT
+
+
+SliceResource = ActorPoolMember[SliceInfo]
+
+
+class ResourcePoolManager(ABC, Generic[ActorInfoT]):
+    def __init__(self):
+        self._actor_pool: list[ActorPoolMember[ActorInfoT]] = []
+
+    @abstractmethod
+    def get_actor_pool_name(self) -> str:
+        return str(self)
+
+    @abstractmethod
+    def get_actor_name_from_actor_info(self, actor_info: ActorInfoT) -> str:
+        raise NotImplementedError()
+
+    @abstractmethod
+    def create_actor(self) -> ActorHandle:
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_actor_info_future(self, actor: ActorHandle) -> ray.ObjectRef:
+        raise NotImplementedError()
+
+    def get_all_actors_in_pool(self) -> list[ActorHandle]:
+        return [member.actor for member in self._actor_pool]
+
+    def get_all_pool_members(self) -> list[ActorPoolMember[ActorInfoT]]:
+        return self._actor_pool.copy()
+
+    def _remove_unhealthy_members_from_actor_pool(self) -> None:
+        logger.info(f"{self.get_actor_pool_name()} actor pool members before removing unhealthy members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+        members_and_health = [(member, member.actor.healthy.remote()) for member in self._actor_pool]
+        healthy_members: list[ActorPoolMember[ActorInfoT]] = []
+        unhealthy_members: list[ActorPoolMember[ActorInfoT]] = []
+        for member, health in members_and_health:
             try:
-                logger.exception(f"Failed to create placement group {pg_name}. Removing it. Error: {e}")
-                ray.util.remove_placement_group(pg)  # don’t leave a half-ready PG behind
-            except Exception as remove_pg_exception:
-                logger.exception(f"Failed to remove placement group {pg_name} after failure: {remove_pg_exception}")
-            raise RuntimeError(f"Failed to create placement group {pg_name}") from e
+                if ray.get(health, timeout=_HEALTH_CHECK_TIMEOUT):
+                    healthy_members.append(member)
+                else:
+                    logger.warning(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} is unhealthy. Removing from actor pool.")
+                    unhealthy_members.append(member)
+            except (RayActorError, RayTaskError, ActorDiedError, ActorUnavailableError, GetTimeoutError) as e:
+                logger.warning(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} is dead or unavailable. Removing from actor pool. Error: {e}")
+                unhealthy_members.append(member)
 
-    return pg
+        # NOTE: For simplicity, we serially process the unhealthy actors, rather than doing it in parallel.
+        for unhealthy_member in unhealthy_members:
+            # This is a synchronous blocking call.
+            _stop_actor(unhealthy_member.actor)
+
+        self._actor_pool = healthy_members
+        logger.info(f"{self.get_actor_pool_name()} actor pool members after unhealthy members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+
+    def _add_members_to_actor_pool(self, desired_num_actors: int) -> None:
+        logger.info(f"{self.get_actor_pool_name()} actor pool members before adding members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+        if len(self._actor_pool) >= desired_num_actors:
+            logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, and we wanted {desired_num_actors}. Skipping adding members.")
+            return
+
+        # if we don't have enough slices, create more
+        logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, but we want {desired_num_actors}. Creating more.")
+
+        actors = [self.create_actor() for _ in range(desired_num_actors - len(self._actor_pool))]
+
+        actors_and_actor_info_awaitables = [(actor, self.get_actor_info_future(actor)) for actor in actors]
+        logger.info(f"{self.get_actor_pool_name()} actor pool waiting for {len(actors)} new actors to start...")
+        for actor, actor_info_awaitable in actors_and_actor_info_awaitables:
+            try:
+                actor_info: ActorInfoT = ray.get(actor_info_awaitable, timeout=_START_ACTOR_TIMEOUT)  # TODO: make this overridable
+            except Exception as e:
+                logger.exception(f"{self.get_actor_pool_name()} actor pool actor {actor} failed to start: {e}")
+                _stop_actor(actor)
+                continue
+            logger.info(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(actor_info)} started.")
+            self._actor_pool.append(ActorPoolMember[ActorInfoT](actor, actor_info))
+
+        logger.info(f"{self.get_actor_pool_name()} actor pool members after adding members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+        logger.info(f"{self.get_actor_pool_name()} actor pool scaled up to {len(self._actor_pool)} members")
+
+        if len(self._actor_pool) < desired_num_actors:
+            raise Exception(f"Wanted {desired_num_actors} hosts in slice {self.get_actor_pool_name()} but only acquired {len(self._actor_pool)} hosts.")
+
+    def scale_actor_pool(self, desired_num_actors: int) -> None:
+        self._remove_unhealthy_members_from_actor_pool()
+        self._add_members_to_actor_pool(desired_num_actors)  # TODO: Clean this up
+        # TODO: Add retry logic
+
+    def drain_actor_pool(self) -> None:
+        logger.info(f"{self.get_actor_pool_name()} actor pool members before draining: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+        for member in self._actor_pool:
+            logger.info(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} stopping.")
+            _stop_actor(member.actor)
+        self._actor_pool = []
+        logger.info(f"{self.get_actor_pool_name()} actor pool drained.")
+
+
+
+class SlicePoolManager(ResourcePoolManager[SliceInfo]):
+    def __init__(self, tpu_type: str):
+        super().__init__()
+        self._tpu_type = tpu_type
+
+    def get_actor_pool_name(self) -> str:
+        return f"{self._tpu_type} slices"
+
+    def get_actor_name_from_actor_info(self, actor_info: SliceInfo) -> str:
+        return str(actor_info.slice_name)
+
+    def create_actor(self) -> ActorHandle:
+        return SliceActor.options(resources={f"TPU-{self._tpu_type}-head": 1}).remote()  # type: ignore
+
+    def get_actor_info_future(self, actor: ActorHandle) -> ray.ObjectRef:
+        return actor.get_slice_info.remote()
+
 
 
 @ray.remote
-class SliceActor:
+class SliceActor(ResourcePoolManager[TPUHostInfo]):
     """
     Actor that manages a single TPU slice.
     """
     def __init__(self):
+        super().__init__()
         self._failed = False
+        self._slice_info: Optional[SliceInfo] = None
 
     def healthy(self) -> bool:
         return not self._failed and not self.is_being_preempted()
@@ -273,6 +339,21 @@ class SliceActor:
 
         return get_current_tpu_is_preempted()
 
+    def get_actor_pool_name(self) -> str:
+        assert self._slice_info
+        return f"slice {self._slice_info.slice_name}"
+
+    def get_actor_name_from_actor_info(self, actor_info: TPUHostInfo) -> str:
+        return str(actor_info.worker_index)
+
+    def create_actor(self) -> ActorHandle:
+        assert self._slice_info
+        slice_name = self._slice_info.slice_name
+        return TPUHostActor.options(resources={slice_name: 1}, num_cpus=0.0).remote(self._slice_info)  # type: ignore
+
+    def get_actor_info_future(self, actor: ActorHandle) -> ray.ObjectRef:
+        return actor.get_host_info.remote()
+
     def get_slice_info(self):
         pod_name = ray.util.accelerators.tpu.get_current_pod_name()
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
@@ -284,27 +365,91 @@ class SliceActor:
             num_tpus_per_host = 4
             num_hosts = num_cores // 8
         ip_address = socket.gethostbyname(socket.gethostname())
-
-        return SliceInfo(
+        self._slice_info = SliceInfo(
             slice_name=pod_name,
             num_hosts=num_hosts,
             num_tpus_per_host=num_tpus_per_host,
             ip_address=ip_address,
         )
+        self.scale_actor_pool(num_hosts)
+        return self._slice_info
+
+    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> list[ray.ObjectRef]:
+        """Run the remote function on this slice.
+
+        NOTE: This runs the remote function in a different task. It does not block on the remote function call.
+        NOTE: This returns a list of Ray futures. If calling this method on a remote Actor, you will get a future of a list of futures."""
+        actors = self.get_all_actors_in_pool()
+        if not self._slice_info or len(actors) < self._slice_info.num_hosts:
+            raise Exception("Insufficient host actors; call setup() before calling run_remote_fn()")
+        futures_of_futures: list[ray.ObjectRef] = [actor.run_remote_fn.remote(remote_fn, runtime_env) for actor in actors]
+        return [ray.get(future_of_future) for future_of_future in futures_of_futures]
+
+    def teardown(self):
+        self.drain_actor_pool()
+        self._slice_info = None
 
 
-@dataclass(frozen=True)
-class SliceResource:
-    """A collection of all resources associated with a single TPU slice."""
+@ray.remote
+class TPUHostActor:
+    """
+    Actor that manages a single TPU host.
+    """
 
-    actor: ActorHandle
-    """Actor handle for the SliceActor"""
+    def __init__(self, slice_info: SliceInfo):
+        self._awaitable: Optional[ray.ObjectRef] = None
+        self._host_info: Optional[TPUHostInfo] = None
+        self._slice_info = slice_info
 
-    slice_info: SliceInfo
-    """Information about the slice"""
+    def healthy(self) -> bool:
+        return not self.is_being_preempted()
 
-    placement_group: PlacementGroup
-    """Placement group of hosts"""
+    def is_being_preempted(self) -> bool:
+        from levanter.infra.tpus import get_current_tpu_is_preempted
+
+        return get_current_tpu_is_preempted()
+
+    def get_host_info(self) -> TPUHostInfo:
+        if self._host_info:
+            return self._host_info
+
+        self._host_info = TPUHostInfo(
+            slice_name = self._slice_info.slice_name,
+            worker_index = TPUAcceleratorManager._get_current_node_tpu_worker_id(),
+            node_id = ray.get_runtime_context().get_node_id(),
+            num_tpus = self._slice_info.num_tpus_per_host,
+        )
+        return self._host_info
+
+    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> ray.ObjectRef:
+        """Run the remote function on this host.
+
+        NOTE: This runs the remote function in a different task. It does not block on the remote function call.
+        NOTE: This returns a Ray future. If calling this method on a remote Actor, you will get a future of a future."""
+        _hacky_remove_tpu_lockfile()
+        if self._awaitable:
+            ray.cancel(self._awaitable, force=True, recursive=True)
+        if not self._host_info:
+            raise Exception("Call setup() before calling run_remote_fn()")
+        self._awaitable = remote_fn.options(
+            scheduling_strategy=NodeAffinitySchedulingStrategy(self._host_info.node_id, soft=False),
+            resources={
+                "TPU": self._host_info.num_tpus,
+            },
+            num_cpus=8,
+            num_gpus=0,
+            memory=20e9,
+            runtime_env=runtime_env,
+        ).remote()
+        return self._awaitable
+
+    def teardown(self) -> None:
+        if self._awaitable:
+            ray.cancel(self._awaitable, force=True, recursive=True)
+        self._awaitable = None
+        self._host_info = None
+
+
 
 
 def run_on_pod(
@@ -372,6 +517,8 @@ def run_on_pod_ray(
     elif remote_fn._default_options.get("max_calls") is None:
         raise ValueError("Remote function must have max_calls set to 1 for TPU workloads.")
 
+    slice_pool_manager = SlicePoolManager(tpu_type)
+
     try:
         while num_failures <= max_retries_failure and num_preemptions <= max_retries_preemption:
             logger.info(f"Running on {num_slices} x TPU {tpu_type}. Attempt {attempt}")
@@ -380,7 +527,8 @@ def run_on_pod_ray(
 
             # prune all bad actors from pool
             try:
-                slice_pool = _scale_slice_pool(slice_pool, tpu_type, num_slices)
+                slice_pool_manager.scale_actor_pool(num_slices)
+                slice_pool = slice_pool_manager.get_all_pool_members()
             except Exception as e:
                 logger.exception("Failed to prune dead slices or create new actors", exc_info=e)
                 problems.append(e)
@@ -388,7 +536,7 @@ def run_on_pod_ray(
                 continue
 
             # If we're doing multislice, we need to get the slice info from the first actor
-            head_slice_info = slice_pool[0].slice_info if len(slice_pool) > 1 else None
+            head_slice_info = slice_pool[0].actor_info if len(slice_pool) > 1 else None
 
             # Ok finally time to run the remote function on all slices
             futures: list[ray.ObjectRef] = []  # one per host in each slice
@@ -402,7 +550,8 @@ def run_on_pod_ray(
                 else:
                     mxla_env = {}
 
-                futures_for_slice = _start_fn_on_slice(tpu_slice, remote_fn, mxla_env)
+                futures_for_slice = _start_fn_on_slice(tpu_slice.actor, remote_fn, mxla_env)
+                logger.info(f"Futures for slice {slice_pool[0].actor_info.slice_name}: {futures_for_slice}")
 
                 futures.extend(futures_for_slice)
                 for future in futures_for_slice:
@@ -496,17 +645,6 @@ def run_on_pod_ray(
                 else:
                     raise RuntimeError(f"Unexpected result: {result}")
 
-            # try to cleanup lockfiles
-            cleanup_futs = []
-            for tpu_slice in slice_pool:
-                cleanup_futs.extend(_cleanup_lockfiles(tpu_slice))
-
-            if cleanup_futs:
-                try:
-                    ray.get(cleanup_futs)
-                except Exception as e:
-                    logger.warning("Failed to cleanup lockfiles", exc_info=e)
-
             if any_preempted:
                 problem = problems[0] if problems else RuntimeError("TPU job was preempted")
                 num_preemptions += 1
@@ -534,12 +672,9 @@ def run_on_pod_ray(
         logger.exception("Unexpected error. This is a bug in Levanter. Please report it.", exc_info=e)
         raise
     finally:
-        # Cleanup actors and placement groups
-        logger.info("Cleaning up actors and placement groups")
-        for tpu_slice in slice_pool:
-            logger.info(f"Removing {tpu_slice.slice_info.slice_name} from pool.")
-            _release_slice_resource(tpu_slice)
-        slice_pool.clear()
+        # Cleanup actors
+        logger.info("Cleaning up actors")
+        slice_pool_manager.drain_actor_pool()
 
     # Note: PyCharm flags this as unreachable code, but it is reachable if the loop exits without returning.
     problem = problems[0] if problems else None
@@ -563,6 +698,7 @@ def _stop_actor(actor: ActorHandle) -> None:
         #
         # NOTE: Not sure if this always returns an exception (because the actor will terminate before finishing)
         # but it doesn't really matter
+        ray.get(actor.teardown.remote(), timeout=_TEARDOWN_ACTOR_TIMEOUT)
         ray.get(actor.__ray_terminate__.remote(), timeout=_TERMINATE_ACTOR_TIMEOUT)
     except ActorDiedError:
         # This is expected because the actor will terminate within  __ray_terminate__() task,
@@ -574,74 +710,7 @@ def _stop_actor(actor: ActorHandle) -> None:
         ray.kill(actor)
 
 
-def _release_slice_resource(slice_resource: SliceResource) -> None:
-    _stop_actor(slice_resource.actor)
-    try:
-        ray.util.remove_placement_group(slice_resource.placement_group)
-    except Exception as e:
-        logger.warning(f"Failed to remove placement group: {e}")
-
-
-def _scale_slice_pool(slice_pool: list[SliceResource], tpu_type: str, num_slices: int) -> list[SliceResource]:
-    """Scale the slice pool to the desired number of slices.
-
-    Terminate unhealth slices, then allocate new slices to fill up the shortfall.
-
-    This function expects to be called repeatedly in an outer retry loop until it succeeds.
-
-    Returns a new pool. Does not mutate `slice_pool`."""
-    # NOTE: Do not add a retry loop, as this function will be run in an outer retry loop.
-    healthy_slices = _prune_dead_slices(slice_pool)
-    del slice_pool  # Defensively prevent mutations to slice_pool
-    if len(healthy_slices) >= num_slices:
-        return healthy_slices
-
-    # if we don't have enough slices, create more
-    logger.info(f"Pool slices: {[tpu_slice.slice_info.slice_name for tpu_slice in healthy_slices]}")
-    logger.info(f"Pool has {len(healthy_slices)} slices, but we want {num_slices}. Creating more slices.")
-    actors = [SliceActor.options(resources={f"TPU-{tpu_type}-head": 1}).remote() for _ in range(num_slices - len(healthy_slices))]  # type: ignore
-
-    actors_and_slice_info_awaitables = [(actor, actor.get_slice_info.remote()) for actor in actors]
-    started_slices: list[SliceResource] = []
-    logger.info(f"Waiting for {len(actors)} new actors to start...")
-    for actor, slice_info_awaitable in actors_and_slice_info_awaitables:
-        try:
-            slice_info = ray.get(slice_info_awaitable, timeout=_START_ACTOR_TIMEOUT)
-        except Exception as e:
-            logger.exception(f"Actor {actor} failed to start: {e}")
-            _stop_actor(actor)
-            continue
-        try:
-            placement_group = _create_placement_group(slice_info.slice_name, slice_info.num_hosts, slice_info.num_tpus_per_host)
-        except Exception as e:
-            logger.exception(f"Could not create placement group for slice {slice_info.slice_name}: {e}")
-            _stop_actor(actor)
-            continue
-        logger.info(f"Actor {actor} for slice {slice_info.slice_name} started.")
-        started_slices.append(SliceResource(actor, slice_info, placement_group))
-
-    slices_and_placement_group_ready_awaitables = [(tpu_slice, tpu_slice.placement_group.ready()) for tpu_slice in started_slices]
-    logger.info(f"Waiting for {len(slices_and_placement_group_ready_awaitables)} placement groups to be ready...")
-    for tpu_slice, placement_group_ready_awaitable in slices_and_placement_group_ready_awaitables:
-        try:
-            ray.get(placement_group_ready_awaitable, timeout=_PLACEMENT_GROUP_READY_TIMEOUT)
-        except Exception as e:
-            logger.exception(f"Placement group for {tpu_slice.slice_info.slice_name} failed to become ready: {e}")
-            _release_slice_resource(tpu_slice)
-            continue
-        logger.info(f"Placement group for {tpu_slice.slice_info.slice_name} ready.")
-        healthy_slices.append(tpu_slice)
-        logger.info(f"Added {tpu_slice.slice_info.slice_name} to pool.")
-
-    logger.info(f"Pool slices: {[tpu_slice.slice_info.slice_name for tpu_slice in healthy_slices]}")
-    logger.info(f"Pool ready with {len(healthy_slices)} actors.")
-
-    if len(healthy_slices) < num_slices:
-        raise Exception(f"Wanted {num_slices} slices but only acquired {len(healthy_slices)} slices.")
-    return healthy_slices
-
-
-def _start_fn_on_slice(tpu_slice: SliceResource, remote_fn: RemoteFunction, mxla_env: dict | None) -> list[ray.ObjectRef]:
+def _start_fn_on_slice(slice_actor: ActorHandle, remote_fn: RemoteFunction, mxla_env: dict | None) -> list[ray.ObjectRef]:
     """
     Start the remote function on a slice of the TPU pod.
     """
@@ -649,54 +718,8 @@ def _start_fn_on_slice(tpu_slice: SliceResource, remote_fn: RemoteFunction, mxla
     if mxla_env is not None:
         mxla_env = dict(env_vars=mxla_env)
         runtime_env = mergedeep.merge({}, runtime_env, mxla_env, strategy=mergedeep.Strategy.ADDITIVE)
-    futures_for_slice = [
-        remote_fn.options(
-            runtime_env=runtime_env,
-            scheduling_strategy=PlacementGroupSchedulingStrategy(
-                placement_group=tpu_slice.placement_group,
-                placement_group_bundle_index=host,
-                placement_group_capture_child_tasks=False,
-            ),
-            **tpu_slice.slice_info.as_ray_resources_kwargs(),
-        ).remote()
-        for host in range(tpu_slice.slice_info.num_hosts)
-    ]
+    futures_for_slice = ray.get(slice_actor.run_remote_fn.remote(remote_fn, runtime_env))
     return futures_for_slice
-
-
-def _cleanup_lockfiles(tpu_slice: SliceResource) -> list[ray.ObjectRef]:
-    return _start_fn_on_slice(
-        tpu_slice,
-        _hacky_remove_tpu_lockfile_ray,
-        mxla_env=None,  # no need for MXLA env vars here
-    )
-
-
-def _prune_dead_slices(pool: list[SliceResource]) -> list[SliceResource]:
-    """Prune dead or unhealthy slices from the pool.
-
-    Returns a new pool. Does not mutate `pool`."""
-    healthy_slices = []
-    unhealthy_slices = []
-    slices_and_health = [(tpu_slice, tpu_slice.actor.healthy.remote()) for tpu_slice in pool]
-    del pool  # Defensively prevent pool from being mutated
-    for tpu_slice, health in slices_and_health:
-        try:
-            if ray.get(health, timeout=_HEALTH_CHECK_TIMEOUT):
-                healthy_slices.append(tpu_slice)
-            else:
-                logger.warning(f"Slice {tpu_slice.slice_info.slice_name} is unhealthy. Removing from pool.")
-                unhealthy_slices.append(tpu_slice)
-        except (RayActorError, RayTaskError, ActorDiedError, ActorUnavailableError, GetTimeoutError) as e:
-            logger.warning(f"Slice {tpu_slice.slice_info.slice_name} is dead or unavailable. Removing from pool. Error: {e}")
-            unhealthy_slices.append(tpu_slice)
-
-    # NOTE: For simplicity, we serially process the unhealthy slices, rather than doing it in parallel.
-    for unhealthy_slice in unhealthy_slices:
-        # This is a synchronous blocking call.
-        _release_slice_resource(unhealthy_slice)
-
-    return healthy_slices
 
 
 def _handle_ray_error(e: RayError):
@@ -856,10 +879,6 @@ def _kill_old_container(name):
     except subprocess.CalledProcessError:
         pass
 
-
-@ray.remote(num_cpus=0.0)
-def _hacky_remove_tpu_lockfile_ray():
-    _hacky_remove_tpu_lockfile()
 
 
 def _separate_process_fn(underlying_function, args, kwargs):
