@@ -6,6 +6,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import signal  # Needed for killing busy vfio processes
 from asyncio import QueueEmpty
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
@@ -193,7 +194,7 @@ class SliceInfo:
 # Timeouts (in seconds)
 _HEALTH_CHECK_TIMEOUT = 60
 _TERMINATE_ACTOR_TIMEOUT = 300
-_START_ACTOR_TIMEOUT = 300
+_START_ACTOR_TIMEOUT = 3000
 _PLACEMENT_GROUP_READY_TIMEOUT = 300
 
 
@@ -314,9 +315,15 @@ def run_on_pod(
     num_slices: int = 1,
     max_retries_preemption=10000,
     max_retries_failure=10,
+    auto_kill_busy_vfio: bool = False,
 ):
     """
     Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
+
+    If *auto_kill_busy_vfio* is ``True`` and we encounter the specific JAX error about ``/dev/vfio/0`` being busy,
+    we will attempt to identify and SIGKILL the process that is holding the device open on every host in the TPU
+    slice before retrying.  This is a best-effort mitigation for the sporadic "Device or resource busy" failures
+    seen when initialising the TPU backend.
 
     Note: This function will block until the function completes or fails too many times. If you want to run it asynchronously,
     use `run_on_pod_ray` instead.
@@ -326,6 +333,7 @@ def run_on_pod(
         tpu_type: The type of TPU to run on, e.g. "v4-32"
         max_retries_preemption: The maximum number of times to retry if the job is preempted
         max_retries_failure: The maximum number of times to retry if the job fails
+        auto_kill_busy_vfio: Whether to attempt to automatically free ``/dev/vfio`` devices when they are busy
 
     Returns:
         The result of the function (not an ObjectRef)
@@ -334,7 +342,16 @@ def run_on_pod(
     if num_slices <= 0:
         raise ValueError("num_slices must be greater than 0")
 
-    return ray.get(run_on_pod_ray.remote(remote_fn, tpu_type, num_slices, max_retries_preemption, max_retries_failure))
+    return ray.get(
+        run_on_pod_ray.remote(
+            remote_fn,
+            tpu_type,
+            num_slices,
+            max_retries_preemption,
+            max_retries_failure,
+            auto_kill_busy_vfio,
+        )
+    )
 
 
 @ray.remote(num_cpus=0.01)
@@ -344,6 +361,7 @@ def run_on_pod_ray(
     num_slices: int = 1,
     max_retries_preemption: int = 10000,
     max_retries_failure: int = 10,
+    auto_kill_busy_vfio: bool = False,
 ):
     """
     Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
@@ -507,6 +525,7 @@ def run_on_pod_ray(
                     logger.warning("Failed to cleanup lockfiles", exc_info=e)
 
             if any_preempted:
+                # S
                 problem = problems[0] if problems else RuntimeError("TPU job was preempted")
                 num_preemptions += 1
                 if any_failed:
@@ -520,6 +539,27 @@ def run_on_pod_ray(
                 continue
             elif any_failed:
                 problem = problems[0] if problems else RuntimeError("TPU job failed")
+
+                # Detect the specific VFIO busy error
+                device_busy_error = any(
+                    "Unable to initialize backend 'tpu'" in str(p) and "Device or resource busy" in str(p)
+                    for p in problems
+                )
+
+                if device_busy_error and auto_kill_busy_vfio:
+                    logger.warning(
+                        "Detected busy /dev/vfio device during TPU initialisation. Attempting to kill offending processes."
+                    )
+                    kill_futs = []
+                    for tpu_slice in slice_pool:
+                        kill_futs.extend(_start_fn_on_slice(tpu_slice, _kill_busy_vfio_process_ray, mxla_env=None))
+
+                    if kill_futs:
+                        try:
+                            ray.get(kill_futs, timeout=60)
+                        except Exception as e:
+                            logger.warning("Failed while trying to kill busy vfio processes", exc_info=e)
+
                 num_failures += 1
                 logger.warning(f"Failed {num_failures} times. Continuing to retry.", exc_info=problem)
                 continue
@@ -917,6 +957,64 @@ def _hacky_remove_tpu_lockfile():
                 os.system("sudo rm /tmp/libtpu_lockfile")
             except Exception:  # noqa
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Helpers for freeing /dev/vfio devices that can remain busy after crashes
+# ---------------------------------------------------------------------------
+
+
+def _kill_busy_vfio_process(device: str = "/dev/vfio/0"):
+    """Attempt to kill any process that is currently holding *device* open.
+
+    This addresses the error we sometimes observe during JAX/TPU initialisation:
+
+        RuntimeError: Unable to initialize backend 'tpu': UNKNOWN: TPU initialization failed: open(/dev/vfio/0): Device or resource busy
+
+    The function relies on *lsof* being present on the host.  If *sudo* is required
+    to kill another user's process we attempt that as well.
+    """
+    try:
+        # *lsof* returns exit status 1 when no process is using the file.
+        output = subprocess.check_output(["lsof", device], text=True)
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 1:
+            logger.info(f"No process appears to be holding {device}")
+            return
+        logger.warning(f"lsof failed with exit code {e.returncode}: {e}")
+        return
+
+    lines = output.strip().splitlines()
+    if len(lines) <= 1:
+        logger.info(f"No process appears to be holding {device}")
+        return
+
+    # First line is the header; remaining lines correspond to processes.
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            continue
+        pid = int(parts[1])
+        try:
+            os.kill(pid, signal.SIGKILL)
+            logger.info(f"Killed PID {pid} to free {device}")
+        except PermissionError:
+            logger.warning(f"Permission denied killing PID {pid}; retrying with sudo.")
+            try:
+                subprocess.check_call(["sudo", "kill", "-9", str(pid)])
+                logger.info(f"Successfully sudo-killed PID {pid}")
+            except Exception as e2:
+                logger.error(f"Failed to sudo kill PID {pid}: {e2}")
+        except ProcessLookupError:
+            # Process already exited between lsof and kill.
+            pass
+        except Exception as e:
+            logger.exception(f"Failed to kill PID {pid}: {e}")
+
+
+@ray.remote(num_cpus=0.0)
+def _kill_busy_vfio_process_ray():
+    _kill_busy_vfio_process()
 
 
 @dataclass
