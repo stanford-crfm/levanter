@@ -164,8 +164,7 @@ class TPUHostInfo:
 _HEALTH_CHECK_TIMEOUT = 60
 _TEARDOWN_ACTOR_TIMEOUT = 300
 _TERMINATE_ACTOR_TIMEOUT = 300
-_START_ACTOR_TIMEOUT = 300
-_PLACEMENT_GROUP_READY_TIMEOUT = 300
+_START_ACTOR_TIMEOUT = 7 * 24 * 60 * 60  # 1 week
 
 
 def _multislice_info_from_head(head: SliceInfo, slice_id: int, num_slices: int) -> MultisliceInfo:
@@ -350,7 +349,7 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
     def create_actor(self) -> ActorHandle:
         assert self._slice_info
         slice_name = self._slice_info.slice_name
-        return TPUHostActor.options(resources={slice_name: 1}, num_cpus=0.0).remote(slice_name)  # type: ignore
+        return TPUHostActor.options(resources={slice_name: 1}, num_cpus=0.0).remote(self._slice_info)  # type: ignore
 
     def get_actor_info_future(self, actor: ActorHandle) -> ray.ObjectRef:
         return actor.get_host_info.remote()
@@ -397,10 +396,9 @@ class TPUHostActor:
     Actor that manages a single TPU host.
     """
 
-    def __init__(self, slice_name: str):
+    def __init__(self, slice_info: SliceInfo):
         self._awaitable: Optional[ray.ObjectRef] = None
-        self._host_info: Optional[TPUHostInfo] = None
-        self._slice_name = slice_name
+        self._slice_info = slice_info
 
     def healthy(self) -> bool:
         return not self.is_being_preempted()
@@ -411,16 +409,14 @@ class TPUHostActor:
         return get_current_tpu_is_preempted()
 
     def get_host_info(self) -> TPUHostInfo:
-        self._node_id = ray.get_runtime_context().get_node_id()
-        self._num_tpus = TPUAcceleratorManager.get_current_node_num_accelerators()
         if self._host_info:
             return self._host_info
 
         self._host_info = TPUHostInfo(
-            slice_name = self._slice_name,
+            slice_name = self._slice_info.slice_name,
             worker_index = TPUAcceleratorManager._get_current_node_tpu_worker_id(),
             node_id = ray.get_runtime_context().get_node_id(),
-            num_tpus = TPUAcceleratorManager.get_current_node_num_accelerators(),
+            num_tpus = self._slice_info.num_tpus_per_host,
         )
         return self._host_info
 
