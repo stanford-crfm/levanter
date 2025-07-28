@@ -9,7 +9,8 @@ from levanter.main.sft import reinitialize_some_tokens
 from levanter.models.llama import LlamaEmbedding
 
 
-class DummyModel(equinox.Module):
+class TestModel(equinox.Module):
+    __test__ = False
     Vocab: hax.Axis
     embeddings: LlamaEmbedding
     lm_head: hax.nn.Linear
