@@ -325,7 +325,7 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
     def __init__(self):
         super().__init__()
         self._failed = False
-        self._slice_info: Optional[SliceInfo]
+        self._slice_info: Optional[SliceInfo] = None
 
     def healthy(self) -> bool:
         return not self._failed and not self.is_being_preempted()
@@ -398,6 +398,7 @@ class TPUHostActor:
 
     def __init__(self, slice_info: SliceInfo):
         self._awaitable: Optional[ray.ObjectRef] = None
+        self._host_info: Optional[TPUHostInfo] = None
         self._slice_info = slice_info
 
     def healthy(self) -> bool:
