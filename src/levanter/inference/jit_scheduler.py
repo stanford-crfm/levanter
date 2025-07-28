@@ -27,6 +27,18 @@ class PackedSequence(eqx.Module):
     num_tokens: jax.Array  # number of tokens in the packed sequence
     is_boundary: ht.bool_[NamedArray, "position"]  # boolean mask for sequence boundaries
 
+    def token_counts_per_sequence(self, max_sequences: int) -> ht.i32[NamedArray, "seq"]:  # type: ignore[name-defined]
+        """
+        Returns the number of tokens per sequence in the packed sequence.
+        The result is a vector of size `max_sequences`, where each entry corresponds to a sequence ID.
+        """
+        raw_seq_ids = self.seq_ids.array
+        weights = jnp.where(jnp.arange(len(raw_seq_ids)) < self.num_tokens, 1, 0)
+        counts = jnp.bincount(raw_seq_ids, weights=weights, length=max_sequences)
+
+        return hax.named(counts, axis=("seq",))
+
+
     def boundary_indices(self, max_boundaries: int) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
         """
         Returns the indices of the sequence boundaries in the packed sequence.
@@ -36,6 +48,108 @@ class PackedSequence(eqx.Module):
         axis = self.is_boundary.resolve_axis("position").resize(max_boundaries)
         boundary_positions = hax.where(self.is_boundary, fill_value=INVALID, new_axis=axis)[0]
         return boundary_positions
+
+
+class SeqDecodingParams(eqx.Module):
+    """Per-sequence decoding parameters."""
+    max_num_tokens: jnp.ndarray
+    stop_tokens: ht.i32[NamedArray, "stop_seq position"] | None
+    temperature: jnp.ndarray
+
+
+class DecodeState(eqx.Module):
+    """
+    State of sequences during decoding.
+    """
+    kv_pages: ht.i32[NamedArray, "seq page"]  # KV pages used for each sequence.
+    page_size: int = eqx.field(static=True)
+    seq_id: ht.i32[NamedArray, "seq"]  # sequence ID. This is the "global" sequence ID
+    tokens: ht.i32[NamedArray, "seq position"]
+    """ most recent tokens generated for each sequence. Should always start at a page boundary. """
+    logprobs: ht.Float[NamedArray, "seq position"] | None  # log probabilities of the tokens
+    num_tokens: ht.i32[NamedArray, "seq"]  # number of tokens generated so far (indexes into `tokens`)
+    """Number of tokens in the buffer right now."""
+    prefix_len: ht.i32[NamedArray, "seq"]
+    """ offset into tokens for each sequence, i.e. how many tokens were generated before the current round """
+
+    # Per sequence sampling parameters
+    max_num_tokens: ht.i32[NamedArray, "seq"]
+    """
+    Maximum number of tokens for each sequence. This is used to limit the number of tokens generated.
+    This is inclusive of the prefix length, i.e. the total number of tokens that can be generated for each sequence.
+
+    NB if the actual sequence is longer than what is currently in DecodeState, this still needs to be
+    relative to what's in decode state.
+    """
+
+    stop_tokens: ht.i32[NamedArray, "seq stop_seq position"] | None
+    """Stop sequences for each sequence. If None, no stop sequences are used. **Left padded** with pad_token_id."""
+    temperature: ht.Float[NamedArray, "seq"]  # temperature for sampling. 0 means greedy sampling
+
+    def assign_seq(self,
+                   local_seq_id: int,
+                   global_seq_id: int,
+                   kv_pages: ht.i32[NamedArray, "page"],  # type: ignore[name-defined]
+                   tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+                   prefix_len: int,
+                   seq_params: SeqDecodingParams | None = None) -> "DecodeState":
+        raise NotImplementedError
+
+    def update_tokens(self,
+                      local_seq_ids:  ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+                      new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+                      new_log_probs: ht.Float[NamedArray, "position"],  # type: ignore[name-defined]
+                      num_new_tokens: jnp.ndarray # scalar
+                      ) -> "DecodeState":
+        """
+        Update the tokens and (optional) log probabilities for the given local sequence IDs.
+        Needs to do the scatter/set operation in a JIT-safe way, similar to update_after_sampling in JitScheduler.
+        """
+        raise NotImplementedError
+
+    def is_finished(self, seq_id: jnp.ndarray):
+        """
+        Check if the sequence or sequences with the given local ID is finished.
+        A sequence is finished if it has reached its maximum number of tokens, hit its stop sequence,
+         or has been marked as finished.
+
+        See is_stop_signal for stop sequence checking.
+
+        Returns jnp.ndarray with the same shape as seq_id, where each entry is True if the sequence is finished.
+        """
+
+        raise NotImplementedError
+
+
+    @staticmethod
+    def init(
+        max_seqs: int,
+        max_pages: int,
+        page_size: int,
+        max_tokens: int,
+        pad_token_id: int = INVALID,
+        max_stop_tokens: int = 0,
+    ) -> "DecodeState":
+        """
+        Initialize a DecodeState with empty buffers.
+        """
+        return DecodeState(
+            kv_pages=hax.full({"seq": max_seqs, "page": max_pages}, INVALID, dtype=jnp.int32),
+            page_size=page_size,
+            seq_id=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
+            tokens=hax.full({"seq": max_seqs, "position": max_tokens}, pad_token_id, dtype=jnp.int32),
+            logprobs=None,
+            prefix_len=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
+            num_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
+            is_finished=hax.zeros({"seq": max_seqs}, dtype=bool),
+            max_num_tokens=hax.full({"seq": max_seqs}, 0, dtype=jnp.int32),
+            stop_tokens=hax.full(
+                {"seq": max_seqs, "stop_seq": max_stop_tokens, "position": max_tokens},
+                INVALID,
+                dtype=jnp.int32,
+            ) if max_stop_tokens > 0 else None,
+            temperature=hax.ones({"seq": max_seqs}, dtype=jnp.float32),
+        )
 
 
 class JitScheduler(eqx.Module):
@@ -363,7 +477,7 @@ class JitScheduler(eqx.Module):
         def callback(self):
             print(f"{prefix}JitScheduler State:")
             print(f"{prefix}Generated Tokens: {self.generated_tokens}")
-            print(f"{prefix}Num Generated Tokens: {self.num_generated_tokens}")
+            print(f"{prefix}Num Generated Tokens: {self.num_tokens}")
             print(f"{prefix}Queued Tokens: {self.queued_tokens}")
             print(f"{prefix}Queued Seq IDs: {self.queued_seq_ids}")
             print(f"{prefix}Num Queued Tokens: {self.num_queued_tokens}")
