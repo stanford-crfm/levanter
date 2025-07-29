@@ -426,11 +426,13 @@ class TPUHostActor:
 
         NOTE: This runs the remote function in a different task. It does not block on the remote function call.
         NOTE: This returns a Ray future. If calling this method on a remote Actor, you will get a future of a future."""
-        _hacky_remove_tpu_lockfile()
-        if self._awaitable:
-            ray.cancel(self._awaitable, force=True, recursive=True)
         if not self._host_info:
             raise Exception("Call setup() before calling run_remote_fn()")
+
+        if self._awaitable:
+            ray.cancel(self._awaitable, force=True, recursive=True)
+        _hacky_remove_tpu_lockfile()
+
         self._awaitable = remote_fn.options(
             scheduling_strategy=NodeAffinitySchedulingStrategy(self._host_info.node_id, soft=False),
             resources={
