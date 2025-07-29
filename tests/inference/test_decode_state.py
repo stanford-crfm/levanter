@@ -45,7 +45,7 @@ def test_update_tokens_and_finish_max():
     kv = hax.named(jnp.array([0, 1], dtype=jnp.int32), axis=("page",))
     toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), axis=("position",))
     params = SeqDecodingParams(max_num_tokens=jnp.array(4, dtype=jnp.int32), stop_tokens=None, temperature=jnp.array(1.0, dtype=jnp.float32))
-    ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 0, params)
+    ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 2, params)
 
     logprobs = hax.full({"seq": 1, "position": 4}, 0.0, dtype=jnp.float32)
     ds = dataclasses.replace(ds, logprobs=logprobs)
@@ -70,7 +70,7 @@ def test_stop_sequence_triggers_finished():
     toks = hax.named(jnp.array([10, 11], dtype=jnp.int32), axis=("position",))
     stop = hax.named(jnp.array([[INVALID, 4]], dtype=jnp.int32), axis=("stop_seq", "position"))
     params = SeqDecodingParams(max_num_tokens=jnp.array(6, dtype=jnp.int32), stop_tokens=stop, temperature=jnp.array(1.0, dtype=jnp.float32))
-    ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 0, params)
+    ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 2, params)
 
     new_toks = hax.named(jnp.array([3, 4], dtype=jnp.int32), axis=("position",))
     seqs = hax.named(jnp.array([0, 0], dtype=jnp.int32), axis=("position",))
@@ -78,3 +78,22 @@ def test_stop_sequence_triggers_finished():
     ds = eqx.filter_jit(ds.update_tokens)(seqs, new_toks, new_lps, jnp.array(2, dtype=jnp.int32))
 
     assert eqx.filter_jit(ds.is_finished)(jnp.array(0, dtype=jnp.int32))
+
+
+def test_extract_new_tokens():
+    ds = _make_state(max_tokens=6)
+    kv = hax.named(jnp.array([0, 1], dtype=jnp.int32), axis=("page",))
+    toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), axis=("position",))
+    params = SeqDecodingParams(max_num_tokens=jnp.array(6, dtype=jnp.int32), stop_tokens=None, temperature=jnp.array(1.0, dtype=jnp.float32))
+    ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 2, params)
+
+    new_toks = hax.named(jnp.array([3, 4, 5], dtype=jnp.int32), axis=("position",))
+    seqs = hax.named(jnp.array([0, 0, 0], dtype=jnp.int32), axis=("position",))
+    new_lps = hax.named(jnp.zeros(3, dtype=jnp.float32), axis=("position",))
+    ds = eqx.filter_jit(ds.update_tokens)(seqs, new_toks, new_lps, jnp.array(3, dtype=jnp.int32))
+
+    ds2, toks_out, counts = eqx.filter_jit(ds.extract_new_tokens)()
+
+    assert counts["seq", 0] == 3
+    assert jnp.array_equal(toks_out["seq", 0, "position", hax.ds(0, 3)].array, jnp.array([3, 4, 5], dtype=jnp.int32))
+    assert ds2.prefix_len["seq", 0] == ds2.num_tokens["seq", 0]
