@@ -62,3 +62,19 @@ def test_update_tokens_and_finish_max():
     )
     assert ds.num_tokens["seq", 0] == 4
     assert eqx.filter_jit(ds.is_finished)(jnp.array(0, dtype=jnp.int32))
+
+
+def test_stop_sequence_triggers_finished():
+    ds = _make_state(max_tokens=6, max_stop_tokens=1)
+    kv = hax.named(jnp.array([0, 1], dtype=jnp.int32), axis=("page",))
+    toks = hax.named(jnp.array([10, 11], dtype=jnp.int32), axis=("position",))
+    stop = hax.named(jnp.array([[INVALID, 4]], dtype=jnp.int32), axis=("stop_seq", "position"))
+    params = SeqDecodingParams(max_num_tokens=jnp.array(6, dtype=jnp.int32), stop_tokens=stop, temperature=jnp.array(1.0, dtype=jnp.float32))
+    ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 0, params)
+
+    new_toks = hax.named(jnp.array([3, 4], dtype=jnp.int32), axis=("position",))
+    seqs = hax.named(jnp.array([0, 0], dtype=jnp.int32), axis=("position",))
+    new_lps = hax.named(jnp.zeros(2, dtype=jnp.float32), axis=("position",))
+    ds = eqx.filter_jit(ds.update_tokens)(seqs, new_toks, new_lps, jnp.array(2, dtype=jnp.int32))
+
+    assert eqx.filter_jit(ds.is_finished)(jnp.array(0, dtype=jnp.int32))

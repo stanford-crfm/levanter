@@ -72,7 +72,6 @@ class DecodeState(eqx.Module):
     prefix_len: ht.i32[NamedArray, "seq"]
     """ offset into tokens for each sequence, i.e. how many tokens were generated before the current round """
 
-    finished: ht.bool_[NamedArray, "seq"]  # whether each sequence is finished
 
     # Per sequence sampling parameters
     max_num_tokens: ht.i32[NamedArray, "seq"]
@@ -110,10 +109,11 @@ class DecodeState(eqx.Module):
             tokens=new_tokens,
             num_tokens=self.num_tokens.at["seq", local_seq_id].set(jnp.array(num, dtype=jnp.int32)),
             prefix_len=self.prefix_len.at["seq", local_seq_id].set(prefix_len),
-            finished=self.finished.at["seq", local_seq_id].set(False),
         )
 
         if seq_params is not None:
+            if seq_params.stop_tokens is not None and self.stop_tokens is None:
+                raise ValueError("DecodeState was initialized without stop token storage")
             new_state = dataclasses.replace(
                 new_state,
                 max_num_tokens=new_state.max_num_tokens.at["seq", local_seq_id].set(seq_params.max_num_tokens),
@@ -167,8 +167,7 @@ class DecodeState(eqx.Module):
     def is_finished(self, seq_id: jnp.ndarray):
         """
         Check if the sequence or sequences with the given local ID is finished.
-        A sequence is finished if it has reached its maximum number of tokens, hit its stop sequence,
-         or has been marked as finished.
+        A sequence is finished if it has reached its maximum number of tokens or hit its stop sequence.
 
         See is_stop_signal for stop sequence checking.
 
@@ -180,26 +179,31 @@ class DecodeState(eqx.Module):
 
         def body(i, acc):
             sid = sid_flat[i]
-            done = self.finished["seq", sid].array
-            total = self.num_tokens["seq", sid].scalar() + self.prefix_len["seq", sid].scalar()
-            done |= total >= self.max_num_tokens["seq", sid].scalar()
 
-            if self.stop_tokens is not None:
-                stop_len = self.stop_tokens.axis_size("position")
-                num = self.num_tokens["seq", sid].scalar()
-                tokens_row = self.tokens["seq", sid].array
-                padded_tokens = jnp.concatenate([
-                    jnp.full((stop_len,), INVALID, dtype=jnp.int32),
-                    tokens_row,
-                ])
-                tail = jax.lax.dynamic_slice(padded_tokens, (num,), (stop_len,))
-                stop = is_stop_signal(
-                    hax.named(tail, axis=("position",)),
-                    self.stop_tokens["seq", sid],
-                ).array
-                done |= stop
+            def compute(_: jax.Array) -> jax.Array:
+                done = False
+                total = self.num_tokens["seq", sid].scalar() + self.prefix_len["seq", sid].scalar()
+                done |= total >= self.max_num_tokens["seq", sid].scalar()
 
-            return acc.at[i].set(done)
+                if self.stop_tokens is not None:
+                    stop_len = self.stop_tokens.axis_size("position")
+                    num = self.num_tokens["seq", sid].scalar()
+                    tokens_row = self.tokens["seq", sid].array
+                    padded_tokens = jnp.concatenate([
+                        jnp.full((stop_len,), INVALID, dtype=jnp.int32),
+                        tokens_row,
+                    ])
+                    tail = jax.lax.dynamic_slice(padded_tokens, (num,), (stop_len,))
+                    stop = is_stop_signal(
+                        hax.named(tail, axis=("position",)),
+                        self.stop_tokens["seq", sid],
+                    ).array
+                    done |= stop
+
+                return done
+
+            finished = jax.lax.cond(is_valid(sid), compute, lambda _: False, operand=None)
+            return acc.at[i].set(finished)
 
         result = jax.lax.fori_loop(0, sid_flat.shape[0], body, result)
         return jnp.reshape(result, seq_id.shape)
@@ -225,7 +229,6 @@ class DecodeState(eqx.Module):
             logprobs=None,
             prefix_len=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             num_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
-            finished=hax.zeros({"seq": max_seqs}, dtype=bool),
             max_num_tokens=hax.full({"seq": max_seqs}, 0, dtype=jnp.int32),
             stop_tokens=hax.full(
                 {"seq": max_seqs, "stop_seq": max_stop_tokens, "position": max_tokens},
@@ -261,7 +264,7 @@ class JitScheduler(eqx.Module):
         def do_generate(sched: JitScheduler, cache, page_table,  max_steps: int) -> JitScheduler:
             def cond(state):
                 _sched, *_ , step = state
-                return (step < max_new_tokens) & (~jnp.all(_sched.finished.array))
+                return (step < max_new_tokens) & (~jnp.all(_sched.is_finished(jnp.arange(_sched.seq_id.size))))
 
             def body(state):
                 sched: JitScheduler
