@@ -31,7 +31,7 @@ from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.inference.jit_scheduler import JitScheduler
+from levanter.inference.jit_scheduler import JitScheduler, DecodeState, SeqDecodingParams
 from levanter.inference.utils import INVALID, is_invalid
 from levanter.layers.attention import KvPageCache
 from jaxtyping import PRNGKeyArray
@@ -47,6 +47,7 @@ class GenState(eqx.Module):
     sched: JitScheduler
     cache: KvPageCache
     page_table: PageTable
+    decode_state: DecodeState
     prng_key: PRNGKeyArray
 
 
@@ -124,7 +125,8 @@ def run_generation_loop(
 
     def cond(state: tuple[GenState, jax.Array]):
         _gen_state, step = state
-        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (_gen_state.sched.empty_generated_space >= max_tokens_per_round)
+        finished = _gen_state.decode_state.is_finished(jnp.arange(_gen_state.decode_state.seq_id.size))
+        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (~jnp.all(finished))
 
     def body(state: tuple[GenState, jax.Array]) -> tuple[GenState, jax.Array]:
         gen_state: GenState
@@ -144,10 +146,9 @@ def run_generation_loop(
         logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
         sample_key, key = jrandom.split(gen_state.prng_key)
         logits = logits["position", boundaries]
-        # jax.debug.print("Logits: {logits}, boundaries: {boundaries}",logits=logits, boundaries=boundaries)
         cache = eqx.error_if(cache, hax.any(hax.isnan(cache.kv_pages)).scalar(), "New Cache contains NaNs")
         logits = eqx.error_if(logits, hax.any(hax.isnan(logits) & ~is_invalid(boundaries)).scalar(), "Logits contain NaNs")
-        new_tokens, _ = sampler(logits, temps, key=sample_key)
+        new_tokens, log_probs = sampler(logits, temps, key=sample_key)
 
         num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = packed_seq.seq_ids["position", boundaries]
@@ -155,11 +156,8 @@ def run_generation_loop(
         #                 new_tokens=new_tokens, num_new_tokens=num_new_tokens, new_seq_ids=new_seq_ids)
 
         # Update scheduler with the freshly sampled tokens
-        sched = sched.update_after_sampling(
-            new_tokens=new_tokens,
-            new_token_seq_ids=new_seq_ids,
-            num_new_tokens=num_new_tokens,
-        )
+        decode_state = gen_state.decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
+        sched = sched.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
 
         # Update the gen_state with all the new components
         new_gen_state = dataclasses.replace(
@@ -167,6 +165,7 @@ def run_generation_loop(
             sched=sched,
             page_table=page_table,
             cache=cache,
+            decode_state=decode_state,
             prng_key=key
         )
 
@@ -175,9 +174,8 @@ def run_generation_loop(
     init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
     final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
 
-    sched, tokens, token_counts = final_gen_state.sched.extract_all_generated_tokens()
-
-    final_gen_state = dataclasses.replace(final_gen_state, sched=sched)
+    decode_state, tokens, token_counts = final_gen_state.decode_state.extract_new_tokens()
+    final_gen_state = dataclasses.replace(final_gen_state, decode_state=decode_state)
 
     return final_gen_state, tokens, token_counts
 
@@ -220,11 +218,18 @@ def main(config: SampleLmConfig):
         MAX_NEW_TOKENS = 32
         table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
-        sched = JitScheduler.init(table.max_seqs, 256, 128)
+        sched = JitScheduler.init(256)
+        decode_state = DecodeState.init(
+            table.max_seqs,
+            table.pages_per_seq,
+            table.page_size,
+            table.max_len_per_seq,
+        )
         gen_state = GenState(
             sched=sched,
             cache=cache,
             page_table=table,
+            decode_state=decode_state,
             prng_key=key
         )
 
@@ -256,6 +261,12 @@ def main(config: SampleLmConfig):
                 # in theory, we can just reuse the cache and not recreate it every time
                 page_table=page_table,
                 sched=sched.cleared(),
+                decode_state=DecodeState.init(
+                    page_table.max_seqs,
+                    page_table.pages_per_seq,
+                    page_table.page_size,
+                    page_table.max_len_per_seq,
+                ),
                 prng_key=jrandom.PRNGKey(0)
             )
             del page_table
@@ -270,6 +281,23 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         # enqueue the entire prompt into the scheduler
         page_table, seq_id = gen_state.page_table.assign_seq_id_to_seq()
         gen_state = dataclasses.replace(gen_state, page_table=page_table)
+
+        seq_params = SeqDecodingParams(
+            max_num_tokens=jnp.array(len(tokens) + config.max_new_tokens, dtype=jnp.int32),
+            stop_tokens=None,
+            temperature=jnp.array(config.temperature, dtype=jnp.float32),
+        )
+        gen_state = dataclasses.replace(
+            gen_state,
+            decode_state=gen_state.decode_state.assign_seq(
+                seq_id,
+                seq_id,
+                hax.full({"page": gen_state.page_table.pages_per_seq}, INVALID, dtype=jnp.int32),
+                hax.named(np.asarray(tokens, dtype=jnp.int32), axis="position"),
+                len(tokens),
+                seq_params,
+            ),
+        )
 
         prompts_tokens_to_enqueue = np.asarray(tokens, dtype=jnp.int32)
         if len(tokens) > gen_state.sched.max_queued_tokens:

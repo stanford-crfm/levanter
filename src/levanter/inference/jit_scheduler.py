@@ -139,7 +139,7 @@ class DecodeState(eqx.Module):
                       ) -> "DecodeState":
         """
         Update the tokens and (optional) log probabilities for the given local sequence IDs.
-        Needs to do the scatter/set operation in a JIT-safe way, similar to update_after_sampling in JitScheduler.
+        Needs to do the scatter/set operation in a JIT-safe way.
         """
         tokens = self.tokens
         logprobs = self.logprobs
@@ -238,6 +238,37 @@ class DecodeState(eqx.Module):
             temperature=hax.ones({"seq": max_seqs}, dtype=jnp.float32),
         )
 
+    @eqx.filter_jit(donate="all")
+    def extract_new_tokens(
+        self,
+    ) -> tuple["DecodeState", ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
+        """Extract tokens generated since the last call and update ``prefix_len``."""
+
+        num_seqs = self.tokens.axis_size("seq")
+
+        out_tokens = hax.full_like(self.tokens, INVALID)
+        out_counts = hax.zeros_like(self.num_tokens)
+
+        def body(i, state):
+            tokens, counts = state
+            start = self.prefix_len["seq", i].scalar()
+            end = self.num_tokens["seq", i].scalar()
+            n = end - start
+
+            row = self.tokens["seq", i]
+            rolled = hax.roll(row, -start, "position")
+            blank = hax.full_like(row, INVALID)
+            new_row = masked_set(blank, "position", 0, rolled, n)
+            tokens = tokens.at["seq", i].set(new_row)
+            counts = counts.at["seq", i].set(n)
+            return tokens, counts
+
+        out_tokens, out_counts = jax.lax.fori_loop(0, num_seqs, body, (out_tokens, out_counts))
+
+        new_state = dataclasses.replace(self, prefix_len=self.num_tokens)
+
+        return new_state, out_tokens, out_counts
+
 
 class JitScheduler(eqx.Module):
     """
@@ -258,7 +289,6 @@ class JitScheduler(eqx.Module):
             jit_scheduler = outer_scheduler.get_next_macro_round(jit_scheduler)
             # do iterative prefill/decode
             jit_scheduler = do_generate(jit_scheduler, page_table, cache, MAX_STEPS)
-            generated_tokens = jit_scheduler.generated_tokens
 
         do_generate might look like this:
         def do_generate(sched: JitScheduler, cache, page_table,  max_steps: int) -> JitScheduler:
@@ -285,10 +315,10 @@ class JitScheduler(eqx.Module):
                 num_new_tokens = hax.sum(binfo.last_token_idx != -1).scalar()
 
                 # Update scheduler with the freshly sampled tokens
-                sched = sched.update_after_sampling(
-                    new_tokens=new_tokens,
-                    new_token_seq_ids=chunk_seq_ids,
-                    num_new_tokens=num_new_tokens,
+                sched = sched.enqueue_tokens(
+                    new_tokens,
+                    chunk_seq_ids,
+                    num_new_tokens,
                 )
                 return sched, page_table, cache, key, step + 1
 
@@ -298,22 +328,12 @@ class JitScheduler(eqx.Module):
 
     """
     # Notes:
-    # - ``generated_tokens`` are stored per sequence in a fixed-size circular buffer
     # - ``queued_tokens`` are stored "flat" with accompanying ``queued_seq_ids``
-    generated_tokens: ht.i32[NamedArray, "seq position"]  # tokens generated per sequence
-    num_generated_tokens: ht.i32[NamedArray, "seq"]  # number of generated tokens per sequence
-
-    queued_tokens: ht.i32[NamedArray, "position"]  # number of tokens ready to be processed in each sequence.
+    queued_tokens: ht.i32[NamedArray, "position"]  # tokens queued for decoding
     queued_seq_ids: ht.i32[NamedArray, "position"]
     num_queued_tokens: jax.Array
 
     # TODO: per-seq sampling params
-
-    @property
-    def empty_generated_space(self) -> jnp.ndarray:
-        """How many tokens can be generated in the generated tokens buffer."""
-        total_cap = self.generated_tokens.axis_size("position") * self.generated_tokens.axis_size("seq")
-        return total_cap - hax.sum(self.num_generated_tokens).array
 
     @property
     def empty_queue_space(self) -> jnp.ndarray:
@@ -326,11 +346,9 @@ class JitScheduler(eqx.Module):
         return self.queued_tokens.axis_size("position")
 
     @staticmethod
-    def init(max_seqs: int, max_queued_tokens: int, max_buffered_tokens: int) -> "JitScheduler":
+    def init(max_queued_tokens: int) -> "JitScheduler":
         """Create a ``JitScheduler`` with empty buffers."""
         return JitScheduler(
-            generated_tokens=hax.full({"seq": max_seqs, "position": max_buffered_tokens}, INVALID, dtype=jnp.int32),
-            num_generated_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             queued_tokens=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             queued_seq_ids=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             num_queued_tokens=jnp.array(0, dtype=jnp.int32),
@@ -366,47 +384,6 @@ class JitScheduler(eqx.Module):
             num_queued_tokens=self.num_queued_tokens + num_new_tokens,
         )
 
-    def update_after_sampling(
-        self,
-        new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
-        new_token_seq_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
-        num_new_tokens: int,
-    ) -> "JitScheduler":
-        """
-        Append new tokens to generated tokens and update the scheduler state.
-
-        generated tokens will also be enqueued in the scheduler for processing in the next round.
-        """
-
-        # first sort tokens by seq id so we can append them per sequence
-        sort_order = hax.argsort(new_token_seq_ids, axis="position")
-        tokens = new_tokens["position", sort_order]
-        seq_ids = new_token_seq_ids["position", sort_order]
-
-        def body(i, state):
-            seq_id = seq_ids["position", i].scalar()
-
-            def update(state):
-                g_tokens, g_counts = state
-                pos = g_counts["seq", seq_id].scalar()
-                g_tokens = g_tokens.at["seq", seq_id, "position", pos].set(tokens["position", i])
-                g_counts = g_counts.at["seq", seq_id].add(1)
-                return g_tokens, g_counts
-
-            return jax.lax.cond(is_valid(seq_id), update, lambda s: s, state)
-
-        init_state = (self.generated_tokens, self.num_generated_tokens)
-        new_g_tokens, new_counts = jax.lax.fori_loop(0, num_new_tokens, body, init_state)
-
-        updated = dataclasses.replace(
-            self,
-            generated_tokens=new_g_tokens,
-            num_generated_tokens=new_counts,
-        )
-
-        updated = updated.enqueue_tokens(new_tokens, new_token_seq_ids, num_new_tokens)
-
-        return updated
 
     def pack_next_sequence(
         self, max_tokens: int
@@ -486,76 +463,13 @@ class JitScheduler(eqx.Module):
             num_queued_tokens=new_num_queued_tokens,
         )
 
-    @eqx.filter_jit(donate="all")
-    def extract_all_generated_tokens(self) -> tuple["JitScheduler", ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
-        """
-        Extract all generated tokens from the scheduler, clearing the buffers.
-        Returns a tuple of the updated scheduler, the extracted tokens, and the number of tokens extracted per sequence.
-        """
-        updated = dataclasses.replace(
-            self,
-            generated_tokens=hax.full_like(self.generated_tokens, INVALID),
-            num_generated_tokens=hax.zeros_like(self.num_generated_tokens),
-        )
-        return updated, self.generated_tokens, self.num_generated_tokens
-
-    def extract_generated_tokens(
-        self,
-        sequence_ids: ht.i32[NamedArray, "seq"],  # type: ignore[name-defined]
-        max_tokens: int,
-    ) -> tuple["JitScheduler", ht.i32[NamedArray, "seq position"]]:
-        """
-        Extract *at most* ``max_tokens`` tokens for each requested sequence, pad with
-        INVALID, and clear them from ``generated_tokens``.
-        """
-        # gather tokens and counts for the requested sequences
-        gathered_tokens = self.generated_tokens["seq", sequence_ids]
-        gathered_counts = self.num_generated_tokens["seq", sequence_ids]
-
-        out_array = gathered_tokens.array[:, :max_tokens]
-        mask = jnp.arange(max_tokens) < gathered_counts.array[:, None]
-        out_array = jnp.where(mask, out_array, INVALID)
-        out = hax.named(out_array, axis=("seq", "position"))
-
-        # how many tokens we will remove from each sequence
-        to_take = jnp.minimum(gathered_counts.array, max_tokens)
-        to_take_full = jnp.zeros_like(self.num_generated_tokens.array)
-        to_take_full = to_take_full.at[sequence_ids.array].add(to_take)
-
-        idx = jnp.arange(self.generated_tokens.axis_size("position"))
-
-        def shift_row(tokens, count, n):
-            rolled = jnp.roll(tokens, -n, axis=0)
-            mask = idx >= (count - n)
-            rolled = jnp.where(mask, INVALID, rolled)
-            return rolled, count - n
-
-        new_tokens, new_counts = jax.vmap(shift_row)(
-            self.generated_tokens.array,
-            self.num_generated_tokens.array,
-            to_take_full,
-        )
-
-        new_tokens = hax.named(new_tokens, axis=self.generated_tokens.axes)
-        new_counts = hax.named(new_counts, axis=self.num_generated_tokens.axes)
-
-        updated = dataclasses.replace(
-            self,
-            generated_tokens=new_tokens,
-            num_generated_tokens=new_counts,
-        )
-
-        return updated, out
-
     def cleared(self) -> "JitScheduler":
         """
         Returns a new JitScheduler with all buffers cleared.
         This is useful for resetting the scheduler state.
         """
         return JitScheduler.init(
-            max_seqs=self.generated_tokens.axis_size("seq"),
             max_queued_tokens=self.queued_tokens.axis_size("position"),
-            max_buffered_tokens=self.generated_tokens.axis_size("position"),
         )
 
 
@@ -563,8 +477,6 @@ class JitScheduler(eqx.Module):
 
         def callback(self):
             print(f"{prefix}JitScheduler State:")
-            print(f"{prefix}Generated Tokens: {self.generated_tokens}")
-            print(f"{prefix}Num Generated Tokens: {self.num_tokens}")
             print(f"{prefix}Queued Tokens: {self.queued_tokens}")
             print(f"{prefix}Queued Seq IDs: {self.queued_seq_ids}")
             print(f"{prefix}Num Queued Tokens: {self.num_queued_tokens}")

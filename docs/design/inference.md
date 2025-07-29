@@ -86,7 +86,7 @@ torch, not much interesting here given jetstream. focused on batch inference I t
 ## Sample LM Integration
 - [ ] expose a free list of pages in `PageTable`
 - [ ] allocate pages from the free list inside the generation loop
-- [ ] store partial sequences in `DecodeState` instead of `JitScheduler`
-- [ ] check `DecodeState.is_finished` during generation
+- [x] store partial sequences in `DecodeState` instead of `JitScheduler`
+- [x] check `DecodeState.is_finished` during generation
 - [ ] remove `PageTable` from the core decoding loop
 - [ ] integrate any remaining pieces needed for `sample_lm`
