@@ -256,11 +256,6 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
 
     def _add_members_to_actor_pool(self, desired_num_actors: int) -> None:
         logger.info(f"{self.get_actor_pool_name()} actor pool members before adding members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
-        if len(self._actor_pool) >= desired_num_actors:
-            logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, and we wanted {desired_num_actors}. Skipping adding members.")
-            return
-
-        # if we don't have enough slices, create more
         logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, but we want {desired_num_actors}. Creating more.")
 
         actors = [self.create_actor() for _ in range(desired_num_actors - len(self._actor_pool))]
@@ -280,20 +275,32 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
         logger.info(f"{self.get_actor_pool_name()} actor pool members after adding members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
         logger.info(f"{self.get_actor_pool_name()} actor pool scaled up to {len(self._actor_pool)} members")
 
-        if len(self._actor_pool) < desired_num_actors:
-            raise Exception(f"Wanted {desired_num_actors} hosts in slice {self.get_actor_pool_name()} but only acquired {len(self._actor_pool)} hosts.")
+    def _remove_members_from_actor_pool(self, desired_num_actors: int) -> None:
+        logger.info(f"{self.get_actor_pool_name()} actor pool members before removing members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+        logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, but we want {desired_num_actors}. Removing members.")
+        
+        members_to_remove = self._actor_pool[desired_num_actors:]
+        self._actor_pool = self._actor_pool[:desired_num_actors]
+        for member in members_to_remove:
+            logger.info(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} stopping.")
+            _stop_actor(member.actor)
 
-    def scale_actor_pool(self, desired_num_actors: int) -> None:
+        logger.info(f"{self.get_actor_pool_name()} actor pool members after removing members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
+        logger.info(f"{self.get_actor_pool_name()} actor pool scaled down to {len(self._actor_pool)} members")
+
+    def scale_actor_pool(self, desired_num_actors: int | Sequence[int]) -> None:
         self._remove_unhealthy_members_from_actor_pool()
-        self._add_members_to_actor_pool(desired_num_actors)  # TODO: Clean this up
+        if len(self._actor_pool) < desired_num_actors:
+            self._add_members_to_actor_pool(desired_num_actors)
+        elif len(self._actor_pool) > desired_num_actors:
+            self._remove_members_from_actor_pool(desired_num_actors)
+        else:
+            logger.info(f"{self.get_actor_pool_name()} actor pool already has {len(self._actor_pool)} members, and we wanted {desired_num_actors}. Skipping scaling.")
         # TODO: Add retry logic
 
     def drain_actor_pool(self) -> None:
-        logger.info(f"{self.get_actor_pool_name()} actor pool members before draining: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
-        for member in self._actor_pool:
-            logger.info(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} stopping.")
-            _stop_actor(member.actor)
-        self._actor_pool = []
+        logger.info(f"{self.get_actor_pool_name()} actor pool members draining.")
+        self._remove_members_from_actor_pool(0)
         logger.info(f"{self.get_actor_pool_name()} actor pool drained.")
 
 
@@ -314,6 +321,10 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
 
     def get_actor_info_future(self, actor: ActorHandle) -> ray.ObjectRef:
         return actor.get_slice_info.remote()
+    
+    def should_increase_slice_pool_size(self, desired_num_actors) -> bool:
+        # wait 
+        self._add_members_to_actor_pool(desired_num_actors)
 
 
 
@@ -458,7 +469,7 @@ def run_on_pod(
     remote_fn: RemoteFunction | Callable,
     tpu_type: str,
     *,
-    num_slices: int = 1,
+    num_slices: int | Sequence[int] = 1,
     max_retries_preemption=10000,
     max_retries_failure=10,
 ):
@@ -488,7 +499,7 @@ def run_on_pod(
 def run_on_pod_ray(
     remote_fn: RemoteFunction,
     tpu_type: str,
-    num_slices: int = 1,
+    num_slices: int | Sequence[int] = 1 ,
     max_retries_preemption: int = 10000,
     max_retries_failure: int = 10,
 ):
@@ -568,6 +579,7 @@ def run_on_pod_ray(
 
             # check health of actors in the loop too
             actor_health_futures = [tpu_slice.actor.healthy.remote() for actor in slice_pool]
+            should_increase_slice_pool_size_future: Optional[ray.ObjectRef] = None
 
             while pending_futures and not had_a_failure:
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
@@ -600,6 +612,8 @@ def run_on_pod_ray(
                         if not healthy:
                             logger.warning(f"Actor {slice_pool[i]} is unhealthy. Will retry.")
                             had_a_failure = True
+
+                
 
             # Proactively cancel jobs if one fails.
             if had_a_failure and pending_futures:
@@ -851,7 +865,7 @@ def _run_command(*args, **kwargs):
 
 
 def run_docker_on_pod(
-    image_id: str, command: Sequence[str], *, tpu_type: str, num_slices: int, env: dict, name: str = "levanter", retries: int = 10
+    image_id: str, command: Sequence[str], *, tpu_type: str, num_slices: int | Sequence[int], env: dict, name: str = "levanter", retries: int = 10
 ):
     env = _massage_env(env)
 
