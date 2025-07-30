@@ -168,7 +168,8 @@ _START_ACTOR_TIMEOUT = 7 * 24 * 60 * 60  # 1 week
 _CHECK_SHOULD_SCALE_UP_MULTISLICE_START_ACTOR_TIMEOUT = 300
 
 # Intervals (in seconds)
-_CHECK_SHOULD_SCALE_UP_MULTISLICE_INTERVAL = 15 * 60 # 15 minutes
+# _CHECK_SHOULD_SCALE_UP_MULTISLICE_INTERVAL = 15 * 60 # 15 minutes
+_CHECK_SHOULD_SCALE_UP_MULTISLICE_INTERVAL = 15
 _SCALE_UP = 15 * 60 # 15 minutes
 
 
@@ -261,7 +262,7 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
 
         actors = [self.create_actor() for _ in range(desired_num_actors - len(self._actor_pool))]
 
-        actors_and_actor_info_awaitables = [(actor, actor.setup.remote()) for actor in actors]
+        actors_and_actor_info_awaitables = [(actor, actor.get_info.remote()) for actor in actors]
         logger.info(f"{self.get_actor_pool_name()} actor pool waiting for {len(actors)} new actors to start...")
         for actor, actor_info_awaitable in actors_and_actor_info_awaitables:
             try:
@@ -378,11 +379,11 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
             num_desired_additional_slices = next_larger_size - len(self._actor_pool)
             logger.info(f"Checking if {num_desired_additional_slices} additional slices are available.")
             actors = [self.create_actor() for _ in range(num_desired_additional_slices)]
-            setup_awaitables = [actor.setup.remote() for actor in actors]
+            actor_info_awaitables = [actor.get_info.remote() for actor in actors]
             logger.info(f"Waiting for {len(actors)} slice probe actors to start.")
-            ray.get(setup_awaitables, timeout=_START_ACTOR_TIMEOUT)
+            actor_infos = ray.get(actor_info_awaitables, timeout=_START_ACTOR_TIMEOUT)
             logger.info(f"{num_desired_additional_slices} additional slices are available.")
-            return True
+            return all(actor_infos)
         except Exception as e:
             logger.info(f"{num_desired_additional_slices} additional slices were not available: {e}")
             return False
@@ -426,7 +427,7 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
         slice_name = self._slice_info.slice_name
         return TPUHostActor.options(resources={slice_name: 1}, num_cpus=0.0).remote(self._slice_info)  # type: ignore
 
-    def setup(self) -> SliceInfo:
+    def get_info(self) -> SliceInfo:
         pod_name = ray.util.accelerators.tpu.get_current_pod_name()
         num_hosts = ray.util.accelerators.tpu.get_current_pod_worker_count()
         num_tpus_per_host = TPUAcceleratorManager.get_current_node_num_accelerators()
@@ -481,7 +482,7 @@ class TPUHostActor:
 
         return get_current_tpu_is_preempted()
 
-    def setup(self) -> TPUHostInfo:
+    def get_info(self) -> TPUHostInfo:
         if self._host_info:
             return self._host_info
 
@@ -625,7 +626,7 @@ def run_on_pod_ray(
                     mxla_env = {}
 
                 futures_for_slice = _start_fn_on_slice(tpu_slice.actor, remote_fn, mxla_env)
-                logger.info(f"Futures for slice {slice_pool[0].actor_info.slice_name}: {futures_for_slice}")
+                logger.info(f"Futures for slice {tpu_slice.actor_info.slice_name}: {futures_for_slice}")
 
                 futures.extend(futures_for_slice)
                 for future in futures_for_slice:
