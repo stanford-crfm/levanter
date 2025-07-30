@@ -374,16 +374,33 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
         self.scale_actor_pool(num_hosts)
         return self._slice_info
 
-    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> list[ray.ObjectRef]:
-        """Run the remote function on this slice.
+    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> list[tuple[int, ray.ObjectRef]]:
+        """Run the remote function on this slice and return futures with host indices.
 
         NOTE: This runs the remote function in a different task. It does not block on the remote function call.
-        NOTE: This returns a list of Ray futures. If calling this method on a remote Actor, you will get a future of a list of futures."""
-        actors = self.get_all_actors_in_pool()
-        if not self._slice_info or len(actors) < self._slice_info.num_hosts:
+        NOTE: This returns a list of tuples ``(worker_index, future)``. If calling this method on a remote Actor,
+        you will get a future of such a list."""
+        members = self.get_all_pool_members()
+        if not self._slice_info or len(members) < self._slice_info.num_hosts:
             raise Exception("Insufficient host actors; call setup() before calling run_remote_fn()")
-        futures_of_futures: list[ray.ObjectRef] = [actor.run_remote_fn.remote(remote_fn, runtime_env) for actor in actors]
-        return [ray.get(future_of_future) for future_of_future in futures_of_futures]
+
+        futures_of_futures: list[tuple[int, ray.ObjectRef]] = [
+            (member.actor_info.worker_index, member.actor.run_remote_fn.remote(remote_fn, runtime_env))
+            for member in members
+        ]
+
+        return [
+            (worker_index, ray.get(fut_of_fut))
+            for worker_index, fut_of_fut in futures_of_futures
+        ]
+
+    def kill_pid_on_host(self, worker_index: int, pid: int) -> None:
+        """Kill a process by PID on the specified host actor."""
+        for member in self._actor_pool:
+            if member.actor_info.worker_index == worker_index:
+                member.actor.kill_pid.remote(pid)
+                return
+        logger.warning(f"No host with worker_index {worker_index} found to kill PID {pid}")
 
     def teardown(self):
         self.drain_actor_pool()
@@ -546,6 +563,7 @@ def run_on_pod_ray(
             # Ok finally time to run the remote function on all slices
             futures: list[ray.ObjectRef] = []  # one per host in each slice
             future_to_index: dict[ray.ObjectRef, int] = {}  # maps futures to their index in the results list
+            future_to_actor: dict[ray.ObjectRef, tuple[ActorHandle, int]] = {}
             global_index = 0  # index into results list
 
             for i, tpu_slice in enumerate(slice_pool):
@@ -555,12 +573,13 @@ def run_on_pod_ray(
                 else:
                     mxla_env = {}
 
-                futures_for_slice = _start_fn_on_slice(tpu_slice.actor, remote_fn, mxla_env)
-                logger.info(f"Futures for slice {slice_pool[0].actor_info.slice_name}: {futures_for_slice}")
+                slice_futures = _start_fn_on_slice(tpu_slice.actor, remote_fn, mxla_env)
+                logger.info(f"Futures for slice {slice_pool[0].actor_info.slice_name}: {list(slice_futures.keys())}")
 
-                futures.extend(futures_for_slice)
-                for future in futures_for_slice:
+                futures.extend(slice_futures.keys())
+                for future, launch_info in slice_futures.items():
                     future_to_index[future] = global_index
+                    future_to_actor[future] = launch_info
                     global_index += 1
 
             tpu_results: list[_TpuRunResult | None] = [None] * len(futures)
@@ -576,12 +595,13 @@ def run_on_pod_ray(
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
 
                 for f in finished:
+                    actor_tuple = future_to_actor.get(f)
                     try:
                         tpu_results[future_to_index[f]] = TpuSuccess(ray.get(f))
                     except RayError as e:
                         had_a_failure = True
                         problems.append(e)
-                        tpu_results[future_to_index[f]] = _handle_ray_error(e)
+                        tpu_results[future_to_index[f]] = _handle_ray_error(e, actor_tuple)
                     except Exception as e:
                         logger.warning(f"Task {f} failed with unexpected error {e}. Will retry.")
                         had_a_failure = True
@@ -715,19 +735,21 @@ def _stop_actor(actor: ActorHandle) -> None:
         ray.kill(actor)
 
 
-def _start_fn_on_slice(slice_actor: ActorHandle, remote_fn: RemoteFunction, mxla_env: dict | None) -> list[ray.ObjectRef]:
-    """
-    Start the remote function on a slice of the TPU pod.
-    """
+def _start_fn_on_slice(
+    slice_actor: ActorHandle, remote_fn: RemoteFunction, mxla_env: dict | None
+) -> dict[ray.ObjectRef, tuple[ActorHandle, int]]:
+    """Start the remote function on a slice of the TPU pod."""
+
     runtime_env = remote_fn._runtime_env or {}
     if mxla_env is not None:
         mxla_env = dict(env_vars=mxla_env)
         runtime_env = mergedeep.merge({}, runtime_env, mxla_env, strategy=mergedeep.Strategy.ADDITIVE)
-    futures_for_slice = ray.get(slice_actor.run_remote_fn.remote(remote_fn, runtime_env))
-    return futures_for_slice
+
+    futures_with_indices = ray.get(slice_actor.run_remote_fn.remote(remote_fn, runtime_env))
+    return {future: (slice_actor, worker_index) for worker_index, future in futures_with_indices}
 
 
-def _handle_ray_error(e: RayError):
+def _handle_ray_error(e: RayError, actor_info: tuple[ActorHandle, int] | None = None):
     """
     Handle a Ray error that occurred on a TPU pod. Tries to determine if the error was due to a
     node failure or preemption or just an application error.
@@ -755,6 +777,18 @@ def _handle_ray_error(e: RayError):
             return TpuPreempted(e)
 
         logger.exception(f"Task error {e}", exc_info=e)
+
+        error_message = str(e)
+        if e.cause is not None:
+            error_message += f" {e.cause}"
+        pid = _extract_blocking_tpu_pid(error_message)
+        if pid is not None and actor_info is not None:
+            slice_actor, worker_index = actor_info
+            try:
+                ray.get(slice_actor.kill_pid_on_host.remote(worker_index, pid), timeout=5)
+            except Exception as kill_e:  # noqa
+                logger.warning(f"Failed to kill blocking process {pid}: {kill_e}")
+
         if isinstance(e.cause, TimeoutError) or "timed out" in str(e):
             logger.exception("Timeout error. Assuming preempted", exc_info=e)
             return TpuPreempted(e)
