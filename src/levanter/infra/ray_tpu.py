@@ -566,8 +566,7 @@ def run_on_pod_ray(
             pending_futures = list(futures)
             had_a_failure = False
 
-            # check health of actors in the loop too
-            actor_health_futures = [tpu_slice.actor.healthy.remote() for actor in slice_pool]
+            actor_health_futures = [tpu_slice.actor.healthy.remote() for tpu_slice in slice_pool]
 
             while pending_futures and not had_a_failure:
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
@@ -585,7 +584,6 @@ def run_on_pod_ray(
                         tpu_results[future_to_index[f]] = TpuRunError(e)
 
                 if had_a_failure:
-                    # skip health checks if we already had a failure
                     break
 
                 # Check if any actors are unhealthy. We hit this if it's been 10 seconds or we got a result
@@ -600,6 +598,11 @@ def run_on_pod_ray(
                         if not healthy:
                             logger.warning(f"Actor {slice_pool[i]} is unhealthy. Will retry.")
                             had_a_failure = True
+
+                if had_a_failure:
+                    break
+
+                actor_health_futures = [tpu_slice.actor.healthy.remote() for tpu_slice in slice_pool]
 
             # Proactively cancel jobs if one fails.
             if had_a_failure and pending_futures:
