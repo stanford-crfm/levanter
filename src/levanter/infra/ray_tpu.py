@@ -588,7 +588,7 @@ def run_on_pod_ray(
 
                 # Check if any actors are unhealthy. We hit this if it's been 10 seconds or we got a result
                 try:
-                    actor_healths = ray.get(actor_health_futures)
+                    actor_healths = ray.get(actor_health_futures, timeout=_HEALTH_CHECK_TIMEOUT)
                 except RayError as e:
                     logger.warning("Failed to get actor healths", exc_info=e)
                     # assume things are bad
