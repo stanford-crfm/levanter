@@ -421,6 +421,9 @@ class TPUHostActor:
         )
         return self._host_info
 
+    def kill_pid(self, pid: int) -> None:
+        _kill_process(pid)
+
     def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> ray.ObjectRef:
         """Run the remote function on this host.
 
@@ -939,6 +942,69 @@ def _hacky_remove_tpu_lockfile():
                 os.system("sudo rm /tmp/libtpu_lockfile")
             except Exception:  # noqa
                 pass
+
+
+def _extract_blocking_tpu_pid(error_message: str) -> int | None:
+    """
+    Extract the blocking process PID from TPU error messages.
+
+    Looks for patterns like: "The TPU is already in use by process with pid 73653"
+
+    Returns the PID as an int if found, None otherwise.
+    """
+    import re
+
+    pid_pattern = r"The TPU is already in use by process with pid (\d+)"
+    match = re.search(pid_pattern, error_message)
+
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _kill_process(blocking_pid: int) -> bool:
+    """
+
+    Returns True if a blocking process was found and killed, False otherwise.
+    """
+
+    logger.warning(f"Found TPU blocking process with PID {blocking_pid}. Attempting to kill it.")
+
+    try:
+        # First try to kill the process normally
+        os.kill(blocking_pid, 15)  # SIGTERM
+        time.sleep(1)
+
+        # Check if process is still alive
+        try:
+            os.kill(blocking_pid, 0)  # Check if process exists
+            # Process still exists, force kill it
+            logger.warning(f"Process {blocking_pid} still alive, force killing...")
+            os.kill(blocking_pid, 9)  # SIGKILL
+        except ProcessLookupError:
+            # Process is dead, good
+            pass
+
+        logger.info(f"Successfully killed blocking TPU process {blocking_pid}")
+        return True
+
+    except ProcessLookupError:
+        logger.info(f"Blocking process {blocking_pid} was already dead")
+        return True
+    except PermissionError:
+        logger.warning(f"Permission denied killing process {blocking_pid}, trying with sudo")
+        try:
+            os.system(f"sudo kill -15 {blocking_pid}")
+            time.sleep(1)
+            os.system(f"sudo kill -9 {blocking_pid}")
+            logger.info(f"Successfully killed blocking TPU process {blocking_pid} with sudo")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to kill blocking process {blocking_pid} even with sudo: {e}")
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error killing blocking process {blocking_pid}: {e}")
+        return False
 
 
 @dataclass
