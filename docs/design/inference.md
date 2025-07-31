@@ -48,7 +48,7 @@ torch, not much interesting here given jetstream. focused on batch inference I t
 - [x] Update JIT scheduler to recognize sequences properly using `hax.where` with size/fill
 - [x] Remove tokens from the queue based on sequence ID using a JIT-safe mask
 - [x] Automatically slide tokens forward when removing entries
-- [ ] Integrate stop sequence into jit scheduler
+- [ ] Integrate stop sequence into decode state
 - [ ] Implement max tokens per sequence limit
 - [ ] Add option to record logprobs
 - [ ] add swapping in new sequences into jit scheduler
