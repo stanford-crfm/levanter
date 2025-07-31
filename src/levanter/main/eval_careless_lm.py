@@ -12,14 +12,15 @@ It also calls ``levanter.books.util.compute_max_extraction_rates`` to
 print the (n, p) discoverability statistics used in memorisation studies.
 """
 
-# NOTE: Do *not* enable postponed evaluation of annotations here because
-# levanter.config.main relies on `inspect.getfullargspec(fn).annotations`
-# producing real types, not strings.
 
 import itertools
 import logging
 import math
+import os
 import pathlib
+import tarfile
+import tempfile
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -39,7 +40,7 @@ import levanter
 import levanter.tracker
 
 # Helpers -----------------------------------------------------------------
-from levanter.books.util import compute_max_extraction_rates, create_pz_histogram
+from levanter.books.util import compute_max_extraction_rates, create_pz_histogram, create_pz_histogram_linear
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
@@ -50,8 +51,11 @@ from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 
 
+jax.config.update("jax_default_matmul_precision", "highest")
 # -----------------------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
+
+RUN_START_TIME = None
 
 
 @dataclass
@@ -87,9 +91,11 @@ class EvalCarelessLmConfig:
     histogram_path: str = "pz_distribution_histogram.png"
     pz_threshold: float = 0.0001
     book_title: str = "Book"
+    pz_data_path: str = "pz_data.npz"
 
     # Performance tweaks -------------------------------------------------------
     use_dataloader: bool = True  # DataLoader keeps devices busy but uses additional host memory
+    histogram_linear: bool = True
 
 
 # -----------------------------------------------------------------------------------------
@@ -97,7 +103,83 @@ class EvalCarelessLmConfig:
 # -----------------------------------------------------------------------------------------
 
 
+def upload_hlo_dumps_to_wandb():
+    """Upload HLO dumps to WandB as artifacts (only from current run)"""
+
+    global RUN_START_TIME
+
+    xla_dump_dir = "/tmp/xla_dumps"
+    if not os.path.exists(xla_dump_dir):
+        logger.warning("No XLA dumps found at /tmp/xla_dumps")
+        return
+
+    # Record current time as the cutoff - only files newer than this run's start
+    # We'll use a time shortly before model initialization as the cutoff
+    current_time = time.time()
+    # Assume run started at most 1 hour ago (adjust based on your typical run times)
+    run_start_cutoff = current_time - (1 * 60 * 60)  # 1 hour ago
+
+    # Collect files that were created during this run
+    recent_dump_files = []
+    all_files = []
+
+    for root, dirs, files in os.walk(xla_dump_dir):
+        for file in files:
+            filepath = os.path.join(root, file)
+            all_files.append(filepath)
+
+            # Check file modification time
+            file_mtime = os.path.getmtime(filepath)
+            if file_mtime > run_start_cutoff:
+                recent_dump_files.append(filepath)
+
+    logger.info(
+        f"Found {len(all_files)} total files, {len(recent_dump_files)} recent files (modified after"
+        f" {time.ctime(run_start_cutoff)})"
+    )
+
+    if not recent_dump_files:
+        logger.warning("No recent XLA dump files found from this run")
+        return
+
+    # Create a tar archive with only recent files
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
+        tar_path = tmp_file.name
+
+    try:
+        with tarfile.open(tar_path, "w:gz") as tar:
+            for filepath in recent_dump_files:
+                # Add each file individually to maintain directory structure
+                arcname = os.path.relpath(filepath, os.path.dirname(xla_dump_dir))
+                tar.add(filepath, arcname=arcname)
+
+        # Upload to WandB
+        levanter.tracker.current_tracker().log_artifact(tar_path, name="hlo_dumps.tar.gz", type="hlo_analysis")
+        logger.info(f"Successfully uploaded {len(recent_dump_files)} recent HLO dumps to WandB")
+
+        # Log statistics
+        recent_file_sizes = [os.path.getsize(f) for f in recent_dump_files]
+        levanter.tracker.log(
+            {
+                "hlo_analysis/total_dump_files": len(recent_dump_files),
+                "hlo_analysis/total_files_in_dir": len(all_files),
+                "hlo_analysis/dump_dir_size_mb": sum(recent_file_sizes) / (1024 * 1024),
+                "hlo_analysis/run_start_cutoff": run_start_cutoff,
+            },
+            step=0,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to upload HLO dumps: {e}")
+    finally:
+        # Clean up temporary file
+        os.unlink(tar_path)
+
+
 def main(cfg: EvalCarelessLmConfig):
+    global RUN_START_TIME
+    RUN_START_TIME = time.time()
+
     levanter.initialize(cfg)
     # Tokenizer & axes ---------------------------------------------------------
     if cfg.tokenizer_name is not None:
@@ -249,9 +331,14 @@ def main(cfg: EvalCarelessLmConfig):
     logger.info("First few (n,p) extraction entries: %s", stats[0][:5])
 
     # Create and save histogram ------------------------------------------------
-    hist_stats = create_pz_histogram(
-        pz_list=pz_list, threshold=cfg.pz_threshold, save_path=cfg.histogram_path, book_title=cfg.book_title
-    )
+    if cfg.histogram_linear:
+        hist_stats = create_pz_histogram_linear(
+            pz_list=pz_list, threshold=cfg.pz_threshold, save_path=cfg.histogram_path, book_title=cfg.book_title
+        )
+    else:
+        hist_stats = create_pz_histogram(
+            pz_list=pz_list, threshold=cfg.pz_threshold, save_path=cfg.histogram_path, book_title=cfg.book_title
+        )
     if hist_stats:
         logger.info("P_z histogram statistics: %s", hist_stats)
         # Log the histogram as an artifact
@@ -274,6 +361,16 @@ def main(cfg: EvalCarelessLmConfig):
         },
         step=0,
     )
+
+    # Save pz_list and related data as npz file
+    np.savez(
+        cfg.pz_data_path,
+        pz_values=np.array(pz_list),
+        char_ranges=np.array(char_ranges),
+        char_max_pz=char_max,
+        config_info=np.array([cfg.chunk_size, cfg.prompt_tokens, cfg.cursor_inc_chars, len(raw_text)]),
+    )
+    levanter.tracker.current_tracker().log_artifact(cfg.pz_data_path, name=cfg.pz_data_path, type="data")
     # ------------------------------------------------------------------
     # Visualization: show a *single-row* heat-map so each character
     # column is a vertical bar whose colour encodes max-P(z).
@@ -304,6 +401,7 @@ def main(cfg: EvalCarelessLmConfig):
     np.save(npy_path, char_max)
     levanter.tracker.current_tracker().log_artifact(str(npy_path), name=str(npy_path), type="array")
 
+    upload_hlo_dumps_to_wandb()
     levanter.tracker.current_tracker().finish()
 
 

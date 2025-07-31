@@ -36,12 +36,91 @@ __all__ = [
     "compute_greedy_extraction_rate",
     "chunk_text_to_sliding_window_token_chunks",
     "sliding_lm_examples",
+    "create_pz_histogram_linear",
+    "create_pz_histogram",
 ]
 
 
 # -----------------------------------------------------------------------------
 # Core metric helpers ---------------------------------------------------------
 # -----------------------------------------------------------------------------
+def create_pz_histogram_linear(pz_list: List[float], threshold: float, save_path: str, book_title: str = "Book"):
+    """
+    Create a histogram of p_z values matching the style from the reference codebase.
+    Uses dynamic bin calculation and styling similar to make_pz_dist_plot.
+
+    Args:
+        pz_list: List of suffix probabilities
+        threshold: Minimum p_z value to include (e.g., 0.0001 for 0.01%)
+        save_path: Path to save the histogram
+        book_title: Title for the plot
+    """
+    # Filter p_z values above threshold
+    filtered_pz = [pz for pz in pz_list if pz >= threshold]
+
+    print(f"Total sequences: {len(pz_list)}")
+    print(f"Sequences above {threshold*100:.3f}% threshold: {len(filtered_pz)}")
+
+    if len(filtered_pz) == 0:
+        print(f"No sequences above threshold {threshold}. Skipping histogram.")
+        return
+
+    # Convert to percentages for plotting
+    filtered_pz_percent = [pz * 100 for pz in filtered_pz]
+
+    # Dynamic bin calculation like in the reference codebase
+    n = len(filtered_pz_percent)
+    num_bins = min(50, max(5, int(np.sqrt(n))))
+
+    # Create histogram with styling matching the reference
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Use matplotlib hist with dynamic bins (linear spacing)
+    bins = np.linspace(threshold * 100, 100, num_bins)
+    counts, bin_edges, patches = ax.hist(
+        filtered_pz_percent, bins=bins, color="steelblue", edgecolor="black", linewidth=0.3, alpha=0.8
+    )
+
+    # Set log scale for y-axis (no fixed limits - let it auto-scale like reference)
+    ax.set_yscale("log")
+    ax.set_ylabel("Frequency", fontsize=12)
+    ax.set_xlabel("Probability of extraction ($p_z$)", fontsize=12)  # Use LaTeX formatting
+
+    # Set x-axis limits and ticks for better spacing
+    ax.set_xlim(0, 100)
+    ax.set_xticks([0, 20, 40, 60, 80, 100])
+    ax.set_xticklabels(["0%", "20%", "40%", "60%", "80%", "100%"])
+
+    # Set title to match the reference style
+    threshold_percent = threshold * 100
+    ax.set_title(
+        f"{book_title}:\nDistribution of $p_z$ (≥ {threshold_percent:.2f}%) for Llama 3.1 70B",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    # Remove grid for cleaner look like reference
+    ax.grid(False)
+
+    # Tight layout
+    plt.tight_layout()
+
+    # Save the plot
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    print(f"Histogram saved to: {save_path}")
+
+    # Return same statistics as original function
+    stats = {
+        "total_sequences": len(pz_list),
+        "above_threshold": len(filtered_pz),
+        "mean_pz": np.mean(filtered_pz),
+        "median_pz": np.median(filtered_pz),
+        "max_pz": max(filtered_pz),
+        "threshold_used": threshold,
+    }
+
+    return stats
+
 
 # Add this function after the main function or before it
 def create_pz_histogram(pz_list: List[float], threshold: float, save_path: str, book_title: str = "Book"):
