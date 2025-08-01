@@ -47,25 +47,32 @@ class EmaModelAveraging(ModelAveraging[M]):
 
 
 class EmaDecaySqrtModelAveraging(ModelAveraging[M]):
-    """Hybrid EMA followed by :math:`1 - \sqrt{x}` decay."""
+    """Hybrid EMA followed by :math:`1 - \sqrt{x}` decay.
+
+    This implementation keeps a running total of the weight mass so the
+    average can be queried at any step. After ``decay_steps`` updates the
+    raw weight becomes zero and the average stops changing.
+    """
 
     model: M
     switch_step: int = eqx.field(static=True)
     decay_steps: int = eqx.field(static=True)
     beta: float = eqx.field(static=True, default=0.999)
-    epsilon: float = eqx.field(static=True, default=1e-5)
+    tot_weight: float = 0.0
+
+    def _raw_weight(self, step: int) -> float:
+        if step < self.switch_step:
+            return 1.0 - self.beta
+        t = step - self.switch_step
+        frac = jnp.clip(t / self.decay_steps, 0.0, 1.0)
+        return float(1.0 - jnp.sqrt(frac))
 
     def update(self, new_model: M, step: int) -> "EmaDecaySqrtModelAveraging[M]":
-        if step < self.switch_step:
-            alpha = 1.0 - self.beta
-        else:
-            t = step - self.switch_step
-            frac = jnp.clip(t / self.decay_steps, 0.0, 1.0)
-            alpha = 1.0 - jnp.sqrt(frac)
-
-        alpha = jnp.maximum(alpha, self.epsilon)
+        w = self._raw_weight(step)
+        new_tot_w = self.tot_weight + w
+        alpha = 0.0 if new_tot_w == 0.0 else w / new_tot_w
         updated = optax.incremental_update(new_model, self.model, alpha)
-        return dataclasses.replace(self, model=updated)  # type: ignore[arg-type]
+        return dataclasses.replace(self, model=updated, tot_weight=new_tot_w)  # type: ignore[arg-type]
 
     @property
     def model_params(self) -> M:
@@ -95,7 +102,6 @@ class EmaDecaySqrtConfig(ModelAveragingConfig[M]):
     beta: float = 0.999
     switch_step: int = 100_000
     decay_steps: int = 100_000
-    epsilon: float = 1e-5
 
     def create(self, model: M) -> EmaDecaySqrtModelAveraging[M]:
         return EmaDecaySqrtModelAveraging(
@@ -103,5 +109,4 @@ class EmaDecaySqrtConfig(ModelAveragingConfig[M]):
             beta=self.beta,
             switch_step=self.switch_step,
             decay_steps=self.decay_steps,
-            epsilon=self.epsilon,
         )
