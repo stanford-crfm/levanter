@@ -16,6 +16,9 @@ prompt_tokens: 50
 
 # Slide the character cursor by this many chars between windows.
 cursor_inc_chars: 10
+# Enable token-based sliding window mode
+token_mode: true
+cursor_inc_tokens: 5
 
 # slice length
 slice_length: 2000

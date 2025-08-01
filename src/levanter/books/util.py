@@ -14,6 +14,7 @@ Two groups of helpers live here:
     ``careless.py`` but yield structures convenient for Levanter/Haliax
     evaluation.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,7 +28,6 @@ import haliax as hax
 
 from levanter.models.lm_model import LmExample
 
-
 __all__ = [
     "compute_extraction_rates",
     "compute_max_extraction_rates",
@@ -36,6 +36,8 @@ __all__ = [
     "compute_greedy_extraction_rate",
     "chunk_text_to_sliding_window_token_chunks",
     "sliding_lm_examples",
+    "chunk_token_ids_to_sliding_windows",
+    "token_sliding_lm_examples",
     "create_pz_histogram_linear",
     "create_pz_histogram",
 ]
@@ -386,3 +388,72 @@ def sliding_lm_examples(
         tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
         example = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=half)
         yield example, (chunk["start_idx"], chunk["end_idx"])
+
+
+def chunk_token_ids_to_sliding_windows(
+    token_ids: Sequence[int],
+    tokenizer,
+    *,
+    chunk_size: int = 100,
+    cursor_inc: int = 1,
+) -> list[Dict[str, Any]]:
+    """Create overlapping ``chunk_size`` token windows from pre-tokenised ids."""
+
+    all_chunks: list[Dict[str, Any]] = []
+    token_cursor = 0
+    token_len = len(token_ids)
+
+    progress_markers = {i for i in range(10, 101, 10)}
+
+    while token_cursor < token_len:
+        ids = list(token_ids[token_cursor : token_cursor + chunk_size])
+        if len(ids) < chunk_size:
+            break
+
+        decoded_chunk = tokenizer.decode(ids, skip_special_tokens=True)
+        all_chunks.append(
+            {
+                "input_ids": ids,
+                "attention_mask": [1] * len(ids),
+                "start_token": token_cursor,
+                "end_token": token_cursor + chunk_size - 1,
+                "text_len": len(decoded_chunk),
+                "text": decoded_chunk,
+            }
+        )
+
+        token_cursor += cursor_inc
+        pct_complete = int(100 * token_cursor / token_len)
+        if pct_complete in progress_markers:
+            logging.getLogger(__name__).info("Sliding-window progress: %s%%", pct_complete)
+            progress_markers.remove(pct_complete)
+
+    return all_chunks
+
+
+def token_sliding_lm_examples(
+    token_ids: Sequence[int],
+    tokenizer,
+    Pos: hax.Axis,
+    pad_id: int,
+    *,
+    chunk_size: int = 100,
+    cursor_inc: int = 1,
+    prompt_tokens: int = 50,
+) -> Generator[Tuple[LmExample, Tuple[int, int]], None, None]:
+    """Yield ``(LmExample, (token_start, token_end))`` pairs from token ids."""
+
+    for chunk in chunk_token_ids_to_sliding_windows(
+        token_ids,
+        tokenizer,
+        chunk_size=chunk_size,
+        cursor_inc=cursor_inc,
+    ):
+        ids = chunk["input_ids"]
+        if len(ids) < Pos.size:
+            ids = ids + [pad_id] * (Pos.size - len(ids))
+        tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
+        example = LmExample.from_prompt_and_completion(
+            Pos, tokens_named, prompt_length=prompt_tokens, ignore_id=pad_id
+        )
+        yield example, (chunk["start_token"], chunk["end_token"])

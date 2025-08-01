@@ -12,7 +12,6 @@ It also calls ``levanter.books.util.compute_max_extraction_rates`` to
 print the (n, p) discoverability statistics used in memorisation studies.
 """
 
-
 import itertools
 import logging
 import math
@@ -40,7 +39,13 @@ import levanter
 import levanter.tracker
 
 # Helpers -----------------------------------------------------------------
-from levanter.books.util import compute_max_extraction_rates, create_pz_histogram, create_pz_histogram_linear
+from levanter.books.util import (
+    chunk_text_to_sliding_window_token_chunks,
+    chunk_token_ids_to_sliding_windows,
+    compute_max_extraction_rates,
+    create_pz_histogram,
+    create_pz_histogram_linear,
+)
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
@@ -49,7 +54,6 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-
 
 jax.config.update("jax_default_matmul_precision", "highest")
 # -----------------------------------------------------------------------------------------
@@ -77,6 +81,8 @@ class EvalCarelessLmConfig:
     slice_length: int = 2000
     prompt_tokens: int = 50
     cursor_inc_chars: int = 10  # stride in characters
+    token_mode: bool = False
+    cursor_inc_tokens: int = 1  # stride in tokens when token_mode is true
 
     # Tokenizer ----------------------------------------------------------------
     tokenizer_name: Optional[str] = None  # e.g. "meta-llama/Llama-3.1-8B"
@@ -238,19 +244,26 @@ def main(cfg: EvalCarelessLmConfig):
     # Data stream ---------------------------------------------------------------
     raw_text = pathlib.Path(cfg.txt_path).read_text()
 
-    # Build chunk list once to know total work.
-    from levanter.books.util import chunk_text_to_sliding_window_token_chunks
-
-    chunks = chunk_text_to_sliding_window_token_chunks(
-        raw_text,
-        tokenizer,
-        chunk_size=cfg.chunk_size,
-        slice_length=cfg.slice_length,
-        cursor_inc=cfg.cursor_inc_chars,
-    )
+    token_ids = None
+    if cfg.token_mode:
+        token_ids = tokenizer(raw_text, add_special_tokens=False)["input_ids"]
+        chunks = chunk_token_ids_to_sliding_windows(
+            token_ids,
+            tokenizer,
+            chunk_size=cfg.chunk_size,
+            cursor_inc=cfg.cursor_inc_tokens,
+        )
+    else:
+        chunks = chunk_text_to_sliding_window_token_chunks(
+            raw_text,
+            tokenizer,
+            chunk_size=cfg.chunk_size,
+            slice_length=cfg.slice_length,
+            cursor_inc=cfg.cursor_inc_chars,
+        )
 
     examples: list[LmExample] = []
-    char_ranges_list: list[Tuple[int, int]] = []
+    span_ranges_list: list[Tuple[int, int]] = []
     for chunk in chunks:
         ids = chunk["input_ids"]
         if len(ids) < Pos.size:
@@ -258,7 +271,10 @@ def main(cfg: EvalCarelessLmConfig):
         tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
         ex = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=cfg.prompt_tokens, ignore_id=pad_id)
         examples.append(ex)
-        char_ranges_list.append((chunk["start_idx"], chunk["end_idx"]))
+        if cfg.token_mode:
+            span_ranges_list.append((chunk["start_token"], chunk["end_token"]))
+        else:
+            span_ranges_list.append((chunk["start_idx"], chunk["end_idx"]))
 
     total_chunks = len(examples)
     print(f"Total sliding windows: {total_chunks}", flush=True)
@@ -275,7 +291,7 @@ def main(cfg: EvalCarelessLmConfig):
         )
         batches = ((batch, None) for batch in loader)
     else:
-        examples_iter = iter(zip(examples, char_ranges_list))
+        examples_iter = iter(zip(examples, span_ranges_list))
 
         def batches(it):
             while True:
@@ -292,7 +308,7 @@ def main(cfg: EvalCarelessLmConfig):
 
     # Evaluation loop -----------------------------------------------------------
     pz_list: List[float] = []
-    char_ranges: List[Tuple[int, int]] = []
+    span_ranges: List[Tuple[int, int]] = []
 
     total_batches = math.ceil(total_chunks / batch_size)
     example_offset = 0
@@ -305,12 +321,12 @@ def main(cfg: EvalCarelessLmConfig):
 
         if cfg.use_dataloader:
             b = batch_ex.tokens.shape[cfg.trainer.batch_axis]
-            ranges = char_ranges_list[example_offset : example_offset + b]
+            ranges = span_ranges_list[example_offset : example_offset + b]
             example_offset += b
 
         pz = process_allgather(sequence_log_prob(model, batch_ex))
         pz_list.extend(np.array(pz).tolist())
-        char_ranges.extend(ranges)
+        span_ranges.extend(ranges)
 
         done = min((idx + 1) * batch_size, total_chunks)
         pct = 100 * done / total_chunks
@@ -344,31 +360,56 @@ def main(cfg: EvalCarelessLmConfig):
         # Log the histogram as an artifact
         levanter.tracker.current_tracker().log_artifact(cfg.histogram_path, name=cfg.histogram_path, type="plot")
 
-    # Character-level max-P(z) curve -------------------------------------------
-    text_len = len(raw_text)
-    char_max = np.zeros(text_len, dtype=np.float32)
-    for pz, (c0, c1) in zip(pz_list, char_ranges):
-        char_max[c0 : c1 + 1] = np.maximum(char_max[c0 : c1 + 1], pz)
+    # Character- or token-level max-P(z) curve --------------------------------
+    if cfg.token_mode:
+        seq_len = len(token_ids)
+        max_vals = np.zeros(seq_len, dtype=np.float32)
+    else:
+        seq_len = len(raw_text)
+        max_vals = np.zeros(seq_len, dtype=np.float32)
 
-    levanter.tracker.log(
-        {
-            "char_analysis/mean_max_pz": float(np.mean(char_max)),
-            "char_analysis/median_max_pz": float(np.median(char_max)),
-            "char_analysis/max_max_pz": float(np.max(char_max)),
-            "char_analysis/chars_above_0.5": int(np.sum(char_max > 0.5)),
-            "char_analysis/chars_above_0.9": int(np.sum(char_max > 0.9)),
-            "char_analysis/total_chars": len(char_max),
-        },
-        step=0,
-    )
+    for pz, (s0, s1) in zip(pz_list, span_ranges):
+        max_vals[s0 : s1 + 1] = np.maximum(max_vals[s0 : s1 + 1], pz)
+
+    if cfg.token_mode:
+        levanter.tracker.log(
+            {
+                "token_analysis/mean_max_pz": float(np.mean(max_vals)),
+                "token_analysis/median_max_pz": float(np.median(max_vals)),
+                "token_analysis/max_max_pz": float(np.max(max_vals)),
+                "token_analysis/tokens_above_0.5": int(np.sum(max_vals > 0.5)),
+                "token_analysis/tokens_above_0.9": int(np.sum(max_vals > 0.9)),
+                "token_analysis/total_tokens": len(max_vals),
+            },
+            step=0,
+        )
+    else:
+        levanter.tracker.log(
+            {
+                "char_analysis/mean_max_pz": float(np.mean(max_vals)),
+                "char_analysis/median_max_pz": float(np.median(max_vals)),
+                "char_analysis/max_max_pz": float(np.max(max_vals)),
+                "char_analysis/chars_above_0.5": int(np.sum(max_vals > 0.5)),
+                "char_analysis/chars_above_0.9": int(np.sum(max_vals > 0.9)),
+                "char_analysis/total_chars": len(max_vals),
+            },
+            step=0,
+        )
 
     # Save pz_list and related data as npz file
     np.savez(
         cfg.pz_data_path,
         pz_values=np.array(pz_list),
-        char_ranges=np.array(char_ranges),
-        char_max_pz=char_max,
-        config_info=np.array([cfg.chunk_size, cfg.prompt_tokens, cfg.cursor_inc_chars, len(raw_text)]),
+        span_ranges=np.array(span_ranges),
+        max_pz=max_vals,
+        config_info=np.array(
+            [
+                cfg.chunk_size,
+                cfg.prompt_tokens,
+                cfg.cursor_inc_tokens if cfg.token_mode else cfg.cursor_inc_chars,
+                len(token_ids) if cfg.token_mode else len(raw_text),
+            ]
+        ),
     )
     levanter.tracker.current_tracker().log_artifact(cfg.pz_data_path, name=cfg.pz_data_path, type="data")
     # ------------------------------------------------------------------
@@ -378,7 +419,7 @@ def main(cfg: EvalCarelessLmConfig):
     # ------------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(14, 2))
     im = ax.imshow(
-        char_max[np.newaxis, :],  # shape (1, text_len)
+        max_vals[np.newaxis, :],  # shape (1, seq_len)
         cmap="Blues",
         aspect="auto",
         vmin=0.0,
@@ -386,8 +427,12 @@ def main(cfg: EvalCarelessLmConfig):
         interpolation="nearest",
     )
 
-    ax.set_title(f"{cfg.book_title}: Maximum per-character probability")
-    ax.set_xlabel("Book position (character)")
+    if cfg.token_mode:
+        ax.set_title(f"{cfg.book_title}: Maximum per-token probability")
+        ax.set_xlabel("Book position (token)")
+    else:
+        ax.set_title(f"{cfg.book_title}: Maximum per-character probability")
+        ax.set_xlabel("Book position (character)")
     ax.set_yticks([])  # Hide y-axis (only one row)
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.04)
@@ -398,7 +443,7 @@ def main(cfg: EvalCarelessLmConfig):
     levanter.tracker.current_tracker().log_artifact(cfg.plot_path, name=cfg.plot_path, type="plot")
 
     npy_path = pathlib.Path(cfg.plot_path).with_suffix(".npy")
-    np.save(npy_path, char_max)
+    np.save(npy_path, max_vals)
     levanter.tracker.current_tracker().log_artifact(str(npy_path), name=str(npy_path), type="array")
 
     upload_hlo_dumps_to_wandb()
