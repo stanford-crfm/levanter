@@ -1,3 +1,6 @@
+from typing import Union
+import typing
+import warnings
 from abc import ABC, abstractmethod
 import dataclasses
 import logging
@@ -33,7 +36,7 @@ from ray.remote_function import RemoteFunction
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from levanter.infra.docker import make_docker_run_command
-from levanter.utils.ray_utils import ser_exc_info
+from levanter.utils.ray_utils import ser_exc_info, RayResources
 
 
 # CF https://gist.github.com/allenwang28/e3400b9e9212b50aa1cda55ebeccea60
@@ -297,7 +300,6 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
         logger.info(f"{self.get_actor_pool_name()} actor pool drained.")
 
 
-
 class SlicePoolManager(ResourcePoolManager[SliceInfo]):
     def __init__(self, tpu_type: str):
         super().__init__()
@@ -374,16 +376,33 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
         self.scale_actor_pool(num_hosts)
         return self._slice_info
 
-    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> list[ray.ObjectRef]:
-        """Run the remote function on this slice.
+    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict, call_args: tuple[tuple, dict]) -> list[tuple[int, ray.ObjectRef]]:
+        """Run the remote function on this slice and return futures with host indices.
 
         NOTE: This runs the remote function in a different task. It does not block on the remote function call.
-        NOTE: This returns a list of Ray futures. If calling this method on a remote Actor, you will get a future of a list of futures."""
-        actors = self.get_all_actors_in_pool()
-        if not self._slice_info or len(actors) < self._slice_info.num_hosts:
+        NOTE: This returns a list of tuples ``(worker_index, future)``. If calling this method on a remote Actor,
+        you will get a future of such a list."""
+        members = self.get_all_pool_members()
+        if not self._slice_info or len(members) < self._slice_info.num_hosts:
             raise Exception("Insufficient host actors; call setup() before calling run_remote_fn()")
-        futures_of_futures: list[ray.ObjectRef] = [actor.run_remote_fn.remote(remote_fn, runtime_env) for actor in actors]
-        return [ray.get(future_of_future) for future_of_future in futures_of_futures]
+
+        futures_of_futures: list[tuple[int, ray.ObjectRef]] = [
+            (member.actor_info.worker_index, member.actor.run_remote_fn.remote(remote_fn, runtime_env, call_args))
+            for member in members
+        ]
+
+        return [
+            (worker_index, ray.get(fut_of_fut))
+            for worker_index, fut_of_fut in futures_of_futures
+        ]
+
+    def kill_pid_on_host(self, worker_index: int, pid: int) -> None:
+        """Kill a process by PID on the specified host actor."""
+        for member in self._actor_pool:
+            if member.actor_info.worker_index == worker_index:
+                member.actor.kill_pid.remote(pid)
+                return
+        logger.warning(f"No host with worker_index {worker_index} found to kill PID {pid}")
 
     def teardown(self):
         self.drain_actor_pool()
@@ -421,7 +440,10 @@ class TPUHostActor:
         )
         return self._host_info
 
-    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> ray.ObjectRef:
+    def kill_pid(self, pid: int) -> None:
+        _kill_process(pid)
+
+    def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict, call_args: tuple[tuple, dict]) -> ray.ObjectRef:
         """Run the remote function on this host.
 
         NOTE: This runs the remote function in a different task. It does not block on the remote function call.
@@ -429,9 +451,9 @@ class TPUHostActor:
         if not self._host_info:
             raise Exception("Call setup() before calling run_remote_fn()")
 
+        # _hacky_remove_tpu_lockfile()
         if self._awaitable:
             ray.cancel(self._awaitable, force=True, recursive=True)
-        _hacky_remove_tpu_lockfile()
 
         self._awaitable = remote_fn.options(
             scheduling_strategy=NodeAffinitySchedulingStrategy(self._host_info.node_id, soft=False),
@@ -442,7 +464,7 @@ class TPUHostActor:
             num_gpus=0,
             memory=20e9,
             runtime_env=runtime_env,
-        ).remote()
+        ).remote(*call_args[0], **call_args[1])
         return self._awaitable
 
     def teardown(self) -> None:
@@ -452,6 +474,118 @@ class TPUHostActor:
         self._host_info = None
 
 
+# TODO: Python's type system doesn't make it easy to do the abstraction over arity etc here.
+
+@typing.overload
+def tpu_remote(fn: Callable, *,
+               tpu_type: str,
+               num_slices: int = 1,
+               max_retries_preemption: int = 10000,
+               max_retries_failure: int = 10,
+               manager_resources: RayResources | None = None,
+               **kwargs) -> "TpuRemoteFunction":
+    ...
+
+
+@typing.overload
+def tpu_remote(*,
+               tpu_type: str,
+               num_slices: int = 1,
+               max_retries_preemption: int = 10000,
+               max_retries_failure: int = 10,
+               manager_resources: RayResources | None = None,
+               **kwargs) -> Callable[[Callable], "TpuRemoteFunction"]:
+    ...
+
+
+def tpu_remote(fn: Callable | None = None, *,
+               tpu_type: str,
+               num_slices: int = 1,
+               max_retries_preemption: int = 10000,
+               max_retries_failure: int = 10,
+               manager_resources: RayResources | None = None,
+               **kwargs) -> Union["TpuRemoteFunction", Callable[[Callable], "TpuRemoteFunction"]]:
+    """
+
+    Decorator to run a function on a TPU pod. The function will be run on a slice of the TPU pod, and will be retried
+    if it fails or is preempted.
+
+    Can also be used as a function to run a function on a TPU pod without decorating it.
+
+
+    Args:
+        fn:
+        tpu_type: The type of TPU to run on, e.g. "v4-32"
+        num_slices: The number of slices to use for the TPU pod. If 1, the function will run on a single slice.
+        max_retries_preemption: The maximum number of times to retry if the job is preempted.
+        max_retries_failure:
+        manager_resources: RayResources object specifying resources for the top-level manager function. If None, uses default resources.
+        **kwargs: Forwarded to ray.remote
+
+    Returns:
+        A Ray remote function that can be called to run the function on a TPU pod.
+        If `fn` is None, returns a decorator that can be used to decorate a function.
+    """
+
+    if fn is None:
+        def decorator(fn: Callable) -> "TpuRemoteFunction":
+            return tpu_remote(fn, tpu_type=tpu_type, num_slices=num_slices,
+                              max_retries_preemption=max_retries_preemption,
+                              max_retries_failure=max_retries_failure,
+                              manager_resources=manager_resources, **kwargs)
+
+        return decorator
+
+    if not callable(fn):
+        raise ValueError("The first argument must be a callable function or None to use as a decorator.")
+
+    if num_slices <= 0:
+        raise ValueError("num_slices must be greater than 0")
+
+    return TpuRemoteFunction(fn, tpu_type, num_slices, max_retries_preemption, max_retries_failure, manager_resources, **kwargs)
+
+
+class TpuRemoteFunction:
+    """
+    A wrapper for a remote function that can be run on a TPU pod.
+    This is used to ensure that the function is run on a TPU pod and can be retried if it fails or is preempted.
+    """
+
+    def __init__(self, fn: Callable, tpu_type: str, num_slices: int,
+                 max_retries_preemption: int, max_retries_failure: int,
+                 manager_resources: RayResources | None = None,
+                 **kwargs):
+        self.fn = fn
+        self.tpu_type = tpu_type
+        self.num_slices = num_slices
+        self.max_retries_preemption = max_retries_preemption
+        self.max_retries_failure = max_retries_failure
+        self.manager_resources = manager_resources
+        self.decorator_kwargs = kwargs
+
+    def remote(self, *args, **kwargs):
+        """
+        Call the remote function with the given arguments.
+        This will run the function on a TPU pod and retry if it fails or is preempted.
+        """
+        # Use manager_resources if provided, otherwise use default
+        if self.manager_resources is not None:
+            remote_kwargs = self.manager_resources.to_kwargs()
+        else:
+            remote_kwargs = {}
+
+        return ray.remote(
+            run_on_pod_ray_internal,
+            **remote_kwargs
+        ).remote(
+            self.fn,
+            self.tpu_type,
+            self.num_slices,
+            self.max_retries_preemption,
+            self.max_retries_failure,
+            call_args=(args, kwargs),
+            decorator_kwargs=self.decorator_kwargs,
+        )
 
 
 def run_on_pod(
@@ -486,11 +620,31 @@ def run_on_pod(
 
 @ray.remote(num_cpus=0.01)
 def run_on_pod_ray(
-    remote_fn: RemoteFunction,
+    remote_fn: Callable | RemoteFunction,
     tpu_type: str,
     num_slices: int = 1,
     max_retries_preemption: int = 10000,
     max_retries_failure: int = 10,
+):
+    """
+    Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
+
+    This function is a Ray remote function that can be called from anywhere in the Ray cluster.
+    """
+    warnings.warn("run_on_pod_ray is deprecated and will be removed in a future version. Use tpu_remote instead.", DeprecationWarning)
+
+    return run_on_pod_ray_internal(remote_fn, tpu_type, num_slices, max_retries_preemption, max_retries_failure)
+
+
+
+def run_on_pod_ray_internal(
+    remote_fn: Callable | RemoteFunction,
+    tpu_type: str,
+    num_slices: int = 1,
+    max_retries_preemption: int = 10000,
+    max_retries_failure: int = 10,
+    call_args: tuple[tuple, dict] | None = None,
+    decorator_kwargs: dict | None = None,
 ):
     """
     Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
@@ -509,17 +663,19 @@ def run_on_pod_ray(
     slice_pool: list[SliceResource] = []
     problems: list[Exception] = []
     problem: Exception | None
-
     if isinstance(remote_fn, FunctionNode):
         raise ValueError(
             "Remote function must be a Ray remote function or a plain function, not a FunctionNode. Don't use bind."
         )
-    elif not isinstance(remote_fn, RemoteFunction):
-        remote_fn = ray.remote(max_calls=1)(remote_fn)
-    elif remote_fn._default_options.get("max_calls") is None:
-        raise ValueError("Remote function must have max_calls set to 1 for TPU workloads.")
+    elif isinstance(remote_fn, RemoteFunction):
+        if remote_fn._default_options.get("max_calls", None) != 1:
+            raise ValueError("Remote function must have max_calls set to 1 for TPU workloads.")
+    elif callable(remote_fn):
+        remote_fn = ray.remote(max_calls=1, **decorator_kwargs)(remote_fn)
 
     slice_pool_manager = SlicePoolManager(tpu_type)
+
+    call_args = call_args or ((), {})
 
     try:
         while num_failures <= max_retries_failure and num_preemptions <= max_retries_preemption:
@@ -543,6 +699,7 @@ def run_on_pod_ray(
             # Ok finally time to run the remote function on all slices
             futures: list[ray.ObjectRef] = []  # one per host in each slice
             future_to_index: dict[ray.ObjectRef, int] = {}  # maps futures to their index in the results list
+            future_to_actor: dict[ray.ObjectRef, tuple[ActorHandle, int]] = {}
             global_index = 0  # index into results list
 
             for i, tpu_slice in enumerate(slice_pool):
@@ -552,12 +709,13 @@ def run_on_pod_ray(
                 else:
                     mxla_env = {}
 
-                futures_for_slice = _start_fn_on_slice(tpu_slice.actor, remote_fn, mxla_env)
-                logger.info(f"Futures for slice {slice_pool[0].actor_info.slice_name}: {futures_for_slice}")
+                slice_futures = _start_fn_on_slice(tpu_slice.actor, remote_fn, mxla_env, call_args)
+                logger.info(f"Futures for slice {slice_pool[0].actor_info.slice_name}: {list(slice_futures.keys())}")
 
-                futures.extend(futures_for_slice)
-                for future in futures_for_slice:
+                futures.extend(slice_futures.keys())
+                for future, launch_info in slice_futures.items():
                     future_to_index[future] = global_index
+                    future_to_actor[future] = launch_info
                     global_index += 1
 
             tpu_results: list[_TpuRunResult | None] = [None] * len(futures)
@@ -573,12 +731,13 @@ def run_on_pod_ray(
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
 
                 for f in finished:
+                    actor_tuple = future_to_actor.get(f)
                     try:
                         tpu_results[future_to_index[f]] = TpuSuccess(ray.get(f))
                     except RayError as e:
                         had_a_failure = True
                         problems.append(e)
-                        tpu_results[future_to_index[f]] = _handle_ray_error(e)
+                        tpu_results[future_to_index[f]] = _handle_ray_error(e, actor_tuple)
                     except Exception as e:
                         logger.warning(f"Task {f} failed with unexpected error {e}. Will retry.")
                         had_a_failure = True
@@ -712,19 +871,24 @@ def _stop_actor(actor: ActorHandle) -> None:
         ray.kill(actor)
 
 
-def _start_fn_on_slice(slice_actor: ActorHandle, remote_fn: RemoteFunction, mxla_env: dict | None) -> list[ray.ObjectRef]:
-    """
-    Start the remote function on a slice of the TPU pod.
-    """
+def _start_fn_on_slice(
+    slice_actor: ActorHandle,
+    remote_fn: RemoteFunction,
+    mxla_env: dict | None,
+    call_args: tuple[tuple, dict],
+) -> dict[ray.ObjectRef, tuple[ActorHandle, int]]:
+    """Start the remote function on a slice of the TPU pod."""
+
     runtime_env = remote_fn._runtime_env or {}
     if mxla_env is not None:
         mxla_env = dict(env_vars=mxla_env)
         runtime_env = mergedeep.merge({}, runtime_env, mxla_env, strategy=mergedeep.Strategy.ADDITIVE)
-    futures_for_slice = ray.get(slice_actor.run_remote_fn.remote(remote_fn, runtime_env))
-    return futures_for_slice
+
+    futures_with_indices = ray.get(slice_actor.run_remote_fn.remote(remote_fn, runtime_env, call_args))
+    return {future: (slice_actor, worker_index) for worker_index, future in futures_with_indices}
 
 
-def _handle_ray_error(e: RayError):
+def _handle_ray_error(e: RayError, actor_info: tuple[ActorHandle, int] | None = None):
     """
     Handle a Ray error that occurred on a TPU pod. Tries to determine if the error was due to a
     node failure or preemption or just an application error.
@@ -752,6 +916,18 @@ def _handle_ray_error(e: RayError):
             return TpuPreempted(e)
 
         logger.exception(f"Task error {e}", exc_info=e)
+
+        error_message = str(e)
+        if e.cause is not None:
+            error_message += f" {e.cause}"
+        pid = _extract_blocking_tpu_pid(error_message)
+        if pid is not None and actor_info is not None:
+            slice_actor, worker_index = actor_info
+            try:
+                ray.get(slice_actor.kill_pid_on_host.remote(worker_index, pid), timeout=5)
+            except Exception as kill_e:  # noqa
+                logger.warning(f"Failed to kill blocking process {pid}: {kill_e}")
+
         if isinstance(e.cause, TimeoutError) or "timed out" in str(e):
             logger.exception("Timeout error. Assuming preempted", exc_info=e)
             return TpuPreempted(e)
@@ -939,6 +1115,69 @@ def _hacky_remove_tpu_lockfile():
                 os.system("sudo rm /tmp/libtpu_lockfile")
             except Exception:  # noqa
                 pass
+
+
+def _extract_blocking_tpu_pid(error_message: str) -> int | None:
+    """
+    Extract the blocking process PID from TPU error messages.
+
+    Looks for patterns like: "The TPU is already in use by process with pid 73653"
+
+    Returns the PID as an int if found, None otherwise.
+    """
+    import re
+
+    pid_pattern = r"The TPU is already in use by process with pid (\d+)"
+    match = re.search(pid_pattern, error_message)
+
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _kill_process(blocking_pid: int) -> bool:
+    """
+
+    Returns True if a blocking process was found and killed, False otherwise.
+    """
+
+    logger.warning(f"Found TPU blocking process with PID {blocking_pid}. Attempting to kill it.")
+
+    try:
+        # First try to kill the process normally
+        os.kill(blocking_pid, 15)  # SIGTERM
+        time.sleep(1)
+
+        # Check if process is still alive
+        try:
+            os.kill(blocking_pid, 0)  # Check if process exists
+            # Process still exists, force kill it
+            logger.warning(f"Process {blocking_pid} still alive, force killing...")
+            os.kill(blocking_pid, 9)  # SIGKILL
+        except ProcessLookupError:
+            # Process is dead, good
+            pass
+
+        logger.info(f"Successfully killed blocking TPU process {blocking_pid}")
+        return True
+
+    except ProcessLookupError:
+        logger.info(f"Blocking process {blocking_pid} was already dead")
+        return True
+    except PermissionError:
+        logger.warning(f"Permission denied killing process {blocking_pid}, trying with sudo")
+        try:
+            os.system(f"sudo kill -15 {blocking_pid}")
+            time.sleep(1)
+            os.system(f"sudo kill -9 {blocking_pid}")
+            logger.info(f"Successfully killed blocking TPU process {blocking_pid} with sudo")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to kill blocking process {blocking_pid} even with sudo: {e}")
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error killing blocking process {blocking_pid}: {e}")
+        return False
 
 
 @dataclass
