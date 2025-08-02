@@ -504,7 +504,7 @@ def tpu_remote(fn: Callable | None = None, *,
                max_retries_preemption: int = 10000,
                max_retries_failure: int = 10,
                manager_resources: RayResources | None = None,
-               **kwargs) -> Union["TpuRemoteFunction", Callable[[Callable], "TpuRemoteFunction"]]:
+               **kwargs) -> Union["TpuRemoteFunction", Callable[[Callable], "TpuRemoteFunction"]]:  # type: ignore
     """
 
     Decorator to run a function on a TPU pod. The function will be run on a slice of the TPU pod, and will be retried
