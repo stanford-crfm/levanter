@@ -13,7 +13,7 @@ from levanter.optim.config import OptimizerConfig
 
 
 @OptimizerConfig.register_subclass("rmsprop")
-@dataclass
+@dataclass(frozen=True)
 class RMSPropMomentumConfig(OptimizerConfig):
     """Configuration for RMSProp with Momentum."""
 
