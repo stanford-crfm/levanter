@@ -16,7 +16,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
 from levanter.data import DataLoader
 from levanter.data.text import LMMixtureDatasetConfig, SingleDatasetLMConfigBase
-from levanter.models.gpt2 import Gpt2Config
+from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.models.loss import next_token_loss
 from levanter.trainer import TrainerConfig
@@ -34,7 +34,7 @@ class VizLmConfig:
     path: str = "logprobs.html"
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     data: SingleDatasetLMConfigBase | LMMixtureDatasetConfig = field(default_factory=SingleDatasetLMConfigBase)
-    model: LmConfig = field(default_factory=Gpt2Config)
+    model: LmConfig = field(default_factory=LlamaConfig)
 
     num_docs: int = 32
 

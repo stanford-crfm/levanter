@@ -11,7 +11,7 @@ from levanter.optim.config import OptimizerConfig
 
 
 @OptimizerConfig.register_subclass("adopt")
-@dataclass
+@dataclass(frozen=True)
 class AdoptConfig(OptimizerConfig):
     """
     Adopt optimizer configuration

@@ -22,7 +22,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
 from levanter.data.text import LMMixtureDatasetConfig, SingleDatasetLMConfig, UrlSingleDatasetLMConfig
 from levanter.eval_harness import LmEvalHarnessConfig
-from levanter.models.gpt2 import Gpt2Config
+from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class TrainLmConfig:
     data: Union[SingleDatasetLMConfig, LMMixtureDatasetConfig] = field(default_factory=UrlSingleDatasetLMConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    model: LmConfig = field(default_factory=Gpt2Config)
+    model: LmConfig = field(default_factory=LlamaConfig)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 
     # config related to continued pretraining
