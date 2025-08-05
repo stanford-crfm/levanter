@@ -108,6 +108,7 @@ nav:
       - 'reference/Configuration.md'
       - "reference/Data-Formats.md"
       - 'reference/Trackers.md'
+      - 'reference/Ray-TPU.md'
   - 'Developer Guide':
       - 'dev/Port-Models.md'
       - 'dev/GPU-Docker-Dev.md'
