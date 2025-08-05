@@ -56,8 +56,31 @@ RUN_START_TIME = None
 
 
 @dataclass
-class EvalCarelessLmConfig:
-    """Configuration for careless suffix likelihood evaluation."""
+class BookConfig:
+    """Overrides for a single book evaluation.
+
+    ``plot_path``, ``histogram_path``, and ``pz_data_path`` are optional; if
+    omitted they will be auto-generated from ``book_title`` and placed inside
+    the per-book output directory.
+    """
+
+    txt_path: str
+    plot_path: Optional[str] = None
+    histogram_path: Optional[str] = None
+    pz_data_path: Optional[str] = None
+    book_title: str = "Book"
+    chunk_size: Optional[int] = None
+    slice_length: Optional[int] = None
+    prompt_tokens: Optional[int] = None
+    cursor_inc_chars: Optional[int] = None
+    token_mode: Optional[bool] = None
+    cursor_inc_tokens: Optional[int] = None
+    eval_batch_size: Optional[int] = None
+
+
+@dataclass
+class EvalSlidingTotalConfig:
+    """Configuration for careless suffix likelihood evaluation over many books."""
 
     # Checkpoint options ---------------------------------------------------
     checkpoint_path: Optional[str] = None
@@ -86,46 +109,18 @@ class EvalCarelessLmConfig:
 
     # Output ---------------------------------------------------------------
     output_base_path: str = "gs://marin-us-central2/books_evals/"
-    plot_path: str = "bar_plot_char_max_pz.png"
+    plot_path: Optional[str] = None
     eval_batch_size: int = 32
-    histogram_path: str = "pz_distribution_histogram.png"
+    histogram_path: Optional[str] = None
     pz_threshold: float = 0.0001
     book_title: str = "Book"
-    pz_data_path: str = "pz_data.npz"
+    pz_data_path: Optional[str] = None
 
     # Performance tweaks ---------------------------------------------------
     use_dataloader: bool = True
     histogram_linear: bool = True
 
-
-@dataclass
-class BookConfig:
-    """Overrides for a single book evaluation.
-
-    ``plot_path``, ``histogram_path``, and ``pz_data_path`` are optional; if
-    omitted they will be auto-generated from ``book_title`` and placed inside
-    the per-book output directory.
-    """
-
-    txt_path: str
-    plot_path: Optional[str] = None
-    histogram_path: Optional[str] = None
-    pz_data_path: Optional[str] = None
-    book_title: str = "Book"
-    chunk_size: Optional[int] = None
-    slice_length: Optional[int] = None
-    prompt_tokens: Optional[int] = None
-    cursor_inc_chars: Optional[int] = None
-    token_mode: Optional[bool] = None
-    cursor_inc_tokens: Optional[int] = None
-    eval_batch_size: Optional[int] = None
-
-
-@dataclass
-class MultiBookEvalConfig:
-    """Configuration for running careless evaluation over many books."""
-
-    base_eval: EvalCarelessLmConfig = field(default_factory=EvalCarelessLmConfig)
+    # Multi-book overrides -------------------------------------------------
     books: Dict[str, BookConfig] = field(default_factory=dict)
 
 
@@ -170,7 +165,7 @@ def upload_hlo_dumps_to_wandb():
         os.unlink(tar_path)
 
 
-def get_full_output_path(cfg: EvalCarelessLmConfig, filename: str) -> str:
+def get_full_output_path(cfg: EvalSlidingTotalConfig, filename: str) -> str:
     if cfg.output_base_path.endswith("/"):
         return cfg.output_base_path + filename
     else:
@@ -213,7 +208,7 @@ def save_data_with_fsspec(data, output_path: str, **kwargs):
 # ---------------------------------------------------------------------------
 
 def evaluate_book(
-    cfg: EvalCarelessLmConfig,
+    cfg: EvalSlidingTotalConfig,
     model: LmHeadModel,
     tokenizer,
     sequence_log_prob,
@@ -444,58 +439,60 @@ def evaluate_book(
 # Driver
 # ---------------------------------------------------------------------------
 
-def main(cfg: MultiBookEvalConfig):
-    """Run careless suffix evaluation for each book listed in ``cfg``.
+def main(cfg: EvalSlidingTotalConfig):
+    """Run careless suffix evaluation for each book listed in ``cfg.books``.
 
     The model and tracker are initialised once; each book reuses the same
     parameters but logs metrics and artifacts with a book-specific prefix and
-    output directory.
+    output directory.  If ``plot_path``/``histogram_path``/``pz_data_path`` are
+    omitted for a book, filenames are derived from the book title to ensure
+    uniqueness.
     """
 
     global RUN_START_TIME
     RUN_START_TIME = time.time()
 
-    levanter.initialize(cfg.base_eval)
+    levanter.initialize(cfg)
 
     # Tokenizer -------------------------------------------------------------
-    if cfg.base_eval.tokenizer_name is not None:
+    if cfg.tokenizer_name is not None:
         from transformers import AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(cfg.base_eval.tokenizer_name)
+        tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name)
     else:
-        tokenizer = getattr(cfg.base_eval.model, "the_tokenizer", None)
+        tokenizer = getattr(cfg.model, "the_tokenizer", None)
 
     if tokenizer is None:
         raise ValueError("Tokenizer not provided: set tokenizer_name in config or ensure model.the_tokenizer exists")
 
-    Pos = cfg.base_eval.model.Pos
+    Pos = cfg.model.Pos
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
     # Build / load model once ----------------------------------------------
-    cmapping = cfg.base_eval.trainer.compute_axis_mapping
-    pmapping = cfg.base_eval.trainer.parameter_axis_mapping
+    cmapping = cfg.trainer.compute_axis_mapping
+    pmapping = cfg.trainer.parameter_axis_mapping
 
-    with cfg.base_eval.trainer.device_mesh, hax.axis_mapping(pmapping):
+    with cfg.trainer.device_mesh, hax.axis_mapping(pmapping):
         key = jax.random.PRNGKey(0)
         vocab_size = len(tokenizer)
         Vocab = round_axis_for_partitioning(hax.Axis("vocab", vocab_size), cmapping)
-        mp: jmp.Policy = cfg.base_eval.trainer.mp
+        mp: jmp.Policy = cfg.trainer.mp
 
-        if cfg.base_eval.checkpoint_path:
+        if cfg.checkpoint_path:
             with use_cpu_device():
-                model = eqx.filter_eval_shape(cfg.base_eval.model.build, Vocab, key=key)
-                model = load_checkpoint(model, cfg.base_eval.checkpoint_path, subpath="model")
+                model = eqx.filter_eval_shape(cfg.model.build, Vocab, key=key)
+                model = load_checkpoint(model, cfg.checkpoint_path, subpath="model")
             model = hax.shard_with_axis_mapping(model, pmapping)
         else:
-            hf_ref = cfg.base_eval.hf_checkpoint or cfg.base_eval.initialize_from_hf
+            hf_ref = cfg.hf_checkpoint or cfg.initialize_from_hf
             if hf_ref is None:
                 raise ValueError("Need --checkpoint-path or --hf-checkpoint")
-            converter: HFCheckpointConverter = cfg.base_eval.model.hf_checkpoint_converter()
+            converter: HFCheckpointConverter = cfg.model.hf_checkpoint_converter()
             converter = converter.replaced(reference_checkpoint=hf_ref, tokenizer=tokenizer)
-            if cfg.base_eval.use_hf_model_config:
-                cfg.base_eval.model = converter.config_from_hf_config(converter.default_hf_config)
+            if cfg.use_hf_model_config:
+                cfg.model = converter.config_from_hf_config(converter.default_hf_config)
             model = converter.load_pretrained(
-                cfg.base_eval.model.model_type, ref=hf_ref, dtype=mp.compute_dtype
+                cfg.model.model_type, ref=hf_ref, dtype=mp.compute_dtype
             )
 
         def sequence_log_prob(mod: LmHeadModel, batch: LmExample):
@@ -513,17 +510,17 @@ def main(cfg: MultiBookEvalConfig):
 
     # Determine model name for titles
     model_name = "Unknown Model"
-    if cfg.base_eval.initialize_from_hf:
-        model_path = str(cfg.base_eval.initialize_from_hf)
+    if cfg.initialize_from_hf:
+        model_path = str(cfg.initialize_from_hf)
         if "--" in model_path:
             model_name = model_path.split("--")[-1].lower().replace("-", "-")
         else:
             model_name = pathlib.Path(model_path).name.lower()
-    elif cfg.base_eval.hf_checkpoint:
-        model_name = str(cfg.base_eval.hf_checkpoint).split("/")[-1].lower().replace("-", "-")
+    elif cfg.hf_checkpoint:
+        model_name = str(cfg.hf_checkpoint).split("/")[-1].lower().replace("-", "-")
 
     for name, book in cfg.books.items():
-        book_cfg = dataclasses.replace(cfg.base_eval)
+        book_cfg = dataclasses.replace(cfg)
         for field_name, value in dataclasses.asdict(book).items():
             if value is not None:
                 setattr(book_cfg, field_name, value)
@@ -531,15 +528,15 @@ def main(cfg: MultiBookEvalConfig):
         if book_cfg.book_title == "Book":
             book_cfg.book_title = name
 
-        if book.plot_path is None:
+        if book_cfg.plot_path is None:
             book_cfg.plot_path = f"bar_plot_max_pz_{book_cfg.book_title}.png"
-        if book.histogram_path is None:
+        if book_cfg.histogram_path is None:
             book_cfg.histogram_path = f"pz_distribution_histogram_{book_cfg.book_title}.png"
-        if book.pz_data_path is None:
+        if book_cfg.pz_data_path is None:
             book_cfg.pz_data_path = f"pz_data_{book_cfg.book_title}.npz"
 
         ts = datetime.datetime.now().strftime("%Y%m%d%H%M")
-        base = cfg.base_eval.output_base_path.rstrip("/")
+        base = cfg.output_base_path.rstrip("/")
         book_cfg.output_base_path = f"{base}/{book_cfg.book_title}/{ts}/"
 
         fs, path = fsspec.core.url_to_fs(book_cfg.output_base_path)
