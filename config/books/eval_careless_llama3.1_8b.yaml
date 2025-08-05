@@ -58,7 +58,7 @@ trainer:
     type: wandb
     project: "marin"
     tags: ["llama3", "eval", "8b"]
-    name: "llama_3.1_8b_gatsby_token_mode_profile_sanity_check"
+    name: "llama_3.1_8b_gatsby_token_mode_profile_sanity_check_v3"
   mp: p=f32,c=f32
   per_device_eval_parallelism: -1
   tensor_parallel_axes: ["mlp", "heads"]

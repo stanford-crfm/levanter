@@ -35,10 +35,10 @@ tokenizer_name: meta-llama/Llama-3.1-8B
 # ---------------------------------------------------------------------------
 # Model ----------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-model:  
+model:
   type: llama
   seq_len: 101
-  hidden_dim: 16384        
+  hidden_dim: 16384
   intermediate_dim: 53248
   num_layers: 126
   num_heads: 128
@@ -63,7 +63,7 @@ trainer:
   mp: p=f32,c=f32
   per_device_eval_parallelism: -1
   # Pure tensor parallelism: Shard computation along mlp/heads across model axis (NOT embed for pure TP)
-  tensor_parallel_axes: ["mlp", "heads"] 
+  tensor_parallel_axes: ["mlp", "heads"]
   batch_axis: "batch"
   # Use all 128 devices for model parallelism - full model parallelism
   # v4-256 has 128 devices total, use all for model axis: 3328MB ÷ 128 = 26MB per device
