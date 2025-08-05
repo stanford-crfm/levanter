@@ -72,14 +72,29 @@ ADD . /opt/levanter
 ARG CACHEBUST=1
 
 # Install haliax from the local source to override the PyPI version
-RUN if [ -d /opt/levanter/haliax ]; then \
-      echo "Found local haliax directory, installing local version..." && \
+RUN echo "=== HALIAX INSTALLATION DEBUG ===" && \
+    echo "Current PATH: $PATH" && \
+    echo "Which pip: $(which pip)" && \
+    ls -la /opt/levanter/ | grep haliax || echo "No haliax directory found" && \
+    if [ -d /opt/levanter/haliax ]; then \
+      echo "Found local haliax directory at /opt/levanter/haliax" && \
+      ls -la /opt/levanter/haliax/src/haliax/ | head -10 && \
+      echo "Checking venv setup and uninstalling existing haliax..." && \
+      ls -la /opt/levanter/.venv/bin/ | grep pip || echo "venv pip not found" && \
+      which python && python --version && \
       pip uninstall -y haliax || true && \
-      pip install -e /opt/levanter/haliax && \
+      echo "Installing local haliax in editable mode with target override..." && \
+      pip install -e /opt/levanter/haliax --target /opt/levanter/.venv/lib/python3.10/site-packages --upgrade && \
       echo "Local haliax installation completed" && \
-      pip show haliax; \
+      pip show haliax || echo "pip show failed, checking install location..." && \
+      ls -la /opt/levanter/.venv/lib/python3.10/site-packages/ | grep haliax || echo "haliax not found in venv" && \
+      echo "Verifying local haliax - checking for debug prints in partitioning.py:" && \
+      grep -n "DEBUG.*WrappedCallable" /opt/levanter/haliax/src/haliax/partitioning.py || echo "No debug prints found" && \
+      echo "Skipping JAX import test during build (will work on TPU runtime)" && \
+      echo "=== HALIAX INSTALLATION SUCCESS ==="; \
     else \
-      echo "No local haliax directory found, using PyPI version"; \
+      echo "No local haliax directory found, using PyPI version" && \
+      echo "=== USING PYPI HALIAX ==="; \
     fi
 
 # Add $EXTRA_CTX to the same location as in local machine.

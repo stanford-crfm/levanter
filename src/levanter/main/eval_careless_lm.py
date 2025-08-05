@@ -36,6 +36,25 @@ from jax.experimental.multihost_utils import process_allgather
 import haliax as hax
 from haliax.nn import log_softmax
 from haliax.partitioning import round_axis_for_partitioning
+import haliax.partitioning
+import sys
+import os
+print("=== HALIAX DEBUG IMPORT CHECK ===", file=sys.stderr, flush=True)
+print("HALIAX.PARTITIONING LOADED FROM:", haliax.partitioning.__file__, file=sys.stderr, flush=True)
+print("=== HALIAX DEBUG IMPORT CHECK ===", file=sys.stderr, flush=True)
+sys.stderr.flush()
+# Log to a location we can access - use the output directory that gets mounted
+debug_path = "/opt/gcsfuse_mount/gcsfuse_mount/logs/haliax_debug.log"
+try:
+    os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+    with open(debug_path, "w") as f:
+        f.write(f"HALIAX LOADED FROM: {haliax.partitioning.__file__}\n")
+        f.write(f"CWD: {os.getcwd()}\n")
+        f.write("This confirms local haliax is being used\n")
+        f.flush()
+    print(f"DEBUG: Wrote haliax info to {debug_path}", file=sys.stderr, flush=True)
+except Exception as e:
+    print(f"DEBUG: Could not write debug file: {e}", file=sys.stderr, flush=True)
 
 import levanter
 import levanter.tracker
@@ -182,7 +201,7 @@ def upload_hlo_dumps_to_wandb():
         logger.error(f"Failed to upload HLO dumps: {e}")
     finally:
         # Clean up temporary file
-    os.unlink(tar_path)
+        os.unlink(tar_path)
 
 def get_full_output_path(cfg: EvalCarelessLmConfig, filename: str) -> str:
     """Construct full output path by joining base path with filename."""

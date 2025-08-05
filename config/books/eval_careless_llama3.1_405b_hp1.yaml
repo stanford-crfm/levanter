@@ -59,7 +59,7 @@ trainer:
     type: wandb
     project: "marin"
     tags: ["llama3", "eval", "405b", "hp1", "tensor_parallel"]
-    name: "llama_3.1_405b_hp1_token_v4_256_model128_debug_partitioning"
+    name: "llama_3.1_405b_hp1_token_v4_256_model128_newv2"
   mp: p=f32,c=f32
   per_device_eval_parallelism: -1
   # Pure tensor parallelism: Shard computation along mlp/heads across model axis (NOT embed for pure TP)
