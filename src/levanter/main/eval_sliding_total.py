@@ -12,7 +12,12 @@ from levanter.main.eval_careless_lm import EvalCarelessLmConfig, main as eval_bo
 
 @dataclass
 class BookConfig:
-    """Overrides for a single book evaluation."""
+    """Overrides for a single book evaluation.
+
+    ``plot_path``, ``histogram_path``, and ``pz_data_path`` are optional; if
+    omitted they will be auto-generated from ``book_title`` and placed inside
+    the per-book output directory.
+    """
 
     txt_path: str
     plot_path: Optional[str] = None
@@ -41,7 +46,12 @@ class MultiBookEvalConfig:
 # ---------------------------------------------------------------------------
 
 def main(cfg: MultiBookEvalConfig):
-    """Run careless suffix evaluation for each book listed in ``cfg``."""
+    """Run careless suffix evaluation for each book listed in ``cfg``.
+
+    For each book entry, missing ``plot_path``, ``histogram_path``, and
+    ``pz_data_path`` fields are derived from the book's title to ensure unique
+    filenames.
+    """
 
     for name, book in cfg.books.items():
         # Copy the base configuration and apply overrides for this book
