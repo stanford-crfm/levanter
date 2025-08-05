@@ -90,7 +90,7 @@ cp -r /opt/levanter/haliax/src/haliax/* /opt/levanter/.venv/lib/python3.10/site-
 
 ### Implementation Status
 ✅ **COMPLETED**: Added `ENV PYTHONPATH=/opt/levanter/haliax/src:$PYTHONPATH` to Dockerfile
-- Location: Line 72 in docker/tpu/Dockerfile.marin_incremental  
+- Location: Line 72 in docker/tpu/Dockerfile.marin_incremental
 - Placement: After `ADD . /opt/levanter` (line 69)
 - Before: Haliax installation debug section
 
@@ -102,7 +102,7 @@ cp -r /opt/levanter/haliax/src/haliax/* /opt/levanter/.venv/lib/python3.10/site-
 
 ### Next Steps
 1. Rebuild Docker image with PYTHONPATH override
-2. Run evaluation job  
+2. Run evaluation job
 3. Check WandB debug artifact for haliax path confirmation
 4. Verify debug prints appear in logs during model loading
 5. Update tracking file with results
