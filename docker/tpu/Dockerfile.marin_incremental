@@ -68,8 +68,8 @@ RUN pip install "draccus@git+https://github.com/dlwh/draccus.git"
 # Copy the rest of the source (including any local haliax/ folder)
 ADD . /opt/levanter
 
-# Cache busting for haliax installation - this will invalidate cache when haliax changes
-ARG CACHEBUST=1
+# Override PYTHONPATH to prioritize local haliax over PyPI version
+ENV PYTHONPATH=/opt/levanter/haliax/src:$PYTHONPATH
 
 # Install haliax from the local source to override the PyPI version
 RUN echo "=== HALIAX INSTALLATION DEBUG ===" && \
@@ -83,8 +83,8 @@ RUN echo "=== HALIAX INSTALLATION DEBUG ===" && \
       ls -la /opt/levanter/.venv/bin/ | grep pip || echo "venv pip not found" && \
       which python && python --version && \
       pip uninstall -y haliax || true && \
-      echo "Installing local haliax in editable mode with target override..." && \
-      pip install -e /opt/levanter/haliax --target /opt/levanter/.venv/lib/python3.10/site-packages --upgrade && \
+      echo "Installing local haliax in editable mode..." && \
+      pip install -e /opt/levanter/haliax && \
       echo "Local haliax installation completed" && \
       pip show haliax || echo "pip show failed, checking install location..." && \
       ls -la /opt/levanter/.venv/lib/python3.10/site-packages/ | grep haliax || echo "haliax not found in venv" && \

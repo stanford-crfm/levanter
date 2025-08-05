@@ -14,7 +14,7 @@ XLA_FLAGS=--xla_force_host_platform_device_count=8 PYTHONPATH=tests:src:. uv run
 
 # Run specific test categories
 uv run pytest tests -m "slow"        # Only slow tests
-uv run pytest tests -m "entry"       # Only entry point tests  
+uv run pytest tests -m "entry"       # Only entry point tests
 uv run pytest tests -m "ray"         # Only Ray-dependent tests
 
 # Set up test environment
@@ -86,18 +86,18 @@ Levanter is a framework for training large language models built on JAX, Equinox
 - Qwen
 - Whisper (for ASR)
 
-**Training System**: 
+**Training System**:
 - `trainer.py`: Core distributed training logic with FSDP and tensor parallelism
 - `trainer_state.py`: Training state management and checkpointing
 - Supports TPU and GPU training with hardware-agnostic design
 
-**Data Pipeline**: 
+**Data Pipeline**:
 - `data/`: Streaming data processing with caching
 - Supports mixture datasets, custom tokenizers
 - Online preprocessing with distributed caching via TensorStore
 - HuggingFace dataset integration
 
-**Optimization**: 
+**Optimization**:
 - `optim/`: Custom optimizers including Sophia, AdamW variants
 - Support for gradient accumulation and mixed precision training
 
@@ -111,7 +111,7 @@ Levanter is a framework for training large language models built on JAX, Equinox
 - `src/levanter/main/`: Entry points for training, evaluation, and inference
 - `src/levanter/models/`: Model implementations using Haliax named tensors
 - `src/levanter/data/`: Data loading, preprocessing, and caching
-- `src/levanter/optim/`: Custom optimizers and training utilities  
+- `src/levanter/optim/`: Custom optimizers and training utilities
 - `src/levanter/callbacks/`: Training callbacks for logging, checkpointing
 - `src/levanter/tracker/`: Integration with WandB, TensorBoard for experiment tracking
 - `config/`: YAML configuration files for different model sizes and datasets
@@ -201,7 +201,7 @@ Uses Draccus for YAML-to-dataclass configuration with command-line overrides:
 
 **Key Config Types:**
 - `TrainerConfig`: Training parameters, checkpointing, logging
-- `LmConfig`: Model architecture configs (Gpt2Config, LlamaConfig, etc.)  
+- `LmConfig`: Model architecture configs (Gpt2Config, LlamaConfig, etc.)
 - `LMDatasetConfig`: Dataset specification and preprocessing
 - `OptimizerConfig`: Adam, Sophia, and other optimizer configurations
 
