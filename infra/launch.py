@@ -110,10 +110,17 @@ def main():
         build_args["IMAGE"] = base_image
         build_args["TAG"] = base_tag
 
-        local_id = docker.build_docker(
-            docker_file="docker/tpu/Dockerfile.marin_incremental", image_name=image_id, tag=tag, build_args=build_args
-        )
+        if zone == "us-east1-d":
+            print(f"using east1 d image!", flush=True)
+            local_id = docker.build_docker(
+                docker_file="docker/tpu/Dockerfile.marin_incremental_east1", image_name=image_id, tag=tag, build_args=build_args
+            )
+        else:
+            local_id = docker.build_docker(
+                docker_file="docker/tpu/Dockerfile.marin_incremental", image_name=image_id, tag=tag, build_args=build_args
+            )
 
+    print(f" capacity type is! {capacity_type}", flush=True)
     if registry == "ghcr":
         full_image_id = docker.push_to_github(
             local_id=local_id,
