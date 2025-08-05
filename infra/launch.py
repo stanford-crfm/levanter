@@ -111,7 +111,7 @@ def main():
         build_args["TAG"] = base_tag
 
         local_id = docker.build_docker(
-            docker_file="docker/tpu/Dockerfile.incremental", image_name=image_id, tag=tag, build_args=build_args
+            docker_file="docker/tpu/Dockerfile.marin_incremental", image_name=image_id, tag=tag, build_args=build_args
         )
 
     if registry == "ghcr":

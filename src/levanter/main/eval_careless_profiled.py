@@ -20,10 +20,10 @@ import pathlib
 import tarfile
 import tempfile
 import time
-import fsspec
-from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
+
+import fsspec
 
 import equinox as eqx
 import jax
@@ -36,25 +36,6 @@ from jax.experimental.multihost_utils import process_allgather
 import haliax as hax
 from haliax.nn import log_softmax
 from haliax.partitioning import round_axis_for_partitioning
-import haliax.partitioning
-import sys
-import os
-print("=== HALIAX DEBUG IMPORT CHECK ===", file=sys.stderr, flush=True)
-print("HALIAX.PARTITIONING LOADED FROM:", haliax.partitioning.__file__, file=sys.stderr, flush=True)
-print("=== HALIAX DEBUG IMPORT CHECK ===", file=sys.stderr, flush=True)
-sys.stderr.flush()
-# Log to a location we can access - use the output directory that gets mounted
-debug_path = "/opt/gcsfuse_mount/gcsfuse_mount/logs/haliax_debug.log"
-try:
-    os.makedirs(os.path.dirname(debug_path), exist_ok=True)
-    with open(debug_path, "w") as f:
-        f.write(f"HALIAX LOADED FROM: {haliax.partitioning.__file__}\n")
-        f.write(f"CWD: {os.getcwd()}\n")
-        f.write("This confirms local haliax is being used\n")
-        f.flush()
-    print(f"DEBUG: Wrote haliax info to {debug_path}", file=sys.stderr, flush=True)
-except Exception as e:
-    print(f"DEBUG: Could not write debug file: {e}", file=sys.stderr, flush=True)
 
 import levanter
 import levanter.tracker
@@ -203,6 +184,7 @@ def upload_hlo_dumps_to_wandb():
         # Clean up temporary file
         os.unlink(tar_path)
 
+
 def get_full_output_path(cfg: EvalCarelessLmConfig, filename: str) -> str:
     """Construct full output path by joining base path with filename."""
     if cfg.output_base_path.endswith("/"):
@@ -210,64 +192,82 @@ def get_full_output_path(cfg: EvalCarelessLmConfig, filename: str) -> str:
     else:
         return cfg.output_base_path + "/" + filename
 
+
 def save_plot_with_fsspec(fig, output_path: str, dpi: int = 300):
     """Save matplotlib figure using fsspec for cloud storage compatibility."""
     if output_path.startswith("gs://"):
+        # For GCS paths, save to temporary file then copy
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
             fig.savefig(tmp_file.name, dpi=dpi, bbox_inches="tight")
             tmp_path = tmp_file.name
-        with fsspec.open(tmp_path, "rb") as local_file, fsspec.open(output_path, "wb") as remote_file:
-            remote_file.write(local_file.read())
+        
+        # Copy to GCS using fsspec
+        with fsspec.open(tmp_path, "rb") as local_file:
+            with fsspec.open(output_path, "wb") as remote_file:
+                remote_file.write(local_file.read())
+        
+        # Clean up temp file
         os.unlink(tmp_path)
     else:
+        # Local path - save directly
         fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
 
 def save_data_with_fsspec(data, output_path: str, **kwargs):
     """Save numpy data using fsspec for cloud storage compatibility."""
     if output_path.startswith("gs://"):
+        # For GCS paths, save to temporary file then copy
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp_file:
             if output_path.endswith(".npz"):
                 np.savez(tmp_file.name, **kwargs)
             else:
                 np.save(tmp_file.name, data)
             tmp_path = tmp_file.name
-        with fsspec.open(tmp_path, "rb") as local_file, fsspec.open(output_path, "wb") as remote_file:
-            remote_file.write(local_file.read())
+        
+        # Copy to GCS using fsspec
+        with fsspec.open(tmp_path, "rb") as local_file:
+            with fsspec.open(output_path, "wb") as remote_file:
+                remote_file.write(local_file.read())
+        
+        # Clean up temp file
         os.unlink(tmp_path)
     else:
+        # Local path - save directly
         if output_path.endswith(".npz"):
             np.savez(output_path, **kwargs)
         else:
             np.save(output_path, data)
 
+
 def main(cfg: EvalCarelessLmConfig):
     global RUN_START_TIME
     RUN_START_TIME = time.time()
 
+    print(f"[TIMING] Starting levanter initialization at {time.time():.3f}", flush=True)
+    start_time = time.time()
     levanter.initialize(cfg)
-
-    # Append timestamp to output_base_path for GCS writes
-    if cfg.output_base_path.startswith("gs://"):
-        ts = datetime.now().strftime("%Y%m%d%H%M")
-        cfg.output_base_path = cfg.output_base_path.rstrip("/") + "/" + ts + "/"
-
+    print(f"[TIMING] Levanter initialize took {time.time() - start_time:.3f}s", flush=True)
+    
     # Extract model name from HF path for plot titles
     model_name = "Unknown Model"
     if cfg.initialize_from_hf:
+        # Extract model name from paths like "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-70B"
         model_path = str(cfg.initialize_from_hf)
         if "--" in model_path:
             model_name = model_path.split("--")[-1].lower().replace("-", "-")
         else:
             model_name = pathlib.Path(model_path).name.lower()
     elif cfg.hf_checkpoint:
+        # Handle RepoRef objects
         model_name = str(cfg.hf_checkpoint).split("/")[-1].lower().replace("-", "-")
-
+    
     # Construct full output paths
     full_plot_path = get_full_output_path(cfg, cfg.plot_path)
     full_histogram_path = get_full_output_path(cfg, cfg.histogram_path)
     full_pz_data_path = get_full_output_path(cfg, cfg.pz_data_path)
-
     # Tokenizer & axes ---------------------------------------------------------
+    print(f"[TIMING] Starting tokenizer setup at {time.time():.3f}", flush=True)
+    start_time = time.time()
     if cfg.tokenizer_name is not None:
         from transformers import AutoTokenizer
 
@@ -281,8 +281,11 @@ def main(cfg: EvalCarelessLmConfig):
 
     Pos = cfg.model.Pos
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+    print(f"[TIMING] Tokenizer setup took {time.time() - start_time:.3f}s", flush=True)
 
     # Build / load model --------------------------------------------------------
+    print(f"[TIMING] Starting model loading at {time.time():.3f}", flush=True)
+    start_time = time.time()
     cmapping = cfg.trainer.compute_axis_mapping
     pmapping = cfg.trainer.parameter_axis_mapping
 
@@ -320,8 +323,12 @@ def main(cfg: EvalCarelessLmConfig):
                 return jnp.exp(lp.array)
 
         sequence_log_prob = hax.named_jit(sequence_log_prob, out_axis_resources=None)
+        
+    print(f"[TIMING] Model loading took {time.time() - start_time:.3f}s", flush=True)
 
     # Data stream ---------------------------------------------------------------
+    print(f"[TIMING] Starting data preprocessing at {time.time():.3f}", flush=True)
+    start_time = time.time()
     raw_text = pathlib.Path(cfg.txt_path).read_text()
 
     token_ids = None
@@ -358,6 +365,7 @@ def main(cfg: EvalCarelessLmConfig):
 
     total_chunks = len(examples)
     print(f"Total sliding windows: {total_chunks}", flush=True)
+    print(f"[TIMING] Data preprocessing took {time.time() - start_time:.3f}s", flush=True)
 
     batch_size = cfg.eval_batch_size if (cfg.eval_batch_size and cfg.eval_batch_size > 0) else 32
 
@@ -387,6 +395,8 @@ def main(cfg: EvalCarelessLmConfig):
                 yield batch, ranges
 
     # Evaluation loop -----------------------------------------------------------
+    print(f"[TIMING] Starting evaluation loop at {time.time():.3f}", flush=True)
+    eval_start_time = time.time()
     pz_list: List[float] = []
     span_ranges: List[Tuple[int, int]] = []
 
@@ -394,6 +404,11 @@ def main(cfg: EvalCarelessLmConfig):
     example_offset = 0
 
     iterator = batches if cfg.use_dataloader else batches(examples_iter)
+    
+    # Timing accumulators
+    forward_time_total = 0.0
+    transfer_time_total = 0.0
+    batch_count = 0
 
     for idx, (batch_ex, ranges) in enumerate(iterator):
         if cfg.max_examples and idx * batch_size >= cfg.max_examples:
@@ -404,12 +419,31 @@ def main(cfg: EvalCarelessLmConfig):
             ranges = span_ranges_list[example_offset : example_offset + b]
             example_offset += b
 
-        pz = process_allgather(sequence_log_prob(model, batch_ex))
+        # Time forward pass
+        forward_start = time.time()
+        pz_device = sequence_log_prob(model, batch_ex)
+        forward_time = time.time() - forward_start
+        forward_time_total += forward_time
+        
+        # Time host-device transfer
+        transfer_start = time.time()
+        pz = process_allgather(pz_device)
+        transfer_time = time.time() - transfer_start
+        transfer_time_total += transfer_time
+        
         pz_list.extend(np.array(pz).tolist())
         span_ranges.extend(ranges)
+        batch_count += 1
 
         done = min((idx + 1) * batch_size, total_chunks)
         pct = 100 * done / total_chunks
+        
+        # Print detailed timing every 10 batches
+        if (idx + 1) % 10 == 0 or idx == 0:
+            avg_forward = forward_time_total / batch_count
+            avg_transfer = transfer_time_total / batch_count
+            print(f"[TIMING] Batch {idx+1}: Forward={forward_time:.3f}s, Transfer={transfer_time:.3f}s, Avg: Forward={avg_forward:.3f}s, Transfer={avg_transfer:.3f}s", flush=True)
+        
         print(f"Batch {idx+1}/{total_batches} – {done}/{total_chunks} windows ({pct:.1f} %)", flush=True)
         levanter.tracker.log(
             {
@@ -422,7 +456,15 @@ def main(cfg: EvalCarelessLmConfig):
             step=idx,
         )
 
+    eval_total_time = time.time() - eval_start_time
+    print(f"[TIMING] Evaluation loop completed in {eval_total_time:.3f}s", flush=True)
+    print(f"[TIMING] Total forward time: {forward_time_total:.3f}s ({forward_time_total/eval_total_time*100:.1f}%)", flush=True)
+    print(f"[TIMING] Total transfer time: {transfer_time_total:.3f}s ({transfer_time_total/eval_total_time*100:.1f}%)", flush=True)
+    print(f"[TIMING] Average per batch: Forward={forward_time_total/batch_count:.3f}s, Transfer={transfer_time_total/batch_count:.3f}s", flush=True)
+
     # Extraction statistics -----------------------------------------------------
+    print(f"[TIMING] Starting extraction statistics at {time.time():.3f}", flush=True)
+    start_time = time.time()
     stats = compute_max_extraction_rates(pz_list)
     logger.info("First few (n,p) extraction entries: %s", stats[0][:5])
 
@@ -431,19 +473,16 @@ def main(cfg: EvalCarelessLmConfig):
     histogram_book_title = f"{cfg.book_title} - {model_name} ({mode_suffix})"
     if cfg.histogram_linear:
         hist_stats = create_pz_histogram_linear(
-            pz_list=pz_list, threshold=cfg.pz_threshold,
-            save_path=full_histogram_path, book_title=histogram_book_title
+            pz_list=pz_list, threshold=cfg.pz_threshold, save_path=full_histogram_path, book_title=histogram_book_title
         )
     else:
         hist_stats = create_pz_histogram(
-            pz_list=pz_list, threshold=cfg.pz_threshold,
-            save_path=full_histogram_path, book_title=histogram_book_title
+            pz_list=pz_list, threshold=cfg.pz_threshold, save_path=full_histogram_path, book_title=histogram_book_title
         )
     if hist_stats:
         logger.info("P_z histogram statistics: %s", hist_stats)
-        levanter.tracker.current_tracker().log_artifact(
-            full_histogram_path, name=cfg.histogram_path, type="plot"
-        )
+        # Log the histogram as an artifact
+        levanter.tracker.current_tracker().log_artifact(full_histogram_path, name=cfg.histogram_path, type="plot")
 
     # Character- or token-level max-P(z) curve --------------------------------
     if cfg.token_mode:
@@ -483,21 +522,21 @@ def main(cfg: EvalCarelessLmConfig):
 
     # Save pz_list and related data as npz file
     save_data_with_fsspec(
-        None,
+        None,  # not used for npz
         full_pz_data_path,
         pz_values=np.array(pz_list),
         span_ranges=np.array(span_ranges),
         max_pz=max_vals,
-        config_info=np.array([
-            cfg.chunk_size,
-            cfg.prompt_tokens,
-            cfg.cursor_inc_tokens if cfg.token_mode else cfg.cursor_inc_chars,
-            len(token_ids) if cfg.token_mode else len(raw_text),
-        ]),
+        config_info=np.array(
+            [
+                cfg.chunk_size,
+                cfg.prompt_tokens,
+                cfg.cursor_inc_tokens if cfg.token_mode else cfg.cursor_inc_chars,
+                len(token_ids) if cfg.token_mode else len(raw_text),
+            ]
+        ),
     )
-    levanter.tracker.current_tracker().log_artifact(
-        full_pz_data_path, name=cfg.pz_data_path, type="data"
-    )
+    levanter.tracker.current_tracker().log_artifact(full_pz_data_path, name=cfg.pz_data_path, type="data")
     # ------------------------------------------------------------------
     # Visualization: show a *single-row* heat-map so each character
     # column is a vertical bar whose colour encodes max-P(z).
@@ -514,29 +553,24 @@ def main(cfg: EvalCarelessLmConfig):
     )
 
     if cfg.token_mode:
-        ax.set_title(f"{cfg.book_title}: Maximum per-token probability")
+        ax.set_title(f"{cfg.book_title} - {model_name}: Maximum per-token probability (Token Mode)")
         ax.set_xlabel("Book position (token)")
     else:
-        ax.set_title(f"{cfg.book_title}: Maximum per-character probability")
+        ax.set_title(f"{cfg.book_title} - {model_name}: Maximum per-character probability (Character Mode)")
         ax.set_xlabel("Book position (character)")
     ax.set_yticks([])  # Hide y-axis (only one row)
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.04)
     cbar.set_label("Max. probability")
 
-
     plt.tight_layout()
     save_plot_with_fsspec(fig, full_plot_path, dpi=300)
-    levanter.tracker.current_tracker().log_artifact(
-        full_plot_path, name=cfg.plot_path, type="plot"
-    )
+    levanter.tracker.current_tracker().log_artifact(full_plot_path, name=cfg.plot_path, type="plot")
 
     npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
     full_npy_path = get_full_output_path(cfg, npy_filename)
     save_data_with_fsspec(max_vals, full_npy_path)
-    levanter.tracker.current_tracker().log_artifact(
-        full_npy_path, name=npy_filename, type="array"
-    )
+    levanter.tracker.current_tracker().log_artifact(full_npy_path, name=npy_filename, type="array")
 
     upload_hlo_dumps_to_wandb()
     levanter.tracker.current_tracker().finish()
