@@ -15,7 +15,6 @@ import jax.random as jrandom
 
 import haliax
 import haliax as hax
-import haliax.haxtyping as ht
 from haliax import Axis, NamedArray
 from haliax.partitioning import round_axis_for_partitioning
 
@@ -68,6 +67,8 @@ class SampleLmConfig:
         # "On the first day of Christmas, my true love gave to me",
         "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
     )
+    stop_sequence: str | None = "."
+    "Stop sequences. Currently only does whole token sequences."
     max_new_tokens: int = 192
     temperature: float = 0.7
 
@@ -108,9 +109,6 @@ def tree_byte_size(tree):
 
     return sum(_leaf_size(x) for x in jax.tree.leaves(tree))
 
-
-
-
 @haliax.named_jit(donate_args=(True, False, False))
 def run_generation_loop(
     gen_state: GenState,
@@ -119,7 +117,7 @@ def run_generation_loop(
     temps,
     max_tokens_per_round: int,
     max_rounds: int,
-) -> tuple[GenState, ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
+) -> GenState:  # type: ignore[name-defined]
     """Generate tokens using ``JitScheduler`` until either ``max_new_tokens`` have been
     produced *per sequence* or all sequences report finished."""
 
@@ -139,10 +137,7 @@ def run_generation_loop(
 
         boundaries = packed_seq.boundary_indices(page_table.max_seqs)
 
-        # jax.debug.print("Next tokens: {toks}, seq_ids: {seq_ids}, boundaries: {boundaries}",
-        #                 toks=packed_seq.tokens, seq_ids=packed_seq.seq_ids, boundaries=boundaries)
         # Decode logits and sample new tokens
-        # jax.debug.print("cache kvs: {cache_kvs}", cache_kvs=hax.nn.logsumexp(gen_state.cache.kv_pages, axis=("kv_head", "head_size")))
         logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
         sample_key, key = jrandom.split(gen_state.prng_key)
         logits = logits["position", boundaries]
@@ -152,8 +147,6 @@ def run_generation_loop(
 
         num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = packed_seq.seq_ids["position", boundaries]
-        # jax.debug.print("Sampled new tokens: {new_tokens}, num_new_tokens: {num_new_tokens}, seq_ids: {new_seq_ids}",
-        #                 new_tokens=new_tokens, num_new_tokens=num_new_tokens, new_seq_ids=new_seq_ids)
 
         # Update scheduler with the freshly sampled tokens
         decode_state = gen_state.decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
@@ -174,10 +167,7 @@ def run_generation_loop(
     init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
     final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
 
-    decode_state, tokens, token_counts = final_gen_state.decode_state.extract_new_tokens()
-    final_gen_state = dataclasses.replace(final_gen_state, decode_state=decode_state)
-
-    return final_gen_state, tokens, token_counts
+    return final_gen_state
 
 
 def main(config: SampleLmConfig):
@@ -213,27 +203,35 @@ def main(config: SampleLmConfig):
 
         temps = hax.full((), config.temperature, dtype=jnp.float32)
 
-        total_prompt_tokens = sum(len(tokens) for tokens in prompt_ids)
-
-        MAX_NEW_TOKENS = 32
         table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
         sched = JitScheduler.init(256)
-        decode_state = DecodeState.init(
+        initial_decode_state = DecodeState.init(
             table.max_seqs,
             table.pages_per_seq,
             table.page_size,
             table.max_len_per_seq,
+            max_stop_seqs=1,
         )
         gen_state = GenState(
             sched=sched,
             cache=cache,
             page_table=table,
-            decode_state=decode_state,
+            decode_state=initial_decode_state,
             prng_key=key
         )
 
         # -------------------------------- Scheduler-based generation --------------------------------
+
+        stop_sequence = config.stop_sequence
+        if stop_sequence is not None:
+            stop_ids = tokenizer(stop_sequence, add_special_tokens=False)["input_ids"]
+            if len(stop_ids) == 0:
+                raise ValueError("Stop sequence must be non-empty")
+            stop_ids = hax.named(np.asarray(stop_ids, dtype=np.int32), axis="position")
+        else:
+            stop_ids = None
+
         for R in range(10):
             if R == 10:
                 start_profiler("/tmp/gen-profile")
@@ -245,8 +243,9 @@ def main(config: SampleLmConfig):
                 print(f"Prompt {i}: {toks}")
 
             time_in = time.time()
-            outputs, gen_state, total_generated = _one_round(config, gen_state, model, prompt_ids, sampler, temps,
-                                                  tokenizer, total_prompt_tokens, MAX_NEW_TOKENS)
+            outputs, gen_state, total_generated = _one_round(
+                config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids
+            )
             print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
                   f"generated {total_generated} tokens in {len(outputs)} sequences.")
 
@@ -261,22 +260,21 @@ def main(config: SampleLmConfig):
                 # in theory, we can just reuse the cache and not recreate it every time
                 page_table=page_table,
                 sched=sched.cleared(),
-                decode_state=DecodeState.init(
-                    page_table.max_seqs,
-                    page_table.pages_per_seq,
-                    page_table.page_size,
-                    page_table.max_len_per_seq,
-                ),
+                decode_state=initial_decode_state,
                 prng_key=jrandom.PRNGKey(0)
             )
             del page_table
 
 
-def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, total_prompt_tokens, MAX_NEW_TOKENS):
+def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids: NamedArray | None):
     time_in = time.time()
     finished = [False] * len(prompt_ids)
     outputs = [list(t) for t in prompt_ids]  # start with the prompts
     # do one prefill at a time, but we do continuous batching, so decode is happening all the while
+
+    if stop_ids is not None:
+        stop_ids = stop_ids.broadcast_axis({"stop_seq": 1})
+
     for tokens in prompt_ids:
         # enqueue the entire prompt into the scheduler
         page_table, seq_id = gen_state.page_table.assign_seq_id_to_seq()
@@ -284,9 +282,10 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
 
         seq_params = SeqDecodingParams(
             max_num_tokens=jnp.array(len(tokens) + config.max_new_tokens, dtype=jnp.int32),
-            stop_tokens=None,
+            stop_tokens=stop_ids,
             temperature=jnp.array(config.temperature, dtype=jnp.float32),
         )
+
         gen_state = dataclasses.replace(
             gen_state,
             decode_state=gen_state.decode_state.assign_seq(
@@ -303,17 +302,18 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         if len(tokens) > gen_state.sched.max_queued_tokens:
             raise ValueError(
                 f"Prompt is too long ({len(tokens)} tokens), "
-                f"max allowed is {MAX_NEW_TOKENS} tokens."
+                f"max queued tokens is {gen_state.sched.max_queued_tokens}. "
             )
 
         target_len = len(prompts_tokens_to_enqueue)
         if target_len > gen_state.sched.max_queued_tokens:
             print(
                 f"Queue is full ({gen_state.sched.num_queued_tokens} tokens), running generation loop to free up space.")
+
         while target_len > gen_state.sched.empty_queue_space:
             # if the queue is too full, we run generation loop to free up space
             # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
-            gen_state, new_tokens, new_counts = run_generation_loop(
+            gen_state = run_generation_loop(
                 gen_state,
                 model,
                 sampler,
@@ -323,7 +323,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
                 32,
             )
 
-            extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+            extract_outputs(gen_state.decode_state, outputs, finished)
 
         this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
         seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
@@ -332,7 +332,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         del new_sched
 
         # do one macro-prefill round
-        gen_state, new_tokens, new_counts = run_generation_loop(
+        gen_state = run_generation_loop(
             gen_state,
             model,
             sampler,
@@ -341,7 +341,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             1,
         )
 
-        extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+        extract_outputs(gen_state.decode_state, outputs, finished)
 
     gen_state = jax.block_until_ready(gen_state)
     time_mid = time.time()
@@ -351,7 +351,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
 
     while not all(finished):
         time_gen_in = time.time()
-        gen_state, new_tokens, new_counts = run_generation_loop(
+        gen_state = run_generation_loop(
             gen_state,
             model,
             sampler,
@@ -364,7 +364,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
         print(f"Generation loop iter took {time.time() - time_gen_in:.3f} seconds, ")
         time_gen_in = time.time()
 
-        extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, config.max_new_tokens)
+        extract_outputs(gen_state.decode_state, outputs, finished)
         print(f"Extracted outputs took {time.time() - time_gen_in:.3f} seconds, ")
 
     gen_state = jax.block_until_ready(gen_state)
@@ -382,32 +382,47 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             print(f"Sequence {seq_id} did not finish, skipping decoding.")
 
         text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
-        print(f"Tokens for sequence {seq_id}: {seq_outputs}")
+        print(f"Tokens for sequence {seq_id} (len: {len(seq_outputs)}: {seq_outputs}")
+
         print(f"Generated text for {seq_id}: {text}")
+        # zip tokens with their individial text
+        tokens = [f"{tok} ({tokenizer.decode([tok], skip_special_tokens=True)})" for tok in seq_outputs]
+        print(f"Tokens with text for sequence {seq_id}: {tokens}")
+
     return outputs, gen_state, total_generated
 
 
-def extract_outputs(new_tokens, new_counts, outputs, finished, total_prompt_tokens, max_new_tokens):
+def extract_outputs(decode_state: DecodeState, outputs, finished):
     """
     drain generated tokens and append them to the outputs.
 
     MUTATES outputs and finished lists.
     """
-    num_seqs = new_tokens.axis_size("seq")
+    num_seqs = decode_state.max_seqs
+    tokens = jax.device_get(decode_state.tokens.array)
+    num_tokens = jax.device_get(decode_state.num_tokens.array)
+    # TODO: just return is_finished from the loop
+    this_finished = jax.device_get(decode_state.is_finished(jnp.arange(num_seqs)))
     for seq_id in range(num_seqs):
+
         if finished[seq_id]:
             continue
-        count = new_counts.array[seq_id]
-        seq_tokens = new_tokens["seq", seq_id].array[:count]
-        if seq_id >= len(outputs) or seq_id < 0:
+
+        current_num_tokens = len(outputs[seq_id])
+
+        new_num_tokens = num_tokens[seq_id]
+        count_to_extract = new_num_tokens - current_num_tokens
+
+        if this_finished[seq_id]:
+            finished[seq_id] = True
+
+        if count_to_extract <= 0:
             continue
 
-        if len(outputs[seq_id]) + count >= max_new_tokens + total_prompt_tokens:
-            # if we have enough tokens, mark this sequence as finished
-            finished[seq_id] = True
-            seq_tokens = seq_tokens[:max_new_tokens + total_prompt_tokens - len(outputs[seq_id])]
+        seq_tokens = tokens[seq_id, current_num_tokens:new_num_tokens]
+        print(f"Extracting {count_to_extract} tokens for sequence {seq_id}: {seq_tokens}")
 
-        outputs[seq_id].extend(seq_tokens)
+        outputs[seq_id].extend(int(x) for x in seq_tokens)
 
 
 if __name__ == "__main__":

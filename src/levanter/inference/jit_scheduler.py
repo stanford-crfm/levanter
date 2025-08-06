@@ -57,35 +57,80 @@ class SeqDecodingParams(eqx.Module):
     temperature: jnp.ndarray
 
 
+    def default(self, num_stop_seqs: int, max_stop_tokens: int) -> "SeqDecodingParams":
+        """
+        Returns a default SeqDecodingParams with the given number of stop sequences and maximum stop tokens.
+        """
+        max_int_jnp = jnp.iinfo(jnp.int32).max
+        return SeqDecodingParams(
+            max_num_tokens=jnp.array(max_int_jnp - 100000, dtype=jnp.int32),
+            stop_tokens=None,
+            temperature=jnp.array(0.0, dtype=jnp.float32),
+        )
+
+
 class DecodeState(eqx.Module):
     """
-    State of sequences during decoding.
+    State of sequences during decoding. This manages a "hot set" of sequences that are currently being decoded.
+
+    * `seq_id` is a buffer of sequence IDs, which is used to identify sequences in the `tokens` buffer. It is
+    the "global" sequence ID. (That is, there might be more sequences than `seq_id.size`, but only the ones that are
+    currently being decoded are stored in this buffer.)
+    * `tokens` is a buffer of tokens for each sequence. It includes any prompt/prefix.
+    * `num_tokens` is a buffer of the number of tokens generated in the current cycle for each sequence.
+    * `prefix_len` is a buffer of prefix lengths for each sequence. This is the length of tokens in the `tokens` buffer
+      that were provided and not generated in the current cycle.
+    * `logprobs` is an optional buffer of log probabilities for the tokens. If not None, it should have the same shape
+       as `tokens`, i.e. `logprobs["seq", i, "position", j]` is the log probability of the token at position `j` in
+       sequence `i`. It is kept in sync with `tokens`, i.e. if a token is generated, its log probability is also
+       generated. We don't currently compute log probabilities for the prefix tokens, so `logprobs` is set to nan for
+       those positions.
+
+    The "effective length" of a sequence is `num_tokens + prefix_len`, where `num_tokens` is the number of tokens
+    generated in the current cycle and `prefix_len` is the length of the prefix tokens that have not been generated yet.
+
     """
-    kv_pages: ht.i32[NamedArray, "seq page"]  # KV pages used for each sequence.
-    page_size: int = eqx.field(static=True)
     seq_id: ht.i32[NamedArray, "seq"]  # sequence ID. This is the "global" sequence ID
     tokens: ht.i32[NamedArray, "seq position"]
     """ most recent tokens generated for each sequence. Should always start at a page boundary. """
     logprobs: ht.Float[NamedArray, "seq position"] | None  # log probabilities of the tokens
-    num_tokens: ht.i32[NamedArray, "seq"]  # number of tokens generated so far (indexes into `tokens`)
+    num_tokens: ht.i32[NamedArray, "seq"]
     """Number of tokens in the buffer right now."""
     prefix_len: ht.i32[NamedArray, "seq"]
-    """ offset into tokens for each sequence, i.e. how many tokens were generated before the current round """
+    """ Length of the prefix for each sequence."""
 
+    kv_pages: ht.i32[NamedArray, "seq page"]
+    """Key-value pages for each sequence. This is used to store the key-value pairs for the sequences."""
+    page_size: int = eqx.field(static=True)
 
     # Per sequence sampling parameters
     max_num_tokens: ht.i32[NamedArray, "seq"]
     """
     Maximum number of tokens for each sequence. This is used to limit the number of tokens generated.
     This is inclusive of the prefix length, i.e. the total number of tokens that can be generated for each sequence.
-
-    NB if the actual sequence is longer than what is currently in DecodeState, this still needs to be
-    relative to what's in decode state.
     """
-
     stop_tokens: ht.i32[NamedArray, "seq stop_seq position"] | None
     """Stop sequences for each sequence. If None, no stop sequences are used. **Left padded** with pad_token_id."""
-    temperature: ht.Float[NamedArray, "seq"]  # temperature for sampling. 0 means greedy sampling
+    temperature: ht.Float[NamedArray, "seq"]
+    """temperature for sampling. 0 means greedy sampling"""
+
+    @property
+    def max_seqs(self) -> int:
+        """Number of sequences in the buffer."""
+        return self.seq_id.axis_size("seq")
+
+    @property
+    def max_tokens(self) -> int:
+        """Maximum number of tokens that can be generated for each sequence, including any prefix tokens."""
+        return self.tokens.axis_size("position")
+
+
+    @property
+    def max_stop_seq_len(self) -> int:
+        """Maximum number of stop sequences for each sequence."""
+        if self.stop_tokens is None:
+            return 0
+        return self.stop_tokens.axis_size("position")
 
     def assign_seq(self,
                    local_seq_id: int,
@@ -95,7 +140,6 @@ class DecodeState(eqx.Module):
                    prefix_len: int,
                    seq_params: SeqDecodingParams | None = None) -> "DecodeState":
         """Assign a new sequence to the given local slot."""
-
         num = tokens.axis_size("position")
 
         row_tokens = self.tokens["seq", local_seq_id]
@@ -107,27 +151,39 @@ class DecodeState(eqx.Module):
             kv_pages=self.kv_pages.at["seq", local_seq_id].set(kv_pages),
             seq_id=self.seq_id.at["seq", local_seq_id].set(global_seq_id),
             tokens=new_tokens,
-            num_tokens=self.num_tokens.at["seq", local_seq_id].set(jnp.array(num, dtype=jnp.int32)),
+            # set log probs to nan for the prefix tokens
+            logprobs=self.logprobs.at["seq", local_seq_id, "position", 0:prefix_len].set(jnp.nan) if self.logprobs is not None else None,
+            num_tokens=self.num_tokens.at["seq", local_seq_id].set(prefix_len),
             prefix_len=self.prefix_len.at["seq", local_seq_id].set(prefix_len),
         )
 
         if seq_params is not None:
-            if seq_params.stop_tokens is not None and self.stop_tokens is None:
-                raise ValueError("DecodeState was initialized without stop token storage")
             new_state = dataclasses.replace(
                 new_state,
                 max_num_tokens=new_state.max_num_tokens.at["seq", local_seq_id].set(seq_params.max_num_tokens),
                 temperature=new_state.temperature.at["seq", local_seq_id].set(seq_params.temperature),
             )
-            if new_state.stop_tokens is not None and seq_params.stop_tokens is not None:
-                n_stop = seq_params.stop_tokens.axis_size("stop_seq")
-                st_len = seq_params.stop_tokens.axis_size("position")
-                st = new_state.stop_tokens
-                for i in range(n_stop):
-                    row = st["seq", local_seq_id, "stop_seq", i]
-                    row = masked_set(row, "position", 0, seq_params.stop_tokens["stop_seq", i], st_len)
-                    st = st.at["seq", local_seq_id, "stop_seq", i].set(row)
-                new_state = dataclasses.replace(new_state, stop_tokens=st)
+            match (new_state.stop_tokens, seq_params.stop_tokens):
+                case (None, None):
+                    pass
+                case (None, _):
+                    raise ValueError("DecodeState was initialized without stop token storage")
+                case (stops, None):
+                    # this is fine, just fill this sequence with the pad token
+                    assert stops is not None  # make mypy happy
+                    new_stop_tokens = stops.at["seq", local_seq_id].set(INVALID)
+                    new_state = dataclasses.replace(new_state, stop_tokens=new_stop_tokens)
+                case (stops, seq_stops):
+                    # too fancy, but we allow for different stop sequences per sequence etc.
+                    # Probably better to do this in python outside of the jit loop
+                    assert stops is not None  # make mypy happy
+                    assert seq_stops is not None  # make mypy happy
+                    seq_num_stops = seq_stops.axis_size("stop_seq")
+                    seq_stop_len = seq_stops.axis_size("position")
+                    this_row_full = hax.full_like(stops["seq", local_seq_id], INVALID)
+                    this_row_full = this_row_full.at["stop_seq", 0:seq_num_stops, "position", -seq_stop_len:].set(seq_stops)
+                    new_stops = stops.at["seq", local_seq_id].set(this_row_full)
+                    new_state = dataclasses.replace(new_state, stop_tokens=new_stops)
 
         return new_state
 
@@ -135,18 +191,16 @@ class DecodeState(eqx.Module):
                       local_seq_ids:  ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
                       new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
                       new_log_probs: ht.Float[NamedArray, "position"],  # type: ignore[name-defined]
-                      num_new_tokens: jnp.ndarray # scalar
+                      num_new_tokens: jnp.ndarray  # scalar
                       ) -> "DecodeState":
         """
         Update the tokens and (optional) log probabilities for the given local sequence IDs.
-        Needs to do the scatter/set operation in a JIT-safe way.
         """
         tokens = self.tokens
         logprobs = self.logprobs
         counts = self.num_tokens
 
         def body(i, state):
-            tkns, lps, cnts = state
             sid = local_seq_ids["position", i].scalar()
 
             def update(state):
@@ -181,9 +235,7 @@ class DecodeState(eqx.Module):
             sid = sid_flat[i]
 
             def compute(_: jax.Array) -> jax.Array:
-                done = False
-                total = self.num_tokens["seq", sid].scalar() + self.prefix_len["seq", sid].scalar()
-                done |= total >= self.max_num_tokens["seq", sid].scalar()
+                done = (self.num_tokens["seq", sid] >= self.max_num_tokens["seq", sid]).scalar()
 
                 if self.stop_tokens is not None:
                     stop_len = self.stop_tokens.axis_size("position")
@@ -209,6 +261,32 @@ class DecodeState(eqx.Module):
         return jnp.reshape(result, seq_id.shape)
 
 
+    def debug_print(self):
+        jax.debug.print(
+            """
+DecodeState:
+seq_id: {seq_id}
+num_tokens: {num_tokens}
+prefix_len: {prefix_len}
+finished: {finished}
+tokens: {tokens}
+stop_tokens: {stop_tokens}
+kv_pages: {kv_pages}
+logprobs: {logprobs}
+max_num_tokens: {max_num_tokens}
+""",
+            seq_id=self.seq_id,
+            num_tokens=self.num_tokens,
+            prefix_len=self.prefix_len,
+            finished=self.is_finished(jnp.arange(self.max_seqs, dtype=jnp.int32)),
+            tokens=self.tokens,
+            stop_tokens=self.stop_tokens,
+            kv_pages=self.kv_pages,
+            logprobs=self.logprobs if self.logprobs is not None else "None",
+            max_num_tokens=self.max_num_tokens,
+        )
+
+
     @staticmethod
     def init(
         max_seqs: int,
@@ -216,7 +294,8 @@ class DecodeState(eqx.Module):
         page_size: int,
         max_tokens: int,
         pad_token_id: int = INVALID,
-        max_stop_tokens: int = 0,
+        max_stop_seqs: int = 0,
+        max_stop_tokens: int = 16,
     ) -> "DecodeState":
         """
         Initialize a DecodeState with empty buffers.
@@ -231,43 +310,48 @@ class DecodeState(eqx.Module):
             num_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             max_num_tokens=hax.full({"seq": max_seqs}, 0, dtype=jnp.int32),
             stop_tokens=hax.full(
-                {"seq": max_seqs, "stop_seq": max_stop_tokens, "position": max_tokens},
+                {"seq": max_seqs, "stop_seq": max_stop_seqs, "position": max_stop_tokens},
                 INVALID,
                 dtype=jnp.int32,
             ) if max_stop_tokens > 0 else None,
             temperature=hax.ones({"seq": max_seqs}, dtype=jnp.float32),
         )
 
-    @eqx.filter_jit(donate="all")
-    def extract_new_tokens(
-        self,
-    ) -> tuple["DecodeState", ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
-        """Extract tokens generated since the last call and update ``prefix_len``."""
+    # This was used to remove tokens from the buffer, but it was too much work.
+    # # @eqx.filter_jit(donate="all")
+    # def extract_new_tokens(
+    #     self,
+    # ) -> tuple["DecodeState", ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
+    #     """Extract tokens generated since the last call and update ``prefix_len``."""
 
-        num_seqs = self.tokens.axis_size("seq")
+    #     num_seqs = self.tokens.axis_size("seq")
 
-        out_tokens = hax.full_like(self.tokens, INVALID)
-        out_counts = hax.zeros_like(self.num_tokens)
+    #     out_tokens = hax.full_like(self.tokens, INVALID)
+    #     out_counts = hax.zeros_like(self.num_tokens)
 
-        def body(i, state):
-            tokens, counts = state
-            start = self.prefix_len["seq", i].scalar()
-            end = self.num_tokens["seq", i].scalar()
-            n = end - start
+    #     def body(i, state):
+    #         tokens, counts = state
+    #         start = self.prefix_len["seq", i].scalar()
+    #         end = self.num_tokens["seq", i].scalar()
+    #         n = end - start
 
-            row = self.tokens["seq", i]
-            rolled = hax.roll(row, -start, "position")
-            blank = hax.full_like(row, INVALID)
-            new_row = masked_set(blank, "position", 0, rolled, n)
-            tokens = tokens.at["seq", i].set(new_row)
-            counts = counts.at["seq", i].set(n)
-            return tokens, counts
+    #         row = self.tokens["seq", i]
+    #         rolled = hax.roll(row, -start, "position")
+    #         blank = hax.full_like(row, INVALID)
+    #         new_row = masked_set(blank, "position", 0, rolled, n)
+    #         tokens = tokens.at["seq", i].set(new_row)
+    #         counts = counts.at["seq", i].set(n)
 
-        out_tokens, out_counts = jax.lax.fori_loop(0, num_seqs, body, (out_tokens, out_counts))
+    #         return tokens, counts
 
-        new_state = dataclasses.replace(self, prefix_len=self.num_tokens)
+    #     out_tokens, out_counts = jax.lax.fori_loop(0, num_seqs, body, (out_tokens, out_counts))
 
-        return new_state, out_tokens, out_counts
+    #     new_state = dataclasses.replace(
+    #         self,
+    #         prefix_len=self.num_tokens,
+    #     )
+
+    #     return new_state, out_tokens, out_counts
 
 
 class JitScheduler(eqx.Module):
