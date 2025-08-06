@@ -1414,6 +1414,7 @@ class MultiHeadLatentAttention(eqx.Module):
         v = kv_out["kv_out", self.config.qk_nope_head_dim :].rename(
             {"kv_out": "v_head_dim"}
         )
+        v_attn = v.rename({"v_head_dim": "q_head_dim"})
 
         # Optional step of doing LoRA on Q.
         # This isn't core to the benefits of MLA, but is what DeepSeek does.
@@ -1453,7 +1454,7 @@ class MultiHeadLatentAttention(eqx.Module):
             "q_head_dim",
             query_states,
             key_states,
-            v,
+            v_attn,
             mask,
             attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
             attn_backend=self.config.attn_backend,
@@ -1465,7 +1466,7 @@ class MultiHeadLatentAttention(eqx.Module):
             prng=key,
         )
 
-        attn_output = attn_output.astype(x.dtype)
+        attn_output = attn_output.rename({"q_head_dim": "v_head_dim"}).astype(x.dtype)
         assert self.o_proj is not None
         attn_output = self.o_proj(attn_output, key=k_o)
         return attn_output
