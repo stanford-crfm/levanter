@@ -311,6 +311,14 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         self._last_scale_multislice_time: Optional[float] = None
         self._last_check_should_scale_up_multislice_time: Optional[float] = None
 
+
+    def _add_members_to_actor_pool(self, desired_num_actors: int) -> None:
+        import random
+        # prev_desired_num_actors = desired_num_actors
+        # desired_num_actors = random.randint(len(self._actor_pool) + 1, desired_num_actors)
+        # logger.info(f"Chaos monkey: wanted {prev_desired_num_actors} slices but getting {desired_num_actors} slices")
+        super()._add_members_to_actor_pool(desired_num_actors)
+
     def get_actor_pool_name(self) -> str:
         return f"{self._tpu_type} slices"
 
@@ -331,21 +339,29 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         logger.info(f"Attempting to scale to {max_valid_size} slices based on the maximum of valid sizes: {sorted_valid_sizes}")
         try:
             self.scale_actor_pool(max_valid_size)
-            return
+            # self.scale_actor_pool(max_valid_size)
         except Exception as e:
-            logger.warning(f"Could not scale to {max_valid_size} slices based on the maximum of valid sizes: {sorted_valid_sizes}: {e}")
+            logger.warning(f"Error when scaling to {max_valid_size} slices: {e}")
+
+        if len(self._actor_pool) in num_slices:
+            return
 
         current_size = len(self._actor_pool)
         feasible_sizes = [size for size in sorted_valid_sizes if size <= current_size]
+
+        if not feasible_sizes:
+            raise Exception(f"Only got {current_size} slices, which is not enough for minimum of valid sizes: {sorted_valid_sizes}")
+
         max_feasible_size = feasible_sizes[-1]
         logger.warning(f"Attempting to scale to {max_feasible_size} slices based on a feasible size in valid sizes: {sorted_valid_sizes}")
         try:
             self.scale_actor_pool(max_feasible_size)
-
         except Exception as e:
-            error_message = f"Could not scale to {max_feasible_size} slices based on a feasible size in valid sizes: {sorted_valid_sizes}: {e}"
-            logger.warning(error_message)
-            raise Exception(error_message) from e  # TODO: Make an error type for insufficient resource errors
+            logger.warning(f"Error when scaling to {max_feasible_size} slices: {e}")
+
+        if len(self._actor_pool) not in num_slices:
+            raise Exception(f"Could not scale to {max_feasible_size} slices")
+
 
     def check_should_scale_up_multislice(self, num_slices: int | Sequence[int]) -> bool:
         if isinstance(num_slices, int):
@@ -354,18 +370,14 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         # Don't check for rescaling if:
         # - Not enough time has passed since the the last scale up check
         # - Not enough time has passed since the the last actual scale up
-        logger.info("check_should_scale_up_multislice called")
         current_time = time.time()
         last_check_time = self._last_check_should_scale_up_multislice_time
         self._last_check_should_scale_up_multislice_time = current_time
         if last_check_time is None or current_time - last_check_time < _SCALE_UP_MULTISLICE_CHECK_INTERVAL:
-            logger.info("last check too recent; skipping")
             return False
 
         if self._last_scale_multislice_time is None or current_time - self._last_scale_multislice_time < _SCALE_UP_MULTISLICE_INTERVAL:
-            logger.info("last scale too recent; skipping")
             return False
-        logger.info("check_should_scale_up_multislice actually checking")
 
         # Want to scale to the next largest desired size that is bigger than the current size.
         sorted_valid_sizes = sorted(num_slices)
@@ -377,25 +389,16 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
 
         # We start N slice probe actors to probe for available slices.
         # We shut down these actors after we're done checking.
-        actors: list[ActorHandle] = []
-        try:
-            num_desired_additional_slices = next_larger_size - len(self._actor_pool)
-            logger.info(f"Currently have {len(self._actor_pool)} slices; next larger size is {next_larger_size} (valid sizes: {num_slices}). Checking if {num_desired_additional_slices} additional slices are available.")
-            actors = [self.create_actor() for _ in range(num_desired_additional_slices)]
-            actor_info_awaitables = [actor.get_info.remote() for actor in actors]
-            logger.info(f"Waiting for {len(actors)} slice actors to start.")
-            actor_infos = ray.wait(actor_info_awaitables, num_returns=len(actor_info_awaitables), timeout=_CHECK_SHOULD_SCALE_UP_MULTISLICE_START_ACTOR_TIMEOUT)
-            for actor_info in actor_infos:
-                ray.get(actor_info, timeout=0)
-            logger.info(f"{num_desired_additional_slices} additional slices are available.")
-            return all(actor_infos)
-        except Exception as e:
-            logger.info(f"{num_desired_additional_slices} additional slices were not available: {e}")
+        previous_size = len(self._actor_pool)
+        logger.info(f"Currently have {previous_size} slices; next larger size is {next_larger_size} (valid sizes: {num_slices}). Trying to acquire more slices.")
+        self._add_members_to_actor_pool(next_larger_size)
+        if len(self._actor_pool) == next_larger_size:
+            logger.info(f"Successfully acquired more slices; now have {next_larger_size} slices.")
+            return True
+        else:
+            logger.info(f"Wanted {next_larger_size} slices but could only get {len(self._actor_pool)} slices; scaling slices back down to previous size {previous_size}.")
+            self._remove_members_from_actor_pool(previous_size)
             return False
-        finally:
-            logger.info(f"Stopping {len(actors)} temporary slice actors.")
-            for actor in actors:
-                _stop_actor(actor)
 
 
 @ray.remote
@@ -530,8 +533,6 @@ class TPUHostActor:
         self._host_info = None
 
 
-
-
 def run_on_pod(
     remote_fn: RemoteFunction | Callable,
     tpu_type: str,
@@ -582,7 +583,6 @@ def run_on_pod_ray(
     num_failures = 0
     # we include any kind of non-`remote_fn` failure in this count, including preemptions
     num_preemptions = 0
-    attempt = 0
 
     slice_pool: list[SliceResource] = []
     problems: list[Exception] = []
@@ -601,8 +601,7 @@ def run_on_pod_ray(
 
     try:
         while num_failures <= max_retries_failure and num_preemptions <= max_retries_preemption:
-            logger.info(f"Running on {num_slices} x TPU {tpu_type}. Attempt {attempt}")
-            attempt += 1
+            logger.info(f"Running on {num_slices} x TPU {tpu_type}. Previous failures: {num_failures}. Previous pre-emptions: {num_preemptions}.")
             problems.clear()
 
             # prune all bad actors from pool
@@ -645,8 +644,9 @@ def run_on_pod_ray(
             had_a_failure = False
             should_scale_up_multislice = False
 
-            # check health of actors in the loop too
-            actor_health_futures = [slice_actor.healthy.remote() for slice_actor in slice_pool]
+            # check health of actors once
+            # TODO: Check health repeatedly given some interval
+            actor_health_futures = [tpu_slice.actor.healthy.remote() for tpu_slice in slice_pool]
 
             while pending_futures:
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
@@ -669,7 +669,7 @@ def run_on_pod_ray(
 
                 # Check if any actors are unhealthy. We hit this if it's been 10 seconds or we got a result
                 try:
-                    actor_healths = ray.get(actor_health_futures)
+                    actor_healths = ray.get(actor_health_futures, timeout=_HEALTH_CHECK_TIMEOUT)
                 except RayError as e:
                     logger.warning("Failed to get actor healths", exc_info=e)
                     # assume things are bad
@@ -691,7 +691,7 @@ def run_on_pod_ray(
                     break
 
             # Proactively cancel jobs if one fails.
-            if had_a_failure and pending_futures:
+            if pending_futures:
                 logger.info(f"Failure detected. Cancelling {len(pending_futures)} futures.")
                 try:
                     for f in pending_futures:
