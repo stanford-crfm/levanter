@@ -38,6 +38,7 @@ import haliax as hax
 import haliax.partitioning
 from haliax.nn import log_softmax
 from haliax.partitioning import round_axis_for_partitioning
+A
 
 import levanter
 import levanter.tracker
@@ -186,53 +187,6 @@ def upload_hlo_dumps_to_wandb():
     finally:
         # Clean up temporary file
         os.unlink(tar_path)
-
-
-def partition_log():
-    """Log partitioning debug information to WandB"""
-    import tempfile
-
-    try:
-        # Create debug info text
-        debug_info = f"""HALIAX PARTITIONING DEBUG INFO
-=====================================
-Haliax partitioning loaded from: {haliax.partitioning.__file__}
-Current working directory: {os.getcwd()}
-Python path: {sys.path[:3]}  # First 3 entries
-Timestamp: {time.ctime()}
-
-This confirms that the LOCAL haliax version with debug prints is being used.
-If you don't see debug prints from partitioning during model loading,
-they are likely being buffered/filtered by the TPU runtime environment.
-"""
-
-        # Write to temporary file and upload to WandB
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp_file:
-            tmp_file.write(debug_info)
-            tmp_file.flush()
-
-            # Upload using levanter tracker helper
-            levanter.tracker.current_tracker().log_artifact(
-                tmp_file.name, name="haliax_partitioning_debug.txt", type="debug_info"
-            )
-
-        # Also log as text to WandB
-        levanter.tracker.log(
-            {
-                "debug/haliax_partitioning_path": haliax.partitioning.__file__,
-                "debug/cwd": os.getcwd(),
-                "debug/local_haliax_confirmed": True,
-            },
-            step=0,
-        )
-
-        logger.info("Successfully uploaded partitioning debug info to WandB")
-
-        # Clean up
-        os.unlink(tmp_file.name)
-
-    except Exception as e:
-        logger.error(f"Error uploading partitioning debug info: {e}")
 
 
 def get_full_output_path(cfg: EvalCarelessLmConfig, filename: str) -> str:
