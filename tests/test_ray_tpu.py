@@ -15,8 +15,8 @@ from levanter.infra.ray_tpu import run_on_pod
 
 
 # Store whether TPUs are available and if multislice is possible
-_TPU_AVAILABLE = False
-_MULTISLICE_POSSIBLE = False
+_TPU_AVAILABLE = True
+_MULTISLICE_POSSIBLE = True
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -31,11 +31,11 @@ def setup_ray_tpu_tests():
     available_resources = ray.cluster_resources()
     tpu_v4_8_head_count = available_resources.get("TPU-v4-8-head", 0)
 
-    if tpu_v4_8_head_count < 1:
-        pytest.skip("No TPU-v4-8-head resources available", allow_module_level=True)
+    # if tpu_v4_8_head_count < 1:
+    #     pytest.skip("No TPU-v4-8-head resources available", allow_module_level=True)
 
     _TPU_AVAILABLE = True
-    _MULTISLICE_POSSIBLE = tpu_v4_8_head_count >= 2
+    _MULTISLICE_POSSIBLE = True
 
     yield
 
@@ -52,7 +52,7 @@ skip_if_no_multislice = pytest.mark.skipif(
 @ray.remote(max_calls=1)
 def simple_jax_fn():
     import time
-    time.sleep(60)
+    time.sleep(120)
 
     import jax
 
@@ -187,6 +187,30 @@ def test_multislice_simple_run():
 
 
 @pytest.mark.ray
+def test_variable_multislice_run():
+    """1. Run a simple function on a multislice and verify it runs correctly."""
+    if not _MULTISLICE_POSSIBLE:  # Redundant due to marker, but good for clarity
+        pytest.skip("Not enough TPUs for multislice test")
+
+    num_slices = [2, 4]
+    tpu_type = "v4-8"  # Each slice is a v4-8
+
+    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
+
+    assert results is not None
+    assert len(results) in num_slices  # num_slices * hosts_per_slice (assuming 1 host per v4-8 slice)
+
+    for i in range(len(results)):
+        assert isinstance(results[i], np.ndarray)
+        assert results[i].shape == (4,)
+        if i > 0:
+            # Due to MEGASCALE_SLICE_ID, the PRNG key might differ effectively if the code used it.
+            # simple_jax_fn uses a fixed PRNGKey(0) so all slices should produce identical results.
+            assert np.array_equal(results[i], results[0])
+
+
+
+@pytest.mark.ray
 def test_multislice_run_twice():
     """2. Run a second function after the first one and verify it runs correctly."""
     if not _MULTISLICE_POSSIBLE:
@@ -212,32 +236,6 @@ def test_multislice_run_twice():
     # Compare first and second run (should be identical)
     for i in range(num_slices):
         assert np.array_equal(results1[i], results2[i])
-
-
-@pytest.mark.ray
-def test_variable_multislice_simple_run():
-    """1. Run a simple function on a multislice and verify it runs correctly."""
-    if not _MULTISLICE_POSSIBLE:  # Redundant due to marker, but good for clarity
-        pytest.skip("Not enough TPUs for multislice test")
-
-    num_slices = [1, 2]
-    tpu_type = "v4-8"  # Each slice is a v4-8
-
-    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
-
-    # run_on_pod_new returns a flat list of results from all hosts across all slices.
-    # If each v4-8 slice has 1 host (as per TPU-v4-8-head resource meaning),
-    # then for num_slices=2, we expect 2 results in the list.
-    assert results is not None
-    assert len(results) == num_slices  # num_slices * hosts_per_slice (assuming 1 host per v4-8 slice)
-
-    for i in range(num_slices):
-        assert isinstance(results[i], np.ndarray)
-        assert results[i].shape == (4,)
-        if i > 0:
-            # Due to MEGASCALE_SLICE_ID, the PRNG key might differ effectively if the code used it.
-            # simple_jax_fn uses a fixed PRNGKey(0) so all slices should produce identical results.
-            assert np.array_equal(results[i], results[0])
 
 
 @ray.remote(max_calls=1)

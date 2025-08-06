@@ -162,15 +162,14 @@ class TPUHostInfo:
 
 # Timeouts (in seconds)
 _HEALTH_CHECK_TIMEOUT = 60
-_TEARDOWN_ACTOR_TIMEOUT = 300
-_TERMINATE_ACTOR_TIMEOUT = 300
-_START_ACTOR_TIMEOUT = 7 * 24 * 60 * 60  # 1 week
-_CHECK_SHOULD_SCALE_UP_MULTISLICE_START_ACTOR_TIMEOUT = 300
+_TEARDOWN_ACTOR_TIMEOUT = 60
+_TERMINATE_ACTOR_TIMEOUT = 60
+_START_ACTOR_TIMEOUT = 120
+_CHECK_SHOULD_SCALE_UP_MULTISLICE_START_ACTOR_TIMEOUT = 30
 
 # Intervals (in seconds)
-# _CHECK_SHOULD_SCALE_UP_MULTISLICE_INTERVAL = 15 * 60 # 15 minutes
-_CHECK_SHOULD_SCALE_UP_MULTISLICE_INTERVAL = 15
-_SCALE_UP = 15 * 60 # 15 minutes
+_SCALE_UP_MULTISLICE_CHECK_INTERVAL = 5
+_SCALE_UP_MULTISLICE_INTERVAL = 5  # 15 minutes
 
 
 def _multislice_info_from_head(head: SliceInfo, slice_id: int, num_slices: int) -> MultisliceInfo:
@@ -237,9 +236,10 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
         members_and_health = [(member, member.actor.healthy.remote()) for member in self._actor_pool]
         healthy_members: list[ActorPoolMember[ActorInfoT]] = []
         unhealthy_members: list[ActorPoolMember[ActorInfoT]] = []
+        ray.wait([health for _, health in members_and_health], num_returns=len(members_and_health), timeout=_HEALTH_CHECK_TIMEOUT)
         for member, health in members_and_health:
             try:
-                if ray.get(health, timeout=_HEALTH_CHECK_TIMEOUT):
+                if ray.get(health, timeout=0):
                     healthy_members.append(member)
                 else:
                     logger.warning(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} is unhealthy. Removing from actor pool.")
@@ -257,48 +257,45 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
         logger.info(f"{self.get_actor_pool_name()} actor pool members after unhealthy members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
 
     def _add_members_to_actor_pool(self, desired_num_actors: int) -> None:
-        logger.info(f"{self.get_actor_pool_name()} actor pool members before adding members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
-        logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, but we want {desired_num_actors}. Creating more.")
-
+        logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, scaling up to {desired_num_actors} members; current members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
         actors = [self.create_actor() for _ in range(desired_num_actors - len(self._actor_pool))]
-
         actors_and_actor_info_awaitables = [(actor, actor.get_info.remote()) for actor in actors]
         logger.info(f"{self.get_actor_pool_name()} actor pool waiting for {len(actors)} new actors to start...")
+        ray.wait([actor_info_awaitable for _, actor_info_awaitable in actors_and_actor_info_awaitables], num_returns=len(actors_and_actor_info_awaitables), timeout=_START_ACTOR_TIMEOUT)
         for actor, actor_info_awaitable in actors_and_actor_info_awaitables:
             try:
-                actor_info: ActorInfoT = ray.get(actor_info_awaitable, timeout=_START_ACTOR_TIMEOUT)  # TODO: make this overridable
+                actor_info: ActorInfoT = ray.get(actor_info_awaitable, timeout=0)
             except Exception as e:
                 logger.exception(f"{self.get_actor_pool_name()} actor pool actor {actor} failed to start: {e}")
                 _stop_actor(actor)
                 continue
             logger.info(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(actor_info)} started.")
             self._actor_pool.append(ActorPoolMember[ActorInfoT](actor, actor_info))
-
-        logger.info(f"{self.get_actor_pool_name()} actor pool members after adding members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
-        logger.info(f"{self.get_actor_pool_name()} actor pool scaled up to {len(self._actor_pool)} members")
+        logger.info(f"{self.get_actor_pool_name()} actor pool scaled up to {len(self._actor_pool)} members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
 
     def _remove_members_from_actor_pool(self, desired_num_actors: int) -> None:
-        logger.info(f"{self.get_actor_pool_name()} actor pool members before removing members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
-        logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members, but we want {desired_num_actors}. Removing members.")
-
+        logger.info(f"{self.get_actor_pool_name()} actor pool has {len(self._actor_pool)} members; scaling down to {desired_num_actors} members; current members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
         members_to_remove = self._actor_pool[desired_num_actors:]
         self._actor_pool = self._actor_pool[:desired_num_actors]
         for member in members_to_remove:
             logger.info(f"{self.get_actor_pool_name()} actor pool member {self.get_actor_name_from_actor_info(member.actor_info)} stopping.")
             _stop_actor(member.actor)
-
-        logger.info(f"{self.get_actor_pool_name()} actor pool members after removing members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
-        logger.info(f"{self.get_actor_pool_name()} actor pool scaled down to {len(self._actor_pool)} members")
+        logger.info(f"{self.get_actor_pool_name()} actor pool scaled down to {len(self._actor_pool)} members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
 
     def scale_actor_pool(self, desired_num_actors: int) -> None:
-        self._remove_unhealthy_members_from_actor_pool()
+        # NOTE: There is no retry loop in this function.
+        # You should wrap this in an external retry loop.
+        if self._actor_pool:
+            self._remove_unhealthy_members_from_actor_pool()
         if len(self._actor_pool) < desired_num_actors:
             self._add_members_to_actor_pool(desired_num_actors)
         elif len(self._actor_pool) > desired_num_actors:
             self._remove_members_from_actor_pool(desired_num_actors)
         else:
             logger.info(f"{self.get_actor_pool_name()} actor pool already has {len(self._actor_pool)} members, and we wanted {desired_num_actors}. Skipping scaling.")
-        # TODO: Add retry logic
+            return
+        if len(self._actor_pool) != desired_num_actors:
+            raise Exception(f"{self.get_actor_pool_name()} actor pool wanted to scale to {desired_num_actors} actors, but scaled to {len(self._actor_pool)} actors instead")
 
     def drain_actor_pool(self) -> None:
         logger.info(f"{self.get_actor_pool_name()} actor pool members draining.")
@@ -331,7 +328,7 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
             return
         sorted_valid_sizes = sorted(num_slices)
         max_valid_size = sorted_valid_sizes[-1]
-        logger.warning(f"Attempting to scale to {max_valid_size} slices based on the maximum of valid sizes: {sorted_valid_sizes}")
+        logger.info(f"Attempting to scale to {max_valid_size} slices based on the maximum of valid sizes: {sorted_valid_sizes}")
         try:
             self.scale_actor_pool(max_valid_size)
             return
@@ -357,13 +354,18 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         # Don't check for rescaling if:
         # - Not enough time has passed since the the last scale up check
         # - Not enough time has passed since the the last actual scale up
+        logger.info("check_should_scale_up_multislice called")
         current_time = time.time()
-        if self._last_check_should_scale_up_multislice_time is None or current_time - self._last_check_should_scale_up_multislice_time < _CHECK_SHOULD_SCALE_UP_MULTISLICE_INTERVAL:
-            return False
+        last_check_time = self._last_check_should_scale_up_multislice_time
         self._last_check_should_scale_up_multislice_time = current_time
-
-        if self._last_scale_multislice_time is None or current_time - self._last_scale_multislice_time < _CHECK_SHOULD_SCALE_UP_MULTISLICE_INTERVAL:  # What to name this?
+        if last_check_time is None or current_time - last_check_time < _SCALE_UP_MULTISLICE_CHECK_INTERVAL:
+            logger.info("last check too recent; skipping")
             return False
+
+        if self._last_scale_multislice_time is None or current_time - self._last_scale_multislice_time < _SCALE_UP_MULTISLICE_INTERVAL:
+            logger.info("last scale too recent; skipping")
+            return False
+        logger.info("check_should_scale_up_multislice actually checking")
 
         # Want to scale to the next largest desired size that is bigger than the current size.
         sorted_valid_sizes = sorted(num_slices)
@@ -375,20 +377,23 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
 
         # We start N slice probe actors to probe for available slices.
         # We shut down these actors after we're done checking.
+        actors: list[ActorHandle] = []
         try:
             num_desired_additional_slices = next_larger_size - len(self._actor_pool)
-            logger.info(f"Checking if {num_desired_additional_slices} additional slices are available.")
+            logger.info(f"Currently have {len(self._actor_pool)} slices; next larger size is {next_larger_size} (valid sizes: {num_slices}). Checking if {num_desired_additional_slices} additional slices are available.")
             actors = [self.create_actor() for _ in range(num_desired_additional_slices)]
             actor_info_awaitables = [actor.get_info.remote() for actor in actors]
-            logger.info(f"Waiting for {len(actors)} slice probe actors to start.")
-            actor_infos = ray.get(actor_info_awaitables, timeout=_START_ACTOR_TIMEOUT)
+            logger.info(f"Waiting for {len(actors)} slice actors to start.")
+            actor_infos = ray.wait(actor_info_awaitables, num_returns=len(actor_info_awaitables), timeout=_CHECK_SHOULD_SCALE_UP_MULTISLICE_START_ACTOR_TIMEOUT)
+            for actor_info in actor_infos:
+                ray.get(actor_info, timeout=0)
             logger.info(f"{num_desired_additional_slices} additional slices are available.")
             return all(actor_infos)
         except Exception as e:
             logger.info(f"{num_desired_additional_slices} additional slices were not available: {e}")
             return False
         finally:
-            logger.info(f"Stopping {len(actors)} slice probe actors.")
+            logger.info(f"Stopping {len(actors)} temporary slice actors.")
             for actor in actors:
                 _stop_actor(actor)
 
@@ -641,9 +646,9 @@ def run_on_pod_ray(
             should_scale_up_multislice = False
 
             # check health of actors in the loop too
-            actor_health_futures = [tpu_slice.actor.healthy.remote() for actor in slice_pool]
+            actor_health_futures = [slice_actor.healthy.remote() for slice_actor in slice_pool]
 
-            while pending_futures and not had_a_failure:
+            while pending_futures:
                 finished, pending_futures = ray.wait(pending_futures, num_returns=1, timeout=10.0)
 
                 for f in finished:
@@ -674,6 +679,9 @@ def run_on_pod_ray(
                         if not healthy:
                             logger.warning(f"Actor {slice_pool[i]} is unhealthy. Will retry.")
                             had_a_failure = True
+
+                if had_a_failure:
+                    break
 
                 # It is safe to call this check_should_scale_up_multislice() frequently in a loop
                 # because it is debounced internally and most calls will finish quickly.
@@ -787,7 +795,7 @@ def _stop_actor(actor: ActorHandle) -> None:
         # but it doesn't really matter
         ray.get(actor.teardown.remote(), timeout=_TEARDOWN_ACTOR_TIMEOUT)
         ray.get(actor.__ray_terminate__.remote(), timeout=_TERMINATE_ACTOR_TIMEOUT)
-    except ActorDiedError:
+    except (ActorUnavailableError, ActorDiedError):
         # This is expected because the actor will terminate within  __ray_terminate__() task,
         # so the task will never succeed.
         pass
