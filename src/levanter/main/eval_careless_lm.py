@@ -98,12 +98,12 @@ class EvalCarelessLmConfig:
 
     # Output -------------------------------------------------------------------
     output_base_path: str = "gs://marin-us-central2/books_evals/"  # Base path for all outputs
-    plot_path: str = "bar_plot_char_max_pz_70b.png"
+    plot_path: Optional[str] = None
     eval_batch_size: int = 32
-    histogram_path: str = "pz_distribution_histogram.png"
+    histogram_path: Optional[str] = None
     pz_threshold: float = 0.0001
     book_title: str = "Book"
-    pz_data_path: str = "pz_data.npz"
+    pz_data_path: Optional[str] = None
 
     # Performance tweaks -------------------------------------------------------
     use_dataloader: bool = True  # DataLoader keeps devices busy but uses additional host memory
@@ -299,6 +299,14 @@ def main(cfg: EvalCarelessLmConfig):
             model_name = pathlib.Path(model_path).name.lower()
     elif cfg.hf_checkpoint:
         model_name = str(cfg.hf_checkpoint).split("/")[-1].lower().replace("-", "-")
+
+    # Derive default filenames when not provided
+    if cfg.plot_path is None:
+        cfg.plot_path = f"bar_plot_max_pz_{cfg.book_title}.png"
+    if cfg.histogram_path is None:
+        cfg.histogram_path = f"pz_distribution_histogram_{cfg.book_title}.png"
+    if cfg.pz_data_path is None:
+        cfg.pz_data_path = f"pz_data_{cfg.book_title}.npz"
 
     # Construct full output paths
     full_plot_path = get_full_output_path(cfg, cfg.plot_path)
