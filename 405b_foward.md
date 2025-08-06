@@ -8,7 +8,7 @@
 
 ## Hardware Specifications
 - **v4-256**: 128 TPU chips, each with 32 GiB HBM memory
-- **Total Memory**: 4096 GiB 
+- **Total Memory**: 4096 GiB
 - **Per-chip Memory**: 32 GiB
 - **Model Size**: 405B parameters ≈ 1620 GiB in fp32
 
@@ -19,7 +19,7 @@ File: `/Users/ahmed/code/levanter/config/books/eval_careless_llama3.1_405b_hp1.y
 ```yaml
 trainer:
   tensor_parallel_axes: ["mlp", "heads"]
-  fsdp_axis: "embed" 
+  fsdp_axis: "embed"
   batch_axis: "batch"
   per_device_eval_parallelism: -1
 eval_batch_size: 1
@@ -28,7 +28,7 @@ eval_batch_size: 1
 ### Model Architecture:
 - **Layers**: 126
 - **Hidden Dim**: 16384
-- **Intermediate Dim**: 53248  
+- **Intermediate Dim**: 53248
 - **Num Heads**: 128
 - **Num KV Heads**: 8
 
@@ -40,7 +40,7 @@ eval_batch_size: 1
    - Lines 60-85: Core Haliax partitioning concepts with axis mappings
 
 2. **Trainer Implementation**: `/Users/ahmed/code/levanter/src/levanter/trainer.py`
-   - Lines 669-676: `tensor_parallel_axes` configuration 
+   - Lines 669-676: `tensor_parallel_axes` configuration
    - Lines 843-847: Tensor parallel axes mapping to `ResourceAxis.MODEL`
    - Lines 791-798: Device mesh creation with `create_fsdp_mesh()`
    - Lines 839-867: `compute_axis_mapping` and `parameter_axis_mapping` properties
@@ -70,7 +70,7 @@ replica_dcn_axis_size: int = 1  # line 682
 
 ### FSDP vs Tensor Parallelism Strategy
 - **FSDP**: Shards parameters across devices (`{"embed": "data"}`)
-- **Data Parallel**: Shards batch across devices (`{"batch": "data"}`)  
+- **Data Parallel**: Shards batch across devices (`{"batch": "data"}`)
 - **Key Pattern**: Use **separate axis mappings** for compute vs parameters
 
 ### Proper Configuration Pattern
@@ -81,7 +81,7 @@ param_axis_mapping = {"embed": "data"}    # For parameter storage
 ```
 
 ### Essential Implementation Details
-1. **Context Manager Usage**: 
+1. **Context Manager Usage**:
    ```python
    with hax.axis_mapping(compute_axis_mapping):
        loss, grads = grad_loss(model, input_ids)
@@ -120,7 +120,7 @@ param_axis_mapping = {**fsdp_axis_mapping, **tp_axis_mapping}
 ## Solution Attempts Log
 
 ### Attempt 1: Current Configuration Analysis
-**Problem Identified**: 
+**Problem Identified**:
 - Error shows allocation of 135GB (126×16384×16384×4 bytes) exceeding 32GB per-chip limit
 - Current config mixes FSDP with tensor parallelism incorrectly
 - User wants **pure tensor parallelism**, not FSDP+TP combination
@@ -135,7 +135,7 @@ param_axis_mapping = {**fsdp_axis_mapping, **tp_axis_mapping}
 
 **Expected Behavior**:
 - MLP computation distributed across 16 model-parallel devices
-- Attention heads distributed across 16 model-parallel devices  
+- Attention heads distributed across 16 model-parallel devices
 - 135GB attention matrices → ~8.4GB per device
 - Should fit comfortably within 32GB per chip on v4-256
 
@@ -190,7 +190,7 @@ model = converter.load_pretrained(cfg.model.model_type, ref=hf_ref, dtype=mp.com
 ### Key Settings for 405B Success:
 ```yaml
 trainer:
-  tensor_parallel_axes: ["mlp", "heads"]  # Pure TP: removed "embed" 
+  tensor_parallel_axes: ["mlp", "heads"]  # Pure TP: removed "embed"
   model_axis_size: 16  # Critical: 16 devices for model parallelism
   batch_axis: "batch"
   # No fsdp_axis - pure tensor parallelism approach
@@ -211,8 +211,8 @@ trainer:
 
 ## ❌ PREVIOUS ATTEMPT FAILED - CORRECT ROOT CAUSE IDENTIFIED
 
-### Analysis of new_tp.log Results 
-**Mesh Configuration**: ✅ CORRECT 
+### Analysis of new_tp.log Results
+**Mesh Configuration**: ✅ CORRECT
 - Mesh shape: `(1, 8, 16)` → `('replica', 'data', 'model')`
 - 16 devices available for MODEL axis (tensor parallelism)
 - 8 devices available for DATA axis (batch parallelism)
@@ -220,7 +220,7 @@ trainer:
 **Critical Problem Found**: ❌ `best_effort_sharding` IGNORES MODEL AXIS
 ```
 [DEBUG] mesh.devices.shape=(1, 8, 16), fsdp_axis=1, num_devices=8
-[DEBUG] Will shard axis 1 (size=16384) across 8 DATA devices  
+[DEBUG] Will shard axis 1 (size=16384) across 8 DATA devices
 [DEBUG] Final sharding: PartitionSpec(None, 'data')
 ```
 
@@ -255,25 +255,25 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
         if hax.partitioning.ResourceAxis.MODEL in mesh.axis_names:
             model_axis_idx = mesh.axis_names.index(hax.partitioning.ResourceAxis.MODEL)
             model_devices = mesh.devices.shape[model_axis_idx]
-        
+
         # Get DATA axis for fallback
         fsdp_axis = mesh.axis_names.index(hax.partitioning.ResourceAxis.DATA)
         data_devices = mesh.devices.shape[fsdp_axis]
-        
+
         # Calculate tensor size in bytes (fp32)
         tensor_size_mb = np.prod(shape) * 4 / (1024 * 1024)
-        
+
         # Use MODEL axis for large tensors when tensor parallelism is available
-        if (model_axis_idx is not None and model_devices > 1 and 
+        if (model_axis_idx is not None and model_devices > 1 and
             tensor_size_mb > 128):  # 128MB threshold
-            
+
             # Try to shard on MODEL axis first
             for i in range(len(shape) - 1, -1, -1):
                 if shape[i] % model_devices == 0:
                     axis_sharding = [None] * len(shape)
                     axis_sharding[i] = hax.partitioning.ResourceAxis.MODEL
                     return NamedSharding(mesh, PartitionSpec(*axis_sharding))
-        
+
         # Fallback to DATA axis (original FSDP behavior)
         # ... existing DATA axis logic ...
 ```
@@ -290,7 +290,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
 2. **Updated config name**: `llama_3.1_405b_hp1_token_v4_256_model16_tp_best_effort_fix`
 
 ### Expected Behavior:
-- **Large tensors** (>128MB): `PartitionSpec(None, 'model')` across 16 devices  
+- **Large tensors** (>128MB): `PartitionSpec(None, 'model')` across 16 devices
 - **Small tensors** (<128MB): `PartitionSpec(None, 'data')` across 8 devices
 - **16384×16384 matrices**: 1GB ÷ 16 = 64MB per device ✅
 - **Total 405B model**: Should fit within 32GB × 128 = 4TB total memory
@@ -298,7 +298,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
 ### Debug Output Will Show:
 ```
 [DEBUG] Large tensor detected, trying MODEL axis with 16 devices
-[DEBUG] Using MODEL axis: shard axis 1 (size=16384) across 16 MODEL devices  
+[DEBUG] Using MODEL axis: shard axis 1 (size=16384) across 16 MODEL devices
 [DEBUG] Final sharding: PartitionSpec(None, 'model')
 ```
 
@@ -306,30 +306,30 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
 
 ---
 
-## ❌ SECOND FAILURE: Model Loading Memory Allocation 
+## ❌ SECOND FAILURE: Model Loading Memory Allocation
 
 ### Analysis of best_effort_claude.log
 
 **✅ Sharding Fix WORKS Correctly**:
 - Large tensors (1024MB): `PartitionSpec(None, 'model')` across 16 devices ✅
-- Small tensors (64MB): `PartitionSpec(None, 'data')` across 8 devices ✅  
+- Small tensors (64MB): `PartitionSpec(None, 'data')` across 8 devices ✅
 - Mesh configuration perfect: `(1, 8, 16)` → `('replica', 'data', 'model')` ✅
 
 **❌ New Problem: Model Loading Memory Allocation**:
 ```
 Loading weights:  12%|█▎        | 1/8 [00:03<00:26,  3.85s/it]
-ValueError: RESOURCE_EXHAUSTED: Error allocating device buffer: 
-Attempting to allocate 104.00M. That was not possible. 
+ValueError: RESOURCE_EXHAUSTED: Error allocating device buffer:
+Attempting to allocate 104.00M. That was not possible.
 There are 15.31M free.; (0x0x0_HBM0)
 ```
 
 ### Root Cause: Loading Process Memory Bottleneck
 
-**Location**: `src/levanter/compat/hf_checkpoints.py:1130` in `_shard_best_effort`  
+**Location**: `src/levanter/compat/hf_checkpoints.py:1130` in `_shard_best_effort`
 **Function**: `jax.make_array_from_callback` during model weight loading
 **Problem**: Even with correct sharding decisions, the loading process requires temporary memory
 
-**Progress**: 
+**Progress**:
 - ✅ **Memory request reduced**: 208MB → 104MB (50% improvement from sharding fix)
 - ❌ **Still insufficient**: Device has only 15.31MB free, needs 104MB
 - ❌ **Early failure**: Only 12% of weights loaded before OOM
@@ -339,7 +339,7 @@ There are 15.31M free.; (0x0x0_HBM0)
 #### Option 1: Loading Memory Optimization 🔧
 **Target**: `src/levanter/compat/hf_checkpoints.py` loading pipeline
 **Changes needed**:
-1. **Batch loading**: Load fewer weight shards simultaneously  
+1. **Batch loading**: Load fewer weight shards simultaneously
 2. **Streaming loading**: Load and shard weights incrementally
 3. **Memory cleanup**: Force garbage collection between weight loads
 
@@ -348,7 +348,7 @@ There are 15.31M free.; (0x0x0_HBM0)
 **Rationale**: More tensors use MODEL axis (16 devices) vs DATA axis (8 devices)
 **Implementation**: Lower `tensor_size_mb > 128` to `tensor_size_mb > 32`
 
-#### Option 3: Sequential Loading 🔄  
+#### Option 3: Sequential Loading 🔄
 **Strategy**: Load model layer-by-layer instead of parallel loading
 **Benefits**: Reduces peak memory during loading phase
 **Trade-off**: Slower loading but more memory efficient
@@ -374,7 +374,7 @@ There are 15.31M free.; (0x0x0_HBM0)
 
 **Expected Impact**:
 - `shape=[1024, 16384]` = 64MB tensors → MODEL axis instead of DATA axis
-- More aggressive distribution of medium-sized tensors  
+- More aggressive distribution of medium-sized tensors
 - Reduced memory pressure during loading phase
 - Debug will show: `"Large tensor detected"` for 64MB+ tensors (vs previous 128MB+)
 
@@ -385,18 +385,18 @@ There are 15.31M free.; (0x0x0_HBM0)
 ### Analysis of 32mb.log Results
 
 **✅ MAJOR IMPROVEMENTS Achieved**:
-1. **Model loading succeeded much further**: Multiple "Loading weights: 100%" completions 
+1. **Model loading succeeded much further**: Multiple "Loading weights: 100%" completions
 2. **64MB tensors now use MODEL axis**: `shape=[1024, 16384]` → `PartitionSpec(None, 'model')` ✅
-3. **Memory allocation dramatically improved**: 
+3. **Memory allocation dramatically improved**:
    - **Previous failure**: 15.31MB free, needed 104MB
-   - **Current attempt**: 178.29MB free, needs 208MB  
+   - **Current attempt**: 178.29MB free, needs 208MB
    - **11x improvement in available memory**: 15MB → 178MB
 
 **❌ Still Failing but Much Later**:
 ```
 Loading weights:  50%|█████     | 1/2 [00:05<00:05,  5.92s/it]
-ValueError: RESOURCE_EXHAUSTED: Error allocating device buffer: 
-Attempting to allocate 208.00M. That was not possible. 
+ValueError: RESOURCE_EXHAUSTED: Error allocating device buffer:
+Attempting to allocate 208.00M. That was not possible.
 There are 178.29M free.; (0x0x0_HBM0)
 ```
 
@@ -492,7 +492,7 @@ This will give us definitive answers about whether our sharding optimizations ar
 
 **2. LOADING PATTERN IS NON-SEQUENTIAL ⚠️**
 - **16MB log**: Layer 20-21 → Layer 100 → ... → **fails at Layer 98**
-- **32MB log**: Similar random order → **fails at Layer 76**  
+- **32MB log**: Similar random order → **fails at Layer 76**
 - **191 total shards** - layers scattered across shards, not sequential loading
 
 **3. BOTH FAIL AT ~8 MINUTES WITH SIMILAR MEMORY PATTERNS**
@@ -548,9 +548,9 @@ This will give us definitive answers about whether our sharding optimizations ar
 **❌ NEW FAILURE AFTER MODEL LOADING:**
 ```
 [DEBUG] [1308.4s] Shard 191/191 loaded successfully, 2 parameters, took 5.4s
-jaxlib._jax.XlaRuntimeError: RESOURCE_EXHAUSTED: 
-Attempting to allocate 126.00G. That was not possible. 
-There are 18.92G free.; (0x0x0_HBM0): 
+jaxlib._jax.XlaRuntimeError: RESOURCE_EXHAUSTED:
+Attempting to allocate 126.00G. That was not possible.
+There are 18.92G free.; (0x0x0_HBM0):
 while running replica 0 and partition 0 of a replicated computation
 ```
 
@@ -567,12 +567,12 @@ while running replica 0 and partition 0 of a replicated computation
 
 ### Next Steps
 
-**The tensor parallelism worked perfectly for loading!** 
+**The tensor parallelism worked perfectly for loading!**
 **New bottleneck**: Model assembly/conversion after loading completes
 
 **Potential solutions**:
 1. Check if `load_from_state_dict` respects axis_mapping
-2. Investigate model conversion memory requirements  
+2. Investigate model conversion memory requirements
 3. May need different approach for model initialization vs loading
 
 ---
@@ -649,5 +649,5 @@ while running replica 0 and partition 0 of a replicated computation
 
 ## Configuration References
 - **Axis Mapping Context**: `hax.axis_mapping()` for scoped partitioning
-- **Sharding Function**: `hax.shard()` for array distribution  
+- **Sharding Function**: `hax.shard()` for array distribution
 - **JIT Integration**: `named_jit()` with axis resources for distributed compilation

@@ -17,15 +17,16 @@ import logging
 import math
 import os
 import pathlib
+import sys
 import tarfile
 import tempfile
 import time
-import fsspec
-from datetime import datetime
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import equinox as eqx
+import fsspec
 import jax
 import jax.numpy as jnp
 import jmp
@@ -34,11 +35,11 @@ import numpy as np
 from jax.experimental.multihost_utils import process_allgather
 
 import haliax as hax
+import haliax.partitioning
 from haliax.nn import log_softmax
 from haliax.partitioning import round_axis_for_partitioning
-import haliax.partitioning
-import sys
-import os
+
+
 print("=== HALIAX DEBUG IMPORT CHECK ===", file=sys.stderr, flush=True)
 print("HALIAX.PARTITIONING LOADED FROM:", haliax.partitioning.__file__, file=sys.stderr, flush=True)
 print("=== HALIAX DEBUG IMPORT CHECK ===", file=sys.stderr, flush=True)
@@ -75,6 +76,7 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+
 
 jax.config.update("jax_default_matmul_precision", "highest")
 # -----------------------------------------------------------------------------------------
@@ -203,12 +205,14 @@ def upload_hlo_dumps_to_wandb():
         # Clean up temporary file
         os.unlink(tar_path)
 
+
 def get_full_output_path(cfg: EvalCarelessLmConfig, filename: str) -> str:
     """Construct full output path by joining base path with filename."""
     if cfg.output_base_path.endswith("/"):
         return cfg.output_base_path + filename
     else:
         return cfg.output_base_path + "/" + filename
+
 
 def save_plot_with_fsspec(fig, output_path: str, dpi: int = 300):
     """Save matplotlib figure using fsspec for cloud storage compatibility."""
@@ -221,6 +225,7 @@ def save_plot_with_fsspec(fig, output_path: str, dpi: int = 300):
         os.unlink(tmp_path)
     else:
         fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
 
 def save_data_with_fsspec(data, output_path: str, **kwargs):
     """Save numpy data using fsspec for cloud storage compatibility."""
@@ -239,6 +244,7 @@ def save_data_with_fsspec(data, output_path: str, **kwargs):
             np.savez(output_path, **kwargs)
         else:
             np.save(output_path, data)
+
 
 def main(cfg: EvalCarelessLmConfig):
     global RUN_START_TIME
@@ -431,19 +437,15 @@ def main(cfg: EvalCarelessLmConfig):
     histogram_book_title = f"{cfg.book_title} - {model_name} ({mode_suffix})"
     if cfg.histogram_linear:
         hist_stats = create_pz_histogram_linear(
-            pz_list=pz_list, threshold=cfg.pz_threshold,
-            save_path=full_histogram_path, book_title=histogram_book_title
+            pz_list=pz_list, threshold=cfg.pz_threshold, save_path=full_histogram_path, book_title=histogram_book_title
         )
     else:
         hist_stats = create_pz_histogram(
-            pz_list=pz_list, threshold=cfg.pz_threshold,
-            save_path=full_histogram_path, book_title=histogram_book_title
+            pz_list=pz_list, threshold=cfg.pz_threshold, save_path=full_histogram_path, book_title=histogram_book_title
         )
     if hist_stats:
         logger.info("P_z histogram statistics: %s", hist_stats)
-        levanter.tracker.current_tracker().log_artifact(
-            full_histogram_path, name=cfg.histogram_path, type="plot"
-        )
+        levanter.tracker.current_tracker().log_artifact(full_histogram_path, name=cfg.histogram_path, type="plot")
 
     # Character- or token-level max-P(z) curve --------------------------------
     if cfg.token_mode:
@@ -488,16 +490,16 @@ def main(cfg: EvalCarelessLmConfig):
         pz_values=np.array(pz_list),
         span_ranges=np.array(span_ranges),
         max_pz=max_vals,
-        config_info=np.array([
-            cfg.chunk_size,
-            cfg.prompt_tokens,
-            cfg.cursor_inc_tokens if cfg.token_mode else cfg.cursor_inc_chars,
-            len(token_ids) if cfg.token_mode else len(raw_text),
-        ]),
+        config_info=np.array(
+            [
+                cfg.chunk_size,
+                cfg.prompt_tokens,
+                cfg.cursor_inc_tokens if cfg.token_mode else cfg.cursor_inc_chars,
+                len(token_ids) if cfg.token_mode else len(raw_text),
+            ]
+        ),
     )
-    levanter.tracker.current_tracker().log_artifact(
-        full_pz_data_path, name=cfg.pz_data_path, type="data"
-    )
+    levanter.tracker.current_tracker().log_artifact(full_pz_data_path, name=cfg.pz_data_path, type="data")
     # ------------------------------------------------------------------
     # Visualization: show a *single-row* heat-map so each character
     # column is a vertical bar whose colour encodes max-P(z).
@@ -524,19 +526,14 @@ def main(cfg: EvalCarelessLmConfig):
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.04)
     cbar.set_label("Max. probability")
 
-
     plt.tight_layout()
     save_plot_with_fsspec(fig, full_plot_path, dpi=300)
-    levanter.tracker.current_tracker().log_artifact(
-        full_plot_path, name=cfg.plot_path, type="plot"
-    )
+    levanter.tracker.current_tracker().log_artifact(full_plot_path, name=cfg.plot_path, type="plot")
 
     npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
     full_npy_path = get_full_output_path(cfg, npy_filename)
     save_data_with_fsspec(max_vals, full_npy_path)
-    levanter.tracker.current_tracker().log_artifact(
-        full_npy_path, name=npy_filename, type="array"
-    )
+    levanter.tracker.current_tracker().log_artifact(full_npy_path, name=npy_filename, type="array")
 
     upload_hlo_dumps_to_wandb()
     levanter.tracker.current_tracker().finish()

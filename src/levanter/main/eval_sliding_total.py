@@ -13,9 +13,9 @@ import logging
 import math
 import os
 import pathlib
+import tarfile
 import tempfile
 import time
-import tarfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -49,6 +49,7 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ class EvalSlidingTotalConfig:
 # Helpers copied from eval_careless_lm
 # ---------------------------------------------------------------------------
 
+
 def upload_hlo_dumps_to_wandb():
     """Upload HLO dumps created during the run to WandB."""
 
@@ -158,54 +160,39 @@ def upload_hlo_dumps_to_wandb():
                 arcname = os.path.relpath(filepath, os.path.dirname(xla_dump_dir))
                 tar.add(filepath, arcname=arcname)
 
-        levanter.tracker.current_tracker().log_artifact(
-            tar_path, name="hlo_dumps.tar.gz", type="hlo_analysis"
-        )
+        levanter.tracker.current_tracker().log_artifact(tar_path, name="hlo_dumps.tar.gz", type="hlo_analysis")
     finally:
         os.unlink(tar_path)
 
 
-def get_full_output_path(cfg: EvalSlidingTotalConfig, filename: str) -> str:
-    if cfg.output_base_path.endswith("/"):
-        return cfg.output_base_path + filename
-    else:
-        return cfg.output_base_path + "/" + filename
+def save_plot_with_wandb(fig, filename: str, dpi: int = 300):
+    """Save plot using W&B tracker only."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+        fig.savefig(tmp_file.name, dpi=dpi, bbox_inches="tight")
+        tmp_path = tmp_file.name
+
+    levanter.tracker.current_tracker().log_artifact(tmp_path, name=filename, type="plot")
+    os.unlink(tmp_path)
 
 
-def save_plot_with_fsspec(fig, output_path: str, dpi: int = 300):
-    if output_path.startswith("gs://"):
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
-            fig.savefig(tmp_file.name, dpi=dpi, bbox_inches="tight")
-            tmp_path = tmp_file.name
-        with fsspec.open(tmp_path, "rb") as local_file, fsspec.open(output_path, "wb") as remote_file:
-            remote_file.write(local_file.read())
-        os.unlink(tmp_path)
-    else:
-        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
-
-
-def save_data_with_fsspec(data, output_path: str, **kwargs):
-    if output_path.startswith("gs://"):
-        suffix = pathlib.Path(output_path).suffix or ".npz"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
-            if suffix == ".npz":
-                np.savez(tmp_file.name, **kwargs)
-            else:
-                np.save(tmp_file.name, data)
-            tmp_path = tmp_file.name
-        with fsspec.open(tmp_path, "rb") as local_file, fsspec.open(output_path, "wb") as remote_file:
-            remote_file.write(local_file.read())
-        os.unlink(tmp_path)
-    else:
-        if output_path.endswith(".npz"):
-            np.savez(output_path, **kwargs)
+def save_data_with_wandb(data, filename: str, **kwargs):
+    """Save data using W&B tracker only."""
+    suffix = pathlib.Path(filename).suffix or ".npz"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+        if suffix == ".npz":
+            np.savez(tmp_file.name, **kwargs)
         else:
-            np.save(output_path, data)
+            np.save(tmp_file.name, data)
+        tmp_path = tmp_file.name
+
+    levanter.tracker.current_tracker().log_artifact(tmp_path, name=filename, type="data")
+    os.unlink(tmp_path)
 
 
 # ---------------------------------------------------------------------------
 # Per-book evaluation
 # ---------------------------------------------------------------------------
+
 
 def evaluate_book(
     cfg: EvalSlidingTotalConfig,
@@ -217,10 +204,6 @@ def evaluate_book(
     model_name: str,
 ):
     """Run careless evaluation on a single book using a pre-loaded model."""
-
-    full_plot_path = get_full_output_path(cfg, cfg.plot_path)
-    full_histogram_path = get_full_output_path(cfg, cfg.histogram_path)
-    full_pz_data_path = get_full_output_path(cfg, cfg.pz_data_path)
 
     raw_text = pathlib.Path(cfg.txt_path).read_text()
 
@@ -249,9 +232,7 @@ def evaluate_book(
         if len(ids) < Pos.size:
             ids = ids + [pad_id] * (Pos.size - len(ids))
         tokens_named = hax.named(np.array(ids, dtype=np.int32), Pos)
-        ex = LmExample.from_prompt_and_completion(
-            Pos, tokens_named, prompt_length=cfg.prompt_tokens, ignore_id=pad_id
-        )
+        ex = LmExample.from_prompt_and_completion(Pos, tokens_named, prompt_length=cfg.prompt_tokens, ignore_id=pad_id)
         examples.append(ex)
         if cfg.token_mode:
             span_ranges_list.append((chunk["start_token"], chunk["end_token"]))
@@ -326,25 +307,29 @@ def evaluate_book(
 
     mode_suffix = "Token Mode" if cfg.token_mode else "Character Mode"
     histogram_book_title = f"{cfg.book_title} - {model_name} ({mode_suffix})"
+
+    # Create histogram and save via W&B only
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+        temp_histogram_path = tmp_file.name
+
     if cfg.histogram_linear:
         hist_stats = create_pz_histogram_linear(
             pz_list=pz_list,
             threshold=cfg.pz_threshold,
-            save_path=full_histogram_path,
+            save_path=temp_histogram_path,
             book_title=histogram_book_title,
         )
     else:
         hist_stats = create_pz_histogram(
             pz_list=pz_list,
             threshold=cfg.pz_threshold,
-            save_path=full_histogram_path,
+            save_path=temp_histogram_path,
             book_title=histogram_book_title,
         )
 
     if hist_stats:
-        levanter.tracker.current_tracker().log_artifact(
-            full_histogram_path, name=cfg.histogram_path, type="plot"
-        )
+        levanter.tracker.current_tracker().log_artifact(temp_histogram_path, name=cfg.histogram_path, type="plot")
+    os.unlink(temp_histogram_path)
 
     if cfg.token_mode:
         seq_len = len(token_ids)
@@ -381,9 +366,9 @@ def evaluate_book(
             step=0,
         )
 
-    save_data_with_fsspec(
+    save_data_with_wandb(
         None,
-        full_pz_data_path,
+        cfg.pz_data_path,
         pz_values=np.array(pz_list),
         span_ranges=np.array(span_ranges),
         max_pz=max_vals,
@@ -395,9 +380,6 @@ def evaluate_book(
                 len(token_ids) if cfg.token_mode else len(raw_text),
             ]
         ),
-    )
-    levanter.tracker.current_tracker().log_artifact(
-        full_pz_data_path, name=cfg.pz_data_path, type="data"
     )
 
     fig, ax = plt.subplots(figsize=(14, 2))
@@ -422,22 +404,16 @@ def evaluate_book(
     cbar.set_label("Max. probability")
 
     plt.tight_layout()
-    save_plot_with_fsspec(fig, full_plot_path, dpi=300)
-    levanter.tracker.current_tracker().log_artifact(
-        full_plot_path, name=cfg.plot_path, type="plot"
-    )
+    save_plot_with_wandb(fig, cfg.plot_path, dpi=300)
 
     npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
-    full_npy_path = get_full_output_path(cfg, npy_filename)
-    save_data_with_fsspec(max_vals, full_npy_path)
-    levanter.tracker.current_tracker().log_artifact(
-        full_npy_path, name=npy_filename, type="array"
-    )
+    save_data_with_wandb(max_vals, npy_filename)
 
 
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
+
 
 def main(cfg: EvalSlidingTotalConfig):
     """Run careless suffix evaluation for each book listed in ``cfg.books``.
@@ -491,9 +467,7 @@ def main(cfg: EvalSlidingTotalConfig):
             converter = converter.replaced(reference_checkpoint=hf_ref, tokenizer=tokenizer)
             if cfg.use_hf_model_config:
                 cfg.model = converter.config_from_hf_config(converter.default_hf_config)
-            model = converter.load_pretrained(
-                cfg.model.model_type, ref=hf_ref, dtype=mp.compute_dtype
-            )
+            model = converter.load_pretrained(cfg.model.model_type, ref=hf_ref, dtype=mp.compute_dtype)
 
         def sequence_log_prob(mod: LmHeadModel, batch: LmExample):
             mod = mp.cast_to_compute(mod)
@@ -535,12 +509,7 @@ def main(cfg: EvalSlidingTotalConfig):
         if book_cfg.pz_data_path is None:
             book_cfg.pz_data_path = f"pz_data_{book_cfg.book_title}.npz"
 
-        ts = datetime.datetime.now().strftime("%Y%m%d%H%M")
-        base = cfg.output_base_path.rstrip("/")
-        book_cfg.output_base_path = f"{base}/{book_cfg.book_title}/{ts}/"
-
-        fs, path = fsspec.core.url_to_fs(book_cfg.output_base_path)
-        fs.makedirs(path, exist_ok=True)
+        # No filesystem directory needed - all files saved via W&B
 
         evaluate_book(book_cfg, model, tokenizer, sequence_log_prob, pad_id, Pos, model_name)
 
@@ -550,4 +519,3 @@ def main(cfg: EvalSlidingTotalConfig):
 
 if __name__ == "__main__":
     levanter.config.main(main)()
-

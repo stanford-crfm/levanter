@@ -23,9 +23,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-import fsspec
-
 import equinox as eqx
+import fsspec
 import jax
 import jax.numpy as jnp
 import jmp
@@ -56,6 +55,7 @@ from levanter.models.gpt2 import Gpt2Config
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+
 
 jax.config.update("jax_default_matmul_precision", "highest")
 # -----------------------------------------------------------------------------------------
@@ -200,12 +200,12 @@ def save_plot_with_fsspec(fig, output_path: str, dpi: int = 300):
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
             fig.savefig(tmp_file.name, dpi=dpi, bbox_inches="tight")
             tmp_path = tmp_file.name
-        
+
         # Copy to GCS using fsspec
         with fsspec.open(tmp_path, "rb") as local_file:
             with fsspec.open(output_path, "wb") as remote_file:
                 remote_file.write(local_file.read())
-        
+
         # Clean up temp file
         os.unlink(tmp_path)
     else:
@@ -223,12 +223,12 @@ def save_data_with_fsspec(data, output_path: str, **kwargs):
             else:
                 np.save(tmp_file.name, data)
             tmp_path = tmp_file.name
-        
+
         # Copy to GCS using fsspec
         with fsspec.open(tmp_path, "rb") as local_file:
             with fsspec.open(output_path, "wb") as remote_file:
                 remote_file.write(local_file.read())
-        
+
         # Clean up temp file
         os.unlink(tmp_path)
     else:
@@ -247,7 +247,7 @@ def main(cfg: EvalCarelessLmConfig):
     start_time = time.time()
     levanter.initialize(cfg)
     print(f"[TIMING] Levanter initialize took {time.time() - start_time:.3f}s", flush=True)
-    
+
     # Extract model name from HF path for plot titles
     model_name = "Unknown Model"
     if cfg.initialize_from_hf:
@@ -260,7 +260,7 @@ def main(cfg: EvalCarelessLmConfig):
     elif cfg.hf_checkpoint:
         # Handle RepoRef objects
         model_name = str(cfg.hf_checkpoint).split("/")[-1].lower().replace("-", "-")
-    
+
     # Construct full output paths
     full_plot_path = get_full_output_path(cfg, cfg.plot_path)
     full_histogram_path = get_full_output_path(cfg, cfg.histogram_path)
@@ -323,7 +323,7 @@ def main(cfg: EvalCarelessLmConfig):
                 return jnp.exp(lp.array)
 
         sequence_log_prob = hax.named_jit(sequence_log_prob, out_axis_resources=None)
-        
+
     print(f"[TIMING] Model loading took {time.time() - start_time:.3f}s", flush=True)
 
     # Data stream ---------------------------------------------------------------
@@ -404,7 +404,7 @@ def main(cfg: EvalCarelessLmConfig):
     example_offset = 0
 
     iterator = batches if cfg.use_dataloader else batches(examples_iter)
-    
+
     # Timing accumulators
     forward_time_total = 0.0
     transfer_time_total = 0.0
@@ -424,26 +424,30 @@ def main(cfg: EvalCarelessLmConfig):
         pz_device = sequence_log_prob(model, batch_ex)
         forward_time = time.time() - forward_start
         forward_time_total += forward_time
-        
+
         # Time host-device transfer
         transfer_start = time.time()
         pz = process_allgather(pz_device)
         transfer_time = time.time() - transfer_start
         transfer_time_total += transfer_time
-        
+
         pz_list.extend(np.array(pz).tolist())
         span_ranges.extend(ranges)
         batch_count += 1
 
         done = min((idx + 1) * batch_size, total_chunks)
         pct = 100 * done / total_chunks
-        
+
         # Print detailed timing every 10 batches
         if (idx + 1) % 10 == 0 or idx == 0:
             avg_forward = forward_time_total / batch_count
             avg_transfer = transfer_time_total / batch_count
-            print(f"[TIMING] Batch {idx+1}: Forward={forward_time:.3f}s, Transfer={transfer_time:.3f}s, Avg: Forward={avg_forward:.3f}s, Transfer={avg_transfer:.3f}s", flush=True)
-        
+            print(
+                f"[TIMING] Batch {idx+1}: Forward={forward_time:.3f}s, Transfer={transfer_time:.3f}s, Avg:"
+                f" Forward={avg_forward:.3f}s, Transfer={avg_transfer:.3f}s",
+                flush=True,
+            )
+
         print(f"Batch {idx+1}/{total_batches} – {done}/{total_chunks} windows ({pct:.1f} %)", flush=True)
         levanter.tracker.log(
             {
@@ -458,9 +462,19 @@ def main(cfg: EvalCarelessLmConfig):
 
     eval_total_time = time.time() - eval_start_time
     print(f"[TIMING] Evaluation loop completed in {eval_total_time:.3f}s", flush=True)
-    print(f"[TIMING] Total forward time: {forward_time_total:.3f}s ({forward_time_total/eval_total_time*100:.1f}%)", flush=True)
-    print(f"[TIMING] Total transfer time: {transfer_time_total:.3f}s ({transfer_time_total/eval_total_time*100:.1f}%)", flush=True)
-    print(f"[TIMING] Average per batch: Forward={forward_time_total/batch_count:.3f}s, Transfer={transfer_time_total/batch_count:.3f}s", flush=True)
+    print(
+        f"[TIMING] Total forward time: {forward_time_total:.3f}s ({forward_time_total/eval_total_time*100:.1f}%)",
+        flush=True,
+    )
+    print(
+        f"[TIMING] Total transfer time: {transfer_time_total:.3f}s ({transfer_time_total/eval_total_time*100:.1f}%)",
+        flush=True,
+    )
+    print(
+        f"[TIMING] Average per batch: Forward={forward_time_total/batch_count:.3f}s,"
+        f" Transfer={transfer_time_total/batch_count:.3f}s",
+        flush=True,
+    )
 
     # Extraction statistics -----------------------------------------------------
     print(f"[TIMING] Starting extraction statistics at {time.time():.3f}", flush=True)
