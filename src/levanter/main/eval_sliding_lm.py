@@ -10,7 +10,6 @@ import jmp
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
-from jax import lax
 from jax.experimental.multihost_utils import process_allgather
 
 import haliax as hax
