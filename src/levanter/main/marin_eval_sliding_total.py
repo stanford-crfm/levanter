@@ -382,7 +382,6 @@ def evaluate_book(
         )
 
     # Save pz data - choose method based on gcp_log flag
-    main_cfg = None  # We need to pass the main config to access gcp_log
     if main_cfg.gcp_log:
         save_data_to_gcp(
             None,
