@@ -191,7 +191,7 @@ def build_docker(docker_file, image_name, tag, build_args=None) -> str:
         "--platform=linux/amd64",
         "--progress=plain",
         # "--output=type=docker",  # Force consistent output format
-        #"--no-cache",  # Force rebuild to ensure local haliax is installed
+        "--no-cache",  # Force rebuild to ensure local haliax is installed
         "-t",
         f"{image_name}:{tag}",
     ]
