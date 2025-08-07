@@ -25,7 +25,7 @@ from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
 
 from .normalization import LayerNormConfigBase
-from .rotary import RotaryEmbeddingsConfig
+from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
 
 
 class AttentionBackend(Enum):
@@ -1114,6 +1114,11 @@ class AttentionConfig:
         return Axis("head_size", self.head_size)
 
     @property
+    def QHeadsPerGroup(self) -> Axis:
+        """Axis for query heads per group."""
+        return Axis("q_heads_per_group", self.q_heads_per_group)
+
+    @property
     def use_flash_attention(self) -> bool:
         """Whether to use flash attention based on the backend."""
         if self.attn_backend is None:
@@ -1135,32 +1140,44 @@ class Attention(eqx.Module):
     o_proj: hnn.Linear
     q_norm: Optional[LayerNormBase] = None
     k_norm: Optional[LayerNormBase] = None
+    rot_embs: Optional[RotaryEmbeddings] = eqx.field(default=None)
 
     @staticmethod
     def init(config: AttentionConfig, *, key) -> "Attention":
         use_bias = config.use_bias
-        Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.q_heads_per_group)
-        HeadSize = hax.Axis("head_size", config.head_size)
-
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, HeadSize), key=k_q, use_bias=use_bias, out_first=True
+            In=config.Embed,
+            Out=(config.KVHeads, config.QHeadsPerGroup, config.HeadSize),
+            key=k_q,
+            use_bias=use_bias,
+            out_first=True,
         )
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_k, use_bias=use_bias, out_first=True)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_v, use_bias=use_bias, out_first=True)
-        o_proj = hnn.Linear.init(In=(config.Heads, HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True)
+        k_proj = hnn.Linear.init(
+            In=config.Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=use_bias, out_first=True
+        )
+        v_proj = hnn.Linear.init(
+            In=(config.Embed), Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
+        )
+        o_proj = hnn.Linear.init(
+            In=(config.Heads, config.HeadSize), Out=config.Embed, key=k_o, use_bias=use_bias, out_first=True
+        )
 
         q_norm = None
         k_norm = None
         if config.qk_norm is not None:
-            q_norm = config.qk_norm.build(HeadSize)
-            k_norm = config.qk_norm.build(HeadSize)
+            q_norm = config.qk_norm.build(config.HeadSize)
+            k_norm = config.qk_norm.build(config.HeadSize)
 
-        return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm)
+        # Build rotary embeddings once during initialization if configured
+        rot_embs = config.rope.build(config.HeadSize) if config.rope is not None else None
+
+        return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm, rot_embs)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
 
         # Project to query, key, value
@@ -1182,9 +1199,11 @@ class Attention(eqx.Module):
         v = v.rearrange((..., "kv_heads", "position", "head_size"))
 
         # Apply rotary position embeddings if configured
-        if self.config.rope is not None:
-            rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
-            q, k = rot_embs(self.config.HeadSize, q, k)
+        if self.rot_embs is not None:
+            if pos_ids is None:
+                pos_ids = hax.arange(x.resolve_axis("position"), dtype=jnp.int32)
+            q = self.rot_embs(q, pos_ids)
+            k = self.rot_embs(k, pos_ids)
 
         # Rename position axis for attention
         k = k.rename({"position": "key_position"})

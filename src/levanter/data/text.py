@@ -434,7 +434,7 @@ class SupervisedLmDatasetFormat(LmDatasetFormatBase):
     mask_inputs: bool = True
 
 
-@dataclass
+@dataclass(frozen=True)
 class LmDatasetSourceConfigBase(abc.ABC):
     """This class represents a dataset source with URLs or hf name/id."""
 
@@ -457,7 +457,7 @@ class LmDatasetSourceConfigBase(abc.ABC):
         return load_lm_dataset_cache(os.path.join(base_cache, split), self.format, tokenizer, enforce_eos=enforce_eos)
 
 
-@dataclass
+@dataclass(frozen=True)
 class HfDatasetSourceConfig(LmDatasetSourceConfigBase):
     """
     This class represents a dataset source with hf id and optional name.
@@ -485,7 +485,7 @@ class HfDatasetSourceConfig(LmDatasetSourceConfigBase):
             return ds
 
 
-@dataclass
+@dataclass(frozen=True)
 class UrlDatasetSourceConfig(LmDatasetSourceConfigBase):
     train_urls: list[str] = ()  # type: ignore
     validation_urls: list[str] = ()  # type:ignore
@@ -515,7 +515,7 @@ class UrlDatasetSourceConfig(LmDatasetSourceConfigBase):
         return urls
 
 
-@dataclass
+@dataclass(frozen=True)
 class LMTaskConfig(abc.ABC):
     tokenizer: str = "gpt2"
     vocab_size: Optional[int] = None  # if using the passthrough tokenizer, this is required
@@ -975,7 +975,7 @@ def mk_chat_sft_dataset(
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
-@dataclass
+@dataclass(frozen=True)
 class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
@@ -1094,12 +1094,12 @@ class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
         return build_lm_dataset_cache(cache_dir, source, format, tokenizer, options, enforce_eos, monitors)
 
 
-@dataclass
+@dataclass(frozen=True)
 class UrlSingleDatasetLMConfig(SingleDatasetLMConfigBase, UrlDatasetSourceConfig):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class HfSingleDatasetLMConfig(SingleDatasetLMConfigBase, HfDatasetSourceConfig):
     pass
 
@@ -1108,7 +1108,7 @@ SingleDatasetLMConfig: TypeAlias = UrlSingleDatasetLMConfig | HfSingleDatasetLMC
 LMDatasetSourceConfig: TypeAlias = UrlDatasetSourceConfig | HfDatasetSourceConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class LMMixtureDatasetConfig(LMTaskConfig):
     """A mixture of language model datasets that supports dynamic weight changes during training.
 
@@ -1766,6 +1766,25 @@ class SingleTurnChatProcessor(BatchProcessor[dict, ProcessedSupervisedDict]):
             "vocab_size": len(self.tokenizer),
             "messages_field": self.messages_field,
         }
+
+
+def cached_token_count(cache_path: str, field: str = "input_ids") -> int:
+    """Return the total number of tokens stored in a finished :class:`TreeCache`.
+
+    This simply loads the cache and reads the ``data_size`` for ``field``.  It
+    assumes the cache contains the given field of token ids and that the cache
+    is already finished.
+
+    Args:
+        cache_path: Path to the on-disk cache directory.
+        field: Name of the field containing token ids. Defaults to ``"input_ids"``.
+
+    Returns:
+        The total number of tokens in the cache.
+    """
+
+    cache = TreeCache.load(cache_path, {field: np.zeros((0,), dtype=np.int32)})
+    return cache.store.tree[field].data_size
 
 
 def count_corpus_sizes(config: LMMixtureDatasetConfig | SingleDatasetLMConfig, prefix: str = "data/stats/") -> dict:

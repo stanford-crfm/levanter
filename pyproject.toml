@@ -1,10 +1,14 @@
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.7.19,<0.9.0"]
+build-backend = "uv_build"
 
 [project]
 name = "levanter"
 version = "1.2"
+description = "Scalable Training for Foundation Models with Named Tensors and JAX"
+readme = "README.md"
+requires-python = ">=3.10"
+
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
     { name = "Jason Wang", email = "jsywang@cs.stanford.edu" },
@@ -13,9 +17,7 @@ authors = [
     { name = "Will Held" },
     { name = "Virginia Adams" },
 ]
-description = "Scalable Training for Foundation Models with Named Tensors and JAX"
-readme = "README.md"
-requires-python = ">=3.10"
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
@@ -24,6 +26,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
 ]
+
 dependencies = [
     "haliax>=1.4.dev351",
     "equinox>=0.11.7,!=0.12.0",
@@ -35,7 +38,7 @@ dependencies = [
     "draccus>=0.11.5",
     "pyarrow>=11.0.0",
     "zstandard>=0.18.0",
-    "datasets>=3.1.0,<4.0",
+    "datasets>=3.1.0,<5.0",
     "gcsfs>=2024.2,<2026",
     "braceexpand>=0.1.7",
     "jmp>=0.0.3",
@@ -54,38 +57,69 @@ dependencies = [
     "tqdm-loggable>=0.2",
     "deepdiff",
     "lenses",
-    "jinja2"   # needed for apply_chat_template
-    #    "lm-eval==0.4.2",
-    #    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+  "jinja2",  # needed for apply_chat_template
+  "protobuf<7",  # causes issues with ray if newer
+  # "lm-eval==0.4.2",
+  # "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/stanford-crfm/levanter"
+Homepage = "https://github.com/stanford-crfm/levanter"
 "Bug Tracker" = "https://github.com/stanford-crfm/levanter/issues"
 
-[tool.black]
-line-length = 119
-target-version = ["py310"]
-preview = true
+[project.optional-dependencies]
+gpu = ["jax[cuda12]>=0.5"]
+tpu = ["jax[tpu]>=0.5"]
+torch_test = [
+  "torch>=2.7.0",
+  "peft>=0.12.0",
+]
 
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-lines_after_imports = 2
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
-line_length = 119
-src_paths = ["src", "tests"]
-known_haliax = ["haliax"]
-sections = [
-    "FUTURE",
-    "STDLIB",
-    "THIRDPARTY",
-    "HALIAX",
-    "FIRSTPARTY",
-    "LOCALFOLDER",
+[dependency-groups]
+test = [
+  "pytest",
+  "pytest-forked",
+  "pytest-asyncio",
+  "soundfile",
+  "librosa",
+  "tensorboardX>=2.6",
+  "chex>=0.1.86",
+]
+
+docs = [
+  "mkdocs>=1.4.3",
+  "mkdocs-material>=7.3.3",
+  "mkdocstrings>=0.22.0",
+  "mkdocs-literate-nav>=0.6.0",
+  "mkdocs-macros-plugin>=0.7.0",
+  "mkdocstrings-python>=1.1.2",
+  "mkdocs-include-markdown-plugin",
+  "pymdown-extensions",
+  "pygments",
+]
+
+dev = [
+  "pygments",
+  "pre-commit",
+]
+
+[tool.uv]
+default-groups = ["test", "docs", "dev"]
+conflicts = [
+  [
+    { extra = "gpu" },
+    { extra = "tpu" },
+  ],
+]  # Never solve for both GPU and TPU at once
+
+[tool.ruff]
+line-length = 119
+target-version = "py310"
+extend-exclude = ["scripts/"]
+
+[tool.ruff.lint]
+ignore = [
+  "E203", "E501", "W605", "F821", "E266", "E722", "E731", "E741"
 ]
 
 [tool.mypy]
@@ -103,18 +137,3 @@ markers = [
     "ray: marks tests that require Ray (deselect with '-m \"not ray\"')",
 ]
 asyncio_default_fixture_loop_scope = "function"
-
-[project.optional-dependencies]
-test = [
-    "pytest",
-    "pytest-forked",
-    "pytest-asyncio",
-    "flake8",
-    "soundfile",
-    "librosa",
-    "tensorboardX>=2.6",
-]
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["levanter", "levanter.*"]

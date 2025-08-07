@@ -17,7 +17,7 @@ from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
 from levanter.data.text import LMMixtureDatasetConfig, SingleDatasetLMConfig, UrlSingleDatasetLMConfig
 from levanter.eval import TaggedEvaluator, eval_model
-from levanter.models.gpt2 import Gpt2Config
+from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
@@ -36,8 +36,8 @@ class EvalLmConfig:
     """If set, load the model weights from this HF checkpoint."""
     use_hf_model_config: bool = False
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    data: SingleDatasetLMConfig | LMMixtureDatasetConfig = field(default_factory=UrlSingleDatasetLMConfig)
-    model: LmConfig = field(default_factory=Gpt2Config)
+    data: SingleDatasetLMConfigBase | LMMixtureDatasetConfig = field(default_factory=SingleDatasetLMConfigBase)
+    model: LmConfig = field(default_factory=LlamaConfig)
 
     eval_on_train: bool = False
 

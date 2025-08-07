@@ -17,7 +17,7 @@ from levanter.utils.jax_utils import leaf_key_paths
 
 
 @OptimizerConfig.register_subclass("scion")
-@dataclass
+@dataclass(frozen=True)
 class ScionConfig(OptimizerConfig):
     """
     Scion optimizer configuration

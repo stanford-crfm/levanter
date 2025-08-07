@@ -34,10 +34,8 @@ def setup_ray_tpu_tests():
     if tpu_v4_8_head_count < 1:
         pytest.skip("No TPU-v4-8-head resources available", allow_module_level=True)
 
-    _TPU_AVAILABLE = True  # At least one TPU is available
-
-    if tpu_v4_8_head_count >= 2:
-        _MULTISLICE_POSSIBLE = True
+    _TPU_AVAILABLE = True
+    _MULTISLICE_POSSIBLE = tpu_v4_8_head_count >= 2
 
     yield
 
