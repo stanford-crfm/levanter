@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Type
 
 import equinox as eqx
-import jax.numpy as jnp
 import jax.random as jrandom
 
 import haliax as hax
@@ -14,7 +13,7 @@ from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.layers.attention import Attention, AttentionConfig, AttentionMask, dot_product_attention
+from levanter.layers.attention import Attention, AttentionConfig, AttentionMask
 from levanter.layers.rotary import RotaryEmbeddingsConfig
 from levanter.models.llama import LlamaConfig, LlamaEmbedding, LlamaLMHeadModel, LlamaMlp, LlamaTransformer
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -135,81 +134,6 @@ class QwenConfig(LlamaConfig):
         )
 
 
-# Modified attention class for Qwen
-class QwenAttention(eqx.Module):
-    config: QwenConfig = eqx.field(static=True)
-    q_proj: hnn.Linear
-    k_proj: hnn.Linear
-    v_proj: hnn.Linear
-    o_proj: hnn.Linear
-
-    @staticmethod
-    def init(config: QwenConfig, *, key) -> "QwenAttention":
-        Embed = config.Embed
-        QHeadsPerGroup = hax.Axis("q_heads_per_group", config.num_heads // config.num_kv_heads)
-
-        k_q, k_k, k_v, k_o = jrandom.split(key, 4)
-        q_proj = hnn.Linear.init(
-            In=Embed,
-            Out=(config.KVHeads, QHeadsPerGroup, config.HeadSize),
-            key=k_q,
-            use_bias=True,  # Qwen always uses bias in attention
-            out_first=True,
-        )
-        k_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_k, use_bias=True, out_first=True
-        )
-        v_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=True, out_first=True
-        )
-        o_proj = hnn.Linear.init(
-            In=(config.Heads, config.HeadSize),
-            Out=Embed,
-            key=k_o,
-            use_bias=False,  # Qwen doesn't use bias in o_proj
-            out_first=True,
-        )
-        return QwenAttention(config, q_proj, k_proj, v_proj, o_proj)
-
-    @named_call
-    def __call__(
-        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], layer_idx: int = 0, *, key=None
-    ) -> NamedArray:
-        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
-
-        # QKV projections
-        q = self.q_proj(x, key=key_q).rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = self.k_proj(x, key=key_k).rearrange((..., "kv_heads", "position", "head_size"))
-        v = self.v_proj(x, key=key_v).rearrange((..., "kv_heads", "position", "head_size"))
-
-        # Apply rotary embeddings
-        rot_embs = self.config.rope.build(self.config.HeadSize, q.resolve_axis("position"))
-        q, k = rot_embs(self.config.HeadSize, q, k)
-
-        k = k.rename({"position": "key_position"})
-        v = v.rename({"position": "key_position"})
-
-        # Perform attention
-        attn_output = dot_product_attention(
-            "position",
-            "key_position",
-            "head_size",
-            q,
-            k,
-            v,
-            mask,
-            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            attn_backend=self.config.attn_backend,
-            flash_block_size=self.config.flash_attention_block_size,
-        )
-
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
-        attn_output = attn_output.astype(x.dtype)
-
-        attn_output = self.o_proj(attn_output, key=key_o)
-        return attn_output
-
-
 # Modified decoder layer for Qwen
 class QwenDecoderLayer(eqx.Module):
     config: QwenConfig = eqx.field(static=True)
@@ -236,7 +160,9 @@ class QwenDecoderLayer(eqx.Module):
         return QwenDecoderLayer(config, attn, mlp, ln_1, ln_2)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
 
         # Apply sliding window attention if configured and past max_window_layers
@@ -247,7 +173,7 @@ class QwenDecoderLayer(eqx.Module):
 
         residual = x
         x = self.input_layernorm(x)
-        attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
+        attn_output = self.self_attn(x=x, mask=mask, key=k_attn, pos_ids=pos_ids)
         x = residual + attn_output
 
         residual = x
@@ -280,6 +206,15 @@ class QwenTransformer(LlamaTransformer):
         ln_f = config.mk_LayerNorm(config.Embed)
         return QwenTransformer(config, layers, ln_f)
 
+    @named_call
+    def __call__(
+        self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
+        keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
+        x = self.layers.fold(x, mask=attn_mask, key=keys, pos_ids=pos_ids)
+        x = self.norm(x)
+        return x
+
 
 # Modified LM head model for Qwen
 class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization):
@@ -296,7 +231,12 @@ class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization)
         return self.embeddings.Vocab
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         """
         Compute the activations for the next token in a sequence.
@@ -310,7 +250,7 @@ class QwenLMHeadModel(LmHeadModel[QwenConfig], ModuleWithStateDictSerialization)
 
         """
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=key)
+        x = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
 
         return x
 

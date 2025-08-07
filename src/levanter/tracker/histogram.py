@@ -11,7 +11,6 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from jaxtyping import ArrayLike, Scalar
 
-import haliax
 import haliax as hax
 from haliax import NamedArray
 

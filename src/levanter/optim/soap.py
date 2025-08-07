@@ -24,7 +24,7 @@ from levanter.optim.config import OptimizerConfig
 
 
 @OptimizerConfig.register_subclass("soap")
-@dataclass
+@dataclass(frozen=True)
 class SoapConfig(OptimizerConfig):
     weight_decay: float = 0.0
     beta1: float = 0.95

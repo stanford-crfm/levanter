@@ -11,7 +11,7 @@ from jaxtyping import PRNGKeyArray
 
 import haliax as hax
 import haliax.nn as hnn
-from haliax import ds
+from haliax import AxisSelection, AxisSpec, ds
 from haliax.jax_utils import named_call
 from haliax.types import PrecisionLike
 
@@ -347,7 +347,7 @@ def _flash_attention_backward(
             dK_ji = hax.dot(dAttn_ij, q_i, axis=QPos.name).astype(dK_j.dtype)
 
             # GQA-specific: eliminate unnecessary axes (e.g. 'q_heads_per_group')
-            unnecessary_axes = hax.eliminate_axes(dV_ji.axes, v.axes)
+            unnecessary_axes = hax.eliminate_axes(dV_ji.axes, _strip_sizes(v.axes))
             dV_ji = hax.sum(dV_ji, unnecessary_axes)
             dK_ji = hax.sum(dK_ji, unnecessary_axes)
 
@@ -387,3 +387,10 @@ def _infer_attention_output_block_shape(QPos, KPos, Key, q_i, k, v):
 
 def _materialize_mask_slice(mask, i, j, QPos, KPos, block_size):
     return materialize_mask(mask, QPos, KPos, q_slice=hax.ds.block(i, block_size), k_slice=hax.ds.block(j, block_size))
+
+
+def _strip_sizes(axes: AxisSpec) -> AxisSelection:
+    """Strip sizes from axes, returning only the names."""
+    if isinstance(axes, hax.Axis):
+        return axes.name
+    return tuple(axis.name for axis in axes)

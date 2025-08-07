@@ -36,7 +36,7 @@ import levanter.tracker
 import levanter.tracker.wandb
 import levanter.utils.logging
 from levanter import tracker
-from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, M, S, StepInfo
+from levanter.callbacks import Callback, CBInfo, JitCallback, LambdaCallback, StepInfo
 from levanter.callbacks.watch import WatchConfig
 from levanter.checkpoint import CheckpointerConfig, is_checkpoint_path, load_checkpoint_or_initialize
 from levanter.config import JsonAtom
@@ -57,6 +57,8 @@ from levanter.utils.types import ComputeLossFunction, FilterSpec
 logger = pylogging.getLogger(__name__)
 
 X = TypeVar("X")  # Input
+M = TypeVar("M")  # Model
+S = TypeVar("S", bound=TrainerState)  # State
 
 DEFAULT_JAX_CONFIG: Dict[str, JsonAtom] = {
     "jax_threefry_partitionable": True,
@@ -202,7 +204,7 @@ class Trainer:
         def fn(model, *batch, **batch_kwargs):
             with hax.axis_mapping(self.compute_axis_mapping):
                 model = self.mp.cast_to_compute(model)
-                return _ensure_scalar(self._raw_loss_function(model, *batch, **batch_kwargs))
+                return _ensure_scalar(self._raw_loss_function(model, *batch, **batch_kwargs).mean())
 
         return fn
 
@@ -435,8 +437,14 @@ class Trainer:
         """
         Performs training until the number of steps is reached.
         """
+        info: Optional[StepInfo[S]] = None
         for info in self.training_steps(state, train_loader):
             pass
+
+        if info is None:
+            raise RuntimeError(
+                "No training steps were executed. The dataset may be empty or there are no steps left to run."
+            )
 
         # force hooks to run at the end
         self.run_hooks(info, force=True)
@@ -567,9 +575,10 @@ class Trainer:
                     hook_infos = self.hooks.run_jit_hooks(state, jit_info, force=False)
 
         if _no_hooks:
-            return loss, new_state, metrics, None
+            return hax.shard_with_axis_mapping( (loss, new_state, metrics, None), self.parameter_axis_mapping)
         else:
-            return loss, new_state, metrics, hook_infos
+            # return loss, new_state, metrics, hook_infos
+            return hax.shard_with_axis_mapping( (loss, new_state, metrics, hook_infos), self.parameter_axis_mapping)
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         Batch = _resolve_axis_in_tree((batch, batch_kwargs), self.config.batch_axis)

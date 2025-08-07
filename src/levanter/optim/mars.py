@@ -11,7 +11,7 @@ from levanter.optim.config import OptimizerConfig
 
 
 @OptimizerConfig.register_subclass("mars")
-@dataclass
+@dataclass(frozen=True)
 class MarsConfig(OptimizerConfig):
     """
     Mars optimizer configuration

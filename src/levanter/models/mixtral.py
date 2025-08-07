@@ -533,7 +533,9 @@ class MixtralTransformer(eqx.Module):
         return MixtralTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, key) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, attn_mask: Optional[NamedArray], *, key, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
         x, extras = self.layers.scan(x, mask=attn_mask, key=keys)
         x = self.norm(x)
@@ -593,6 +595,7 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
         self,
         input_ids: NamedArray,
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
+        pos_ids: NamedArray | None = None,
         *,
         key=None,
     ) -> NamedArray:
@@ -606,7 +609,7 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x, _ = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        x, _ = self.transformer(x, attn_mask=attn_mask, key=k_t, pos_ids=pos_ids)
         if self.lm_head:
             lm_logits = self.lm_head(x, key=k_head)
         else:
@@ -614,7 +617,12 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
         return lm_logits
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        pos_ids: NamedArray | None = None,
+        *,
+        key=None,
     ) -> NamedArray:
         """
         Compute the activations for the next token in a sequence.
@@ -628,7 +636,7 @@ class MixtralLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[MixtralCo
 
         """
         x = self.embeddings.embed(input_ids)
-        x, extras = self.transformer(x, attn_mask=attn_mask, key=key)
+        x, extras = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
 
         aux_loss = 0
         if self.config.lbl_coef is not None:

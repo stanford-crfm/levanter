@@ -15,7 +15,7 @@ from levanter.utils.jax_utils import leaf_key_paths
 
 
 @OptimizerConfig.register_subclass("mini")
-@dataclass
+@dataclass(frozen=True)
 class MiniConfig(OptimizerConfig):
     """
     AdamW Mini optimizer configuration

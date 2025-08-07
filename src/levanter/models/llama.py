@@ -23,7 +23,6 @@ from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.logging import silence_transformer_nag
 from levanter.utils.types import BlockFoldable
 
-
 silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
@@ -74,7 +73,7 @@ class LlamaConfig(HFCompatConfig):
     use_layer_norm_weight: bool = True
     rope: RotaryEmbeddingsConfig = dataclasses.field(default_factory=DefaultRotaryEmbeddingsConfig)
 
-    reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
+    reference_checkpoint: str = "NousResearch/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
 
     # Axis
@@ -103,7 +102,7 @@ class LlamaConfig(HFCompatConfig):
     @classmethod
     def from_hf_config(cls, hf_config: HfConfig):
         rope_theta = hf_config.rope_theta
-        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, hf_config.rope_scaling)
+        rope_config = RotaryEmbeddingsConfig.from_hf_config(rope_theta, getattr(hf_config, "rope_scaling", None))
         return LlamaConfig(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
@@ -142,7 +141,11 @@ class LlamaConfig(HFCompatConfig):
         if config_overrides is None:
             config_overrides = {}
 
-        rope_theta, rope_scaling = self.rope.to_hf_config()
+        if self.rope:
+            rope_theta, rope_scaling = self.rope.to_hf_config()
+        else:
+            rope_theta = None
+            rope_scaling = None
 
         return HfLlamaConfig(
             max_position_embeddings=self.seq_len,
@@ -296,12 +299,14 @@ class LlamaDecoderLayer(eqx.Module):
         return LlamaDecoderLayer(config, attn, mlp, ln_1, ln_2, post_attn_ln, post_mlp_ln)
 
     @named_call
-    def __call__(self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         k_attn, k_mlp = maybe_rng_split(key, 2)
         # self attention and skip connection
         residual = x
         x = self.input_layernorm(x)
-        attn_output = self.self_attn(x=x, mask=mask, key=k_attn)
+        attn_output = self.self_attn(x=x, mask=mask, key=k_attn, pos_ids=pos_ids)
         if self.post_attn_layernorm is not None:
             attn_output = self.post_attn_layernorm(attn_output)
         x = residual + attn_output
@@ -338,9 +343,11 @@ class LlamaTransformer(eqx.Module):
         return LlamaTransformer(config, layers, ln_f)
 
     @named_call
-    def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key) -> NamedArray:
+    def __call__(
+        self, x: NamedArray, attn_mask: Optional[NamedArray | AttentionMask], *, key, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x = self.layers.fold(x, mask=attn_mask, key=keys)
+        x = self.layers.fold(x, mask=attn_mask, key=keys, pos_ids=pos_ids)
         x = self.norm(x)
 
         return x
@@ -422,6 +429,7 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         self,
         input_ids: NamedArray,
         attn_mask: Optional[Union[NamedArray, AttentionMask]] = None,
+        pos_ids: NamedArray | None = None,
         *,
         key=None,
     ) -> NamedArray:
@@ -432,13 +440,14 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
             attn_mask (Union[NamedArray, AttentionMask], optional): [batch, position]
                 Mask to avoid performing attention on the padding token indices of the encoder input.
                 The attn_mask from training pipeline may be an AttentionMask object instead of NamedArray
+            pos_ids: NamedArray | None = None,
 
         Returns:
             NamedArray: logits with shape {Batch, Pos, Vocab}
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=k_t)
+        x = self.transformer(x, attn_mask=attn_mask, key=k_t, pos_ids=pos_ids)
         if self.lm_head:
             lm_logits = self.lm_head(x, key=k_head)
         else:
@@ -446,7 +455,12 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         return lm_logits
 
     def activations(
-        self, input_ids: NamedArray, attn_mask: Optional[AttentionMask | NamedArray] = None, *, key=None
+        self,
+        input_ids: NamedArray,
+        attn_mask: Optional[AttentionMask | NamedArray] = None,
+        *,
+        key=None,
+        pos_ids: NamedArray | None = None,
     ) -> NamedArray:
         """
         Compute the activations for the next token in a sequence.
@@ -454,13 +468,14 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
             input_ids: token IDs with shape {Pos}
             attn_mask: attention mask with shape {Pos, KeyPos}
             key: PRNGKeyArray for random number generation
+            pos_ids: position IDs with shape {Pos}
 
         Returns:
             NamedArray: activations with shape {Pos, Embed}
 
         """
         x = self.embeddings.embed(input_ids)
-        x = self.transformer(x, attn_mask=attn_mask, key=key)
+        x = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
 
         return x
 

@@ -9,7 +9,7 @@ import levanter.tracker
 
 
 @register_dataclass
-@dataclass
+@dataclass(frozen=True)
 class ClipUpdateNormState:
     """State for the ClipUpdateNorm gradient transformation."""
 
@@ -19,7 +19,7 @@ class ClipUpdateNormState:
     count: jax.Array  # Number of valid entries currently in the buffer (up to buffer_size)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ClipUpdateNormConfig:
     """Configuration for the ClipUpdateNorm gradient transformation."""
 

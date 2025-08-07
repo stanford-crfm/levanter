@@ -9,7 +9,7 @@ from haliax.quantization import QuantizationConfig
 import levanter.main.train_lm as train_lm
 import tiny_test_corpus
 from levanter.distributed import RayConfig
-from levanter.tracker.wandb import WandbConfig
+from levanter.tracker import NoopConfig
 
 
 @pytest.mark.entry
@@ -20,9 +20,10 @@ def test_train_lm():
         try:
             config = train_lm.TrainLmConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
+                model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
+                    num_kv_heads=2,
                     seq_len=64,
                     hidden_dim=32,
                     attn_backend=None,  # use default for platform
@@ -31,7 +32,7 @@ def test_train_lm():
                     num_train_steps=2,
                     train_batch_size=len(jax.devices()),
                     max_eval_batches=1,
-                    wandb=WandbConfig(mode="disabled"),
+                    tracker=NoopConfig(),
                     require_accelerator=False,
                     ray=RayConfig(auto_start_cluster=False),
                 ),
@@ -52,9 +53,10 @@ def test_train_lm_fp8():
         try:
             config = train_lm.TrainLmConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
+                model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
+                    num_kv_heads=2,
                     seq_len=64,
                     hidden_dim=32,
                     attn_backend=None,  # use default for platform
@@ -64,7 +66,7 @@ def test_train_lm_fp8():
                     num_train_steps=2,
                     train_batch_size=len(jax.devices()),
                     max_eval_batches=1,
-                    wandb=WandbConfig(mode="disabled"),
+                    tracker=NoopConfig(),
                     require_accelerator=False,
                     ray=RayConfig(auto_start_cluster=False),
                 ),

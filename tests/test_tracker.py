@@ -69,7 +69,7 @@ def test_get_tracker_by_name():
 
     from levanter.tracker import NoopTracker
 
-    wandb1 = wandb_config(mode="disabled").init(None)
+    wandb1 = wandb_config(mode="offline").init(None)
     tracker = CompositeTracker([wandb1, NoopTracker()])
 
     with tracker:
