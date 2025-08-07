@@ -272,7 +272,7 @@ def as_arrayish(x):
         return jnp.asarray(x)
 
 
-# TODO: this is a hack for 405b and should be removed, 
+# TODO: this is a hack for 405b and should be removed,
 # def best_effort_sharding(shape, *, devices=None, mesh=None):
 #     if hasattr(shape, "shape"):
 #         shape = shape.shape
@@ -415,7 +415,7 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
         sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
 
         return sharding
-    
+
 def create_fsdp_mesh(
     replica_ici_axis_size: int,
     data_ici_axis_size: int,

@@ -111,7 +111,7 @@ def main():
         build_args["TAG"] = base_tag
 
         if zone == "us-east1-d":
-            print(f"using east1 d image!", flush=True)
+            print("using east1 d image!", flush=True)
             local_id = docker.build_docker(
                 docker_file="docker/tpu/Dockerfile.marin_incremental_east1", image_name=image_id, tag=tag, build_args=build_args
             )
