@@ -2,6 +2,7 @@ import dataclasses
 
 import equinox as eqx
 import haliax as hax
+import jaxtyping
 from haliax import NamedArray, haxtyping as ht
 from jax import numpy as jnp
 import jax
@@ -55,9 +56,10 @@ class SeqDecodingParams(eqx.Module):
     max_num_tokens: jnp.ndarray
     stop_tokens: ht.i32[NamedArray, "stop_seq position"] | None
     temperature: jnp.ndarray
+    key: jaxtyping.PRNGKeyArray
 
-
-    def default(self, num_stop_seqs: int, max_stop_tokens: int) -> "SeqDecodingParams":
+    @staticmethod
+    def default() -> "SeqDecodingParams":
         """
         Returns a default SeqDecodingParams with the given number of stop sequences and maximum stop tokens.
         """
@@ -66,6 +68,7 @@ class SeqDecodingParams(eqx.Module):
             max_num_tokens=jnp.array(max_int_jnp - 100000, dtype=jnp.int32),
             stop_tokens=None,
             temperature=jnp.array(0.0, dtype=jnp.float32),
+            key=jax.random.key(0)
         )
 
 
@@ -85,10 +88,6 @@ class DecodeState(eqx.Module):
        sequence `i`. It is kept in sync with `tokens`, i.e. if a token is generated, its log probability is also
        generated. We don't currently compute log probabilities for the prefix tokens, so `logprobs` is set to nan for
        those positions.
-
-    The "effective length" of a sequence is `num_tokens + prefix_len`, where `num_tokens` is the number of tokens
-    generated in the current cycle and `prefix_len` is the length of the prefix tokens that have not been generated yet.
-
     """
     seq_id: ht.i32[NamedArray, "seq"]  # sequence ID. This is the "global" sequence ID
     tokens: ht.i32[NamedArray, "seq position"]
@@ -113,6 +112,17 @@ class DecodeState(eqx.Module):
     """Stop sequences for each sequence. If None, no stop sequences are used. **Left padded** with pad_token_id."""
     temperature: ht.Float[NamedArray, "seq"]
     """temperature for sampling. 0 means greedy sampling"""
+    prng_keys: jaxtyping.PRNGKeyArray
+    """one per sequence, used for sampling. This is a JAX PRNG key, so it can be split to get new keys."""
+
+    def prng_keys_for(self, seq_ids: ht.i32[NamedArray, "position"], pos_ids: ht.i32[NamedArray, "position"]) -> jaxtyping.PRNGKeyArray:  # type: ignore[name-defined]
+        """
+        Get the PRNG keys for the given sequence IDs and positions.
+        This is used to sample new tokens for the given sequence IDs and positions.
+        """
+        # We assume that seq_ids and pos_ids are aligned
+        per_pos_keys = self.prng_keys[seq_ids.array]
+        return jax.vmap(jax.random.fold_in)(per_pos_keys, pos_ids.array)
 
     @property
     def max_seqs(self) -> int:
@@ -124,7 +134,6 @@ class DecodeState(eqx.Module):
         """Maximum number of tokens that can be generated for each sequence, including any prefix tokens."""
         return self.tokens.axis_size("position")
 
-
     @property
     def max_stop_seq_len(self) -> int:
         """Maximum number of stop sequences for each sequence."""
@@ -132,6 +141,7 @@ class DecodeState(eqx.Module):
             return 0
         return self.stop_tokens.axis_size("position")
 
+    @eqx.filter_jit
     def assign_seq(self,
                    local_seq_id: int,
                    global_seq_id: int,
@@ -162,6 +172,7 @@ class DecodeState(eqx.Module):
                 new_state,
                 max_num_tokens=new_state.max_num_tokens.at["seq", local_seq_id].set(seq_params.max_num_tokens),
                 temperature=new_state.temperature.at["seq", local_seq_id].set(seq_params.temperature),
+                prng_keys=self.prng_keys.at[local_seq_id].set(seq_params.key)  # type: ignore[name-defined]
             )
             match (new_state.stop_tokens, seq_params.stop_tokens):
                 case (None, None):
@@ -228,37 +239,32 @@ class DecodeState(eqx.Module):
         Returns jnp.ndarray with the same shape as seq_id, where each entry is True if the sequence is finished.
         """
 
-        sid_flat = jnp.reshape(seq_id, (-1,))
-        result = jnp.zeros_like(sid_flat, dtype=bool)
+        def body(i):
+            sid = seq_id[i]
 
-        def body(i, acc):
-            sid = sid_flat[i]
+            done = ((self.num_tokens["seq", sid] != INVALID) &
+                    (self.num_tokens["seq", sid] >= self.max_num_tokens["seq", sid])
+                    ).scalar()
 
-            def compute(_: jax.Array) -> jax.Array:
-                done = (self.num_tokens["seq", sid] >= self.max_num_tokens["seq", sid]).scalar()
+            if self.stop_tokens is not None:
+                stop_len = self.stop_tokens.axis_size("position")
+                num = self.num_tokens["seq", sid].scalar()
+                tokens_row = self.tokens["seq", sid].array
+                padded_tokens = jnp.concatenate([
+                    jnp.full((stop_len,), INVALID, dtype=jnp.int32),
+                    tokens_row,
+                ])
+                tail = jax.lax.dynamic_slice(padded_tokens, (num,), (stop_len,))
+                stop = is_stop_signal(
+                    hax.named(tail, axis=("position",)),
+                    self.stop_tokens["seq", sid],
+                ).array
+                done |= stop
 
-                if self.stop_tokens is not None:
-                    stop_len = self.stop_tokens.axis_size("position")
-                    num = self.num_tokens["seq", sid].scalar()
-                    tokens_row = self.tokens["seq", sid].array
-                    padded_tokens = jnp.concatenate([
-                        jnp.full((stop_len,), INVALID, dtype=jnp.int32),
-                        tokens_row,
-                    ])
-                    tail = jax.lax.dynamic_slice(padded_tokens, (num,), (stop_len,))
-                    stop = is_stop_signal(
-                        hax.named(tail, axis=("position",)),
-                        self.stop_tokens["seq", sid],
-                    ).array
-                    done |= stop
+            # If the sequence ID is INVALID, we consider it not finished.
+            return done & (self.seq_id["seq", sid] != INVALID).scalar()
 
-                return done
-
-            finished = jax.lax.cond(is_valid(sid), compute, lambda _: False, operand=None)
-            return acc.at[i].set(finished)
-
-        result = jax.lax.fori_loop(0, sid_flat.shape[0], body, result)
-        return jnp.reshape(result, seq_id.shape)
+        return jax.vmap(body)(seq_id)
 
 
     def debug_print(self):
@@ -315,6 +321,7 @@ max_num_tokens: {max_num_tokens}
                 dtype=jnp.int32,
             ) if max_stop_tokens > 0 else None,
             temperature=hax.ones({"seq": max_seqs}, dtype=jnp.float32),
+            prng_keys=jax.vmap(jax.random.key, axis_size=max_seqs, in_axes=None)(0)
         )
 
     # This was used to remove tokens from the buffer, but it was too much work.
@@ -555,7 +562,6 @@ class JitScheduler(eqx.Module):
         return JitScheduler.init(
             max_queued_tokens=self.queued_tokens.axis_size("position"),
         )
-
 
     def debug_print(self, prefix: str = ""):
 

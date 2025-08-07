@@ -33,7 +33,6 @@ from levanter.utils.jax_utils import use_cpu_device
 from levanter.inference.jit_scheduler import JitScheduler, DecodeState, SeqDecodingParams
 from levanter.inference.utils import INVALID, is_invalid
 from levanter.layers.attention import KvPageCache
-from jaxtyping import PRNGKeyArray
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,6 @@ class GenState(eqx.Module):
     cache: KvPageCache
     page_table: PageTable
     decode_state: DecodeState
-    prng_key: PRNGKeyArray
 
 
 @dataclass
@@ -63,7 +61,7 @@ class SampleLmConfig:
     tokenizer: str | None = None
 
     prompts: list[str] | str | tuple[str, ...] = (
-        # "Four score and seven years ago, our",
+        "Four score and seven years ago, our",
         # "On the first day of Christmas, my true love gave to me",
         "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
     )
@@ -71,6 +69,7 @@ class SampleLmConfig:
     "Stop sequences. Currently only does whole token sequences."
     max_new_tokens: int = 192
     temperature: float = 0.7
+    seed: int = 2
 
 
 def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
@@ -109,6 +108,7 @@ def tree_byte_size(tree):
 
     return sum(_leaf_size(x) for x in jax.tree.leaves(tree))
 
+
 @haliax.named_jit(donate_args=(True, False, False))
 def run_generation_loop(
     gen_state: GenState,
@@ -135,22 +135,26 @@ def run_generation_loop(
 
         page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
 
-        boundaries = packed_seq.boundary_indices(page_table.max_seqs)
+        boundaries = packed_seq.boundary_indices(min(page_table.max_seqs, max_tokens_per_round))
 
         # Decode logits and sample new tokens
         logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
-        sample_key, key = jrandom.split(gen_state.prng_key)
         logits = logits["position", boundaries]
         cache = eqx.error_if(cache, hax.any(hax.isnan(cache.kv_pages)).scalar(), "New Cache contains NaNs")
         logits = eqx.error_if(logits, hax.any(hax.isnan(logits) & ~is_invalid(boundaries)).scalar(), "Logits contain NaNs")
-        new_tokens, log_probs = sampler(logits, temps, key=sample_key)
 
         num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = packed_seq.seq_ids["position", boundaries]
+        new_pos_ids = binfo.pos_ids["position", boundaries]
+        prng_keys = gen_state.decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
+
+        new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
 
         # Update scheduler with the freshly sampled tokens
         decode_state = gen_state.decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
+        # decode_state.debug_print()
         sched = sched.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
+        # sched.debug_print("post enqueue")
 
         # Update the gen_state with all the new components
         new_gen_state = dataclasses.replace(
@@ -159,7 +163,6 @@ def run_generation_loop(
             page_table=page_table,
             cache=cache,
             decode_state=decode_state,
-            prng_key=key
         )
 
         return new_gen_state, step + 1
@@ -183,7 +186,7 @@ def main(config: SampleLmConfig):
 
     tokenizer = load_tokenizer(config.tokenizer)
 
-    key = jrandom.PRNGKey(0)
+    key = jrandom.key(config.seed)
 
     # NB: we use the compute_axis_mapping b/c we're doing inference
     with config.trainer.device_mesh, hax.axis_mapping(config.trainer.compute_axis_mapping):
@@ -205,7 +208,7 @@ def main(config: SampleLmConfig):
 
         table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
-        sched = JitScheduler.init(256)
+        sched = JitScheduler.init(32)
         initial_decode_state = DecodeState.init(
             table.max_seqs,
             table.pages_per_seq,
@@ -218,7 +221,6 @@ def main(config: SampleLmConfig):
             cache=cache,
             page_table=table,
             decode_state=initial_decode_state,
-            prng_key=key
         )
 
         # -------------------------------- Scheduler-based generation --------------------------------
@@ -244,7 +246,7 @@ def main(config: SampleLmConfig):
 
             time_in = time.time()
             outputs, gen_state, total_generated = _one_round(
-                config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids
+                config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids, key
             )
             print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
                   f"generated {total_generated} tokens in {len(outputs)} sequences.")
@@ -261,12 +263,11 @@ def main(config: SampleLmConfig):
                 page_table=page_table,
                 sched=sched.cleared(),
                 decode_state=initial_decode_state,
-                prng_key=jrandom.PRNGKey(0)
             )
             del page_table
 
 
-def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids: NamedArray | None):
+def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids: NamedArray | None, key):
     time_in = time.time()
     finished = [False] * len(prompt_ids)
     outputs = [list(t) for t in prompt_ids]  # start with the prompts
@@ -284,6 +285,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             max_num_tokens=jnp.array(len(tokens) + config.max_new_tokens, dtype=jnp.int32),
             stop_tokens=stop_ids,
             temperature=jnp.array(config.temperature, dtype=jnp.float32),
+            key=jax.random.fold_in(key, seq_id)
         )
 
         gen_state = dataclasses.replace(
@@ -358,14 +360,16 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             temps,
             # TODO: tune/configure
             len(prompt_ids),
-            64,
+            8,
         )
+        total_gen_loop = time.time() - time_gen_in
         gen_state = jax.block_until_ready(gen_state)
-        print(f"Generation loop iter took {time.time() - time_gen_in:.3f} seconds, ")
         time_gen_in = time.time()
 
-        extract_outputs(gen_state.decode_state, outputs, finished)
-        print(f"Extracted outputs took {time.time() - time_gen_in:.3f} seconds, ")
+        new_tokens = extract_outputs(gen_state.decode_state, outputs, finished)
+        print(f"Extracted outputs took {time.time() - time_gen_in:.3f} seconds")
+        tps = new_tokens / total_gen_loop
+        print(f"Generation loop iter took {total_gen_loop :.3f} seconds, {tps:.2f} tokens/sec, ")
 
     gen_state = jax.block_until_ready(gen_state)
     time_out = time.time()
@@ -398,6 +402,7 @@ def extract_outputs(decode_state: DecodeState, outputs, finished):
 
     MUTATES outputs and finished lists.
     """
+    total_this_time = 0
     num_seqs = decode_state.max_seqs
     tokens = jax.device_get(decode_state.tokens.array)
     num_tokens = jax.device_get(decode_state.num_tokens.array)
@@ -405,13 +410,18 @@ def extract_outputs(decode_state: DecodeState, outputs, finished):
     this_finished = jax.device_get(decode_state.is_finished(jnp.arange(num_seqs)))
     for seq_id in range(num_seqs):
 
-        if finished[seq_id]:
-            continue
-
         current_num_tokens = len(outputs[seq_id])
 
         new_num_tokens = num_tokens[seq_id]
         count_to_extract = new_num_tokens - current_num_tokens
+
+        # print(f"Sequence {seq_id} has {new_num_tokens} tokens. we have {current_num_tokens} tokens already extracted, "
+        #       f"We think the sequence is finished: {finished[seq_id]}, now {this_finished[seq_id]}")
+
+        if finished[seq_id]:
+            continue
+
+        total_this_time += count_to_extract
 
         if this_finished[seq_id]:
             finished[seq_id] = True
@@ -420,9 +430,11 @@ def extract_outputs(decode_state: DecodeState, outputs, finished):
             continue
 
         seq_tokens = tokens[seq_id, current_num_tokens:new_num_tokens]
-        print(f"Extracting {count_to_extract} tokens for sequence {seq_id}: {seq_tokens}")
+        # print(f"Extracting {count_to_extract} tokens for sequence {seq_id}: {seq_tokens}")
 
         outputs[seq_id].extend(int(x) for x in seq_tokens)
+
+    return total_this_time
 
 
 if __name__ == "__main__":

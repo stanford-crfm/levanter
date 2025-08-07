@@ -36,9 +36,6 @@ def test_enqueue_and_pack_over_length():
     assert jnp.array_equal(pseqs.array, jnp.array([0, 1, INVALID, INVALID], dtype=jnp.int32))
 
 
-
-
-
 def test_partial_dequeue():
     sched = JitScheduler.init(8)
     toks = hax.named(jnp.array([1, 2, 3], dtype=jnp.int32), "position")
@@ -64,8 +61,6 @@ def _make_scheduler_with_tokens(max_tokens=8):
     toks = hax.named(jnp.array([10, 20, 30, 40], dtype=jnp.int32), axis=("position",))
     seqs = hax.named(jnp.array([0, 1, 0, 1], dtype=jnp.int32), axis=("position",))
     return eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 4)
-
-
 
 
 def test_purge_queue_of_seq():
@@ -98,3 +93,16 @@ def test_purge_queue_of_seq():
     assert jnp.all(sched4.queued_tokens.array == INVALID)
     assert jnp.all(sched4.queued_seq_ids.array == INVALID)
     assert sched4.num_queued_tokens == 0
+
+
+def test_pack_multiple_sequences():
+    sched = JitScheduler.init(16)
+    # Enqueue tokens with seq_ids: [1, 1, 1, 1, 1, 0]
+    toks = hax.named(jnp.array([10, 20, 30, 40, 50, 60], dtype=jnp.int32), "position")
+    seq_ids = hax.named(jnp.array([1, 1, 1, 1, 1, 0], dtype=jnp.int32), "position")
+
+    sched = sched.enqueue_tokens(toks, seq_ids, 6)
+
+    sched, packed_sequence = sched.pack_next_sequence(8)
+
+    assert packed_sequence.num_tokens == 6
