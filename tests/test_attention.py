@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
 import pytest
+import equinox as eqx
 from chex import assert_trees_all_close
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
@@ -13,11 +14,14 @@ from haliax import Axis
 
 from levanter.layers.attention import (
     AttentionBackend,
+    AttentionConfig,
     AttentionMask,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
+    AttentionWithSink,
     dot_product_attention,
+    dot_product_attention_with_sink,
 )
 from test_utils import skip_if_module_missing
 
@@ -56,6 +60,68 @@ def test_causal_mask_slicing():
     for i in range(16):
         for j in range(16):
             assert mat_sliced.array[i, j] == mat_mask.array[7 + i, 24 + j]
+
+
+def test_sliding_window_mask():
+    Pos = hax.Axis("pos", 16)
+    KeyPos = Pos.alias("key_pos")
+    window = 4
+    mask = AttentionMask.causal(sliding_window=window)
+    mat = mask.materialize(Pos, KeyPos)
+    q_pos = hax.arange(Pos)
+    k_pos = hax.arange(KeyPos)
+    diff = q_pos.broadcast_axis(KeyPos) - k_pos.broadcast_axis(Pos)
+    expected = (diff >= 0) & (diff < window)
+    assert hax.all(mat == expected)
+
+
+def test_attention_sink():
+    Pos = hax.Axis("position", 2)
+    KeyPos = Pos.alias("key_pos")
+    Head = hax.Axis("kv_heads", 1)
+    QHead = hax.Axis("q_heads_per_group", 1)
+    D = hax.Axis("head_size", 1)
+
+    q = hax.zeros((Head, QHead, Pos, D))
+    k = hax.zeros((Head, KeyPos, D))
+    v = hax.ones((Head, KeyPos, D))
+    sink = hax.zeros((Head, QHead))
+
+    out = dot_product_attention_with_sink(
+        Pos.name,
+        KeyPos.name,
+        D.name,
+        q,
+        k,
+        v,
+        sink,
+    )
+
+    expected = np.full((1, 1, 2, 1), 2.0 / 3)
+    assert_trees_all_close(out.array, expected)
+
+
+def test_attention_with_sink_module():
+    Pos = hax.Axis("position", 2)
+    Embed = hax.Axis("embed", 1)
+
+    config = AttentionConfig(Embed=Embed, num_heads=1, num_kv_heads=1, use_bias=True)
+    attn = AttentionWithSink.init(config, key=jrandom.PRNGKey(0))
+
+    attn = eqx.tree_at(lambda a: a.q_proj.weight, attn, hax.zeros(attn.q_proj.weight.axes))
+    attn = eqx.tree_at(lambda a: a.q_proj.bias, attn, hax.zeros(attn.q_proj.bias.axes))
+    attn = eqx.tree_at(lambda a: a.k_proj.weight, attn, hax.zeros(attn.k_proj.weight.axes))
+    attn = eqx.tree_at(lambda a: a.k_proj.bias, attn, hax.zeros(attn.k_proj.bias.axes))
+    attn = eqx.tree_at(lambda a: a.v_proj.weight, attn, hax.zeros(attn.v_proj.weight.axes))
+    attn = eqx.tree_at(lambda a: a.v_proj.bias, attn, hax.ones(attn.v_proj.bias.axes))
+    attn = eqx.tree_at(lambda a: a.o_proj.weight, attn, hax.ones(attn.o_proj.weight.axes))
+    attn = eqx.tree_at(lambda a: a.o_proj.bias, attn, hax.zeros(attn.o_proj.bias.axes))
+
+    x = hax.zeros((Pos, Embed))
+    out = attn(x, None)
+
+    expected = np.full((2, 1), 2.0 / 3)
+    assert_trees_all_close(out.array, expected)
 
 
 def test_te_bin_and_group_axes_by_function():
