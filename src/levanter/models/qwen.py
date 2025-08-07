@@ -305,7 +305,22 @@ class Qwen3Config(LlamaConfig):
     def model_type(self):  # noqa: D401
         return Qwen3LMHeadModel
 
-    def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfQwen3Config:
+    def hf_checkpoint_converter(
+        self, ref_checkpoint: Optional[str] = None
+    ) -> HFCheckpointConverter["Qwen3Config"]:  # type: ignore
+        return HFCheckpointConverter(
+            self.__class__,
+            reference_checkpoint=self.reference_checkpoint
+            if ref_checkpoint is None
+            else ref_checkpoint,
+            trust_remote_code=True,
+            tokenizer=ref_checkpoint if self.tokenizer is None else self.tokenizer,
+            HfConfigClass=HfQwen3Config,
+        )
+
+    def to_hf_config(
+        self, vocab_size: int, config_overrides: Optional[Dict] = None
+    ) -> HfQwen3Config:
         if config_overrides is None:
             config_overrides = {}
 
