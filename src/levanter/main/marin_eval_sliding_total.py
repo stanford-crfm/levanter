@@ -12,19 +12,20 @@ import logging
 import math
 import os
 import pathlib
-import tarfile
 import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import equinox as eqx
+import fsspec
 import jax
 import jax.numpy as jnp
 import jmp
 import matplotlib.pyplot as plt
 import numpy as np
 from jax.experimental.multihost_utils import process_allgather
+from tqdm import tqdm
 
 import haliax as hax
 from haliax.nn import log_softmax
@@ -122,45 +123,11 @@ class EvalSlidingTotalConfig:
     # Multi-book overrides -------------------------------------------------
     books: Dict[str, BookConfig] = field(default_factory=dict)
 
+    # Logging options ------------------------------------------------------
+    gcp_log: bool = False  # If True, save artifacts to GCP instead of WandB
 
-# ---------------------------------------------------------------------------
-# Helpers copied from eval_careless_lm
-# ---------------------------------------------------------------------------
-
-
-def upload_hlo_dumps_to_wandb():
-    """Upload HLO dumps created during the run to WandB."""
-
-    global RUN_START_TIME
-    xla_dump_dir = "/tmp/xla_dumps"
-    if not os.path.exists(xla_dump_dir):
-        return
-
-    current_time = time.time()
-    run_start_cutoff = current_time - (1 * 60 * 60)  # 1 hour
-
-    recent_dump_files = []
-    for root, dirs, files in os.walk(xla_dump_dir):
-        for file in files:
-            filepath = os.path.join(root, file)
-            if os.path.getmtime(filepath) > run_start_cutoff:
-                recent_dump_files.append(filepath)
-
-    if not recent_dump_files:
-        return
-
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
-        tar_path = tmp_file.name
-
-    try:
-        with tarfile.open(tar_path, "w:gz") as tar:
-            for filepath in recent_dump_files:
-                arcname = os.path.relpath(filepath, os.path.dirname(xla_dump_dir))
-                tar.add(filepath, arcname=arcname)
-
-        levanter.tracker.current_tracker().log_artifact(tar_path, name="hlo_dumps.tar.gz", type="hlo_analysis")
-    finally:
-        os.unlink(tar_path)
+    # DataLoader options ---------------------------------------------------
+    allow_nondivisible_batch_size: bool = False  # Allow batch sizes not divisible by number of devices
 
 
 def save_plot_with_wandb(fig, filename: str, dpi: int = 300):
@@ -187,6 +154,43 @@ def save_data_with_wandb(data, filename: str, **kwargs):
     os.unlink(tmp_path)
 
 
+def save_plot_to_gcp(fig, output_path: str, filename: str, dpi: int = 300):
+    """Save plot directly to GCP using fsspec."""
+    full_path = f"{output_path.rstrip('/')}/{filename}"
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+        fig.savefig(tmp_file.name, dpi=dpi, bbox_inches="tight")
+        tmp_path = tmp_file.name
+
+    # Copy to GCP using fsspec
+    with fsspec.open(full_path, 'wb') as f_out:
+        with open(tmp_path, 'rb') as f_in:
+            f_out.write(f_in.read())
+
+    os.unlink(tmp_path)
+    logger.info(f"📊 Saved plot to: {full_path}")
+
+
+def save_data_to_gcp(data, output_path: str, filename: str, **kwargs):
+    """Save data directly to GCP using fsspec."""
+    full_path = f"{output_path.rstrip('/')}/{filename}"
+    suffix = pathlib.Path(filename).suffix or ".npz"
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+        if suffix == ".npz":
+            np.savez(tmp_file.name, **kwargs)
+        else:
+            np.save(tmp_file.name, data)
+        tmp_path = tmp_file.name
+
+    # Copy to GCP using fsspec
+    with fsspec.open(full_path, 'wb') as f_out:
+        with open(tmp_path, 'rb') as f_in:
+            f_out.write(f_in.read())
+
+    os.unlink(tmp_path)
+    logger.info(f"💾 Saved data to: {full_path}")
+
+
 # ---------------------------------------------------------------------------
 # Per-book evaluation
 # ---------------------------------------------------------------------------
@@ -200,10 +204,13 @@ def evaluate_book(
     pad_id: int,
     Pos: hax.Axis,
     model_name: str,
+    main_cfg: EvalSlidingTotalConfig,  # Pass main config for gcp_log flag
 ):
     """Run careless evaluation on a single book using a pre-loaded model."""
 
-    raw_text = pathlib.Path(cfg.txt_path).read_text()
+    # Use fsspec to read text files (supports both local and remote paths like gs://)
+    with fsspec.open(cfg.txt_path, 'r') as f:
+        raw_text = f.read()
 
     token_ids = None
     if cfg.token_mode:
@@ -247,6 +254,7 @@ def evaluate_book(
             batch_size=batch_size,
             axis_resources=cfg.trainer.compute_axis_mapping,
             mesh=cfg.trainer.device_mesh,
+            allow_nondivisible_batch_size=cfg.allow_nondivisible_batch_size,
         )
         batches = ((batch, None) for batch in loader)
     else:
@@ -326,7 +334,16 @@ def evaluate_book(
         )
 
     if hist_stats:
-        levanter.tracker.current_tracker().log_artifact(temp_histogram_path, name=cfg.histogram_path, type="plot")
+        # Save histogram - choose method based on gcp_log flag
+        if main_cfg.gcp_log:
+            # Copy histogram to GCP using fsspec
+            histogram_gcp_path = f"{main_cfg.output_base_path.rstrip('/')}/{cfg.histogram_path}"
+            with fsspec.open(histogram_gcp_path, 'wb') as f_out:
+                with open(temp_histogram_path, 'rb') as f_in:
+                    f_out.write(f_in.read())
+            logger.info(f"📊 Saved histogram to: {histogram_gcp_path}")
+        else:
+            levanter.tracker.current_tracker().log_artifact(temp_histogram_path, name=cfg.histogram_path, type="plot")
     os.unlink(temp_histogram_path)
 
     if cfg.token_mode:
@@ -364,21 +381,43 @@ def evaluate_book(
             step=0,
         )
 
-    save_data_with_wandb(
-        None,
-        cfg.pz_data_path,
-        pz_values=np.array(pz_list),
-        span_ranges=np.array(span_ranges),
-        max_pz=max_vals,
-        config_info=np.array(
-            [
-                cfg.chunk_size,
+    # Save pz data - choose method based on gcp_log flag
+    main_cfg = None  # We need to pass the main config to access gcp_log
+    # This is a workaround - we'll need to modify the function signature
+    if hasattr(cfg, 'gcp_log') and cfg.gcp_log and hasattr(cfg, 'output_base_path'):
+        save_data_to_gcp(
+            None,
+            cfg.output_base_path,
+            cfg.pz_data_path,
+            pz_values=np.array(pz_list),
+            span_ranges=np.array(span_ranges),
+            max_pz=max_vals,
+            config_info=np.array(
+                [
+                    cfg.chunk_size,
                 cfg.prompt_tokens,
                 cfg.cursor_inc_tokens if cfg.token_mode else cfg.cursor_inc_chars,
                 len(token_ids) if cfg.token_mode else len(raw_text),
             ]
         ),
     )
+    else:
+        save_data_with_wandb(
+            None,
+            cfg.pz_data_path,
+            pz_values=np.array(pz_list),
+            span_ranges=np.array(span_ranges),
+            max_pz=max_vals,
+            config_info=np.array(
+                [
+                    cfg.chunk_size,
+                    cfg.slice_length,
+                    cfg.prompt_tokens,
+                    cfg.cursor_inc_tokens if cfg.token_mode else cfg.cursor_inc_chars,
+                    len(token_ids) if cfg.token_mode else len(raw_text),
+                ]
+            ),
+        )
 
     fig, ax = plt.subplots(figsize=(14, 2))
     im = ax.imshow(
@@ -402,10 +441,15 @@ def evaluate_book(
     cbar.set_label("Max. probability")
 
     plt.tight_layout()
-    save_plot_with_wandb(fig, cfg.plot_path, dpi=300)
-
-    npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
-    save_data_with_wandb(max_vals, npy_filename)
+    # Save plot and data - choose method based on gcp_log flag
+    if hasattr(cfg, 'gcp_log') and cfg.gcp_log and hasattr(cfg, 'output_base_path'):
+        save_plot_to_gcp(fig, cfg.output_base_path, cfg.plot_path, dpi=300)
+        npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
+        save_data_to_gcp(max_vals, cfg.output_base_path, npy_filename)
+    else:
+        save_plot_with_wandb(fig, cfg.plot_path, dpi=300)
+        npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
+        save_data_with_wandb(max_vals, npy_filename)
 
 
 # ---------------------------------------------------------------------------
@@ -423,20 +467,10 @@ def main(cfg: EvalSlidingTotalConfig):
     uniqueness.
     """
 
-    import sys
-    print("🔥 EVAL_SLIDING_TOTAL main: Function started!", flush=True)
-    sys.stdout.flush()
-
     global RUN_START_TIME
     RUN_START_TIME = time.time()
 
-    print("🔥 EVAL_SLIDING_TOTAL main: About to call levanter.initialize", flush=True)
-    sys.stdout.flush()
-
     levanter.initialize(cfg)
-
-    print("🔥 EVAL_SLIDING_TOTAL main: levanter.initialize completed!", flush=True)
-    sys.stdout.flush()
 
     # Tokenizer -------------------------------------------------------------
     if cfg.tokenizer_name is not None:
@@ -501,7 +535,11 @@ def main(cfg: EvalSlidingTotalConfig):
     elif cfg.hf_checkpoint:
         model_name = str(cfg.hf_checkpoint).split("/")[-1].lower().replace("-", "-")
 
-    for name, book in cfg.books.items():
+    # Set up progress bar for book evaluation
+    book_items = list(cfg.books.items())
+    total_books = len(book_items)
+
+    for name, book in tqdm(book_items, desc="📚 Evaluating books", unit="book"):
         book_cfg = dataclasses.replace(cfg)
         for field_name, value in dataclasses.asdict(book).items():
             if value is not None:
@@ -518,10 +556,16 @@ def main(cfg: EvalSlidingTotalConfig):
             book_cfg.pz_data_path = f"pz_data_{book_cfg.book_title}.npz"
 
         # No filesystem directory needed - all files saved via W&B
+        logger.info(f"🔥 Starting evaluation for: {book_cfg.book_title}")
+        start_time = time.time()
 
-        evaluate_book(book_cfg, model, tokenizer, sequence_log_prob, pad_id, Pos, model_name)
+        evaluate_book(book_cfg, model, tokenizer, sequence_log_prob, pad_id, Pos, model_name, cfg)
 
-    upload_hlo_dumps_to_wandb()
+        elapsed_time = time.time() - start_time
+        logger.info(f"✅ Completed {book_cfg.book_title} in {elapsed_time:.1f}s")
+
+    logger.info(f"🎉 Completed evaluation of all {total_books} books!")
+
     levanter.tracker.current_tracker().finish()
 
 

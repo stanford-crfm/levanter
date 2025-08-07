@@ -676,7 +676,7 @@ while running replica 0 and partition 0 of a replicated computation
 ```python
 # ATTENTION LAYERS - WRONG AXIS ASSIGNMENTS:
 q_proj: PartitionSpec(None, None, None, None, 'data')  # ❌ Should use 'model'
-k_proj: PartitionSpec(None, None, None, 'data')        # ❌ Should use 'model'  
+k_proj: PartitionSpec(None, None, None, 'data')        # ❌ Should use 'model'
 v_proj: PartitionSpec(None, None, None, 'data')        # ❌ Should use 'model'
 
 # MLP LAYERS - AXES SWAPPED:
@@ -712,7 +712,7 @@ sharding = NamedSharding(mesh, pspec_for_axis(node.axes, resource_mapping))
 - But partition specs suggest these aren't mapping correctly to 'model' axis
 - Mixed 'data'/'model' assignments indicate partial matches or fallback behavior
 
-### Memory Allocation Mathematics  
+### Memory Allocation Mathematics
 
 **Why 126GB Specifically**:
 - **Full 405B model**: ~1620GB total in fp32
@@ -730,7 +730,7 @@ Current failure: 126GB on single device ❌ (exceeds 32GB limit)
 
 **Added comprehensive logging in**:
 1. **`haliax/src/haliax/partitioning.py`** - WrappedCallable._call method
-2. **`src/levanter/compat/hf_checkpoints.py`** - Parameter loading progress  
+2. **`src/levanter/compat/hf_checkpoints.py`** - Parameter loading progress
 3. **`src/levanter/utils/jax_utils.py`** - Best effort sharding decisions
 
 **Local haliax installation confirmed working**:
@@ -741,7 +741,7 @@ Current failure: 126GB on single device ❌ (exceeds 32GB limit)
 ### Current Configuration State
 
 **Hardware**: v4-256 (128 devices total)
-**Mesh**: `(1, 1, 128)` → `('replica', 'data', 'model')`  
+**Mesh**: `(1, 1, 128)` → `('replica', 'data', 'model')`
 **Axis Mapping**: `{'mlp': 'model', 'heads': 'model', 'embed': 'data'}`
 **Model Parallelism**: All 128 devices used for model axis
 
@@ -767,13 +767,13 @@ print(f"[AXIS_DEBUG] Result: {mapping.get(axis.name if hasattr(axis, 'name') els
 
 ### Key Files for Next Session
 
-**Debug Logs**: 
+**Debug Logs**:
 - `/Users/ahmed/code/levanter/failure.log` - Contains full partition spec debug output
 - WandB artifacts with runtime path confirmation
 
 **Modified Files**:
 - `haliax/src/haliax/partitioning.py` - Debug logging infrastructure
-- `src/levanter/utils/jax_utils.py` - Best effort sharding fixes  
+- `src/levanter/utils/jax_utils.py` - Best effort sharding fixes
 - `config/books/eval_careless_llama3.1_405b_hp1.yaml` - Working configuration
 
 **Critical Functions**:
@@ -785,7 +785,7 @@ print(f"[AXIS_DEBUG] Result: {mapping.get(axis.name if hasattr(axis, 'name') els
 
 **Why we're confident this is the root cause**:
 1. ✅ Model loading phase works perfectly with tensor parallelism
-2. ✅ Failure happens exactly at model assembly compilation  
+2. ✅ Failure happens exactly at model assembly compilation
 3. ✅ Debug output shows incorrect partition specs with wrong axis assignments
 4. ✅ 126GB allocation matches expected large tensor consolidation
 5. ✅ All infrastructure in place to debug and fix axis mapping
@@ -810,7 +810,7 @@ tensor_parallel_axes: ["mlp", "heads"]
 
 **Actual Model Structure Axis Names** (from debug logs):
 - ✅ `'mlp'` (53248) → Maps to `'model'` ✅ **WORKS**
-- ✅ `'embed'` (16384) → Maps to `'data'` ✅ **WORKS**  
+- ✅ `'embed'` (16384) → Maps to `'data'` ✅ **WORKS**
 - ✅ `'heads'` (128) → Maps to `'model'` ✅ **WORKS when present**
 - ❌ `'kv_heads'` (8) → **MISSING** → Returns `None` → **FAILS**
 - ❌ `'q_heads_per_group'` (16) → **MISSING** → Returns `None` → **FAILS**
@@ -823,7 +823,7 @@ tensor_parallel_axes: ["mlp", "heads"]
 **The Critical Insight**: Llama-3.1-405B uses **decomposed attention head structure**:
 - Instead of single `'heads'` (128), the model uses:
   - `'kv_heads'` (8) - Key/Value heads
-  - `'q_heads_per_group'` (16) - Query heads per KV group  
+  - `'q_heads_per_group'` (16) - Query heads per KV group
   - `'head_size'` (128) - Individual head dimension
 - **Mathematical check**: `8 × 16 = 128` total query heads ✅
 
@@ -885,7 +885,7 @@ trainer:
 # Custom axis mapping in trainer configuration
 axis_mapping:
   mlp: "model"
-  heads: "model" 
+  heads: "model"
   kv_heads: "model"
   q_heads_per_group: "model"
   head_size: "model"
@@ -898,7 +898,7 @@ axis_mapping:
 
 **Large attention tensors**:
 - q_proj: `(8, 16, 128, 16384)` → 268MB ÷ 128 devices = **~2MB per device** ✅
-- k_proj: `(8, 128, 16384)` → 67MB ÷ 128 devices = **~0.5MB per device** ✅  
+- k_proj: `(8, 128, 16384)` → 67MB ÷ 128 devices = **~0.5MB per device** ✅
 - v_proj: `(8, 128, 16384)` → 67MB ÷ 128 devices = **~0.5MB per device** ✅
 
 **Total reduction**: 126GB → **~1GB distributed** across all devices
@@ -945,7 +945,7 @@ trainer:
 
 **✅ AXIS MAPPING FIX WORKED**: All debug logs show correct axis resolution:
 - `kv_heads` → `model` ✅
-- `q_heads_per_group` → `model` ✅  
+- `q_heads_per_group` → `model` ✅
 - `head_size` → `model` ✅
 - `embed` → `data` ✅
 
@@ -998,9 +998,9 @@ tensor_parallel_axes: ["mlp", "heads"]
 **Option 3: 2D Mesh (Advanced)**
 ```yaml
 # Create separate mesh axes for different head dimensions
-mesh_configuration: 
+mesh_configuration:
   - model_axis: 128  # for head_size
-  - head_axis: 8     # for kv_heads  
+  - head_axis: 8     # for kv_heads
   - group_axis: 16   # for q_heads_per_group
 ```
 
@@ -1032,7 +1032,7 @@ trainer:
 ### Memory Impact Analysis
 
 **head_size parallelism benefit**:
-- Large tensors: `(..., head_size=128, embed=16384)` 
+- Large tensors: `(..., head_size=128, embed=16384)`
 - Distributed: 128 dimension → 1 per device → **significant memory reduction**
 
 **Replicated dimensions acceptable**:
@@ -1051,7 +1051,7 @@ trainer:
 tensor_parallel_axes: ["mlp", "heads", "kv_heads", "q_heads_per_group", "head_size"]
 ```
 
-**Original Config**: `tensor_parallel_axes: ["mlp", "heads"]` 
+**Original Config**: `tensor_parallel_axes: ["mlp", "heads"]`
 **Problem**: The decomposed attention structure means `"heads"` axis doesn't exist in the actual model - only `"kv_heads"`, `"q_heads_per_group"`, and `"head_size"` exist.
 
 ### The Real Issue: Decomposed vs Unified Attention Structure
@@ -1067,7 +1067,7 @@ tensor_parallel_axes: ["mlp", "heads", "kv_heads", "q_heads_per_group", "head_si
 **Option 1: Multi-Axis Mesh (RECOMMENDED)**
 Create a mesh that can handle multiple head dimensions by modifying the trainer configuration:
 
-**Current Mesh Structure**: `(replica=1, data=1, model=128)` 
+**Current Mesh Structure**: `(replica=1, data=1, model=128)`
 **Problem**: Single `model` axis cannot be shared across multiple tensor dimensions
 
 **Solution - Multi-Dimensional Model Mesh**:
@@ -1075,15 +1075,15 @@ Create a mesh that can handle multiple head dimensions by modifying the trainer 
 trainer:
   # Modify mesh dimensions to create 2D model space
   model_axis_size: 64        # First model dimension (for head_size: 128 ÷ 2 = 64)
-  data_ici_axis_size: 2      # Repurpose data axis for second model dimension  
-  
+  data_ici_axis_size: 2      # Repurpose data axis for second model dimension
+
   # Custom axis mapping for multi-dimensional partitioning
-  tensor_parallel_axes: ["mlp", "head_size", "kv_heads"] 
-  
+  tensor_parallel_axes: ["mlp", "head_size", "kv_heads"]
+
   # Map different axes to different mesh dimensions
   axis_mapping_override:
     mlp: "model"           # Use primary model axis (64 devices)
-    head_size: "model"     # Use primary model axis (64 devices) 
+    head_size: "model"     # Use primary model axis (64 devices)
     kv_heads: "data"       # Use repurposed data axis (2 devices)
     q_heads_per_group: null # Keep replicated (16 is small)
     embed: "replica"       # Keep replicated on remaining dimension
@@ -1095,14 +1095,14 @@ trainer:
   replica_ici_axis_size: 1
   data_ici_axis_size: 8      # 8 devices for kv_heads (exactly matches kv_heads=8)
   model_axis_size: 16        # 16 devices for head_size (128 ÷ 8 = 16)
-  
+
   # Total: 1 × 8 × 16 = 128 devices
   # Mesh: (replica=1, data=8, model=16)
-  
+
   tensor_parallel_axes: ["mlp", "head_size", "kv_heads"]
   axis_mapping:
     mlp: "model"           # mlp (53248) across 16 devices
-    head_size: "model"     # head_size (128) across 16 devices  
+    head_size: "model"     # head_size (128) across 16 devices
     kv_heads: "data"       # kv_heads (8) across 8 devices
     q_heads_per_group: null # Replicated (16 is manageable)
 ```
@@ -1111,7 +1111,7 @@ trainer:
 1. **Different mesh axes** for different tensor dimensions
 2. **No JAX constraint violation** - each mesh axis used only once per tensor
 3. **PartitionSpec examples**:
-   - q_proj: `(kv_heads=8, q_heads_per_group=16, head_size=128, embed=16384)` 
+   - q_proj: `(kv_heads=8, q_heads_per_group=16, head_size=128, embed=16384)`
    - Result: `PartitionSpec('data', None, 'model', None)` ✅ (no duplicates)
    - Memory: 8÷8=1 per data device, 128÷16=8 per model device
 
@@ -1125,7 +1125,7 @@ tensor_parallel_axes: ["mlp", "head_size"]  # Only head_size, biggest dimension
 **Option 3: Tensor Reshaping (Advanced)**
 Modify model to combine decomposed axes back into single `heads` axis before partitioning
 
-**Option 4: Memory-First Approach** 
+**Option 4: Memory-First Approach**
 Focus on the axes that give maximum memory reduction:
 ```yaml
 tensor_parallel_axes: ["mlp"]  # Only MLP, skip complex head partitioning
@@ -1158,24 +1158,24 @@ tensor_parallel_axes: ["mlp"]  # Only MLP, skip complex head partitioning
 # Update config: eval_careless_llama3.1_405b_hp1.yaml
 trainer:
   replica_ici_axis_size: 1
-  data_ici_axis_size: 8      # For kv_heads (8)  
+  data_ici_axis_size: 8      # For kv_heads (8)
   model_axis_size: 16        # For head_size (128 ÷ 8 = 16)
-  
+
   tensor_parallel_axes: ["mlp", "head_size", "kv_heads"]
   name: "llama_3.1_405b_hp1_token_v4_256_3d_mesh_fix"
 ```
 
 **Expected PartitionSpecs**:
-- q_proj `(kv_heads=8, q_heads_per_group=16, head_size=128, embed=16384)`: 
+- q_proj `(kv_heads=8, q_heads_per_group=16, head_size=128, embed=16384)`:
   - `PartitionSpec('data', None, 'model', None)` ✅ (no duplicates)
 - k_proj `(kv_heads=8, head_size=128, embed=16384)`:
-  - `PartitionSpec('data', 'model', None)` ✅ 
+  - `PartitionSpec('data', 'model', None)` ✅
 - mlp `(mlp=53248, embed=16384)`:
   - `PartitionSpec('model', None)` ✅
 
 **Memory Distribution**:
 - **kv_heads**: 8 ÷ 8 = 1 per data device
-- **head_size**: 128 ÷ 16 = 8 per model device  
+- **head_size**: 128 ÷ 16 = 8 per model device
 - **mlp**: 53248 ÷ 16 = 3328 per model device
 - **No axis conflicts** - each mesh axis used once per tensor
 
@@ -1221,7 +1221,7 @@ trainer:
   replica_ici_axis_size: 1        # Keep replica axis as 1
   model_axis_size: 16             # ⭐ CHANGE: Reduce model axis for head_size (128÷8=16)
   # data_ici_axis_size automatically calculated: 128 ÷ (1 × 16) = 8 for kv_heads!
-  
+
   tensor_parallel_axes: ["mlp", "head_size", "kv_heads"]  # ⭐ Remove q_heads_per_group, heads
   name: "llama_3.1_405b_hp1_token_v4_256_3d_mesh_solution"
 ```
@@ -1253,11 +1253,11 @@ trainer:
 
 **Why `model_axis_size: 16`**:
 - `head_size` (128) divides evenly: 128÷16 = 8 per device
-- `mlp` (53248) divides evenly: 53248÷16 = 3328 per device  
+- `mlp` (53248) divides evenly: 53248÷16 = 3328 per device
 - Maintains high parallelism for largest dimensions
 
 **Why remove `q_heads_per_group` from tensor_parallel_axes**:
-- Size 16 is manageable when replicated  
+- Size 16 is manageable when replicated
 - Avoids need for 4D mesh (overly complex)
 - Focus on dimensions with highest memory impact
 
@@ -1271,7 +1271,7 @@ trainer:
 **Axis mapping resolution**:
 ```
 [AXIS_DEBUG] String axis 'kv_heads' -> result: data ✅
-[AXIS_DEBUG] String axis 'head_size' -> result: model ✅  
+[AXIS_DEBUG] String axis 'head_size' -> result: model ✅
 [AXIS_DEBUG] String axis 'mlp' -> result: model ✅
 [AXIS_DEBUG] String axis 'q_heads_per_group' -> result: None ✅ (replicated)
 ```

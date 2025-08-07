@@ -27,6 +27,9 @@ trainer:
   tensor_parallel_axes: ["mlp", "heads"]
   fsdp_axis: "embed"
   batch_axis: "batch"
+  ray:
+    auto_start_cluster: false
+    start_workers: false
 initialize_from_hf: "/opt/gcsfuse_mount/models/meta-llama--Llama-3-1-8B"
 use_hf_model_config: false
 chunk_size: 100

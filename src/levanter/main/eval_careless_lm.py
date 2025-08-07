@@ -17,7 +17,6 @@ import logging
 import math
 import os
 import pathlib
-import sys
 import tarfile
 import tempfile
 import time
