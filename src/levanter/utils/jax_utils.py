@@ -272,6 +272,101 @@ def as_arrayish(x):
         return jnp.asarray(x)
 
 
+# TODO: this is a hack for 405b and should be removed, 
+# def best_effort_sharding(shape, *, devices=None, mesh=None):
+#     if hasattr(shape, "shape"):
+#         shape = shape.shape
+
+#     if devices is None:
+#         devices = jax.devices()
+
+#     if mesh is None:
+#         mesh = hax.partitioning._get_mesh()
+#         if mesh.devices.shape == ():
+#             mesh = None
+
+#     if mesh is None:
+#         device_shape = (len(devices),)
+#         # we want to shard an array with shape shape across len(devices)
+#         # each axis in the array has to be divisible by the corresponding axis in device_shape, so
+#         # we iterate from the right, taking the gcd of the shape and the left-most axis of device_shape
+#         num_devices = device_shape[0]
+
+#         for i in range(len(shape) - 1, -1, -1):
+#             shape_i = shape[i]
+#             gcd = np.gcd(shape_i, num_devices)
+#             num_devices //= gcd
+#             device_shape = (num_devices, gcd) + device_shape[1:]
+
+#         device_mesh = np.array(devices).reshape(list(device_shape[1:]))
+#         axis_names = [f"d{i}" for i in range(len(shape))]
+#         mesh = Mesh(device_mesh, axis_names)
+#         sharding = NamedSharding(mesh, PartitionSpec(*axis_names))
+#         return sharding
+#     else:
+#         # Check if we have a model axis available for tensor parallelism
+#         model_axis_idx = None
+#         model_devices = 1
+#         if hax.partitioning.ResourceAxis.MODEL in mesh.axis_names:
+#             model_axis_idx = mesh.axis_names.index(hax.partitioning.ResourceAxis.MODEL)
+#             model_devices = mesh.devices.shape[model_axis_idx]
+
+#         # Get DATA axis for fallback
+#         fsdp_axis = mesh.axis_names.index(hax.partitioning.ResourceAxis.DATA)
+#         data_devices = mesh.devices.shape[fsdp_axis]
+
+#         print(f"[DEBUG] best_effort_sharding: shape={shape}, mesh.axis_names={mesh.axis_names}", flush=True)
+#         print(
+#             f"[DEBUG] mesh.devices.shape={mesh.devices.shape}, data_devices={data_devices},"
+#             f" model_devices={model_devices}",
+#             flush=True,
+#         )
+
+#         # Calculate tensor size in MB (assuming fp32)
+#         tensor_size_mb = np.prod(shape) * 4 / (1024 * 1024)
+#         print(f"[DEBUG] Tensor size: {tensor_size_mb:.1f}MB", flush=True)
+
+#         # Use MODEL axis for large tensors when tensor parallelism is available
+#         if model_axis_idx is not None and model_devices > 1 and tensor_size_mb > 16:
+#             print(f"[DEBUG] Large tensor detected, trying MODEL axis with {model_devices} devices", flush=True)
+
+#             # Try to shard on MODEL axis first
+#             for i in range(len(shape) - 1, -1, -1):
+#                 shape_i = shape[i]
+#                 if shape_i % model_devices == 0:
+#                     axis_sharding = [None] * len(shape)
+#                     axis_sharding[i] = hax.partitioning.ResourceAxis.MODEL
+#                     sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
+#                     print(
+#                         f"[DEBUG] Using MODEL axis: shard axis {i} (size={shape_i}) across {model_devices} MODEL"
+#                         " devices",
+#                         flush=True,
+#                     )
+#                     print(f"[DEBUG] Final sharding: {sharding.spec}", flush=True)
+#                     return sharding
+
+#             print(f"[DEBUG] No axis divisible by {model_devices} MODEL devices, falling back to DATA axis", flush=True)
+
+#         # Fallback to DATA axis (original FSDP behavior)
+#         print(f"[DEBUG] Using DATA axis fallback with {data_devices} devices", flush=True)
+
+#         for i in range(len(shape) - 1, -1, -1):
+#             shape_i = shape[i]
+#             if shape_i % data_devices == 0:
+#                 sharded_axis = i
+#                 print(f"[DEBUG] Will shard axis {i} (size={shape_i}) across {data_devices} DATA devices", flush=True)
+#                 break
+#         else:
+#             print(f"[DEBUG] No axis divisible by {data_devices}, returning replicated sharding", flush=True)
+#             return NamedSharding(mesh, PartitionSpec(None))
+
+#         axis_sharding = [None] * len(shape)
+#         axis_sharding[sharded_axis] = hax.partitioning.ResourceAxis.DATA
+#         sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
+
+#         print(f"[DEBUG] Final sharding: {sharding.spec}", flush=True)
+#         return sharding
+
 def best_effort_sharding(shape, *, devices=None, mesh=None):
     if hasattr(shape, "shape"):
         shape = shape.shape
@@ -303,70 +398,24 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
         sharding = NamedSharding(mesh, PartitionSpec(*axis_names))
         return sharding
     else:
-        # Check if we have a model axis available for tensor parallelism
-        model_axis_idx = None
-        model_devices = 1
-        if hax.partitioning.ResourceAxis.MODEL in mesh.axis_names:
-            model_axis_idx = mesh.axis_names.index(hax.partitioning.ResourceAxis.MODEL)
-            model_devices = mesh.devices.shape[model_axis_idx]
-
-        # Get DATA axis for fallback
+        # get the existing mesh and find the FSDP axis
         fsdp_axis = mesh.axis_names.index(hax.partitioning.ResourceAxis.DATA)
-        data_devices = mesh.devices.shape[fsdp_axis]
-
-        print(f"[DEBUG] best_effort_sharding: shape={shape}, mesh.axis_names={mesh.axis_names}", flush=True)
-        print(
-            f"[DEBUG] mesh.devices.shape={mesh.devices.shape}, data_devices={data_devices},"
-            f" model_devices={model_devices}",
-            flush=True,
-        )
-
-        # Calculate tensor size in MB (assuming fp32)
-        tensor_size_mb = np.prod(shape) * 4 / (1024 * 1024)
-        print(f"[DEBUG] Tensor size: {tensor_size_mb:.1f}MB", flush=True)
-
-        # Use MODEL axis for large tensors when tensor parallelism is available
-        if model_axis_idx is not None and model_devices > 1 and tensor_size_mb > 16:
-            print(f"[DEBUG] Large tensor detected, trying MODEL axis with {model_devices} devices", flush=True)
-
-            # Try to shard on MODEL axis first
-            for i in range(len(shape) - 1, -1, -1):
-                shape_i = shape[i]
-                if shape_i % model_devices == 0:
-                    axis_sharding = [None] * len(shape)
-                    axis_sharding[i] = hax.partitioning.ResourceAxis.MODEL
-                    sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
-                    print(
-                        f"[DEBUG] Using MODEL axis: shard axis {i} (size={shape_i}) across {model_devices} MODEL"
-                        " devices",
-                        flush=True,
-                    )
-                    print(f"[DEBUG] Final sharding: {sharding.spec}", flush=True)
-                    return sharding
-
-            print(f"[DEBUG] No axis divisible by {model_devices} MODEL devices, falling back to DATA axis", flush=True)
-
-        # Fallback to DATA axis (original FSDP behavior)
-        print(f"[DEBUG] Using DATA axis fallback with {data_devices} devices", flush=True)
+        num_devices = mesh.devices.shape[fsdp_axis]
 
         for i in range(len(shape) - 1, -1, -1):
             shape_i = shape[i]
-            if shape_i % data_devices == 0:
+            if shape_i % num_devices == 0:
                 sharded_axis = i
-                print(f"[DEBUG] Will shard axis {i} (size={shape_i}) across {data_devices} DATA devices", flush=True)
                 break
         else:
-            print(f"[DEBUG] No axis divisible by {data_devices}, returning replicated sharding", flush=True)
             return NamedSharding(mesh, PartitionSpec(None))
 
         axis_sharding = [None] * len(shape)
         axis_sharding[sharded_axis] = hax.partitioning.ResourceAxis.DATA
         sharding = NamedSharding(mesh, PartitionSpec(*axis_sharding))
 
-        print(f"[DEBUG] Final sharding: {sharding.spec}", flush=True)
         return sharding
-
-
+    
 def create_fsdp_mesh(
     replica_ici_axis_size: int,
     data_ici_axis_size: int,

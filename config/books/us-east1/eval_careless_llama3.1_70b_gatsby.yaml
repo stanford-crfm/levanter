@@ -60,6 +60,7 @@ trainer:
     project: "marin"
     tags: ["llama3", "eval", "70b"]
     name: "llama_3.1_70b_gatsby_v6e_64"
+    mode: "online"
   mp: p=f32,c=f32
   per_device_eval_parallelism: -1
   tensor_parallel_axes: ["mlp", "heads"]
@@ -68,7 +69,7 @@ trainer:
 
 # Evaluation-specific overrides
 # Reduce batch size to avoid OOM on 70B.
-eval_batch_size: 1
+eval_batch_size: 64
 
 # ---------------------------------------------------------------------------
 # Checkpoint -----------------------------------------------------------------

@@ -44,7 +44,8 @@ ENV CLOUDSDK_CORE_PROJECT=hai-gcp-models \
 ENV XLA_USE_F16=0 \
     XLA_USE_BF16=0 \
     XLA_DOWNCAST_BF16=0 \
-    JAX_DEFAULT_MATMUL_PRECISION=highest
+    JAX_DEFAULT_MATMUL_PRECISION=highest \
+    WANDB_MODE=online
 
 # Add XLA debugging environment variables
 ENV XLA_FLAGS="--xla_dump_to=/tmp/xla_dumps --xla_dump_hlo_as_text --xla_dump_hlo_pass_re=.*" \
@@ -62,11 +63,17 @@ WORKDIR /opt/levanter
 
 ADD pyproject.toml README.md /opt/levanter/
 RUN mkdir -p /opt/levanter/src/levanter
-RUN pip install -e '.[test]'
-RUN pip install "lm-eval@git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
-RUN pip install "draccus@git+https://github.com/dlwh/draccus.git"
+RUN touch /opt/levanter/src/levanter/__init__.py || true
+RUN uv pip install -e '/opt/levanter/[test]'
+RUN uv pip install "lm-eval@git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+RUN uv pip install "draccus@git+https://github.com/dlwh/draccus.git"
+RUN rm /opt/levanter/src/levanter/__init__.py
 # Copy the rest of the source (including any local haliax/ folder)
 ADD . /opt/levanter
+
+# Force wandb online mode by removing any offline settings
+RUN rm -rf /opt/levanter/.wandb /root/.wandb ~/.wandb || true
+RUN wandb online || true
 
 # Override PYTHONPATH to prioritize local haliax over PyPI version
 ENV PYTHONPATH=/opt/levanter/haliax/src:$PYTHONPATH
@@ -82,9 +89,9 @@ RUN echo "=== HALIAX INSTALLATION DEBUG ===" && \
       echo "Checking venv setup and uninstalling existing haliax..." && \
       ls -la /opt/levanter/.venv/bin/ | grep pip || echo "venv pip not found" && \
       which python && python --version && \
-      pip uninstall -y haliax || true && \
+      uv pip uninstall -y haliax || true && \
       echo "Installing local haliax in editable mode..." && \
-      pip install -e /opt/levanter/haliax && \
+      uv pip install -e /opt/levanter/haliax && \
       echo "Local haliax installation completed" && \
       pip show haliax || echo "pip show failed, checking install location..." && \
       ls -la /opt/levanter/.venv/lib/python3.10/site-packages/ | grep haliax || echo "haliax not found in venv" && \
@@ -104,6 +111,11 @@ RUN if [ -f ".mnt" ] || [ -d ".mnt" ]; then mkdir -p $(dirname $EXTRA_CTX) && mv
 # Create entrypoint script that mounts GCS bucket and runs the original command
 RUN echo '#!/bin/bash' > /opt/entrypoint.sh && \
     echo 'set -e' >> /opt/entrypoint.sh && \
+    echo '' >> /opt/entrypoint.sh && \
+    echo '# Force wandb online mode' >> /opt/entrypoint.sh && \
+    echo 'export WANDB_MODE=online' >> /opt/entrypoint.sh && \
+    echo 'rm -f ~/.wandb/settings /opt/levanter/.wandb/settings' >> /opt/entrypoint.sh && \
+    echo 'wandb online || true' >> /opt/entrypoint.sh && \
     echo '' >> /opt/entrypoint.sh && \
     echo '# Mount GCS bucket inside container' >> /opt/entrypoint.sh && \
     echo 'echo "Mounting GCS bucket marin-us-central2 to /opt/gcsfuse_mount..."' >> /opt/entrypoint.sh && \

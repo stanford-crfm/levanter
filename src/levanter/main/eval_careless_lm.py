@@ -38,7 +38,6 @@ import haliax as hax
 import haliax.partitioning
 from haliax.nn import log_softmax
 from haliax.partitioning import round_axis_for_partitioning
-A
 
 import levanter
 import levanter.tracker
@@ -235,8 +234,6 @@ def main(cfg: EvalCarelessLmConfig):
 
     levanter.initialize(cfg)
 
-    # Log partitioning debug info to WandB (must be after levanter.initialize)
-    partition_log()
 
     # Append timestamp to output_base_path for GCS writes
     if cfg.output_base_path.startswith("gs://"):
