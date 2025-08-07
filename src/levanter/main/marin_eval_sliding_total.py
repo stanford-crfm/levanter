@@ -154,9 +154,9 @@ def save_data_with_wandb(data, filename: str, **kwargs):
     os.unlink(tmp_path)
 
 
-def save_plot_to_gcp(fig, output_path: str, filename: str, dpi: int = 300):
-    """Save plot directly to GCP using fsspec."""
-    full_path = f"{output_path.rstrip('/')}/{filename}"
+def save_plot_to_gcp(fig, output_path: str, filename: str, book_title: str, dpi: int = 300):
+    """Save plot directly to GCP using fsspec with book subfolder."""
+    full_path = f"{output_path.rstrip('/')}/{book_title}/{filename}"
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
         fig.savefig(tmp_file.name, dpi=dpi, bbox_inches="tight")
         tmp_path = tmp_file.name
@@ -170,9 +170,9 @@ def save_plot_to_gcp(fig, output_path: str, filename: str, dpi: int = 300):
     logger.info(f"📊 Saved plot to: {full_path}")
 
 
-def save_data_to_gcp(data, output_path: str, filename: str, **kwargs):
-    """Save data directly to GCP using fsspec."""
-    full_path = f"{output_path.rstrip('/')}/{filename}"
+def save_data_to_gcp(data, output_path: str, filename: str, book_title: str, **kwargs):
+    """Save data directly to GCP using fsspec with book subfolder."""
+    full_path = f"{output_path.rstrip('/')}/{book_title}/{filename}"
     suffix = pathlib.Path(filename).suffix or ".npz"
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
@@ -336,8 +336,8 @@ def evaluate_book(
     if hist_stats:
         # Save histogram - choose method based on gcp_log flag
         if main_cfg.gcp_log:
-            # Copy histogram to GCP using fsspec
-            histogram_gcp_path = f"{main_cfg.output_base_path.rstrip('/')}/{cfg.histogram_path}"
+            # Copy histogram to GCP using fsspec with book subfolder
+            histogram_gcp_path = f"{main_cfg.output_base_path.rstrip('/')}/{cfg.book_title}/{cfg.histogram_path}"
             with fsspec.open(histogram_gcp_path, 'wb') as f_out:
                 with open(temp_histogram_path, 'rb') as f_in:
                     f_out.write(f_in.read())
@@ -383,12 +383,12 @@ def evaluate_book(
 
     # Save pz data - choose method based on gcp_log flag
     main_cfg = None  # We need to pass the main config to access gcp_log
-    # This is a workaround - we'll need to modify the function signature
-    if hasattr(cfg, 'gcp_log') and cfg.gcp_log and hasattr(cfg, 'output_base_path'):
+    if main_cfg.gcp_log:
         save_data_to_gcp(
             None,
-            cfg.output_base_path,
+            main_cfg.output_base_path,
             cfg.pz_data_path,
+            cfg.book_title,
             pz_values=np.array(pz_list),
             span_ranges=np.array(span_ranges),
             max_pz=max_vals,
@@ -442,10 +442,10 @@ def evaluate_book(
 
     plt.tight_layout()
     # Save plot and data - choose method based on gcp_log flag
-    if hasattr(cfg, 'gcp_log') and cfg.gcp_log and hasattr(cfg, 'output_base_path'):
-        save_plot_to_gcp(fig, cfg.output_base_path, cfg.plot_path, dpi=300)
+    if main_cfg.gcp_log:
+        save_plot_to_gcp(fig, main_cfg.output_base_path, cfg.plot_path, cfg.book_title, dpi=300)
         npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
-        save_data_to_gcp(max_vals, cfg.output_base_path, npy_filename)
+        save_data_to_gcp(max_vals, main_cfg.output_base_path, npy_filename, cfg.book_title)
     else:
         save_plot_with_wandb(fig, cfg.plot_path, dpi=300)
         npy_filename = pathlib.Path(cfg.plot_path).with_suffix(".npy").name
