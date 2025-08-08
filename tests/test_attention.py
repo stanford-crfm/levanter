@@ -332,9 +332,7 @@ def test_tpu_splash_attention_sliding_window():
             block_size=BLOCK_SIZE,
             scaling_factor=1 / math.sqrt(Key.size),
         )
-        hax_out = hax.nn.attention.dot_product_attention(
-            KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos)
-        )
+        hax_out = hax.nn.attention.dot_product_attention(KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos))
         assert hax_out.axes == flash_out.axes
         assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
 
@@ -361,9 +359,7 @@ def test_segment_ids_are_respected(impl):
     values = hax.named(values, (KPos, Head))
 
     dp_mesh = Mesh(jax.devices(), ("dp",))
-    query, keys, values = jax.device_put(
-        [query, keys, values], NamedSharding(dp_mesh, PartitionSpec("dp", None))
-    )
+    query, keys, values = jax.device_put([query, keys, values], NamedSharding(dp_mesh, PartitionSpec("dp", None)))
 
     segment_ids = np.array([0, 0, 0] + [1] * (L - 3), dtype=np.int32)
     segment_ids = jax.device_put(segment_ids, NamedSharding(dp_mesh, PartitionSpec("dp")))
@@ -421,9 +417,7 @@ def sink_attention_ref_gpt_oss(
 
     output = torch.einsum("bhmqk,bkhmd->bqhmd", scores, value.float())
 
-    output = output.reshape(
-        batch_size, num_queries, num_key_value_heads * num_key_value_groups * head_dim
-    ).bfloat16()
+    output = output.reshape(batch_size, num_queries, num_key_value_heads * num_key_value_groups * head_dim).bfloat16()
     return output
 
 
@@ -445,9 +439,7 @@ def sink_attention(
     q_jax = jnp.array(query.cpu().numpy(), dtype=jnp.bfloat16)
     k_jax = jnp.array(key.cpu().numpy(), dtype=jnp.bfloat16)
     v_jax = jnp.array(value.cpu().numpy(), dtype=jnp.bfloat16)
-    sink_jax = jnp.array(
-        sinks.view(num_key_value_heads, num_key_value_groups).cpu().numpy(), dtype=jnp.bfloat16
-    )
+    sink_jax = jnp.array(sinks.view(num_key_value_heads, num_key_value_groups).cpu().numpy(), dtype=jnp.bfloat16)
 
     Batch = Axis("batch", batch_size)
     QPos = Axis("q_pos", num_queries)
@@ -507,22 +499,22 @@ def test_attention_equivalence(
     sliding_window,
     start_q,
 ):
+    import torch
+
     if num_queries > num_keys:
         pytest.skip("too many queries")
 
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required for this test")
 
-    q = torch.randn(
-        batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim
-    ).bfloat16().cuda()
+    q = torch.randn(batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim).bfloat16().cuda()
     k = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
     v = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
     sinks = torch.randn(num_key_value_heads * num_key_value_groups).bfloat16().cuda()
 
     start_q_t = torch.tensor([start_q], dtype=torch.int32).cuda()
 
-    o1 = attention(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
-    o2 = attention_ref(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
+    o1 = sink_attention(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
+    o2 = sink_attention_ref_gpt_oss(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
 
     torch.testing.assert_close(o1, o2)
