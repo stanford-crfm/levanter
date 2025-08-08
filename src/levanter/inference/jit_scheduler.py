@@ -7,7 +7,7 @@ from haliax import NamedArray, haxtyping as ht
 from jax import numpy as jnp
 import jax
 
-from levanter.inference.utils import INVALID, masked_set, is_valid, is_stop_signal
+from levanter.inference.utils import INVALID, masked_set, is_valid, is_stop_signal, purge
 
 
 class PackedSequence(eqx.Module):
@@ -38,7 +38,6 @@ class PackedSequence(eqx.Module):
         counts = jnp.bincount(raw_seq_ids, weights=weights, length=max_sequences)
 
         return hax.named(counts, axis=("seq",))
-
 
     def boundary_indices(self, max_boundaries: int) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
         """
@@ -229,7 +228,7 @@ class DecodeState(eqx.Module):
 
         return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, num_tokens=counts)
 
-    def is_finished(self, seq_id: jnp.ndarray):
+    def is_finished(self, seq_id: jnp.ndarray) -> jnp.ndarray:
         """
         Check if the sequence or sequences with the given local ID is finished.
         A sequence is finished if it has reached its maximum number of tokens or hit its stop sequence.
@@ -535,23 +534,23 @@ class JitScheduler(eqx.Module):
 
         return new_scheduler, sequence
 
-    def purge_queue_of_seq(self, seq_id) -> "JitScheduler":
+    def purge_queue_of_seq(self, seq_id: hax.NamedArray | int) -> "JitScheduler":
         """
-        Remove all tokens from the queue that belong to the given sequence ID.
+        Remove all tokens from the queue that belong to the given sequence IDs or sequence ids
         Slides remaining tokens to the front of the queue.
         """
 
-        is_seq_id = self.queued_seq_ids == seq_id
-        new_num_queued_tokens = self.num_queued_tokens - hax.sum(is_seq_id).scalar()
-        remaining_seq_id_pos = hax.where(~is_seq_id, fill_value=INVALID, new_axis=self.queued_seq_ids.resolve_axis("position"))[0]
-        new_seq_ids = self.queued_seq_ids.at["position", remaining_seq_id_pos].get(mode="fill", fill_value=INVALID)
-        new_tokens = self.queued_tokens.at["position", remaining_seq_id_pos].get(mode="fill", fill_value=INVALID)
+        # einsum takes care of broadcasting
+        is_seq_id = hax.einsum(" -> position", self.queued_seq_ids == seq_id)
+        new_seq_ids = purge(self.queued_seq_ids, is_seq_id)
+        new_tokens = purge(self.queued_tokens, is_seq_id)
+        new_queued = hax.sum(new_seq_ids != INVALID).scalar()
 
         return dataclasses.replace(
             self,
             queued_tokens=new_tokens,
             queued_seq_ids=new_seq_ids,
-            num_queued_tokens=new_num_queued_tokens,
+            num_queued_tokens=new_queued,
         )
 
     def cleared(self) -> "JitScheduler":

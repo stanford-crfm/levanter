@@ -1,3 +1,5 @@
+import jax.numpy as jnp
+
 import haliax as hax
 import haliax.haxtyping as ht
 from haliax import NamedArray
@@ -55,3 +57,47 @@ def is_stop_signal(tail_tokens: ht.i32[NamedArray, "position"], stop_sequences: 
     count_match = hax.sum(tail_tokens == stop_sequences, axis="position") == total_stop_tokens
 
     return hax.any(valid_stop_sequences & count_match)
+
+
+def purge_raw(array: jnp.array, mask, max_nnz=None, invalid=INVALID) -> jnp.ndarray:
+    """
+    Set elements of the array to `invalid` where the `mask` is True and slides the rest to the front.
+
+    Args:
+        array: The input array to be purged.
+        mask: A boolean array indicating which elements to purge (True means purge).
+        max_nnz: The maximum size of the array. If None, it is inferred from the array shape.
+        invalid: The value to pad with (default is INVALID).
+
+    Returns:
+        the purged array.
+    """
+    if array.ndim != 1:
+        raise ValueError("purge function only supports 1D arrays")
+
+    if max_nnz is None:
+        max_nnz = array.size
+
+    indices = jnp.nonzero(~mask, size=max_nnz, fill_value=INVALID)[0]
+    new_values = array.at[indices].get(mode="fill", fill_value=invalid)
+
+    return new_values
+
+
+def purge(array: NamedArray, mask: NamedArray, invalid=INVALID) -> NamedArray:
+    """
+    Set elements of the array to `invalid` where the `mask` is True and slides the rest to the front.
+
+    Args:
+        array: The input array to be purged.
+        mask: A boolean array indicating which elements to purge (True means purge).
+        invalid: The value to pad with (default is INVALID).
+
+    Returns:
+        The purged array.
+    """
+    if array.ndim != 1:
+        raise ValueError("purge function only supports 1D arrays")
+
+    new_values = purge_raw(array.array, mask.array, invalid=invalid)
+    return hax.named(new_values, array.axes)
