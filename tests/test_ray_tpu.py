@@ -6,7 +6,6 @@ import jax.random as jrandom
 import numpy as np
 import pytest
 import ray
-from ray.actor import ActorHandle
 from jax.lax import with_sharding_constraint
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
