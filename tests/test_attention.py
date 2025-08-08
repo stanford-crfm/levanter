@@ -436,10 +436,12 @@ def sink_attention(
     _, num_keys, _, _ = key.shape
 
     # Convert torch tensors to JAX NamedArrays
-    q_jax = jnp.array(query.cpu().numpy(), dtype=jnp.bfloat16)
-    k_jax = jnp.array(key.cpu().numpy(), dtype=jnp.bfloat16)
-    v_jax = jnp.array(value.cpu().numpy(), dtype=jnp.bfloat16)
-    sink_jax = jnp.array(sinks.view(num_key_value_heads, num_key_value_groups).cpu().numpy(), dtype=jnp.bfloat16)
+    q_jax = jnp.array(query.to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16)
+    k_jax = jnp.array(key.to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16)
+    v_jax = jnp.array(value.to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16)
+    sink_jax = jnp.array(
+        sinks.view(num_key_value_heads, num_key_value_groups).to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16
+    )
 
     Batch = Axis("batch", batch_size)
     QPos = Axis("q_pos", num_queries)
@@ -472,7 +474,7 @@ def sink_attention(
         scaling_factor=sm_scale,
     )
 
-    out_np = np.asarray(out.array)
+    out_np = np.asarray(out.array, dtype=np.float32)
     out_torch = torch.from_numpy(out_np).to(query.device)
     out_torch = out_torch.view(batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim)
     return out_torch.reshape(batch_size, num_queries, -1).bfloat16()
