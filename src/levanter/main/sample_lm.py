@@ -31,7 +31,7 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.inference.jit_scheduler import JitScheduler, DecodeState, SeqDecodingParams
-from levanter.inference.utils import INVALID, is_invalid
+from levanter.inference.utils import INVALID
 from levanter.layers.attention import KvPageCache
 
 logger = logging.getLogger(__name__)
@@ -114,21 +114,17 @@ def run_generation_loop(
     gen_state: GenState,
     model,
     sampler,
-    temps,
     max_tokens_per_round: int,
     max_rounds: int,
-) -> GenState:  # type: ignore[name-defined]
-    """Generate tokens using ``JitScheduler`` until either ``max_new_tokens`` have been
-    produced *per sequence* or all sequences report finished."""
+) -> GenState:
+    """Generate tokens until all sequences are finished or max rounds is reached."""
 
-    def cond(state: tuple[GenState, jax.Array]):
-        _gen_state, step = state
-        finished = _gen_state.decode_state.is_finished(jnp.arange(_gen_state.decode_state.seq_id.size))
+    def cond(state: tuple[GenState, jax.Array, jax.Array]):
+        _gen_state, finished, step = state
         return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (~jnp.all(finished))
 
-    def body(state: tuple[GenState, jax.Array]) -> tuple[GenState, jax.Array]:
-        gen_state: GenState
-        gen_state, step = state
+    def body(state: tuple[GenState, jax.Array, jax.Array]) -> tuple[GenState, jax.Array, jax.Array]:
+        gen_state, has_finished, step = state
 
         # Pack the next chunk from the queue
         sched, packed_seq = gen_state.sched.pack_next_sequence(max_tokens_per_round)
@@ -140,21 +136,29 @@ def run_generation_loop(
         # Decode logits and sample new tokens
         logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
         logits = logits["position", boundaries]
-        cache = eqx.error_if(cache, hax.any(hax.isnan(cache.kv_pages)).scalar(), "New Cache contains NaNs")
-        logits = eqx.error_if(logits, hax.any(hax.isnan(logits) & ~is_invalid(boundaries)).scalar(), "Logits contain NaNs")
+        # cache = eqx.error_if(cache, hax.any(hax.isnan(cache.kv_pages)).scalar(), "New Cache contains NaNs")
+        # logits = eqx.error_if(logits, hax.any(hax.isnan(logits) & ~is_invalid(boundaries)).scalar(), "Logits contain NaNs")
 
         num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = packed_seq.seq_ids["position", boundaries]
         new_pos_ids = binfo.pos_ids["position", boundaries]
         prng_keys = gen_state.decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
 
+        temps = gen_state.decode_state.temperature["seq", new_seq_ids]
+
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
 
         # Update scheduler with the freshly sampled tokens
         decode_state = gen_state.decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
-        # decode_state.debug_print()
+        new_finished = decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
+        has_finished = has_finished | new_finished
+
         sched = sched.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
-        # sched.debug_print("post enqueue")
+
+        # purge any finished sequencse
+        finished_sequences = jnp.nonzero(new_finished, size=gen_state.page_table.max_seqs, fill_value=INVALID)[0]
+        finished_sequences = hax.named(finished_sequences, axis="seq")
+        sched = sched.purge_queue_of_seq(finished_sequences)
 
         # Update the gen_state with all the new components
         new_gen_state = dataclasses.replace(
@@ -165,10 +169,11 @@ def run_generation_loop(
             decode_state=decode_state,
         )
 
-        return new_gen_state, step + 1
+        return new_gen_state, has_finished, step + 1
 
-    init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
-    final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
+    has_finished = gen_state.decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
+    init_state = (gen_state, has_finished, jnp.array(0, dtype=jnp.int32))
+    final_gen_state, has_finished, _ = jax.lax.while_loop(cond, body, init_state)
 
     return final_gen_state
 
@@ -203,8 +208,6 @@ def main(config: SampleLmConfig):
             prompts = [prompts]
 
         prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
-
-        temps = hax.full((), config.temperature, dtype=jnp.float32)
 
         table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
@@ -246,7 +249,7 @@ def main(config: SampleLmConfig):
 
             time_in = time.time()
             outputs, gen_state, total_generated = _one_round(
-                config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids, key
+                config, gen_state, model, prompt_ids, sampler, tokenizer, stop_ids, key
             )
             print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
                   f"generated {total_generated} tokens in {len(outputs)} sequences.")
@@ -267,7 +270,7 @@ def main(config: SampleLmConfig):
             del page_table
 
 
-def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, stop_ids: NamedArray | None, key):
+def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_ids: NamedArray | None, key):
     time_in = time.time()
     finished = [False] * len(prompt_ids)
     outputs = [list(t) for t in prompt_ids]  # start with the prompts
@@ -319,7 +322,6 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
                 gen_state,
                 model,
                 sampler,
-                temps,
                 # TODO: tune/configure
                 64,
                 32,
@@ -338,7 +340,6 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             gen_state,
             model,
             sampler,
-            temps,
             16,
             1,
         )
@@ -357,7 +358,6 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, temps, tokenizer, 
             gen_state,
             model,
             sampler,
-            temps,
             # TODO: tune/configure
             len(prompt_ids),
             8,
@@ -406,7 +406,6 @@ def extract_outputs(decode_state: DecodeState, outputs, finished):
     num_seqs = decode_state.max_seqs
     tokens = jax.device_get(decode_state.tokens.array)
     num_tokens = jax.device_get(decode_state.num_tokens.array)
-    # TODO: just return is_finished from the loop
     this_finished = jax.device_get(decode_state.is_finished(jnp.arange(num_seqs)))
     for seq_id in range(num_seqs):
 
