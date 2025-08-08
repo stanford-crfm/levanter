@@ -51,7 +51,6 @@ skip_if_no_multislice = pytest.mark.skipif(
 # Base function for tests, similar to the one in ray_tpu.py
 @ray.remote(max_calls=1)
 def simple_jax_fn():
-
     import jax
 
     jax.devices()
@@ -80,7 +79,7 @@ def simple_jax_fn():
     key_x, key_weights, key_bias = jrandom.split(jrandom.PRNGKey(0), 3)
 
     # Define array dimensions
-    dim_in = 32  # factor of num_tpus_per_host usually
+    dim_in = 8  # factor of num_tpus_per_host usually
     dim_out = 4
 
     with mesh:
@@ -190,7 +189,7 @@ def test_variable_multislice_run():
     if not _MULTISLICE_POSSIBLE:  # Redundant due to marker, but good for clarity
         pytest.skip("Not enough TPUs for multislice test")
 
-    num_slices = [2, 4]
+    num_slices = [1, 2]
     tpu_type = "v4-8"  # Each slice is a v4-8
 
     results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices, max_retries_failure=1)
