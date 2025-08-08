@@ -54,7 +54,7 @@ def is_stop_signal(tail_tokens: ht.i32[NamedArray, "position"], stop_sequences: 
     # next, count up the number of valid tokens in each stop sequence
     total_stop_tokens = hax.sum(is_valid(stop_sequences, invalid), axis="position")
 
-    count_match = hax.sum(tail_tokens == stop_sequences, axis="position") == total_stop_tokens
+    count_match = hax.sum((tail_tokens == stop_sequences) & (tail_tokens != invalid), axis="position") == total_stop_tokens
 
     return hax.any(valid_stop_sequences & count_match)
 

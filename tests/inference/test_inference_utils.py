@@ -37,3 +37,19 @@ def test_is_stop_signal_multiple_stop_sequences_one_matches():
     tail_tokens = hax.named(jnp.array([8, 9, 10], dtype=jnp.int32), axis=("position",))
     stop_sequences = hax.named(jnp.array([[1, 2, 3], [8, 9, 10], [4, 5, 6]], dtype=jnp.int32), axis=("seq", "position"))
     assert is_stop_signal(tail_tokens, stop_sequences)
+
+
+def test_is_stop_signal_problem():
+    tail_tokens = hax.named(
+        jnp.array([2000000, 28070, 5573, 323, 8254, 1667, 4227, 11, 1057, 2291, 69, 19568, 323, 40317, 743, 704], dtype=jnp.int32),
+        axis=("position",)
+    )
+    stop_sequences = hax.named(
+        jnp.array([[2000000, 2000000, 2000000, 2000000,
+                     2000000, 2000000, 2000000, 2000000,
+                     2000000, 2000000, 2000000, 2000000,
+                     2000000, 2000000, 2000000,      13]], dtype=jnp.int32),
+        axis=("stop_seq", "position")
+    )
+
+    assert not is_stop_signal(tail_tokens, stop_sequences)

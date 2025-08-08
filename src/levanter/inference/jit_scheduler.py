@@ -540,8 +540,10 @@ class JitScheduler(eqx.Module):
         Slides remaining tokens to the front of the queue.
         """
 
-        # einsum takes care of broadcasting
-        is_seq_id = hax.einsum(" -> position", self.queued_seq_ids == seq_id)
+        if isinstance(seq_id, hax.NamedArray):
+            is_seq_id = hax.einsum(" -> position", self.queued_seq_ids.broadcast_axis(seq_id.axes) == seq_id)
+        else:
+            is_seq_id = self.queued_seq_ids == seq_id
         new_seq_ids = purge(self.queued_seq_ids, is_seq_id)
         new_tokens = purge(self.queued_tokens, is_seq_id)
         new_queued = hax.sum(new_seq_ids != INVALID).scalar()
