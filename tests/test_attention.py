@@ -23,7 +23,7 @@ from levanter.layers.attention import (
     dot_product_attention,
     dot_product_attention_with_sink,
 )
-from test_utils import skip_if_module_missing
+from test_utils import skip_if_module_missing, skip_if_no_torch
 
 
 @pytest.mark.skip
@@ -379,3 +379,149 @@ def test_segment_ids_are_respected(impl):
     assert_trees_all_close(result.array[0:3, 1], 300.0, atol=1e-3, rtol=1e-3)
     # the rest should be 0
     assert_trees_all_close(result.array[3:, 1], 0.0, atol=1e-3, rtol=1e-3)
+
+
+def attention_ref(
+    query,
+    key,
+    value,
+    sinks,
+    sm_scale: float = 0.125,
+    sliding_window: int | None = None,
+    start_q=0,
+):
+    import torch
+
+    batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim = query.shape
+    batch_size, num_keys, num_key_value_heads, head_dim = key.shape
+
+    sinks = sinks.view(1, num_key_value_heads, num_key_value_groups, 1, 1).float()
+    key = key.unsqueeze(3)
+    value = value.unsqueeze(3)
+
+    pos_keys = torch.arange(num_keys, device=query.device)
+    pos_queries = torch.arange(num_queries, device=query.device) + start_q
+    mask = pos_keys[None, :] > pos_queries[:, None]
+    mask = mask.float().masked_fill(mask, float("-inf"))
+
+    if sliding_window:
+        too_old = pos_keys[None, :] < (pos_queries[:, None] - sliding_window + 1)
+        mask.masked_fill_(too_old, float("-inf"))
+
+    logits = torch.einsum("bqhmd,bkhmd->bhmqk", query.float(), key.float()) * sm_scale
+    logits = logits + mask[None, None, None, :, :]
+
+    logits_max = torch.max(logits, dim=-1, keepdim=True).values
+    logits_or_sinks_max = torch.maximum(sinks, logits_max)
+    sinks = torch.exp(sinks - logits_or_sinks_max)
+    unnormalized_scores = torch.exp(logits - logits_or_sinks_max)
+    normalizer = unnormalized_scores.sum(dim=-1, keepdim=True) + sinks
+    scores = unnormalized_scores / normalizer
+
+    output = torch.einsum("bhmqk,bkhmd->bqhmd", scores, value.float())
+
+    output = output.reshape(
+        batch_size, num_queries, num_key_value_heads * num_key_value_groups * head_dim
+    ).bfloat16()
+    return output
+
+
+def attention(
+    query,
+    key,
+    value,
+    sinks,
+    sm_scale: float = 0.125,
+    sliding_window: int | None = None,
+    start_q=0,
+):
+    import torch
+
+    batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim = query.shape
+    _, num_keys, _, _ = key.shape
+
+    # Convert torch tensors to JAX NamedArrays
+    q_jax = jnp.array(query.cpu().numpy(), dtype=jnp.bfloat16)
+    k_jax = jnp.array(key.cpu().numpy(), dtype=jnp.bfloat16)
+    v_jax = jnp.array(value.cpu().numpy(), dtype=jnp.bfloat16)
+    sink_jax = jnp.array(
+        sinks.view(num_key_value_heads, num_key_value_groups).cpu().numpy(), dtype=jnp.bfloat16
+    )
+
+    Batch = Axis("batch", batch_size)
+    QPos = Axis("q_pos", num_queries)
+    KPos = Axis("k_pos", num_keys)
+    KVHead = Axis("kv_heads", num_key_value_heads)
+    KVGroup = Axis("kv_groups", num_key_value_groups)
+    D = Axis("head_dim", head_dim)
+
+    q = hax.named(q_jax, (Batch, QPos, KVHead, KVGroup, D))
+    k = hax.named(k_jax, (Batch, KPos, KVHead, D))
+    v = hax.named(v_jax, (Batch, KPos, KVHead, D))
+    sink = hax.named(sink_jax, (KVHead, KVGroup))
+
+    pos_queries = jnp.arange(num_queries, dtype=jnp.int32) + int(start_q)
+    pos_keys = jnp.arange(num_keys, dtype=jnp.int32)
+    mask_arr = pos_queries[:, None] >= pos_keys[None, :]
+    if sliding_window is not None:
+        mask_arr &= pos_queries[:, None] - sliding_window + 1 <= pos_keys[None, :]
+    mask = hax.named(mask_arr, (QPos, KPos))
+
+    out = dot_product_attention_with_sink(
+        QPos,
+        KPos,
+        D,
+        q,
+        k,
+        v,
+        sink,
+        mask=mask,
+        scaling_factor=sm_scale,
+    )
+
+    out_np = np.asarray(out.array)
+    out_torch = torch.from_numpy(out_np).to(query.device)
+    out_torch = out_torch.view(batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim)
+    return out_torch.reshape(batch_size, num_queries, -1).bfloat16()
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("num_queries", [1, 128])
+@pytest.mark.parametrize("num_keys", [128, 32])
+@pytest.mark.parametrize("num_key_value_heads", [8])
+@pytest.mark.parametrize("num_key_value_groups", [8])
+@pytest.mark.parametrize("head_dim", [64])
+@pytest.mark.parametrize("sm_scale", [0.125])
+@pytest.mark.parametrize("sliding_window", [None, 128])
+@pytest.mark.parametrize("start_q", [0, 5])
+def test_attention_equivalence(
+    batch_size,
+    num_queries,
+    num_keys,
+    num_key_value_heads,
+    num_key_value_groups,
+    head_dim,
+    sm_scale,
+    sliding_window,
+    start_q,
+):
+    if num_queries > num_keys:
+        pytest.skip("too many queries")
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required for this test")
+
+    q = torch.randn(
+        batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim
+    ).bfloat16().cuda()
+    k = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
+    v = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
+    sinks = torch.randn(num_key_value_heads * num_key_value_groups).bfloat16().cuda()
+
+    start_q_t = torch.tensor([start_q], dtype=torch.int32).cuda()
+
+    o1 = attention(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
+    o2 = attention_ref(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
+
+    torch.testing.assert_close(o1, o2)
