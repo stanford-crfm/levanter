@@ -381,7 +381,8 @@ def test_segment_ids_are_respected(impl):
     assert_trees_all_close(result.array[3:, 1], 0.0, atol=1e-3, rtol=1e-3)
 
 
-def attention_ref(
+# Reference implementation of Attention Sink with Sliding Window from https://github.com/openai/gpt-oss/blob/main/gpt_oss/triton/attention.py
+def sink_attention_ref_gpt_oss(
     query,
     key,
     value,
@@ -426,7 +427,7 @@ def attention_ref(
     return output
 
 
-def attention(
+def sink_attention(
     query,
     key,
     value,

@@ -47,7 +47,7 @@ def default_attention_type() -> AttentionBackend:
 
 
 @named_call
-def _dot_product_attention(
+def dot_product_attention(
     QPos: AxisSelector,
     KPos: AxisSelection,
     Key: AxisSelector,
@@ -220,51 +220,6 @@ def _dot_product_attention(
         )
 
 
-def dot_product_attention(
-    QPos: AxisSelector,
-    KPos: AxisSelection,
-    Key: AxisSelector,
-    query: NamedArray,
-    key: NamedArray,
-    value: NamedArray,
-    mask: Optional[Union["AttentionMask", NamedArray]] = None,
-    bias: Optional[NamedArray] = None,
-    attention_dtype: Optional[jnp.dtype] = None,
-    precision: PrecisionLike = None,
-    use_flash: Optional[bool] = None,
-    attn_backend: Optional[AttentionBackend] = None,
-    flash_block_size: Optional[int] = None,
-    dropout: float = 0.0,
-    *,
-    logits_soft_cap: float | None = None,
-    scaling_factor: float | None = None,
-    inference: bool = True,
-    prng: PRNGKeyArray | None = None,
-):
-    """Standard dot-product attention."""
-
-    return _dot_product_attention(
-        QPos,
-        KPos,
-        Key,
-        query,
-        key,
-        value,
-        mask,
-        bias,
-        attention_dtype,
-        precision,
-        use_flash,
-        attn_backend,
-        flash_block_size,
-        dropout,
-        logits_soft_cap=logits_soft_cap,
-        scaling_factor=scaling_factor,
-        inference=inference,
-        prng=prng,
-    )
-
-
 def dot_product_attention_with_sink(
     QPos: AxisSelector,
     KPos: AxisSelection,
@@ -400,45 +355,6 @@ def _simple_attention_with_dropout(
     out = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
 
     return haliax.dot(out, value, axis=KPos)
-
-
-def simple_attention_with_dropout(
-    QPos: Axis,
-    KPos: Axis,
-    Key: Axis,
-    query: NamedArray,
-    key: NamedArray,
-    value: NamedArray,
-    mask: Optional[Union[NamedArray, "AttentionMask"]] = None,
-    bias: Optional[NamedArray] = None,
-    inference: bool = False,
-    dropout: float = 0.0,
-    attention_dtype: Optional[jnp.dtype] = None,
-    precision: PrecisionLike = None,
-    *,
-    prng: Optional[PRNGKeyArray] = None,
-    scaling_factor: float | None = None,
-    logits_soft_cap: Optional[float] = None,
-):
-    """Dot-product attention with optional dropout and masking."""
-
-    return _simple_attention_with_dropout(
-        QPos,
-        KPos,
-        Key,
-        query,
-        key,
-        value,
-        mask,
-        bias,
-        inference,
-        dropout,
-        attention_dtype,
-        precision,
-        prng=prng,
-        scaling_factor=scaling_factor,
-        logits_soft_cap=logits_soft_cap,
-    )
 
 
 def _try_te_attention(
