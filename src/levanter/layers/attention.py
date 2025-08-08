@@ -1225,6 +1225,13 @@ def _tpu_splash_attention(
                 base_mask = splash_attention_mask.CausalMask(shape=(Sq, Sk))
             else:
                 base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+            if mask.sliding_window is not None:
+                local_mask = splash_attention_mask.LocalMask(
+                    shape=(Sq, Sk),
+                    window_size=(mask.sliding_window - 1, None),
+                    offset=0,
+                )
+                base_mask = splash_attention_mask.LogicalAnd(base_mask, local_mask)
             # This is going to be a pain to support
             if mask.explicit_mask is not None:
                 raise NotImplementedError("Explicit masks are not yet supported for splash attention")

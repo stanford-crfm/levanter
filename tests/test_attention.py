@@ -302,6 +302,43 @@ def test_tpu_splash_attention():
         assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
 
 
+def test_tpu_splash_attention_sliding_window():
+    if jax.default_backend() != "tpu":
+        pytest.skip("TPU only")
+
+    BLOCK_SIZE = 512
+
+    Head = hax.Axis("Head", 8)
+    Key = hax.Axis("Key", 128)  # splash only supports 128
+    QPos = hax.Axis("QPos", BLOCK_SIZE * 2)
+    KPos = hax.Axis("KPos", BLOCK_SIZE * 2)
+
+    q = hax.random.normal(jrandom.PRNGKey(0), (QPos, Head, Key)) * 0.02
+    k = hax.random.normal(jrandom.PRNGKey(1), (KPos, Head, Key)) * 0.02
+    v = hax.random.normal(jrandom.PRNGKey(2), (KPos, Head, Key)) * 0.02
+
+    mask = AttentionMask.causal(sliding_window=BLOCK_SIZE)
+
+    with jax.sharding.Mesh(jax.devices(), ("dp",)):
+        flash_out = _tpu_splash_attention(
+            QPos,
+            KPos,
+            Key,
+            q,
+            k,
+            v,
+            inference=True,
+            mask=mask,
+            block_size=BLOCK_SIZE,
+            scaling_factor=1 / math.sqrt(Key.size),
+        )
+        hax_out = hax.nn.attention.dot_product_attention(
+            KPos, Key, q, k, v, mask=mask.materialize(QPos, KPos)
+        )
+        assert hax_out.axes == flash_out.axes
+        assert_trees_all_close(hax_out.array, flash_out.array, atol=1e-3, rtol=1e-3)
+
+
 @pytest.mark.parametrize("impl", ["default", "jax_flash", "vanilla"])
 def test_segment_ids_are_respected(impl):
     # test that we can't attend to something outside of the range
