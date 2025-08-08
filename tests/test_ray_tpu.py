@@ -427,7 +427,6 @@ def fail_on_slice_0_fn():
     return np.array(data)
 
 
-
 # Multislice failure: one slice fails, the whole thing should retry and eventually fail.
 @pytest.mark.ray
 def test_multislice_one_slice_fails():
