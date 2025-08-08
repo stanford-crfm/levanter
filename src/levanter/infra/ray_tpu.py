@@ -312,12 +312,13 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         self._last_check_should_scale_up_multislice_time: Optional[float] = None
 
 
-    def _add_members_to_actor_pool(self, desired_num_actors: int) -> None:
-        import random
-        # prev_desired_num_actors = desired_num_actors
-        # desired_num_actors = random.randint(len(self._actor_pool) + 1, desired_num_actors)
-        # logger.info(f"Chaos monkey: wanted {prev_desired_num_actors} slices but getting {desired_num_actors} slices")
-        super()._add_members_to_actor_pool(desired_num_actors)
+    # CHAOS MONKEY: Simulate randomly not getting enough slices
+    # def _add_members_to_actor_pool(self, desired_num_actors: int) -> None:
+    #     import random
+    #     prev_desired_num_actors = desired_num_actors
+    #     desired_num_actors = random.randint(len(self._actor_pool) + 1, desired_num_actors)
+    #     logger.info(f"CHAOS MONKEY: wanted {prev_desired_num_actors} slices but getting {desired_num_actors} slices")
+    #     super()._add_members_to_actor_pool(desired_num_actors)
 
     def get_actor_pool_name(self) -> str:
         return f"{self._tpu_type} slices"
@@ -334,8 +335,14 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         if isinstance(num_slices, int):
             self.scale_actor_pool(num_slices)
             return
+
         sorted_valid_sizes = sorted(num_slices)
         max_valid_size = sorted_valid_sizes[-1]
+
+        # CHAOS MONKEY: Simulate initial scaling not getting enough slices:
+        # if len(self._actor_pool) == 0:
+        #     max_valid_size -= 1
+
         logger.info(f"Attempting to scale to {max_valid_size} slices based on the maximum of valid sizes: {sorted_valid_sizes}")
         try:
             self.scale_actor_pool(max_valid_size)
@@ -577,7 +584,7 @@ def run_on_pod_ray(
     This function is a Ray remote function that can be called from anywhere in the Ray cluster.
     """
     if not num_slices:
-        raise ValueError("num_slices must be greater than 0")
+        raise ValueError("num_slices must a positive integer or a non-empty list of positive integers")
 
     # failures here means the job failed due to an error in the remote function, not a preemption
     num_failures = 0
@@ -695,7 +702,7 @@ def run_on_pod_ray(
                 logger.info(f"Failure detected. Cancelling {len(pending_futures)} futures.")
                 try:
                     for f in pending_futures:
-                        ray.cancel(f, force=True)
+                        ray.cancel(f, force=True, recursive=True)
                 except Exception:
                     logger.exception("Failed to cancel pending futures")
 
