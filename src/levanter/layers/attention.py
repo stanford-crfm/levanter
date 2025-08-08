@@ -174,7 +174,7 @@ def dot_product_attention(
                 logits_soft_cap=logits_soft_cap,
             )
         case AttentionBackend.VANILLA:
-            attention_out = _simple_attention_with_dropout(
+            attention_out = simple_attention_with_dropout(
                 QPos,
                 KPos,
                 Key,
@@ -305,7 +305,7 @@ def dot_product_attention_with_sink(
     )
 
 
-def _simple_attention_with_dropout(
+def simple_attention_with_dropout(
     QPos: Axis,
     KPos: Axis,
     Key: Axis,
@@ -561,9 +561,9 @@ def _te_materialize_mask(KPos, QPos, batch_size, mask):
 
             fused_attn_mask = mask.materialize(QPos, KPos)
 
-            assert (
-                fused_attn_mask is not None
-            ), "If AttentionMask is causal, the materialized array should never be None. Something is wrong."
+            assert fused_attn_mask is not None, (
+                "If AttentionMask is causal, the materialized array should never be None. Something is wrong."
+            )
 
             fused_attn_mask = fused_attn_mask.array
             fused_attn_mask = jnp.dstack([fused_attn_mask] * batch_size)
@@ -873,8 +873,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> NamedArray:
-    ...
+) -> NamedArray: ...
 
 
 @overload
@@ -884,8 +883,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> Optional[NamedArray]:
-    ...
+) -> Optional[NamedArray]: ...
 
 
 def materialize_mask(
@@ -1238,9 +1236,9 @@ class AttentionConfig:
     """Configuration for QK normalization. If None, no normalization is applied."""
 
     def __post_init__(self):
-        assert (
-            self.num_heads % self.num_kv_heads == 0
-        ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+        assert self.num_heads % self.num_kv_heads == 0, (
+            f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+        )
 
     @property
     def head_size(self) -> int:
