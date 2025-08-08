@@ -168,8 +168,9 @@ class Checkpointer:
 
         if step == 0:
             self._last_save_time = self._dt_now_injection()
-            if not force:
-                return  # don't save checkpoint at step 0 unless forced
+            # Remove this check to allow step 0 checkpoints
+            # if not force:
+            #     return  # don't save checkpoint at step 0 unless forced
 
         if step == self._last_save_step and not force:
             # we've already saved a checkpoint at this step
@@ -609,7 +610,7 @@ def _get_fs_and_plain_path(path, fs=None):
 
 @dataclass
 class CheckpointerConfig:
-    base_path: str = "checkpoints/"
+    base_path: str = "/scr-ssd/sampark/levanter/checkpoints/"
     save_interval: timedelta = timedelta(minutes=15)
     # TODO: I'd like to write this, but it's not supported by draccus
     # keep: List[CheckpointInterval] = field(default_factory=lambda: [CheckpointInterval(every=1000)])
@@ -683,3 +684,4 @@ def is_checkpoint_path(path: str) -> bool:
     except Exception:  # noqa
         logger.exception(f"Error checking if {path} is a checkpoint path")
         raise
+

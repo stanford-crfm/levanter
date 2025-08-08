@@ -8,6 +8,7 @@ from typing import Optional, Union, overload
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.debug as debug
 import jax.random as jrandom
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
 from jax.experimental.shard_map import shard_map
@@ -102,6 +103,9 @@ def dot_product_attention(
     """
     if axis_name(QPos) == axis_name(KPos):
         raise ValueError("QPos and KPos must have different names")
+
+    print(f"use_flash: {use_flash}, attn_backend: {attn_backend}", flush=True)
+    #import pdb; pdb.set_trace()
 
     if use_flash is not None:
         if attn_backend is None:
@@ -240,11 +244,18 @@ def simple_attention_with_dropout(
 ):
     QPos = query.resolve_axis(QPos)
     KPos = key.resolve_axis(KPos)
+
+    debug.print("simple_attention_with_dropout > query: {}", query)
+    debug.print("simple_attention_with_dropout > key: {}", key)
+    debug.print("simple_attention_with_dropout > value: {}", value)
+    #import pdb; pdb.set_trace()
+
     m = materialize_mask(mask, QPos, KPos)
     orig_dtype = query.dtype
 
     if scaling_factor is None:
         scaling_factor = 1.0 / jnp.sqrt(query.axis_size(Key))
+        debug.print("\n\n\nsimple_attention_with_dropout > scaling_factor: {}", scaling_factor)
 
     query = query * scaling_factor
 
@@ -253,6 +264,7 @@ def simple_attention_with_dropout(
         key = key.astype(attention_dtype)
 
     weights = haliax.dot(query, key, precision=precision, axis=Key)
+    debug.print("simple_attention_with_dropout > scores: {}", weights)
 
     if bias is not None:
         weights = weights + bias
@@ -260,16 +272,22 @@ def simple_attention_with_dropout(
     if logits_soft_cap is not None:
         weights = hax.tanh(weights / logits_soft_cap) * logits_soft_cap
 
+    debug.print("simple_attention_with_dropout > mask: {}", m)
+
     if m is not None:
-        weights = haliax.where(m, weights, -1e9)
+        weights = haliax.where(m, weights, -jnp.inf) # TODO: check
 
     weights = haliax.nn.softmax(weights, axis=KPos)
+    debug.print("simple_attention_with_dropout > weights after softmax: {}", weights)
 
     weights = weights.astype(orig_dtype)
 
     out = haliax.nn.dropout(weights, dropout, key=prng, inference=inference)
+    out = haliax.dot(out, value, axis=KPos)
+    debug.print("simple_attention_with_dropout > out: {}", out)
+    return out
 
-    return haliax.dot(out, value, axis=KPos)
+    #return haliax.dot(out, value, axis=KPos)
 
 
 def _try_te_attention(
@@ -1198,12 +1216,24 @@ class Attention(eqx.Module):
         k = k.rearrange((..., "kv_heads", "position", "head_size"))
         v = v.rearrange((..., "kv_heads", "position", "head_size"))
 
+        #debug.print("> Attention.call q shape: {}", q.shape, ordered=True)
+        #debug.print("> Attention.call q: {}", q.array[0][0][0], ordered=True)
+        #debug.print("> Attention.call k shape: {}", k.shape, ordered=True)
+        #debug.print("> Attention.call k: {}", k.array[0][0], ordered=True)
+        #debug.print("> Attention.call v shape: {}", v.shape, ordered=True)
+        #debug.print("> Attention.call v: {}", v.array[0][0], ordered=True)
+
+        # TODO: REMOVE
         # Apply rotary position embeddings if configured
-        if self.rot_embs is not None:
-            if pos_ids is None:
-                pos_ids = hax.arange(x.resolve_axis("position"), dtype=jnp.int32)
-            q = self.rot_embs(q, pos_ids)
-            k = self.rot_embs(k, pos_ids)
+        #if self.rot_embs is not None:
+        #    if pos_ids is None:
+        #        pos_ids = hax.arange(x.resolve_axis("position"), dtype=jnp.int32)
+        #    q = self.rot_embs(q, pos_ids)
+        #    k = self.rot_embs(k, pos_ids)
+
+        #debug.print("> Attention.call q (post rotary): {}", q.array[0][0][0], ordered=True)
+        #debug.print("> Attention.call k (post rotary): {}", k.array[0][0], ordered=True)
+        #debug.print("> Attention.call v (post rotary): {}", v.array[0][0], ordered=True)
 
         # Rename position axis for attention
         k = k.rename({"position": "key_position"})
@@ -1232,5 +1262,8 @@ class Attention(eqx.Module):
         attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
+
+        debug.print("> Attention.call attn_output shape: {}", attn_output.shape, ordered=True)
+        debug.print("> Attention.call attn_output: {}", attn_output.array[0], ordered=True)
 
         return attn_output

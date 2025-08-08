@@ -11,12 +11,21 @@ import haliax as hax
 from haliax import Axis, NamedArray
 
 
+'''
 def _rotate_half(x: NamedArray, HeadSize: Axis) -> NamedArray:
     """Rotates half of the hidden dims of the input and concatenates them."""
     x1 = x[HeadSize, : HeadSize.size // 2]
     x2 = x[HeadSize, HeadSize.size // 2 :]
     out = hax.concatenate(HeadSize, (-x2, x1))
     return out
+'''
+
+def _rotate_half(x: NamedArray, HeadSize: Axis) -> NamedArray:
+    """Rotate **adjacent pairs** (d0,d1), (d2,d3)…  — matches Llama-v2/v3."""
+    even = x[HeadSize, ::2]                         # d0, d2, d4 …
+    odd  = x[HeadSize,  1::2]                       # d1, d3, d5 …
+    # return (-odd, even)
+    return hax.concatenate(HeadSize, (-odd, even))
 
 
 class RotaryEmbeddings(eqx.Module):
@@ -29,13 +38,41 @@ class DefaultRotaryEmbeddings(RotaryEmbeddings):
     config: "DefaultRotaryEmbeddingsConfig"
 
     def __call__(self, q: NamedArray, position_ids: NamedArray) -> NamedArray:
+        #with jax.ensure_compile_time_eval():
+        #    HeadHalfSize = self.HeadDim.resize(self.HeadDim.size // 2)
+        #    inv_freq: NamedArray = 1.0 / (self.config.theta ** (hax.arange(HeadHalfSize, step=2) / self.HeadDim.size))
+        #    inv_freq = inv_freq / self.config.factor
+
         with jax.ensure_compile_time_eval():
             HeadHalfSize = self.HeadDim.resize(self.HeadDim.size // 2)
-            inv_freq: NamedArray = 1.0 / (self.config.theta ** (hax.arange(HeadHalfSize, step=2) / self.HeadDim.size))
+            # Match Llama-v2: exponent is 2 * k / dim
+            inv_freq = 1.0 / (
+                self.config.theta ** (2 * hax.arange(HeadHalfSize) / self.HeadDim.size)
+            )
             inv_freq = inv_freq / self.config.factor
 
         freqs = inv_freq.broadcast_axis(position_ids.axes) * position_ids
-        emb = hax.concatenate(self.HeadDim, (freqs, freqs))
+        # emb = hax.concatenate(self.HeadDim, (freqs, freqs))
+        # interleave each value twice so even/odd coords share the same phase:  freq0,freq0,freq1,freq1
+        #emb = hax.interleave(self.HeadDim, (freqs, freqs))
+        #emb = hax.repeat(frequencies=freqs, Axis=self.HeadDim, repeats=2)  # pseudo-code; use hax.repeat or
+                                                                       # hax.concatenate((freqs[:, None], freqs[:, None]), axis=-1).reshape(...)
+        # broadcast to positions
+        # 1. broadcast inv_freq to positions
+        freqs = inv_freq.broadcast_axis(position_ids.axes) * position_ids        # axes: …, HeadHalf
+
+        # 2. duplicate **each** frequency so (d0,d1) share the same value
+        #    jnp.repeat along the HeadHalf axis gives  f0,f0,f1,f1,…
+        axis_idx = freqs.axes.index(self.HeadDim.resize(self.HeadDim.size // 2))
+        freq_arr = jnp.repeat(freqs.array, 2, axis=axis_idx)
+
+        # 3. wrap back into a NamedArray whose last axis is the full HeadDim
+        new_axes = tuple(
+            self.HeadDim if ax.size * 2 == self.HeadDim.size and ax.name == freqs.axes[axis_idx].name else ax
+            for ax in freqs.axes
+        )
+        emb = NamedArray(freq_arr, axes=new_axes)
+
         cos = hax.cos(emb)
         sin = hax.sin(emb)
 

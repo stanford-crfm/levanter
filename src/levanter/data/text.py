@@ -215,7 +215,7 @@ class BatchTokenizer(BatchProcessor[dict, dict]):
         self,
         tokenizer: HfTokenizer,
         text_field="text",
-        enforce_bos=True,
+        enforce_bos=False,
         enforce_eos=True,
         *,
         override_resources=None,
