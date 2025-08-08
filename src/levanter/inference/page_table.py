@@ -245,18 +245,6 @@ class PageBatchInfo(eqx.Module):
     pos_ids: ht.i32[NamedArray, "position"]  # type: ignore[name-defined]
     page_size: int = eqx.field(static=True)
 
-    @property
-    def last_token_idx(self) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
-        """Last token index for each sequence, INVALID if the sequence is not present."""
-        # TODO: this won't be useful if we do speculation, but for now it is useful
-        # this can be easily computed from cu_q_lens
-        # roll so we get the len for each seq, then subtract 1 to get the last index
-        rolled = hax.roll(self.cu_q_lens, shift=-1, axis="seq",)["seq", :-1] - 1
-        out = hax.where(is_invalid(self.seq_lens), INVALID, rolled)
-        # rename to position since this is about token positions
-        out = out.rename({"seq": "position"})
-        return out
-
     def __post_init__(self):
         assert isinstance(self.num_seqs, jnp.ndarray), "num_seqs must be a JAX ndarray"
 

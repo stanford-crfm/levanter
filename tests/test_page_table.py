@@ -63,9 +63,6 @@ def test_allocate_for_seqs_with_padding():
 
     assert new_pt.seq_lens.array[0] == 1
     assert batch_info.num_seqs == 1
-    # last token index for seq 0 should be 0, others INVALID
-    assert batch_info.last_token_idx.array[0] == 0
-    assert jnp.all(batch_info.last_token_idx.array[1:] == INVALID)
 
 
 def test_allocate_for_seqs_updates_only_valid_ids():
@@ -80,8 +77,6 @@ def test_allocate_for_seqs_updates_only_valid_ids():
     assert jnp.all(new_pt.seq_lens.array[:6] == jnp.array([0, 0, 1, 2, 0, 3]))
     assert jnp.all(new_pt.seq_lens.array[6:] == INVALID)
     assert batch_info.num_seqs == 3
-    expected_last = jnp.array([0, 2, 5] + [INVALID] * 5, dtype=jnp.int32)
-    assert jnp.array_equal(batch_info.last_token_idx.array, expected_last)
 
 
 def test_free_pages_invalid_seq_id_noop():
