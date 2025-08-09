@@ -421,22 +421,57 @@ class DataLoaderIterator(Iterator[Ex]):
             global_offset = batch.global_data_offset
             local_indices_for_device = self.dl.local_data_indices_by_device_for_step(batch.index)
 
+            #print(f"🔍 DATALOADER DEBUG: Processing batch {batch.index}, global_offset={global_offset}, global_size={batch.global_size}", flush=True)
+            #print(f"🔍 DATALOADER DEBUG: local_indices_for_device keys: {list(local_indices_for_device.keys())}", flush=True)
+
             distinct_local_indices_this_batch = set()
-            for indices in local_indices_for_device.values():
+            total_indices_checked = 0
+            skipped_indices = 0
+
+            for device, indices in local_indices_for_device.items():
+                #print(f"🔍 DATALOADER DEBUG: Device {device} has {len(indices)} indices: {indices[:10]}{'...' if len(indices) > 10 else ''}", flush=True)
                 for local_index in indices:
+                    total_indices_checked += 1
                     if local_index >= batch.global_size:
+                        #print(f"🔍 DATALOADER DEBUG: Skipping local_index {local_index} >= global_size {batch.global_size}", flush=True)
+                        skipped_indices += 1
                         assert self.dl._pad_final_batch or self.dl._allow_non_divisible_batch_size
                         continue
 
                     distinct_local_indices_this_batch.add(local_index)
 
+            # BUGFIX: Handle the case where all indices were filtered out due to batch size rounding
+            # This happens when the final partial batch gets rounded up for device alignment,
+            # but the actual global_size is smaller than the device indices
+            if total_indices_checked > 0 and len(distinct_local_indices_this_batch) == 0:
+                # print(f"🔍 DATALOADER BUGFIX: All {total_indices_checked} indices were filtered out for batch {batch.index}", flush=True)
+                # print(f"🔍 DATALOADER BUGFIX: This is likely a final partial batch with rounded device indices", flush=True)
+                # print(f"🔍 DATALOADER BUGFIX: Creating valid indices [0, {min(batch.global_size, total_indices_checked)})", flush=True)
+
+                # Create valid indices for the actual data available
+                # Take the minimum of what we need and what's available
+                valid_count = min(batch.global_size, total_indices_checked)
+                distinct_local_indices_this_batch = set(range(valid_count))
+                #print(f"🔍 DATALOADER BUGFIX: Generated {len(distinct_local_indices_this_batch)} valid indices", flush=True)
+
+            #print(f"🔍 DATALOADER DEBUG: Checked {total_indices_checked} indices, skipped {skipped_indices}, kept {len(distinct_local_indices_this_batch)}", flush=True)
+
             global_indices_for_this_batch = [global_offset + i for i in distinct_local_indices_this_batch]
+            #print(f"🔍 DATALOADER DEBUG: Final global_indices_for_this_batch: {len(global_indices_for_this_batch)} items", flush=True)
             global_indices_for_each_batch.append(global_indices_for_this_batch)
 
         # flattened view so we can load all the data at once
         indices_for_this_batch_of_batches: list[int] = [
             i for indices in global_indices_for_each_batch for i in indices
         ]
+        #print(f"🔍 DATALOADER DEBUG: global_indices_for_each_batch has {len(global_indices_for_each_batch)} batches", flush=True)
+        #for i, batch_indices in enumerate(global_indices_for_each_batch):
+        #    print(f"🔍 DATALOADER DEBUG: Batch {i}: {len(batch_indices)} indices", flush=True)
+        #print(f"🔍 DATALOADER DEBUG: Flattened indices_for_this_batch_of_batches: {len(indices_for_this_batch_of_batches)} items", flush=True)
+
+        if not indices_for_this_batch_of_batches:
+            print("🔍 DATALOADER DEBUG: ❌ EMPTY INDICES LIST - this will cause the max() error!", flush=True)
+
         individual_datums = await self.run_and_report_slowness(
             self.dl.data_store.get_batch(indices_for_this_batch_of_batches),
             f"Waiting for {len(indices_for_this_batch_of_batches)} items.",

@@ -296,6 +296,13 @@ class ListAsyncDataset(AsyncDataset[T]):
         return len(self.data)
 
     async def get_batch(self, indices: Sequence[int]) -> Sequence[T]:
+        #print(f"🔍 DATASET DEBUG: get_batch called with {len(indices)} indices: {indices[:10]}{'...' if len(indices) > 10 else ''}", flush=True)
+        #print(f"🔍 DATASET DEBUG: dataset has {len(self.data)} items", flush=True)
+
+        if not indices:
+            print("🔍 DATASET DEBUG: ❌ EMPTY INDICES - this will cause max() error on next line!", flush=True)
+            # This is the actual line that fails
+
         await self.wait_until_len_at_least(max(indices) + 1)
         return [self.data[i] for i in indices]
 

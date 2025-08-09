@@ -73,7 +73,7 @@ class QwenConfig(LlamaConfig):
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
             rope=rope_config,
-            use_bias=not hf_config.no_bias,
+            use_bias=not getattr(hf_config, 'no_bias', True),  # Default no_bias=True means use_bias=False (matches Qwen2 majority)
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfQwenConfig:
