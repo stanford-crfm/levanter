@@ -436,11 +436,11 @@ def sink_attention(
     _, num_keys, _, _ = key.shape
 
     # Convert torch tensors to JAX NamedArrays
-    q_jax = jnp.array(query.to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16)
-    k_jax = jnp.array(key.to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16)
-    v_jax = jnp.array(value.to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16)
+    q_jax = jnp.array(query.to(torch.float32).cpu().numpy(), dtype=jnp.float32)
+    k_jax = jnp.array(key.to(torch.float32).cpu().numpy(), dtype=jnp.float32)
+    v_jax = jnp.array(value.to(torch.float32).cpu().numpy(), dtype=jnp.float32)
     sink_jax = jnp.array(
-        sinks.view(num_key_value_heads, num_key_value_groups).to(torch.float32).cpu().numpy(), dtype=jnp.bfloat16
+        sinks.view(num_key_value_heads, num_key_value_groups).to(torch.float32).cpu().numpy(), dtype=jnp.float32
     )
 
     Batch = Axis("batch", batch_size)
@@ -505,18 +505,17 @@ def test_attention_equivalence(
 
     if num_queries > num_keys:
         pytest.skip("too many queries")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA is required for this test")
+    q = torch.randn(
+        batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim,
+        device=device, dtype=torch.bfloat16,
+    )
+    k = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim, device=device, dtype=torch.bfloat16)
+    v = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim, device=device, dtype=torch.bfloat16)
+    sinks = torch.randn(num_key_value_heads * num_key_value_groups, device=device, dtype=torch.bfloat16)
 
-    q = torch.randn(batch_size, num_queries, num_key_value_heads, num_key_value_groups, head_dim).bfloat16().cuda()
-    k = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
-    v = torch.randn(batch_size, num_keys, num_key_value_heads, head_dim).bfloat16().cuda()
-    sinks = torch.randn(num_key_value_heads * num_key_value_groups).bfloat16().cuda()
-
-    start_q_t = torch.tensor([start_q], dtype=torch.int32).cuda()
-
-    o1 = sink_attention(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
-    o2 = sink_attention_ref_gpt_oss(q, k, v, sinks, sm_scale, sliding_window, start_q_t)
+    o1 = sink_attention(q, k, v, sinks, sm_scale, sliding_window, start_q)
+    o2 = sink_attention_ref_gpt_oss(q, k, v, sinks, sm_scale, sliding_window, start_q)
 
     torch.testing.assert_close(o1, o2)
