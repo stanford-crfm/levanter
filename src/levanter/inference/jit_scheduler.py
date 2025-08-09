@@ -323,42 +323,6 @@ max_num_tokens: {max_num_tokens}
             prng_keys=jax.vmap(jax.random.key, axis_size=max_seqs, in_axes=None)(0)
         )
 
-    # This was used to remove tokens from the buffer, but it was too much work.
-    # # @eqx.filter_jit(donate="all")
-    # def extract_new_tokens(
-    #     self,
-    # ) -> tuple["DecodeState", ht.i32[NamedArray, "seq position"], ht.i32[NamedArray, "seq"]]:  # type: ignore[name-defined]
-    #     """Extract tokens generated since the last call and update ``prefix_len``."""
-
-    #     num_seqs = self.tokens.axis_size("seq")
-
-    #     out_tokens = hax.full_like(self.tokens, INVALID)
-    #     out_counts = hax.zeros_like(self.num_tokens)
-
-    #     def body(i, state):
-    #         tokens, counts = state
-    #         start = self.prefix_len["seq", i].scalar()
-    #         end = self.num_tokens["seq", i].scalar()
-    #         n = end - start
-
-    #         row = self.tokens["seq", i]
-    #         rolled = hax.roll(row, -start, "position")
-    #         blank = hax.full_like(row, INVALID)
-    #         new_row = masked_set(blank, "position", 0, rolled, n)
-    #         tokens = tokens.at["seq", i].set(new_row)
-    #         counts = counts.at["seq", i].set(n)
-
-    #         return tokens, counts
-
-    #     out_tokens, out_counts = jax.lax.fori_loop(0, num_seqs, body, (out_tokens, out_counts))
-
-    #     new_state = dataclasses.replace(
-    #         self,
-    #         prefix_len=self.num_tokens,
-    #     )
-
-    #     return new_state, out_tokens, out_counts
-
 
 class JitScheduler(eqx.Module):
     """
