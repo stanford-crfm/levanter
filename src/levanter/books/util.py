@@ -47,7 +47,7 @@ __all__ = [
 # -----------------------------------------------------------------------------
 # Core metric helpers ---------------------------------------------------------
 # -----------------------------------------------------------------------------
-def create_pz_histogram_linear(pz_list: List[float], threshold: float, save_path: str, book_title: str = "Book"):
+def create_pz_histogram_linear(pz_list: List[float], threshold: float, save_path: str, book_title: str = "Book", model_name: str = "Unknown Model"):
     """
     Create a histogram of p_z values matching the style from the reference codebase.
     Uses dynamic bin calculation and styling similar to make_pz_dist_plot.
@@ -57,6 +57,7 @@ def create_pz_histogram_linear(pz_list: List[float], threshold: float, save_path
         threshold: Minimum p_z value to include (e.g., 0.0001 for 0.01%)
         save_path: Path to save the histogram
         book_title: Title for the plot
+        model_name: Name of the model for the plot title
     """
     # Filter p_z values above threshold
     filtered_pz = [pz for pz in pz_list if pz >= threshold]
@@ -97,7 +98,7 @@ def create_pz_histogram_linear(pz_list: List[float], threshold: float, save_path
     # Set title to match the reference style
     threshold_percent = threshold * 100
     ax.set_title(
-        f"{book_title}:\nDistribution of $p_z$ (≥ {threshold_percent:.2f}%) for Llama 3.1 70B",
+        f"{book_title}:\nDistribution of $p_z$ (≥ {threshold_percent:.2f}%) for {model_name}",
         fontsize=14,
         fontweight="bold",
     )

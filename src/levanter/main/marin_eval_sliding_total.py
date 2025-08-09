@@ -8,6 +8,7 @@ with its own prefix so progress starts at step zero for every title.
 
 import dataclasses
 import itertools
+import json
 import logging
 import math
 import os
@@ -15,6 +16,7 @@ import pathlib
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import equinox as eqx
@@ -53,6 +55,18 @@ from levanter.utils.jax_utils import use_cpu_device
 logger = logging.getLogger(__name__)
 
 RUN_START_TIME = None
+
+
+def fsspec_exists(path: str) -> bool:
+    """Check if a file exists using fsspec (works with local and GCS paths)."""
+    try:
+        with fsspec.open(path, 'r') as f:
+            return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        # Handle other potential fsspec errors (permissions, etc.)
+        return False
 
 
 @dataclass
@@ -230,8 +244,24 @@ def evaluate_book(
             cursor_inc=cfg.cursor_inc_chars,
         )
 
+    # Check if chunks are empty and handle gracefully
+    if not chunks:
+        logger.warning(f"⚠️  WARNING: No chunks generated for book '{cfg.book_title}' (txt_path: {cfg.txt_path})")
+        logger.warning("⚠️  Book may be too short for sliding window parameters:")
+        logger.warning(f"⚠️    - chunk_size: {cfg.chunk_size}")
+        if cfg.token_mode:
+            logger.warning(f"⚠️    - cursor_inc_tokens: {cfg.cursor_inc_tokens}")
+            logger.warning(f"⚠️    - token_ids length: {len(token_ids) if token_ids else 0} tokens")
+        else:
+            logger.warning(f"⚠️    - slice_length: {cfg.slice_length}")
+            logger.warning(f"⚠️    - cursor_inc_chars: {cfg.cursor_inc_chars}")
+        logger.warning(f"⚠️    - raw_text length: {len(raw_text)} characters")
+        logger.warning("⚠️  Skipping evaluation for this book.")
+        return
+
     examples: List[LmExample] = []
     span_ranges_list: List[Tuple[int, int]] = []
+    print(f"🔍 DEBUG: Processing {len(chunks)} chunks into examples...", flush=True)
     for chunk in chunks:
         ids = chunk["input_ids"]
         if len(ids) < Pos.size:
@@ -324,6 +354,7 @@ def evaluate_book(
             threshold=cfg.pz_threshold,
             save_path=temp_histogram_path,
             book_title=histogram_book_title,
+            model_name=model_name,
         )
     else:
         hist_stats = create_pz_histogram(
@@ -429,10 +460,10 @@ def evaluate_book(
     )
 
     if cfg.token_mode:
-        ax.set_title(f"{cfg.book_title}: Maximum per-token probability")
+        ax.set_title(f"{cfg.book_title}: Maximum per-token probability for {model_name}")
         ax.set_xlabel("Book position (token)")
     else:
-        ax.set_title(f"{cfg.book_title}: Maximum per-character probability")
+        ax.set_title(f"{cfg.book_title}: Maximum per-character probability for {model_name}")
         ax.set_xlabel("Book position (character)")
     ax.set_yticks([])
 
@@ -528,7 +559,15 @@ def main(cfg: EvalSlidingTotalConfig):
     if cfg.initialize_from_hf:
         model_path = str(cfg.initialize_from_hf)
         if "--" in model_path:
-            model_name = model_path.split("--")[-1].lower().replace("-", "-")
+            parts = model_path.split("--")
+            if len(parts) >= 2:
+                extracted_name = parts[1].lower().replace("-", " ").title()  # llama-13b -> Llama 13B
+                print(f"🔍 DEBUG: Found '--' in path, extracted_name = {extracted_name}", flush=True)
+                model_name = extracted_name
+            else:
+                extracted_name = parts[-1].lower()
+                print(f"🔍 DEBUG: Fallback to last part, extracted_name = {extracted_name}", flush=True)
+                model_name = extracted_name
         else:
             model_name = pathlib.Path(model_path).name.lower()
     elif cfg.hf_checkpoint:
@@ -554,14 +593,42 @@ def main(cfg: EvalSlidingTotalConfig):
         if book_cfg.pz_data_path is None:
             book_cfg.pz_data_path = f"pz_data_{book_cfg.book_title}.npz"
 
+        # Check if this book evaluation is already completed (caching logic)
+        success_file_path = f"{cfg.output_base_path.rstrip('/')}/{book_cfg.book_title}.success"
+
+        if fsspec_exists(success_file_path):
+            logger.info(f"✅ Book '{book_cfg.book_title}' already completed, skipping")
+            continue
+
         # No filesystem directory needed - all files saved via W&B
         logger.info(f"🔥 Starting evaluation for: {book_cfg.book_title}")
         start_time = time.time()
 
-        evaluate_book(book_cfg, model, tokenizer, sequence_log_prob, pad_id, Pos, model_name, cfg)
+        try:
+            evaluate_book(book_cfg, model, tokenizer, sequence_log_prob, pad_id, Pos, model_name, cfg)
 
-        elapsed_time = time.time() - start_time
-        logger.info(f"✅ Completed {book_cfg.book_title} in {elapsed_time:.1f}s")
+            elapsed_time = time.time() - start_time
+            logger.info(f"✅ Completed {book_cfg.book_title} in {elapsed_time:.1f}s")
+
+            # Write success file after successful completion
+            success_metadata = {
+                "book_title": book_cfg.book_title,
+                "book_path": book_cfg.txt_path,
+                "completed_at": datetime.utcnow().isoformat(),
+                "elapsed_time_seconds": elapsed_time,
+                "status": "success"
+            }
+
+            with fsspec.open(success_file_path, 'w') as f:
+                f.write(json.dumps(success_metadata, indent=2))
+
+            logger.info(f"📝 Success marker written to: {success_file_path}")
+
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            logger.error(f"❌ Failed {book_cfg.book_title} after {elapsed_time:.1f}s: {e}")
+            # Don't write success file on failure, allowing retry on restart
+            raise  # Re-raise to trigger job restart
 
     logger.info(f"🎉 Completed evaluation of all {total_books} books!")
 
