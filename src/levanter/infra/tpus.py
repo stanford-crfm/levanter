@@ -273,6 +273,10 @@ def tpu_ssh(tpu_name, zone, node_count, *args, ignore_failure=False):
             "--worker=all",
             f"--zone={zone}",
             "--command=%s" % " ".join(args),
+            "--",
+            # Forward 9001 which is used for profiling
+            "-L",
+            "9001:localhost:9001",
         )
     except subprocess.CalledProcessError as e:
         if ignore_failure:
