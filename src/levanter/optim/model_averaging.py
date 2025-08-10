@@ -4,6 +4,7 @@ from typing import Generic, TypeVar
 
 import draccus
 import equinox as eqx
+import jax.numpy as jnp
 import optax
 
 
@@ -45,6 +46,39 @@ class EmaModelAveraging(ModelAveraging[M]):
         return self.model
 
 
+class EmaDecaySqrtModelAveraging(ModelAveraging[M]):
+    """Hybrid EMA followed by :math:`1 - \sqrt{x}` decay.
+
+    This implementation keeps a running total of the weight mass so the
+    average can be queried at any step. After ``decay_steps`` updates the
+    raw weight becomes zero and the average stops changing.
+    """
+
+    model: M
+    switch_step: int = eqx.field(static=True)
+    decay_steps: int = eqx.field(static=True)
+    beta: float = eqx.field(static=True, default=0.999)
+    tot_weight: float = 0.0
+
+    def _raw_weight(self, step: int) -> float:
+        if step < self.switch_step:
+            return 1.0 - self.beta
+        t = step - self.switch_step
+        frac = jnp.clip(t / self.decay_steps, 0.0, 1.0)
+        return float(1.0 - jnp.sqrt(frac))
+
+    def update(self, new_model: M, step: int) -> "EmaDecaySqrtModelAveraging[M]":
+        w = self._raw_weight(step)
+        new_tot_w = self.tot_weight + w
+        alpha = 0.0 if new_tot_w == 0.0 else w / new_tot_w
+        updated = optax.incremental_update(new_model, self.model, alpha)
+        return dataclasses.replace(self, model=updated, tot_weight=new_tot_w)  # type: ignore[arg-type]
+
+    @property
+    def model_params(self) -> M:
+        return self.model
+
+
 class ModelAveragingConfig(abc.ABC, draccus.ChoiceRegistry, Generic[M]):
     @abc.abstractmethod
     def create(self, model: M) -> ModelAveraging[M]:
@@ -58,3 +92,21 @@ class EmaModelAveragingConfig(ModelAveragingConfig[M]):
 
     def create(self, model: M) -> EmaModelAveraging[M]:
         return EmaModelAveraging(model=model, beta=self.beta)
+
+
+@ModelAveragingConfig.register_subclass("ema_decay_sqrt")
+@dataclasses.dataclass(frozen=True)
+class EmaDecaySqrtConfig(ModelAveragingConfig[M]):
+    """EMA followed by :math:`1 - \sqrt{x}` decay."""
+
+    beta: float = 0.999
+    switch_step: int = 100_000
+    decay_steps: int = 100_000
+
+    def create(self, model: M) -> EmaDecaySqrtModelAveraging[M]:
+        return EmaDecaySqrtModelAveraging(
+            model=model,
+            beta=self.beta,
+            switch_step=self.switch_step,
+            decay_steps=self.decay_steps,
+        )
