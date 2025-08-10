@@ -477,34 +477,43 @@ class TPUHostActor:
 # TODO: Python's type system doesn't make it easy to do the abstraction over arity etc here.
 
 @typing.overload
-def tpu_remote(fn: Callable, *,
-               tpu_type: str,
-               num_slices: int = 1,
-               max_retries_preemption: int = 10000,
-               max_retries_failure: int = 10,
-               manager_resources: RayResources | None = None,
-               **kwargs) -> "TpuRemoteFunction":
+def tpu_remote(
+    fn: Callable,
+    *,
+    tpu_type: str,
+    num_slices: int = 1,
+    max_retries_preemption: int = 10000,
+    max_retries_failure: int = 10,
+    manager_resources: RayResources | None = None,
+    **kwargs,
+) -> "TpuRemoteFunction":
     ...
 
 
 @typing.overload
-def tpu_remote(*,
-               tpu_type: str,
-               num_slices: int = 1,
-               max_retries_preemption: int = 10000,
-               max_retries_failure: int = 10,
-               manager_resources: RayResources | None = None,
-               **kwargs) -> Callable[[Callable], "TpuRemoteFunction"]:
+def tpu_remote(
+    fn: None = None,
+    *,
+    tpu_type: str,
+    num_slices: int = 1,
+    max_retries_preemption: int = 10000,
+    max_retries_failure: int = 10,
+    manager_resources: RayResources | None = None,
+    **kwargs,
+) -> Callable[[Callable], "TpuRemoteFunction"]:
     ...
 
 
-def tpu_remote(fn: Callable | None = None, *,
-               tpu_type: str,
-               num_slices: int = 1,
-               max_retries_preemption: int = 10000,
-               max_retries_failure: int = 10,
-               manager_resources: RayResources | None = None,
-               **kwargs) -> Union["TpuRemoteFunction", Callable[[Callable], "TpuRemoteFunction"]]:  # type: ignore
+def tpu_remote(
+    fn: Callable | None = None,
+    *,
+    tpu_type: str,
+    num_slices: int = 1,
+    max_retries_preemption: int = 10000,
+    max_retries_failure: int = 10,
+    manager_resources: RayResources | None = None,
+    **kwargs,
+) -> Union["TpuRemoteFunction", Callable[[Callable], "TpuRemoteFunction"]]:
     """
 
     Decorator to run a function on a TPU pod. The function will be run on a slice of the TPU pod, and will be retried
