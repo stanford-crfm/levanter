@@ -702,7 +702,7 @@ def _stop_actor(actor: ActorHandle) -> None:
         # but it doesn't really matter
         ray.get(actor.teardown.remote(), timeout=_TEARDOWN_ACTOR_TIMEOUT)
         ray.get(actor.__ray_terminate__.remote(), timeout=_TERMINATE_ACTOR_TIMEOUT)
-    except ActorDiedError:
+    except (ActorDiedError, ActorUnavailableError):
         # This is expected because the actor will terminate within  __ray_terminate__() task,
         # so the task will never succeed.
         pass
