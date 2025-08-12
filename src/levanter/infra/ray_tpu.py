@@ -448,10 +448,7 @@ class TPUHostActor:
 
     def teardown(self) -> None:
         if self._awaitable:
-            try:
-                _cancel_tasks_and_wait([self._awaitable])
-            except Exception as e:
-                raise Exception("Could not tear down actor") from e
+            _cancel_tasks_and_wait([self._awaitable])
         self._awaitable = None
         self._host_info = None
 
@@ -720,7 +717,7 @@ def _cancel_tasks_and_wait(tasks: list[ray.ObjectRef]) -> None:
     logger.info(f"Cancelling {len(tasks)} tasks")
     try:
         for task in tasks:
-            ray.cancel(task, force=True)
+            ray.cancel(task, force=True, recursive=True)
     except Exception:
         message = f"Failed to cancel {len(tasks)} tasks"
         logger.error(message)
