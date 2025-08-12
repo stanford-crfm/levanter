@@ -220,6 +220,91 @@ def dot_product_attention(
         )
 
 
+def dot_product_attention_with_sink(
+    QPos: AxisSelector,
+    KPos: AxisSelection,
+    Key: AxisSelector,
+    query: NamedArray,
+    key: NamedArray,
+    value: NamedArray,
+    attn_sink: NamedArray,
+    mask: Optional[Union["AttentionMask", NamedArray]] = None,
+    bias: Optional[NamedArray] = None,
+    attention_dtype: Optional[jnp.dtype] = None,
+    precision: PrecisionLike = None,
+    use_flash: Optional[bool] = None,
+    attn_backend: Optional[AttentionBackend] = None,
+    flash_block_size: Optional[int] = None,
+    dropout: float = 0.0,
+    *,
+    logits_soft_cap: float | None = None,
+    scaling_factor: float | None = None,
+    inference: bool = True,
+    prng: PRNGKeyArray | None = None,
+):
+    """Dot-product attention variant with a learned sink term per head.
+
+    The sink is implemented by appending a dummy key/value of zeros and
+    inserting the sink logit via the bias term at the final key position.
+    """
+
+    QPos = query.resolve_axis(QPos)
+    KPos = key.resolve_axis(KPos)
+    Key = query.resolve_axis(Key)
+
+    KPos1 = KPos.resize(1)
+    KPosPlus = KPos.resize(KPos.size + 1)
+
+    zero_key_axes = tuple(KPos1 if ax == KPos else ax for ax in key.axes)
+    zero_key = hax.zeros(zero_key_axes, dtype=key.dtype)
+    key = hax.concatenate(KPosPlus, [key, zero_key])
+
+    zero_val_axes = tuple(KPos1 if ax == KPos else ax for ax in value.axes)
+    zero_val = hax.zeros(zero_val_axes, dtype=value.dtype)
+    value = hax.concatenate(KPosPlus, [value, zero_val])
+
+    m = materialize_mask(mask, QPos, KPos)
+    if m is not None:
+        sink_mask_axes = tuple(KPos1 if ax == KPos else ax for ax in m.axes)
+        sink_mask = hax.ones(sink_mask_axes, dtype=m.dtype)
+        m = hax.concatenate(KPosPlus, [m, sink_mask])
+
+    bias_axes_prefix = tuple(ax for ax in query.axes if ax != Key)
+    sink_bias = attn_sink
+    for ax in bias_axes_prefix:
+        if ax not in sink_bias.axes:
+            sink_bias = sink_bias.broadcast_axis(ax)
+    sink_bias = sink_bias.broadcast_axis(KPos1)
+
+    if bias is not None:
+        bias = hax.concatenate(KPosPlus, [bias, sink_bias])
+    else:
+        zero_bias_axes = bias_axes_prefix + (KPos,)
+        zero_bias = hax.zeros(zero_bias_axes, dtype=sink_bias.dtype)
+        bias = hax.concatenate(KPosPlus, [zero_bias, sink_bias])
+
+    return dot_product_attention(
+        QPos,
+        KPosPlus,
+        Key,
+        query,
+        key,
+        value,
+        m,
+        bias,
+        attention_dtype,
+        precision,
+        use_flash,
+        attn_backend,
+        flash_block_size,
+        dropout,
+        logits_soft_cap=logits_soft_cap,
+        scaling_factor=scaling_factor,
+        inference=inference,
+        prng=prng,
+    )
+
+
 def simple_attention_with_dropout(
     QPos: Axis,
     KPos: Axis,
@@ -617,6 +702,18 @@ def _materialize_segment_mask(segment_ids, QPos, KPos, q_slice, k_slice) -> Name
     return q_segment_ids.broadcast_axis(sub_KPos) == kv_segment_ids
 
 
+def _materialize_sliding_window_mask(
+    window: int, QPos: Axis, KPos: Axis, q_slice: haliax.dslice, k_slice: haliax.dslice
+) -> NamedArray:
+    """Materialize a causal sliding window mask."""
+    sub_q = QPos.resize(q_slice.size)
+    sub_k = KPos.resize(k_slice.size)
+    q_pos = hax.arange(sub_q) + q_slice.start
+    k_pos = hax.arange(sub_k) + k_slice.start
+    diff = q_pos.broadcast_axis(sub_k) - k_pos.broadcast_axis(sub_q)
+    return (diff >= 0) & (diff < window)
+
+
 class AttentionMask(eqx.Module):
     """
 
@@ -646,6 +743,7 @@ class AttentionMask(eqx.Module):
     is_causal: bool = eqx.field(static=True)
     explicit_mask: Optional[NamedArray] = None
     segment_ids: Optional[NamedArray] = None
+    sliding_window: Optional[int] = eqx.field(default=None, static=True)
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
     # TODO: add prefixlm
     # cf https://github.com/google-research/t5x/blob/51a99bff8696c373cc03918707ada1e98cbca407/t5x/examples/decoder_only/layers.py#L978
@@ -674,6 +772,12 @@ class AttentionMask(eqx.Module):
 
         mask = combine_masks_and(causal, explicit)
 
+        if self.sliding_window is not None:
+            sw_mask = _materialize_sliding_window_mask(
+                self.sliding_window, QPos, KPos, q_slice=q_slice, k_slice=k_slice
+            )
+            mask = combine_masks_and(mask, sw_mask)
+
         if self.segment_ids is not None:
             segment_mask = _materialize_segment_mask(self.segment_ids, QPos, KPos, q_slice, k_slice)
             mask = combine_masks_and(mask, segment_mask)
@@ -681,28 +785,68 @@ class AttentionMask(eqx.Module):
         return mask
 
     @staticmethod
-    def causal() -> "AttentionMask":
-        return AttentionMask(is_causal=True)
+    def causal(sliding_window: Optional[int] = None) -> "AttentionMask":
+        """Create a causal AttentionMask.
+
+        Args:
+            sliding_window: If provided, restrict each query position to attend only to keys within
+                ``sliding_window`` previous positions.
+        """
+        return AttentionMask(is_causal=True, sliding_window=sliding_window)
 
     @staticmethod
     def explicit(mask: NamedArray) -> "AttentionMask":
         return AttentionMask(is_causal=False, explicit_mask=mask)
 
     def with_segment_ids(self, segment_ids: NamedArray) -> "AttentionMask":
-        return AttentionMask(is_causal=self.is_causal, explicit_mask=self.explicit_mask, segment_ids=segment_ids)
+        return AttentionMask(
+            is_causal=self.is_causal,
+            explicit_mask=self.explicit_mask,
+            segment_ids=segment_ids,
+            sliding_window=self.sliding_window,
+        )
+
+    def with_sliding_window(self, sliding_window: int | None) -> "AttentionMask":
+        """Return a copy of this mask with ``sliding_window`` applied."""
+        return AttentionMask(
+            is_causal=self.is_causal,
+            explicit_mask=self.explicit_mask,
+            segment_ids=self.segment_ids,
+            sliding_window=sliding_window,
+        )
 
     def __and__(self, other) -> "AttentionMask":
         is_causal = self.is_causal or other.is_causal
         explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
         segment_ids = self._check_for_same_segment_ids(other)
+        if self.sliding_window is None:
+            sliding_window = other.sliding_window
+        elif other.sliding_window is None:
+            sliding_window = self.sliding_window
+        else:
+            sliding_window = min(self.sliding_window, other.sliding_window)
 
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
+        return AttentionMask(
+            is_causal=is_causal,
+            explicit_mask=explicit_mask,
+            segment_ids=segment_ids,
+            sliding_window=sliding_window,
+        )
 
     def __or__(self, other) -> "AttentionMask":
         is_causal = self.is_causal and other.is_causal
         explicit_mask = combine_masks_or(self.explicit_mask, other.explicit_mask)
         segment_ids = self._check_for_same_segment_ids(other)
-        return AttentionMask(is_causal=is_causal, explicit_mask=explicit_mask, segment_ids=segment_ids)
+        if self.sliding_window is None or other.sliding_window is None:
+            sliding_window = None
+        else:
+            sliding_window = max(self.sliding_window, other.sliding_window)
+        return AttentionMask(
+            is_causal=is_causal,
+            explicit_mask=explicit_mask,
+            segment_ids=segment_ids,
+            sliding_window=sliding_window,
+        )
 
     def _check_for_same_segment_ids(self, other):
         if self.segment_ids is not None and other.segment_ids is not None:
@@ -995,6 +1139,13 @@ def _tpu_splash_attention(
                 base_mask = splash_attention_mask.CausalMask(shape=(Sq, Sk))
             else:
                 base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
+            if mask.sliding_window is not None:
+                local_mask = splash_attention_mask.LocalMask(
+                    shape=(Sq, Sk),
+                    window_size=(mask.sliding_window - 1, None),
+                    offset=0,
+                )
+                base_mask = splash_attention_mask.LogicalAnd(base_mask, local_mask)
             # This is going to be a pain to support
             if mask.explicit_mask is not None:
                 raise NotImplementedError("Explicit masks are not yet supported for splash attention")
@@ -1233,7 +1384,6 @@ class Attention(eqx.Module):
 
         return attn_output
 
-
 @dataclass(frozen=True)
 class MultiHeadLatentAttentionConfig:
     """Configuration for MultiHeadLatentAttention adapted from DeepSeek-V3."""
@@ -1453,4 +1603,85 @@ class MultiHeadLatentAttention(eqx.Module):
         attn_output = attn_output.rename({"q_head_dim": "v_head_dim"}).astype(x.dtype)
         assert self.o_proj is not None
         attn_output = self.o_proj(attn_output, key=k_o)
+        return attn_output
+
+class AttentionWithSink(Attention):
+    """Attention module that includes a learned sink term per head.
+
+    The sink is added to the softmax denominator, reducing the attention mass
+    assigned to tokens and allowing some probability to fall into a separate
+    bucket. This can improve stability during generation.
+    """
+
+    sinks: NamedArray | None = None
+
+    @staticmethod
+    def init(config: AttentionConfig, *, key) -> "AttentionWithSink":
+        base = Attention.init(config, key=key)
+        sinks = hax.zeros((config.KVHeads, config.QHeadsPerGroup), dtype=jnp.float32)
+        return AttentionWithSink(
+            base.config,
+            base.q_proj,
+            base.k_proj,
+            base.v_proj,
+            base.o_proj,
+            base.q_norm,
+            base.k_norm,
+            base.rot_embs,
+            sinks,
+        )
+
+    @named_call
+    def __call__(
+        self, x: NamedArray, mask: Optional[NamedArray | AttentionMask], *, key=None, pos_ids: NamedArray | None = None
+    ) -> NamedArray:
+        key_q, key_k, key_v, key_o = maybe_rng_split(key, 4)
+
+        q_proj = self.q_proj(x, key=key_q)
+        k_proj = self.k_proj(x, key=key_k)
+        v = self.v_proj(x, key=key_v)
+
+        if self.config.qk_norm is not None:
+            q = self.q_norm(q_proj)  # type: ignore[misc]
+            k = self.k_norm(k_proj)  # type: ignore[misc]
+        else:
+            q = q_proj
+            k = k_proj
+
+        q = q.rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
+        k = k.rearrange((..., "kv_heads", "position", "head_size"))
+        v = v.rearrange((..., "kv_heads", "position", "head_size"))
+
+        if self.rot_embs is not None:
+            if pos_ids is None:
+                pos_ids = hax.arange(x.resolve_axis("position"), dtype=jnp.int32)
+            q = self.rot_embs(q, pos_ids)
+            k = self.rot_embs(k, pos_ids)
+
+        k = k.rename({"position": "key_position"})
+        v = v.rename({"position": "key_position"})
+
+        attn_output = dot_product_attention_with_sink(
+            "position",
+            "key_position",
+            "head_size",
+            q,
+            k,
+            v,
+            self.sinks,
+            mask,
+            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
+            attn_backend=self.config.attn_backend,
+            flash_block_size=self.config.flash_attention_block_size,
+            scaling_factor=self.config.scaling_factor,
+            logits_soft_cap=self.config.logits_soft_cap,
+            dropout=0.0,
+            inference=True,
+            prng=key,
+        )
+
+        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_output.astype(x.dtype)
+        attn_output = self.o_proj(attn_output, key=key_o)
+
         return attn_output
