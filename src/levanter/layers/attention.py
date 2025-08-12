@@ -476,9 +476,9 @@ def _te_materialize_mask(KPos, QPos, batch_size, mask):
 
             fused_attn_mask = mask.materialize(QPos, KPos)
 
-            assert (
-                fused_attn_mask is not None
-            ), "If AttentionMask is causal, the materialized array should never be None. Something is wrong."
+            assert fused_attn_mask is not None, (
+                "If AttentionMask is causal, the materialized array should never be None. Something is wrong."
+            )
 
             fused_attn_mask = fused_attn_mask.array
             fused_attn_mask = jnp.dstack([fused_attn_mask] * batch_size)
@@ -729,8 +729,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> NamedArray:
-    ...
+) -> NamedArray: ...
 
 
 @overload
@@ -740,8 +739,7 @@ def materialize_mask(
     KPos: Axis,
     q_slice: Optional[haliax.dslice] = None,
     k_slice: Optional[haliax.dslice] = None,
-) -> Optional[NamedArray]:
-    ...
+) -> Optional[NamedArray]: ...
 
 
 def materialize_mask(
@@ -1087,9 +1085,9 @@ class AttentionConfig:
     """Configuration for QK normalization. If None, no normalization is applied."""
 
     def __post_init__(self):
-        assert (
-            self.num_heads % self.num_kv_heads == 0
-        ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+        assert self.num_heads % self.num_kv_heads == 0, (
+            f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
+        )
 
     @property
     def head_size(self) -> int:
@@ -1235,6 +1233,7 @@ class Attention(eqx.Module):
 
         return attn_output
 
+
 @dataclass(frozen=True)
 class MultiHeadLatentAttentionConfig:
     """Configuration for MultiHeadLatentAttention adapted from DeepSeek-V3."""
@@ -1280,7 +1279,9 @@ class MultiHeadLatentAttentionConfig:
 
 
 class MultiHeadLatentAttention(eqx.Module):
-    """Multi-head attention layer with latent projections inspired by DeepSeek-V3. Reference: https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/modeling_deepseek.py"""
+    """Multi-head attention layer with latent projections inspired by DeepSeek-V3.
+    Reference: https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/modeling_deepseek.py
+    """
 
     config: MultiHeadLatentAttentionConfig = eqx.field(static=True)
     kv_a_proj: hnn.Linear
@@ -1296,9 +1297,7 @@ class MultiHeadLatentAttention(eqx.Module):
     rot_embs: Optional[RotaryEmbeddings] = eqx.field(default=None)
 
     @staticmethod
-    def init(
-        config: MultiHeadLatentAttentionConfig, *, key
-    ) -> "MultiHeadLatentAttention":
+    def init(config: MultiHeadLatentAttentionConfig, *, key) -> "MultiHeadLatentAttention":
         use_bias = config.use_bias
         keys = jrandom.split(key, 5)
         if config.q_lora_rank is None:
@@ -1320,9 +1319,7 @@ class MultiHeadLatentAttention(eqx.Module):
                 use_bias=use_bias,
                 out_first=True,
             )
-            q_a_norm = hnn.RmsNorm.init(
-                Axis("q_lora_rank", config.q_lora_rank), use_bias=False
-            )
+            q_a_norm = hnn.RmsNorm.init(Axis("q_lora_rank", config.q_lora_rank), use_bias=False)
             q_b_proj = hnn.Linear.init(
                 In=config.QLoraSize,
                 Out=(config.Heads, config.QHeadSize),
@@ -1339,9 +1336,7 @@ class MultiHeadLatentAttention(eqx.Module):
             use_bias=use_bias,
             out_first=True,
         )
-        kv_a_norm = hnn.RmsNorm.init(
-            Axis("latent", config.kv_lora_rank), use_bias=False
-        )
+        kv_a_norm = hnn.RmsNorm.init(Axis("latent", config.kv_lora_rank), use_bias=False)
         kv_b_proj = hnn.Linear.init(
             In=config.LatentSize,
             Out=(
@@ -1359,11 +1354,7 @@ class MultiHeadLatentAttention(eqx.Module):
             use_bias=use_bias,
             out_first=True,
         )
-        rot_embs = (
-            config.rope.build(Axis("q_head_dim", config.qk_rope_head_dim))
-            if config.rope is not None
-            else None
-        )
+        rot_embs = config.rope.build(Axis("q_head_dim", config.qk_rope_head_dim)) if config.rope is not None else None
 
         return MultiHeadLatentAttention(
             config,
@@ -1390,14 +1381,12 @@ class MultiHeadLatentAttention(eqx.Module):
         k_q_a, k_q_b, k_kv_a, k_kv_b, k_o = maybe_rng_split(key, 5)
 
         # Project to a shared latent space for K and V.
-        # For inference, this means you just need to cache the reduced size latent
+        # For inference, this means you just need to cache the reduced size latent.
         kv = self.kv_a_proj(x, key=k_kv_a)
-        compressed_kv = kv["kv_combined", : self.config.kv_lora_rank].rename(
-            {"kv_combined": "latent"}
-        )
+        compressed_kv = kv["kv_combined", : self.config.kv_lora_rank].rename({"kv_combined": "latent"})
 
         # We can't do RoPE on K without materializing K, so we shave off a
-        # qk_rope_head_dim sized chunk to materialize for RoPE
+        # qk_rope_head_dim-sized chunk to materialize for RoPE.
         k_pe = (
             kv["kv_combined", self.config.kv_lora_rank :]
             .rename({"kv_combined": "q_head_dim"})
@@ -1407,35 +1396,27 @@ class MultiHeadLatentAttention(eqx.Module):
         compressed_kv_norm = self.kv_a_norm(compressed_kv)
         kv_out = self.kv_b_proj(compressed_kv_norm, key=k_kv_b)
 
-        # Split the Matrix into K_nope and the full V
-        k_nope = kv_out["kv_out", : self.config.qk_nope_head_dim].rename(
-            {"kv_out": "q_head_dim"}
-        )
-        v = kv_out["kv_out", self.config.qk_nope_head_dim :].rename(
-            {"kv_out": "v_head_dim"}
-        )
-        v_attn = v.rename({"v_head_dim": "q_head_dim"})
+        # Split the matrix into K_nope and the full V.
+        k_nope = kv_out["kv_out", : self.config.qk_nope_head_dim].rename({"kv_out": "q_head_dim"})
+        v = kv_out["kv_out", self.config.qk_nope_head_dim :].rename({"kv_out": "v_head_dim"})
 
-        # Optional step of doing LoRA on Q.
-        # This isn't core to the benefits of MLA, but is what DeepSeek does.
+        # Optional step of doing LoRA on Q (as done in DeepSeek).
         if self.config.q_lora_rank is None:
             q = self.q_proj(x, key=k_q_a)
         else:
-            assert (
-                self.q_a_proj is not None
-                and self.q_a_norm is not None
-                and self.q_b_proj is not None
-            ), "q_lora_rank defined, but LoRA matrices are not."
+            assert self.q_a_proj is not None and self.q_a_norm is not None and self.q_b_proj is not None, (
+                "q_lora_rank defined, but LoRA matrices are not."
+            )
             q = self.q_a_proj(x, key=k_q_a)
             q = self.q_a_norm(q)
             q = self.q_b_proj(q, key=k_q_b)
         q = q.rearrange((..., "heads", "position", "q_head_dim"))
 
-        # Prep for partial RoPE
+        # Prep for partial RoPE.
         q_nope = q["q_head_dim", : self.config.qk_nope_head_dim]
         q_pe = q["q_head_dim", self.config.qk_nope_head_dim :]
 
-        # Apply RoPE to the split off portion for it and then merge back together
+        # Apply RoPE to the split-off portion and then merge back together.
         if self.rot_embs is not None:
             if pos_ids is None:
                 pos_ids = hax.arange(x.resolve_axis("position"), dtype=jnp.int32)
@@ -1445,8 +1426,11 @@ class MultiHeadLatentAttention(eqx.Module):
         query_states = hax.concatenate("q_head_dim", (q_nope, q_pe))
         key_states = hax.concatenate("q_head_dim", (k_nope, k_pe))
 
+        # Rename axes for attention inputs.
         key_states = key_states.rename({"position": "key_position"})
         v = v.rename({"position": "key_position"})
+        # Build the value tensor AFTER renaming position → key_position.
+        v_attn = v.rename({"v_head_dim": "q_head_dim"})
 
         attn_output = dot_product_attention(
             "position",
