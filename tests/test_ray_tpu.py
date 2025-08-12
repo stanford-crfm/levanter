@@ -296,7 +296,7 @@ def test_multislice_fail_once():
             if count == 0:
                 raise DeliberatelyRaisedException(f"Failing deliberately because count is {count}")
         # sleeping for a while makes the TPU initialization error repro more consistent
-        time.sleep(30)
+        time.sleep(5)
         return result
 
     results = run_on_pod(fail_once_on_first_slice_jax_fn, "v4-8", num_slices=num_slices, max_retries_failure=1)

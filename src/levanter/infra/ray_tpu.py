@@ -9,7 +9,7 @@ import tempfile
 import time
 from asyncio import QueueEmpty
 from dataclasses import dataclass
-from typing import Callable, Generic, Optional, Sequence, TypeVar
+from typing import Callable, Generic, Iterable, Optional, Sequence, TypeVar
 
 import draccus
 import mergedeep
@@ -162,8 +162,9 @@ class TPUHostInfo:
 
 # Timeouts (in seconds)
 _HEALTH_CHECK_TIMEOUT = 60
-_TEARDOWN_ACTOR_TIMEOUT = 300
-_TERMINATE_ACTOR_TIMEOUT = 300
+_TEARDOWN_ACTOR_TIMEOUT = 5 * 60
+_CANCEL_TASK_TIMEOUT = 4 * 60
+_TERMINATE_ACTOR_TIMEOUT = 5 * 60
 _START_ACTOR_TIMEOUT = 7 * 24 * 60 * 60  # 1 week
 
 
@@ -430,7 +431,7 @@ class TPUHostActor:
             raise Exception("Call setup() before calling run_remote_fn()")
 
         if self._awaitable:
-            ray.cancel(self._awaitable, force=True, recursive=True)
+            _cancel_tasks_and_wait([self._awaitable])
         _hacky_remove_tpu_lockfile()
 
         self._awaitable = remote_fn.options(
@@ -447,11 +448,12 @@ class TPUHostActor:
 
     def teardown(self) -> None:
         if self._awaitable:
-            ray.cancel(self._awaitable, force=True, recursive=True)
+            try:
+                _cancel_tasks_and_wait([self._awaitable])
+            except Exception as e:
+                raise Exception(f"Could not tear down actor {self._host_info.node_id}") from e
         self._awaitable = None
         self._host_info = None
-
-
 
 
 def run_on_pod(
@@ -603,12 +605,11 @@ def run_on_pod_ray(
 
             # Proactively cancel jobs if one fails.
             if had_a_failure and pending_futures:
-                logger.info(f"Failure detected. Cancelling {len(pending_futures)} futures.")
+                logger.info(f"Failure detected. Cancelling {len(pending_futures)} pending futures.")
                 try:
-                    for f in pending_futures:
-                        ray.cancel(f, force=True)
-                except Exception:
-                    logger.exception("Failed to cancel pending futures")
+                    _cancel_tasks_and_wait(pending_futures)
+                except Exception as e:
+                    logger.error(f"Could not cancel all pending futures: {e}")
 
                 # Now, fill in the cancellations
                 for f in pending_futures:
@@ -710,6 +711,28 @@ def _stop_actor(actor: ActorHandle) -> None:
         logger.warning(f"Failed to gracefully shut down actor in {_TERMINATE_ACTOR_TIMEOUT} seconds; killing it instead: {e}")
     finally:
         ray.kill(actor)
+
+
+def _cancel_tasks_and_wait(tasks: Iterable[ray.ObjectRef]) -> None:
+    _, tasks = ray.wait(tasks, timeout=0)
+    if not tasks:
+        return
+    logger.info(f"Cancelling {len(tasks)} tasks")
+    try:
+        for task in tasks:
+            ray.cancel(task, force=True)
+    except Exception:
+        message = f"Failed to cancel {len(tasks)} tasks"
+        logger.error(message)
+        raise Exception(message)
+    logger.info(f"Waiting for {len(tasks)} tasks to be cancelled.")
+    cancel_ready, cancel_unready = ray.wait(tasks, num_returns=len(tasks), timeout=_CANCEL_TASK_TIMEOUT)
+    if cancel_unready:
+        message = f"Cancelled {len(cancel_ready)} tasks; could not cancel {len(cancel_unready)} tasks"
+        logger.error(message)
+        raise Exception(message)
+    else:
+        logger.info(f"Cancelled {len(cancel_ready)} tasks")
 
 
 def _start_fn_on_slice(slice_actor: ActorHandle, remote_fn: RemoteFunction, mxla_env: dict | None) -> list[ray.ObjectRef]:
