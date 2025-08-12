@@ -9,7 +9,7 @@ import tempfile
 import time
 from asyncio import QueueEmpty
 from dataclasses import dataclass
-from typing import Callable, Generic, Iterable, Optional, Sequence, TypeVar
+from typing import Callable, Generic, Optional, Sequence, TypeVar
 
 import draccus
 import mergedeep
@@ -451,7 +451,7 @@ class TPUHostActor:
             try:
                 _cancel_tasks_and_wait([self._awaitable])
             except Exception as e:
-                raise Exception(f"Could not tear down actor {self._host_info.node_id}") from e
+                raise Exception("Could not tear down actor") from e
         self._awaitable = None
         self._host_info = None
 
@@ -713,7 +713,7 @@ def _stop_actor(actor: ActorHandle) -> None:
         ray.kill(actor)
 
 
-def _cancel_tasks_and_wait(tasks: Iterable[ray.ObjectRef]) -> None:
+def _cancel_tasks_and_wait(tasks: list[ray.ObjectRef]) -> None:
     _, tasks = ray.wait(tasks, timeout=0)
     if not tasks:
         return
