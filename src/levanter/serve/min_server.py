@@ -1,11 +1,10 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 import time
 import uuid
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from levanter.trainer import TrainerConfig
 from pydantic import BaseModel, Field
 
 from levanter.inference.service import GenerationService, GenerationOptions
@@ -50,7 +49,9 @@ class CompletionResponse(BaseModel):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "ready": bool(_service and _service.ready())}
+    ready = bool(_service and _service.ready())
+    detail = getattr(_service, "last_error", None) if _service and not ready else None
+    return {"status": "ok", "ready": ready, "detail": detail}
 
 
 @app.post("/v1/completions", response_model=CompletionResponse)
@@ -58,7 +59,7 @@ def completions(req: CompletionRequest):
     if not req.prompt:
         raise HTTPException(status_code=400, detail="prompt must be non-empty")
     if _service is None or not _service.ready():
-        raise HTTPException(status_code=503, detail="model not ready")
+        raise HTTPException(status_code=503, detail=(getattr(_service, "last_error", None) if _service else "model not ready"))
     created = int(time.time())
     opts = GenerationOptions(
         max_tokens=req.max_tokens,
@@ -85,16 +86,22 @@ def completions(req: CompletionRequest):
 def main():
     @dataclass(frozen=True)
     class ServeConfig:
+        trainer: TrainerConfig
         host: str = "0.0.0.0"
         port: int = 8000
         hf_checkpoint: Optional[RepoRef] = None
         checkpoint_path: Optional[str] = None
         tokenizer: Optional[str] = None
         seed: int = 0
+        log_level: str = "info"
+        access_log: bool = True
 
     def _run(cfg: ServeConfig):
         # Lazy import to avoid forcing uvicorn at import-time
         import uvicorn  # type: ignore
+
+        # initialize jax/logging/tracker similar to other entrypoints
+        levanter.initialize(cfg)
 
         global _service
         _service = GenerationService(
@@ -102,11 +109,20 @@ def main():
             checkpoint_path=cfg.checkpoint_path,
             tokenizer=cfg.tokenizer,
             seed=cfg.seed,
+            trainer=cfg.trainer,
         )
 
-        uvicorn.run("levanter.serve.min_server:app", host=cfg.host, port=cfg.port, reload=False, workers=1)
+        uvicorn.run(
+            app,
+            host=cfg.host,
+            port=cfg.port,
+            reload=False,
+            workers=1,
+            log_level=cfg.log_level,
+            access_log=cfg.access_log,
+        )
 
-    levanter.config.main(_run, ServeConfig)()
+    levanter.config.main(_run)()
 
 
 if __name__ == "__main__":

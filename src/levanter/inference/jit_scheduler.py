@@ -319,7 +319,7 @@ max_num_tokens: {max_num_tokens}
                 dtype=jnp.int32,
             ) if max_stop_tokens > 0 else None,
             temperature=hax.ones({"seq": max_seqs}, dtype=jnp.float32),
-            prng_keys=jax.vmap(jax.random.key, axis_size=max_seqs, in_axes=None)(0)
+            prng_keys=jax.vmap(jax.random.PRNGKey, axis_size=max_seqs, in_axes=None)(0)
         )
 
 

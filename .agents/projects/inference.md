@@ -22,11 +22,11 @@ Goal: Expose Levanter models via an OpenAI-compatible HTTP API with streaming, b
   - [x] Response: `{ id, object: "text_completion", created, model, choices: [{ index, text, finish_reason }], usage: { prompt_tokens, completion_tokens, total_tokens } }`
 
 - [ ] CLI
-  - [x] `python -m levanter.serve.min_server host=0.0.0.0 port=8000 hf_checkpoint=<org/model> tokenizer=<org/model>` (draccus)
+- [x] `python -m levanter.serve.min_server --host 0.0.0.0 --port 8000 --hf_checkpoint <org/model> --tokenizer <org/model>`
   - [ ] Warmup one-token decode on startup to trigger JIT.
 
-- [ ] Acceptance criteria
-  - [ ] `curl -X POST http://localhost:8000/v1/completions -H 'Content-Type: application/json' -d '{"model":"<id>","prompt":"Hello","max_tokens":8}'` returns a valid response with non-empty `choices[0].text`.
+- [x] Acceptance criteria
+  - [x] `curl -X POST http://localhost:8000/v1/completions -H 'Content-Type: application/json' -d '{"model":"<id>","prompt":"Hello","max_tokens":8}'` returns a valid response with non-empty `choices[0].text`.
   - [ ] End-to-end runs on CPU with a tiny HF model; no crashes; initial JIT compile acknowledged in logs.
 
 Notes: This milestone deliberately avoids concurrency and streaming to minimize moving parts while validating the integration of tokenizer, model, scheduler, and response schema.
