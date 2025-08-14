@@ -7,10 +7,10 @@ Goal: Expose Levanter models via an OpenAI-compatible HTTP API with streaming, b
 - **Out of scope**: SSE streaming, batching >1, usage tokens accounting beyond basic counts, top_p/top_k penalties, function/tool calls.
 
 - [ ] Server scaffold
-  - [ ] Add optional dependency group `serve` (fastapi + uvicorn).
-  - [ ] Create `src/levanter/serve/min_server.py` exposing `app` and a `main()` to run uvicorn.
-  - [ ] Endpoint: `POST /v1/completions` with minimal OpenAI-compatible schema.
-  - [ ] Health: `GET /healthz` returns 200 when model is ready.
+  - [x] Add optional dependency group `serve` (fastapi + uvicorn).
+  - [x] Create `src/levanter/serve/min_server.py` exposing `app` and a `main()` to run uvicorn.
+  - [x] Endpoint: `POST /v1/completions` with minimal OpenAI-compatible schema.
+  - [x] Health: `GET /healthz` returns 200 when model is ready.
 
 - [ ] Minimal model wrapper
   - [ ] `GenerationService` (single-seq) that loads tokenizer + model via `_load_model` and sets up `PageTable`, `KvPageCache`, `JitScheduler`, `DecodeState`, `Sampler`.
@@ -18,11 +18,11 @@ Goal: Expose Levanter models via an OpenAI-compatible HTTP API with streaming, b
   - [ ] Convert `stop` strings to token sequences with tokenizer and pass via `SeqDecodingParams`.
 
 - [ ] Request/response models (subset of OpenAI)
-  - [ ] Request: `{ model: str, prompt: str, max_tokens?: int, temperature?: float, stop?: str | string[] }`
-  - [ ] Response: `{ id, object: "text_completion", created, model, choices: [{ index, text, finish_reason }], usage: { prompt_tokens, completion_tokens, total_tokens } }`
+  - [x] Request: `{ model: str, prompt: str, max_tokens?: int, temperature?: float, stop?: str | string[], seed?: int }`
+  - [x] Response: `{ id, object: "text_completion", created, model, choices: [{ index, text, finish_reason }], usage: { prompt_tokens, completion_tokens, total_tokens } }`
 
 - [ ] CLI
-  - [ ] `python -m levanter.serve.min_server --hf-checkpoint ... --tokenizer ... --host 0.0.0.0 --port 8000`
+  - [x] `python -m levanter.serve.min_server host=0.0.0.0 port=8000 hf_checkpoint=<org/model> tokenizer=<org/model>` (draccus)
   - [ ] Warmup one-token decode on startup to trigger JIT.
 
 - [ ] Acceptance criteria
