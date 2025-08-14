@@ -67,12 +67,9 @@ def completions(req: CompletionRequest):
         stop=(req.stop if isinstance(req.stop, list) else ([req.stop] if req.stop else None)),
         seed=req.seed if req.seed is not None else created,
     )
-    text = _service.generate_once(req.prompt, opts)
-    choice = Choice(index=0, text=text, finish_reason="stop")
-    # Rough usage until wired to tokenizer counts
-    prompt_tokens = len(req.prompt.split())
-    completion_tokens = len(text.split()) - prompt_tokens if text.startswith(req.prompt) else len(text.split())
-    usage = Usage(prompt_tokens=prompt_tokens, completion_tokens=max(completion_tokens, 0), total_tokens=prompt_tokens + max(completion_tokens, 0))
+    result = _service.generate_once(req.prompt, opts)
+    choice = Choice(index=0, text=result.text, finish_reason=result.finish_reason)
+    usage = Usage(prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens, total_tokens=result.total_tokens)
     return CompletionResponse(
         id=f"cmpl-{uuid.uuid4().hex[:12]}",
         object="text_completion",
@@ -115,8 +112,8 @@ def main():
         # Warmup JIT compilation with a tiny generation
         print("Warming up JIT compilation...")
         try:
-            warmup_text = _service.generate_once("Hello", GenerationOptions(max_tokens=1, temperature=0.7, seed=42))
-            print(f"JIT warmup complete. Generated: {repr(warmup_text)}")
+            warmup_result = _service.generate_once("Hello", GenerationOptions(max_tokens=1, temperature=0.7, seed=42))
+            print(f"JIT warmup complete. Generated: {repr(warmup_result.text)}")
         except Exception as e:
             print(f"JIT warmup failed: {e}")
             # Continue anyway - the service might still work for some requests

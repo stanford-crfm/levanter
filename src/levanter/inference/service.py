@@ -36,6 +36,20 @@ class GenerationOptions:
     seed: Optional[int] = None
 
 
+@dataclass
+class GenerationResult:
+    """Result of a text generation request."""
+    text: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    finish_reason: str = "stop"
+    # Future fields we might want:
+    # logprobs: Optional[list[float]] = None
+    # top_logprobs: Optional[list[dict[str, float]]] = None
+    # usage: Optional[dict[str, int]] = None
+
+
 class GenerationService:
     """
     Minimal generation service facade. For the initial milestone this is a stub that echoes the prompt,
@@ -92,7 +106,13 @@ class GenerationService:
             return self._checkpoint_path
         return "levanter-echo"
 
-    def generate_once(self, prompt: str, options: GenerationOptions) -> str:
+    def generate_once(self, prompt: str, options: GenerationOptions) -> GenerationResult:
+        """
+        Generate text from a prompt.
+
+        Returns:
+            GenerationResult: Contains generated text and token usage information
+        """
         assert self._model is not None and self._sampler is not None
         assert self._table is not None and self._cache is not None
         assert self._sched is not None and self._decode_state is not None
@@ -111,7 +131,9 @@ class GenerationService:
         # Tokenize prompt
         prompt_ids: list[int] = self._tokenizer_obj(prompt, add_special_tokens=False)["input_ids"]
         if len(prompt_ids) == 0:
-            return ""
+            return GenerationResult(text="", prompt_tokens=0, completion_tokens=0, total_tokens=0)
+
+        prompt_tokens = len(prompt_ids)
 
         # Clone state for this request
         table = self._table
@@ -202,7 +224,7 @@ class GenerationService:
         # Decode tokens to text
         seq_outputs = [tok for tok in outputs[0] if tok != self._tokenizer_obj.pad_token_id and tok != INVALID]
         text = self._tokenizer_obj.decode(seq_outputs, skip_special_tokens=True)
-        return text
+        return GenerationResult(text=text, prompt_tokens=prompt_tokens, completion_tokens=len(outputs[0]) - prompt_tokens, total_tokens=len(outputs[0]))
 
     # ---- Internal helpers ----
     def _initialize(self):
