@@ -542,6 +542,19 @@ class TPUHostActor:
         self._host_info = None
 
 
+def _validate_num_slices(num_slices: int | Sequence[int]):
+    if isinstance(num_slices, int):
+        is_valid = num_slices > 0
+    elif isinstance(num_slices, list):
+        is_valid = len(num_slices) > 0 and all(isinstance(n, int) and n > 0 for n in num_slices)
+    else:
+        is_valid = False
+    if not is_valid:
+        raise Exception(
+            f"num_slices must be a positive integer or non-empty list of positive integers, but instead it was {num_slices}"
+        )
+
+
 def run_on_pod(
     remote_fn: RemoteFunction | Callable,
     tpu_type: str,
@@ -566,8 +579,7 @@ def run_on_pod(
         The result of the function (not an ObjectRef)
     """
 
-    if not num_slices:
-        raise ValueError("num_slices must be greater than 0")
+    _validate_num_slices(num_slices)
 
     return ray.get(run_on_pod_ray.remote(remote_fn, tpu_type, num_slices, max_retries_preemption, max_retries_failure))
 
@@ -585,8 +597,7 @@ def run_on_pod_ray(
 
     This function is a Ray remote function that can be called from anywhere in the Ray cluster.
     """
-    if not num_slices:
-        raise ValueError("num_slices must a positive integer or a non-empty list of positive integers")
+    _validate_num_slices(num_slices)
 
     # failures here means the job failed due to an error in the remote function, not a preemption
     num_failures = 0
@@ -882,7 +893,7 @@ def _handle_ray_error(e: RayError):
 #     for
 
 
-def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: int) -> list[ray.ObjectRef]:
+def run_on_pod_multislice(remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: Sequence[int]) -> list[ray.ObjectRef]:
     """
     Run a remote function on multiple TPU slices.
 
@@ -923,7 +934,7 @@ def run_on_pod_resumable(remote_fn: RemoteFunction | Callable, tpu_type: str, ma
 
 
 def run_on_pod_multislice_resumable(
-    remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: int, max_retries_preemption: int = 1_000_000, max_retries_failure: int = 10
+    remote_fn: RemoteFunction | Callable, tpu_type: str, num_slices: int | Sequence[int], max_retries_preemption: int = 1_000_000, max_retries_failure: int = 10
 ):
     """
     Repeatedly run a function on a TPU pod until it succeeds or a maximum number of retries is reached.
