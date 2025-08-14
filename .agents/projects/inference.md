@@ -29,7 +29,7 @@
 
 - [x] **CLI**
   - [x] `python -m levanter.serve.min_server --host 0.0.0.0 --port 8000 --hf_checkpoint <org/model> --tokenizer <org/model>`
-  - [ ] Warmup one-token decode on startup to trigger JIT.
+  - [x] Warmup one-token decode on startup to trigger JIT.
 
 - [x] **Acceptance criteria**
   - [x] `curl -X POST http://localhost:8000/v1/completions -H 'Content-Type: application/json' -d '{"model":"<id>","prompt":"Hello","max_tokens":8}'` returns a valid response with non-empty `choices[0].text`.

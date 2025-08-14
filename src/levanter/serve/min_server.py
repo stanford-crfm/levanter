@@ -112,6 +112,15 @@ def main():
             trainer=cfg.trainer,
         )
 
+        # Warmup JIT compilation with a tiny generation
+        print("Warming up JIT compilation...")
+        try:
+            warmup_text = _service.generate_once("Hello", GenerationOptions(max_tokens=1, temperature=0.7, seed=42))
+            print(f"JIT warmup complete. Generated: {repr(warmup_text)}")
+        except Exception as e:
+            print(f"JIT warmup failed: {e}")
+            # Continue anyway - the service might still work for some requests
+
         uvicorn.run(
             app,
             host=cfg.host,

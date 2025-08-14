@@ -85,7 +85,7 @@ torch, not much interesting here given jetstream. focused on batch inference I t
 - [x] Reuse `TrainerConfig` for device mesh and `mp` dtype; allow YAML config file.
 - [x] CLI `python -m levanter.serve.min_server`:
   - [x] Args: `--hf-checkpoint`, `--checkpoint-path`, `--tokenizer`, `--port`, `--host`, `--seed`, `--log-level`, `--access-log`.
-  - [ ] Warmup: perform one tiny decode to compile.
+  - [x] Warmup: perform one tiny decode to compile.
 
 ### 6. Observability
 - [x] Structured logging for lifecycle and request events (start, end, errors, latency, tps).
