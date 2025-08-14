@@ -114,7 +114,7 @@ def test_single_slice_simple_run():
         pytest.skip("TPU not available for single slice test")
 
     num_slices = 1
-    results = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices, max_retries_failure=1)
+    results = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
 
     assert results is not None
     assert len(results) == num_slices
@@ -125,7 +125,7 @@ def test_single_slice_simple_run():
     assert results[0].shape == (4,)  # Based on simple_jax_fn's output dim_out
 
     # Verify a second run works
-    results_2 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices, max_retries_failure=1)
+    results_2 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
     assert len(results_2) == 1
     assert isinstance(results_2[0], np.ndarray)
     assert np.array_equal(results[0], results_2[0])  # Deterministic function
@@ -139,13 +139,13 @@ def test_single_slice_run_twice():
 
     num_slices = 1
     # First run
-    results1 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices, max_retries_failure=1)
+    results1 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
     assert len(results1) == 1
     assert isinstance(results1[0], np.ndarray)
     assert results1[0].shape == (4,)
 
     # Second run
-    results2 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices, max_retries_failure=1)
+    results2 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
     assert len(results2) == 1
     assert isinstance(results2[0], np.ndarray)
     assert results2[0].shape == (4,)
@@ -166,7 +166,7 @@ def test_multislice_simple_run():
     num_slices = 2
     tpu_type = "v4-8"  # Each slice is a v4-8
 
-    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices, max_retries_failure=1)
+    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
 
     # run_on_pod_new returns a flat list of results from all hosts across all slices.
     # If each v4-8 slice has 1 host (as per TPU-v4-8-head resource meaning),
@@ -192,7 +192,7 @@ def test_variable_multislice_run():
     num_slices = [1, 2]
     tpu_type = "v4-8"  # Each slice is a v4-8
 
-    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices, max_retries_failure=1)
+    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
 
     assert results is not None
     assert len(results) in num_slices  # num_slices * hosts_per_slice (assuming 1 host per v4-8 slice)
@@ -217,14 +217,14 @@ def test_multislice_run_twice():
     tpu_type = "v4-8"
 
     # First run
-    results1 = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices, max_retries_failure=1)
+    results1 = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
     assert len(results1) == num_slices
     for i in range(num_slices):
         assert isinstance(results1[i], np.ndarray)
         assert np.array_equal(results1[i], results1[0])  # All slices should be same
 
     # Second run
-    results2 = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices, max_retries_failure=1)
+    results2 = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
     assert len(results2) == num_slices
     for i in range(num_slices):
         assert isinstance(results2[i], np.ndarray)
@@ -254,7 +254,7 @@ def test_single_slice_catches_failure():
         pytest.skip("TPU not available for failure test")
 
     with pytest.raises(RayTaskError) as excinfo:
-        run_on_pod(failing_fn, "v4-8", num_slices=1, max_retries_failure=1, max_retries_preemption=0)
+        run_on_pod(failing_fn, "v4-8", num_slices=1, max_retries_failure=0, max_retries_preemption=0)
 
     assert "DeliberatelyRaisedException" in str(
         excinfo.value
