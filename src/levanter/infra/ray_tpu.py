@@ -396,8 +396,8 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
             return False
         next_larger_size = larger_sizes[0]
 
-        # We start N slice probe actors to probe for available slices.
-        # We shut down these actors after we're done checking.
+        # Attempt to start enough slice actors to go up to the next largest desired size
+        # If we don't succeed, release the new slice actors
         previous_size = len(self._actor_pool)
         logger.info(f"Currently have {previous_size} slices; next larger size is {next_larger_size} (valid sizes: {num_slices}). Trying to acquire more slices.")
         self._add_members_to_actor_pool(next_larger_size)
