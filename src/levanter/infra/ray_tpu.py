@@ -164,14 +164,11 @@ class TPUHostInfo:
 _HEALTH_CHECK_TIMEOUT = 60
 _TEARDOWN_ACTOR_TIMEOUT = 60
 _TERMINATE_ACTOR_TIMEOUT = 60
-_START_ACTOR_TIMEOUT = 60
-# NOTE: It is good to have a short timeout here because
-# cluster autoscaling happens outside the this timeout.
-# Also we have a preemption retry loop with a very high retry count anyway.
+_START_ACTOR_TIMEOUT = 30 * 60  # 30 minutes
 
 # Intervals (in seconds)
-_SCALE_UP_MULTISLICE_CHECK_INTERVAL = 15 * 60  # 15 minutes
-_SCALE_UP_MULTISLICE_INTERVAL = 30 * 60  # 1 hour
+_SCALE_UP_MULTISLICE_CHECK_INTERVAL = 3 * 60 * 60  # 3 hours
+_SCALE_UP_MULTISLICE_INTERVAL = 12 * 60 * 60  # 12 hour
 
 
 def _multislice_info_from_head(head: SliceInfo, slice_id: int, num_slices: int) -> MultisliceInfo:
