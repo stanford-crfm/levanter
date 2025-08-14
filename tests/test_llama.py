@@ -35,6 +35,7 @@ def test_llama_config():
         "_name_or_path": hf_config._name_or_path,
         "architectures": hf_config.architectures,
         "torch_dtype": hf_config.torch_dtype,
+        "pad_token_id": hf_config.pad_token_id,
     }
     new_hf_config = llama_config.to_hf_config(
         vocab_size=hf_config.vocab_size,

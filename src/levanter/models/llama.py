@@ -161,6 +161,8 @@ class LlamaConfig(HFCompatConfig):
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
+            attention_bias=self.use_bias,
+            mlp_bias=self.use_bias,
             **config_overrides,
         )
 

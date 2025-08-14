@@ -125,8 +125,9 @@ class QwenConfig(LlamaConfig):
             Embed=self.Embed,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
-            # qwen2 always uses bias in attention
-            use_bias=True,
+            # qwen2 uses bias for qkv projections but not for output projection
+            use_bias=True,  # Qwen2 qkv projections always have bias
+            use_output_bias=False,  # Qwen2 specifically has no bias on o_proj
             upcast_attn=self.upcast_attn,
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
