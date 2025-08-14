@@ -168,7 +168,7 @@ _START_ACTOR_TIMEOUT = 30 * 60  # 30 minutes
 
 # Intervals (in seconds)
 _SCALE_UP_MULTISLICE_CHECK_INTERVAL = 3 * 60 * 60  # 3 hours
-_SCALE_UP_MULTISLICE_INTERVAL = 12 * 60 * 60  # 12 hour
+_SCALE_UP_MULTISLICE_INTERVAL = 12 * 60 * 60  # 12 hours
 
 
 def _multislice_info_from_head(head: SliceInfo, slice_id: int, num_slices: int) -> MultisliceInfo:
