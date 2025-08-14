@@ -77,6 +77,10 @@ torch_test = [
 eval_harness = [
     "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
+serve = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+]
 
 [dependency-groups]
 test = [

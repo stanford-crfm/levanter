@@ -265,7 +265,6 @@ class DecodeState(eqx.Module):
 
         return jax.vmap(body)(seq_id)
 
-
     def debug_print(self):
         jax.debug.print(
             """
@@ -437,7 +436,6 @@ class JitScheduler(eqx.Module):
             queued_seq_ids=new_q_seq_ids,
             num_queued_tokens=self.num_queued_tokens + num_new_tokens,
         )
-
 
     def pack_next_sequence(
         self, max_tokens: int
