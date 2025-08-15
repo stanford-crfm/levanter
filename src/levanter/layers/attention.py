@@ -1226,6 +1226,7 @@ class AttentionConfig:
     num_kv_heads: int
     head_dim: int | None = None
     use_bias: bool = False
+    use_output_bias: Optional[bool] = None  # If None, uses use_bias
     upcast_attn: bool = False
     attn_backend: Optional[AttentionBackend] = None
     flash_attention_block_size: Optional[int] = None
@@ -1294,6 +1295,7 @@ class Attention(eqx.Module):
     @staticmethod
     def init(config: AttentionConfig, *, key) -> "Attention":
         use_bias = config.use_bias
+        use_output_bias = config.use_output_bias if config.use_output_bias is not None else use_bias
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         q_proj = hnn.Linear.init(
             In=config.Embed,
@@ -1309,7 +1311,7 @@ class Attention(eqx.Module):
             In=(config.Embed), Out=(config.KVHeads, config.HeadSize), key=k_v, use_bias=use_bias, out_first=True
         )
         o_proj = hnn.Linear.init(
-            In=(config.Heads, config.HeadSize), Out=config.Embed, key=k_o, use_bias=use_bias, out_first=True
+            In=(config.Heads, config.HeadSize), Out=config.Embed, key=k_o, use_bias=use_output_bias, out_first=True
         )
 
         q_norm = None
