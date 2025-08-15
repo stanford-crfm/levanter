@@ -96,14 +96,9 @@
 
 ### 7. Testing
 - [ ] Unit: schema validation, prompt templating, stop sequence application.
-- [ ] Integration: spin up server with tiny CPU config; `POST /v1/completions` generating <= 4 tokens.
+- [x] Integration: spin up server with tiny CPU config; `POST /v1/completions` generating <= 4 tokens.
 - [ ] Streaming: verify incremental deltas and `[DONE]` terminator.
 - [ ] Load smoke: concurrent requests (N=4–8) exercise batching path.
-
-### 8. Packaging & deployment
-- [ ] Add optional `docs/design/Dockerfile` for serving (uv + runtime). Build stage compiles deps; runtime is slim.
-- [ ] Example Kubernetes manifest (`infra/cluster/`) with resource requests, liveness/readiness probes.
-- [ ] Document TPU/GPU flags and any XLA env needed.
 
 ### 9. Documentation & examples
 - [ ] `README` snippet with curl examples for both endpoints.
