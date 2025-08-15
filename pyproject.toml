@@ -61,6 +61,8 @@ dependencies = [
     "jinja2", # needed for apply_chat_template
     "protobuf<7", # causes issues with ray if newer
     # "lm-eval==0.4.2",
+    "torch>=2.7.1",
+    "sentencepiece>=0.2.1",
 ]
 
 [project.urls]
@@ -111,6 +113,7 @@ docs = [
 dev = [
   "pygments",
   "pre-commit",
+  "httpx",
 ]
 
 [tool.uv]
@@ -133,7 +136,7 @@ ignore = [
 ]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 mypy_path = ["src"]
 
 [tool.mypy-haliax.core]

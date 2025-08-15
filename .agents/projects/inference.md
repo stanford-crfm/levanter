@@ -39,7 +39,7 @@
 
 - [x] **Fix usage token counting** - Replace `len(text.split())` with actual tokenizer counts
 - [x] **Improve API design** - Replace tuple returns with GenerationResult dataclass for better extensibility
-- [ ] **Test end-to-end** - Verify everything works with a tiny HF model on CPU
+- [x] **Test end-to-end** - Verify everything works with a tiny HF model on CPU
 - [ ] **Add `/v1/models` endpoint** - Return model information
 
 ## Implementation Tasks

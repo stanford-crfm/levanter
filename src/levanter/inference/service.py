@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
 import logging
 import time
 from dataclasses import dataclass
@@ -83,6 +84,7 @@ class GenerationService:
         self._vocab_axis: Optional[Axis] = None
 
         self._last_error: Optional[str] = None
+        self._gen_lock = threading.RLock()
 
         try:
             self._logger.info("GenerationService initializing (hf_checkpoint=%s, checkpoint=%s)", self._hf_checkpoint, self._checkpoint_path)
@@ -113,118 +115,119 @@ class GenerationService:
         Returns:
             GenerationResult: Contains generated text and token usage information
         """
-        assert self._model is not None and self._sampler is not None
-        assert self._table is not None and self._cache is not None
-        assert self._sched is not None and self._decode_state is not None
-        assert self._tokenizer_obj is not None
+        with self._gen_lock:
+            assert self._model is not None and self._sampler is not None
+            assert self._table is not None and self._cache is not None
+            assert self._sched is not None and self._decode_state is not None
+            assert self._tokenizer_obj is not None
 
-        # Build stop ids if provided
-        stop_ids_named = None
-        if options.stop:
-            # Only use the first stop sequence for now
-            stop_str = options.stop[0]
-            stop_ids = self._tokenizer_obj(stop_str, add_special_tokens=False)["input_ids"]
-            if len(stop_ids) == 0:
-                raise ValueError("Stop sequence must be non-empty")
-            stop_ids_named = hax.named(np.asarray(stop_ids, dtype=np.int32), axis="position")
+            # Build stop ids if provided
+            stop_ids_named = None
+            if options.stop:
+                # Only use the first stop sequence for now
+                stop_str = options.stop[0]
+                stop_ids = self._tokenizer_obj(stop_str, add_special_tokens=False)["input_ids"]
+                if len(stop_ids) == 0:
+                    raise ValueError("Stop sequence must be non-empty")
+                stop_ids_named = hax.named(np.asarray(stop_ids, dtype=np.int32), axis="position")
 
-        # Tokenize prompt
-        prompt_ids: list[int] = self._tokenizer_obj(prompt, add_special_tokens=False)["input_ids"]
-        if len(prompt_ids) == 0:
-            return GenerationResult(text="", prompt_tokens=0, completion_tokens=0, total_tokens=0)
+            # Tokenize prompt
+            prompt_ids: list[int] = self._tokenizer_obj(prompt, add_special_tokens=False)["input_ids"]
+            if len(prompt_ids) == 0:
+                return GenerationResult(text="", prompt_tokens=0, completion_tokens=0, total_tokens=0)
 
-        prompt_tokens = len(prompt_ids)
+            prompt_tokens = len(prompt_ids)
 
-        # Clone state for this request
-        table = self._table
-        cache = self._cache
-        sched = self._sched
-        decode_state = self._decode_state
+            # Clone state for this request
+            table = self._table
+            cache = self._cache
+            sched = self._sched
+            decode_state = self._decode_state
 
-        # assign a sequence slot
-        table, seq_id = table.assign_seq_id_to_seq()
+            # assign a sequence slot
+            table, seq_id = table.assign_seq_id_to_seq()
 
-        # Per-sequence params
-        max_total = int(len(prompt_ids) + max(0, options.max_tokens))
-        temp = float(max(0.0, options.temperature))
-        seed = int(options.seed if options.seed is not None else int(time.time()))
-        key = jrandom.PRNGKey(seed)
+            # Per-sequence params
+            max_total = int(len(prompt_ids) + max(0, options.max_tokens))
+            temp = float(max(0.0, options.temperature))
+            seed = int(options.seed if options.seed is not None else int(time.time()))
+            key = jrandom.PRNGKey(seed)
 
-        # expand stop tokens to the expected shape if provided
-        if stop_ids_named is not None:
-            stop_ids_broadcast = stop_ids_named.broadcast_axis({"stop_seq": 1})
-        else:
-            stop_ids_broadcast = None
+            # expand stop tokens to the expected shape if provided
+            if stop_ids_named is not None:
+                stop_ids_broadcast = stop_ids_named.broadcast_axis({"stop_seq": 1})
+            else:
+                stop_ids_broadcast = None
 
-        seq_params = SeqDecodingParams(
-            max_num_tokens=jnp.array(max_total, dtype=jnp.int32),
-            stop_tokens=stop_ids_broadcast,
-            temperature=jnp.array(temp, dtype=jnp.float32),
-            key=jax.random.fold_in(key, seq_id),
-        )
-
-        # assign sequence tokens
-        decode_state = decode_state.assign_seq(
-            seq_id,
-            seq_id,
-            hax.full({"page": table.pages_per_seq}, INVALID, dtype=jnp.int32),
-            hax.named(np.asarray(prompt_ids, dtype=jnp.int32), axis="position"),
-            len(prompt_ids),
-            seq_params,
-        )
-
-        # enqueue prompt tokens
-        prompts_tokens_to_enqueue = np.asarray(prompt_ids, dtype=jnp.int32)
-        if len(prompt_ids) > sched.max_queued_tokens:
-            raise ValueError(
-                f"Prompt too long ({len(prompt_ids)} tokens) for queue size {sched.max_queued_tokens}"
+            seq_params = SeqDecodingParams(
+                max_num_tokens=jnp.array(max_total, dtype=jnp.int32),
+                stop_tokens=stop_ids_broadcast,
+                temperature=jnp.array(temp, dtype=jnp.float32),
+                key=jax.random.fold_in(key, seq_id),
             )
 
-        while len(prompts_tokens_to_enqueue) > sched.empty_queue_space:
-            # free space with a short generation loop
+            # assign sequence tokens
+            decode_state = decode_state.assign_seq(
+                seq_id,
+                seq_id,
+                hax.full({"page": table.pages_per_seq}, INVALID, dtype=jnp.int32),
+                hax.named(np.asarray(prompt_ids, dtype=jnp.int32), axis="position"),
+                len(prompt_ids),
+                seq_params,
+            )
+
+            # enqueue prompt tokens
+            prompts_tokens_to_enqueue = np.asarray(prompt_ids, dtype=jnp.int32)
+            if len(prompt_ids) > sched.max_queued_tokens:
+                raise ValueError(
+                    f"Prompt too long ({len(prompt_ids)} tokens) for queue size {sched.max_queued_tokens}"
+                )
+
+            while len(prompts_tokens_to_enqueue) > sched.empty_queue_space:
+                # free space with a short generation loop
+                gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
+                gen_state = run_generation_loop(gen_state, self._model, self._sampler, 64, 32)
+                sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
+                _ = _extract_outputs(decode_state, [[]], [False])
+
+            this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
+            seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
+            sched = sched.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
+
+            # One macro-prefill round
             gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
-            gen_state = run_generation_loop(gen_state, self._model, self._sampler, 64, 32)
+            gen_state = run_generation_loop(gen_state, self._model, self._sampler, 16, 1)
             sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
-            _ = _extract_outputs(decode_state, [[]], [False])
 
-        this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
-        seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
-        sched = sched.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
-
-        # One macro-prefill round
-        gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
-        gen_state = run_generation_loop(gen_state, self._model, self._sampler, 16, 1)
-        sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
-
-        # Decode loop until finished
-        finished = [False]
-        outputs = [list(prompt_ids)]
-        _extract_outputs(decode_state, outputs, finished)
-
-        while not all(finished):
-            gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
-            gen_state = run_generation_loop(gen_state, self._model, self._sampler, 16, 8)
-            sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
+            # Decode loop until finished
+            finished = [False]
+            outputs = [list(prompt_ids)]
             _extract_outputs(decode_state, outputs, finished)
 
-        # Cleanup: free pages and reset local structures for next request
-        table = table.free_pages(seq_id)
-        decode_state = DecodeState.init(
-            table.max_seqs,
-            table.pages_per_seq,
-            table.page_size,
-            table.max_len_per_seq,
-            max_stop_seqs=1,
-        )
-        sched = sched.cleared()
+            while not all(finished):
+                gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
+                gen_state = run_generation_loop(gen_state, self._model, self._sampler, 16, 8)
+                sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
+                _extract_outputs(decode_state, outputs, finished)
 
-        # Persist updated components for subsequent requests
-        self._table, self._cache, self._sched, self._decode_state = table, cache, sched, decode_state
+            # Cleanup: free pages and reset local structures for next request
+            table = table.free_pages(seq_id)
+            decode_state = DecodeState.init(
+                table.max_seqs,
+                table.pages_per_seq,
+                table.page_size,
+                table.max_len_per_seq,
+                max_stop_seqs=1,
+            )
+            sched = sched.cleared()
 
-        # Decode tokens to text
-        seq_outputs = [tok for tok in outputs[0] if tok != self._tokenizer_obj.pad_token_id and tok != INVALID]
-        text = self._tokenizer_obj.decode(seq_outputs, skip_special_tokens=True)
-        return GenerationResult(text=text, prompt_tokens=prompt_tokens, completion_tokens=len(outputs[0]) - prompt_tokens, total_tokens=len(outputs[0]))
+            # Persist updated components for subsequent requests
+            self._table, self._cache, self._sched, self._decode_state = table, cache, sched, decode_state
+
+            # Decode tokens to text
+            seq_outputs = [tok for tok in outputs[0] if tok != self._tokenizer_obj.pad_token_id and tok != INVALID]
+            text = self._tokenizer_obj.decode(seq_outputs, skip_special_tokens=True)
+            return GenerationResult(text=text, prompt_tokens=prompt_tokens, completion_tokens=len(outputs[0]) - prompt_tokens, total_tokens=len(outputs[0]))
 
     # ---- Internal helpers ----
     def _initialize(self):

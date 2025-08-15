@@ -82,6 +82,7 @@ The inference server is built around a `GenerationService` that encapsulates:
 - Warmup JIT compilation on startup implemented
 - Health check endpoint (`/healthz`) functional
 - Accurate token counting using actual tokenizer instead of rough estimates
+- End-to-end testing completed successfully with tiny HF model on CPU
 
 ### Key Design Decisions
 - **Optional Dependencies**: FastAPI and Uvicorn are optional `serve` dependencies
