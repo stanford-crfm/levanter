@@ -281,7 +281,7 @@ class ResourcePoolManager(ABC, Generic[ActorInfoT]):
             _stop_actor(member.actor)
         logger.info(f"{self.get_actor_pool_name()} actor pool scaled down to {len(self._actor_pool)} members: {[self.get_actor_name_from_actor_info(member.actor_info) for member in self._actor_pool]}")
 
-    def scale_actor_pool(self, desired_num_actors: int) -> None:
+    def _scale_actor_pool(self, desired_num_actors: int) -> None:
         # NOTE: There is no retry loop in this function.
         # You should wrap this in an external retry loop.
         if self._actor_pool:
@@ -332,7 +332,7 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         self._last_scale_multislice_time = time.time()
 
         if isinstance(num_slices, int):
-            self.scale_actor_pool(num_slices)
+            self._scale_actor_pool(num_slices)
             return
 
         sorted_valid_sizes = sorted(num_slices)
@@ -344,7 +344,7 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
 
         logger.info(f"Attempting to scale to {max_valid_size} slices based on the maximum of valid sizes: {sorted_valid_sizes}")
         try:
-            self.scale_actor_pool(max_valid_size)
+            self._scale_actor_pool(max_valid_size)
             # self.scale_actor_pool(max_valid_size)
         except Exception as e:
             logger.warning(f"Error when scaling to {max_valid_size} slices: {e}")
@@ -361,7 +361,7 @@ class SlicePoolManager(ResourcePoolManager[SliceInfo]):
         max_feasible_size = feasible_sizes[-1]
         logger.warning(f"Attempting to scale to {max_feasible_size} slices based on a feasible size in valid sizes: {sorted_valid_sizes}")
         try:
-            self.scale_actor_pool(max_feasible_size)
+            self._scale_actor_pool(max_feasible_size)
         except Exception as e:
             logger.warning(f"Error when scaling to {max_feasible_size} slices: {e}")
 
@@ -458,7 +458,7 @@ class SliceActor(ResourcePoolManager[TPUHostInfo]):
             num_tpus_per_host=num_tpus_per_host,
             ip_address=ip_address,
         )
-        self.scale_actor_pool(num_hosts)
+        self._scale_actor_pool(num_hosts)
         return self._slice_info
 
     def run_remote_fn(self, remote_fn: RemoteFunction, runtime_env: dict) -> list[ray.ObjectRef]:
