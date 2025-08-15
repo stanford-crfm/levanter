@@ -163,6 +163,7 @@ class LlamaConfig(HFCompatConfig):
             rope_scaling=rope_scaling,
             attention_bias=self.use_bias,
             mlp_bias=self.use_bias,
+            _attn_implementation="eager",
             **config_overrides,
         )
 

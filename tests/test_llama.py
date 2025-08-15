@@ -1,3 +1,4 @@
+import sys
 import tempfile
 
 import chex
@@ -44,7 +45,7 @@ def test_llama_config():
 
     # assert the content in new_hf_config is the same as hf_config
     for k in new_hf_config.__dict__.keys():
-        if k in ["_commit_hash", "transformers_version"]:
+        if k in ["_commit_hash", "transformers_version", "_attn_implementation_internal"]:
             continue
         assert getattr(new_hf_config, k) == getattr(
             hf_config, k
@@ -162,12 +163,68 @@ def test_llama_decoder_layer(num_kv_heads):
     hf_rotary_emb = HFLlamaRotaryEmbedding(config=hf_config)
     cos, sin = hf_rotary_emb(x_torch, position_ids)
 
+    # LOGGING: Input shapes
+    print(f"\n=== DECODER LAYER TEST DEBUG (num_kv_heads={num_kv_heads}) ===")
+    print("Input shapes:")
+    print(f"  x (NamedArray): {x}")
+    print(f"  x.array.shape: {x.array.shape}")
+    print(f"  x_torch.shape: {x_torch.shape}")
+    print(f"  mask type: {type(mask)}")
+    print(f"  mask_torch.shape: {mask_torch.shape}")
+    print(f"  position_ids.shape: {position_ids.shape}")
+
     out = llama_decoder_layer(x, mask)
     hf_out = hf_decoder_layer(
         x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
     )
 
-    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
+    # LOGGING: Output shapes and structure
+    print("\nOutput analysis:")
+    print(f"  Levanter out type: {type(out)}")
+    print(f"  Levanter out: {out}")
+    print(f"  Levanter out.array.shape: {out.array.shape}")
+    print(f"  HF hf_out type: {type(hf_out)}")
+    print(f"  HF hf_out length: {len(hf_out) if hasattr(hf_out, '__len__') else 'no len'}")
+    print(f"  HF hf_out[0].shape: {hf_out[0].shape}")
+    if len(hf_out) > 1:
+        print(f"  HF hf_out[1] type: {type(hf_out[1])}")
+        if hasattr(hf_out[1], 'shape'):
+            print(f"  HF hf_out[1].shape: {hf_out[1].shape}")
+
+    # LOGGING: Array values for shape comparison
+    print("\nArray comparison:")
+    print(f"  HF hf_out structure: {type(hf_out)} with length {len(hf_out) if hasattr(hf_out, '__len__') else 'no len'}")
+
+    # Handle the case where HF returns separate batch elements vs single tensor
+    import torch  # Import torch for isinstance check
+    if isinstance(hf_out, torch.Tensor):
+        # Single tensor case - should preserve batch dimension
+        hf_array = hf_out.detach().cpu().numpy()
+        print(f"  HF single tensor shape: {hf_array.shape}")
+    else:
+        # Multiple tensors case - need to stack them back together
+        print(f"  HF returns {len(hf_out)} separate tensors, stacking them...")
+        hf_stacked = torch.stack(hf_out)
+        hf_array = hf_stacked.detach().cpu().numpy()
+        print(f"  HF stacked shape: {hf_array.shape}")
+        print(f"  Individual tensor shapes: {[t.shape for t in hf_out]}")
+
+    levanter_array = out.array
+    print(f"  Levanter array shape: {levanter_array.shape}")
+    print(f"  Shapes match: {hf_array.shape == levanter_array.shape}")
+
+    if hf_array.shape != levanter_array.shape:
+        print("  ERROR: Shape mismatch even after handling!")
+        print(f"    HF final shape: {hf_array.shape}")
+        print(f"    Levanter shape: {levanter_array.shape}")
+        print(f"    First few values HF: {hf_array.flatten()[:5]}")
+        print(f"    First few values Levanter: {levanter_array.flatten()[:5]}")
+    else:
+        print("  SUCCESS: Shapes now match!")
+
+    sys.stdout.flush()  # Ensure prints are visible
+
+    chex.assert_trees_all_close(hf_array, levanter_array, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])

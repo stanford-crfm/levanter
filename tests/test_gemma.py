@@ -56,7 +56,7 @@ def test_gemma_config():
 
     # assert the content in new_hf_config is the same as hf_config
     for k in new_hf_config.__dict__.keys():
-        if k in ["_commit_hash", "transformers_version"]:
+        if k in ["_commit_hash", "transformers_version", "_attn_implementation_internal"]:
             continue
 
         if k in ["hidden_act", "hidden_activation"]:
@@ -143,7 +143,14 @@ def test_gemma1_decoder_layer(num_kv_heads):
         position_embeddings=(cos, sin),
     )
 
-    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), lev_out.array, rtol=1e-4, atol=1e-4)
+    # Handle HF output shape - same fix as Llama decoder layer
+    if isinstance(hf_out, torch.Tensor):
+        hf_array = hf_out.detach().cpu().numpy()
+    else:
+        hf_stacked = torch.stack(hf_out)
+        hf_array = hf_stacked.detach().cpu().numpy()
+
+    chex.assert_trees_all_close(hf_array, lev_out.array, rtol=1e-4, atol=1e-4)
 
 
 @skip_if_no_torch
