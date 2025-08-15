@@ -48,7 +48,7 @@ def create_tiny_llama_model():
     key = random.PRNGKey(42)
     model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=key)
 
-    print("✅ Model created successfully")
+    print(" Model created successfully")
     print(f"  Total parameters: {sum(x.size for x in hax.tree_util.tree_flatten(model)[0])}")
 
     return model, config, Vocab
@@ -92,7 +92,7 @@ def create_test_tokenizer(output_dir: str):
 
     # Save the tokenizer
     tokenizer.save_pretrained(output_dir)
-    print(f"✅ Tokenizer saved to {output_dir}")
+    print(f" Tokenizer saved to {output_dir}")
 
     # Print some info about the tokenizer
     print(f"   Tokenizer vocab size: {tokenizer.vocab_size}")
@@ -122,14 +122,14 @@ def main():
         # Create test tokenizer
         create_test_tokenizer(str(output_dir))
 
-        print("\n🎉 Tiny Llama test model created successfully!")
-        print(f"📁 Model saved to: {output_dir}")
-        print("🔧 You can now use this model in integration tests with:")
-        print(f"   --checkpoint_path {output_dir}")
-        print(f"   --tokenizer {output_dir}")
+        print("Tiny Llama test model created successfully!")
+        print(f"Model saved to: {output_dir}")
+        print(" You can now use this model in integration tests with:")
+        print(f"  --checkpoint_path {output_dir}")
+        print(f"  --tokenizer {output_dir}")
 
     except Exception as e:
-        print(f"❌ Error creating test model: {e}")
+        print(f"Error creating test model: {e}")
         import traceback
         traceback.print_exc()
         return 1
