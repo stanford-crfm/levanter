@@ -33,6 +33,9 @@ __all__ = [
     "scale_by_sophia_h",
     # skipstep
     "SkipStepConfig",
+    # model averaging
+    "EmaModelAveragingConfig",
+    "EmaDecaySqrtConfig",
 ]
 
 from .adam_mini import MiniConfig, ScaleByMiniState
@@ -51,3 +54,7 @@ from .sophia import (  # SophiaGConfig,; SophiaGObjective,; scale_by_sophia_g,
     scale_by_sophia_h,
 )
 from .skipstep import SkipStepConfig
+from .model_averaging import (
+    EmaDecaySqrtConfig,
+    EmaModelAveragingConfig,
+)

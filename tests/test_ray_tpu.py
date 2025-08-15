@@ -49,7 +49,6 @@ skip_if_no_multislice = pytest.mark.skipif(
 
 
 # Base function for tests, similar to the one in ray_tpu.py
-@ray.remote(max_calls=1)
 def simple_jax_fn():
     import jax
 
@@ -104,6 +103,29 @@ def simple_jax_fn():
     return np.array(output)
 
 
+@ray.remote(max_calls=1)
+def remote_simple_jax_fn():
+    return simple_jax_fn()
+
+
+@ray.remote
+class CounterActor:
+    def __init__(self):
+        self._count = 0
+
+    def increment(self) -> None:
+        self._count += 1
+
+    def count(self) -> int:
+        return self._count
+
+
+
+# Want to try:
+# Task fails on first slice but not second
+# Some amount of sleeping
+
+
 # --- Single Slice Tests ---
 
 
@@ -114,7 +136,7 @@ def test_single_slice_simple_run():
         pytest.skip("TPU not available for single slice test")
 
     num_slices = 1
-    results = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
+    results = run_on_pod(remote_simple_jax_fn, "v4-8", num_slices=num_slices)
 
     assert results is not None
     assert len(results) == num_slices
@@ -125,7 +147,7 @@ def test_single_slice_simple_run():
     assert results[0].shape == (4,)  # Based on simple_jax_fn's output dim_out
 
     # Verify a second run works
-    results_2 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
+    results_2 = run_on_pod(remote_simple_jax_fn, "v4-8", num_slices=num_slices)
     assert len(results_2) == 1
     assert isinstance(results_2[0], np.ndarray)
     assert np.array_equal(results[0], results_2[0])  # Deterministic function
@@ -139,19 +161,56 @@ def test_single_slice_run_twice():
 
     num_slices = 1
     # First run
-    results1 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
+    results1 = run_on_pod(remote_simple_jax_fn, "v4-8", num_slices=num_slices)
     assert len(results1) == 1
     assert isinstance(results1[0], np.ndarray)
     assert results1[0].shape == (4,)
 
     # Second run
-    results2 = run_on_pod(simple_jax_fn, "v4-8", num_slices=num_slices)
+    results2 = run_on_pod(remote_simple_jax_fn, "v4-8", num_slices=num_slices)
     assert len(results2) == 1
     assert isinstance(results2[0], np.ndarray)
     assert results2[0].shape == (4,)
 
     # Check if results are the same (since PRNGKey is fixed)
     assert np.array_equal(results1[0], results2[0])
+
+
+@pytest.mark.ray
+def test_single_slice_fail_once():
+    """1. Run a simple function on a single slice and verify it runs correctly."""
+    if not _TPU_AVAILABLE:
+        pytest.skip("TPU not available for single slice test")
+
+    num_slices = 1
+    results = run_on_pod(fail_once_jax_fn, "v4-8", num_slices=num_slices, max_retries_failure=1)
+
+    counter_actor = CounterActor.remote()
+
+    @ray.remote(max_calls=1)
+    def fail_once_jax_fn() -> None:
+        # do JAX work first
+        result = simple_jax_fn()
+        # fail on the first run
+        count = ray.get(counter_actor.count.remote())
+        ray.get(counter_actor.increment.remote())
+        if count == 0:
+            raise DeliberatelyRaisedException(f"Failing deliberately because count is {count}")
+        return result
+
+    assert results is not None
+    assert len(results) == num_slices
+
+    # For `num_slices=1` with "v4-8" (1 host per slice):
+    assert len(results) == 1  # One result because one host in total for one v4-8 slice.
+    assert isinstance(results[0], np.ndarray)
+    assert results[0].shape == (4,)  # Based on simple_jax_fn's output dim_out
+
+    # Verify a second run works
+    results_2 = run_on_pod(remote_simple_jax_fn, "v4-8", num_slices=num_slices)
+    assert len(results_2) == 1
+    assert isinstance(results_2[0], np.ndarray)
+    assert np.array_equal(results[0], results_2[0])  # Deterministic function
 
 
 # --- Multislice Tests ---
@@ -166,7 +225,7 @@ def test_multislice_simple_run():
     num_slices = 2
     tpu_type = "v4-8"  # Each slice is a v4-8
 
-    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
+    results = run_on_pod(remote_simple_jax_fn, tpu_type, num_slices=num_slices)
 
     # run_on_pod_new returns a flat list of results from all hosts across all slices.
     # If each v4-8 slice has 1 host (as per TPU-v4-8-head resource meaning),
@@ -215,14 +274,14 @@ def test_multislice_run_twice():
     tpu_type = "v4-8"
 
     # First run
-    results1 = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
+    results1 = run_on_pod(remote_simple_jax_fn, tpu_type, num_slices=num_slices)
     assert len(results1) == num_slices
     for i in range(num_slices):
         assert isinstance(results1[i], np.ndarray)
         assert np.array_equal(results1[i], results1[0])  # All slices should be same
 
     # Second run
-    results2 = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
+    results2 = run_on_pod(remote_simple_jax_fn, tpu_type, num_slices=num_slices)
     assert len(results2) == num_slices
     for i in range(num_slices):
         assert isinstance(results2[i], np.ndarray)
@@ -231,6 +290,52 @@ def test_multislice_run_twice():
     # Compare first and second run (should be identical)
     for i in range(num_slices):
         assert np.array_equal(results1[i], results2[i])
+
+
+@pytest.mark.ray
+def test_multislice_fail_once():
+    """Run a simple function on two slices and verify it runs correctly
+    when the first slice will fail on the first run."""
+    # NOTE: This is currently causing a TPU initialization failure:
+    # https://gist.github.com/yifanmai/88c7d56f31c2558ee79cd45b97ad5de0
+
+    if not _MULTISLICE_POSSIBLE:
+        pytest.skip("Not enough TPUs for multislice test")
+
+    num_slices = 2
+    counter_actor = CounterActor.remote()
+
+    @ray.remote(max_calls=1)
+    def fail_once_on_first_slice_jax_fn() -> None:
+        import time
+        # do JAX work first
+        result = simple_jax_fn()
+        # fail on the first run one the first slice
+        slice_id_str = os.getenv("MEGASCALE_SLICE_ID")
+        if slice_id_str == "0":
+            count = ray.get(counter_actor.count.remote())
+            ray.get(counter_actor.increment.remote())
+            if count == 0:
+                raise DeliberatelyRaisedException(f"Failing deliberately because count is {count}")
+        # sleeping for a while makes the TPU initialization error repro more consistent
+        time.sleep(5)
+        return result
+
+    results = run_on_pod(fail_once_on_first_slice_jax_fn, "v4-8", num_slices=num_slices, max_retries_failure=1)
+
+    # run_on_pod_new returns a flat list of results from all hosts across all slices.
+    # If each v4-8 slice has 1 host (as per TPU-v4-8-head resource meaning),
+    # then for num_slices=2, we expect 2 results in the list.
+    assert results is not None
+    assert len(results) == num_slices  # num_slices * hosts_per_slice (assuming 1 host per v4-8 slice)
+
+    for i in range(num_slices):
+        assert isinstance(results[i], np.ndarray)
+        assert results[i].shape == (4,)
+        if i > 0:
+            # Due to MEGASCALE_SLICE_ID, the PRNG key might differ effectively if the code used it.
+            # simple_jax_fn uses a fixed PRNGKey(0) so all slices should produce identical results.
+            assert np.array_equal(results[i], results[0])
 
 
 @ray.remote(max_calls=1)
