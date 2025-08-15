@@ -90,10 +90,43 @@ class TestInferenceServerIntegration:
             results = list(ex.map(lambda _: make_request(), range(4)))
         assert all(results)
 
+    def test_multiple_generations(self, client: TestClient):
+        payload = {"model": "local-test", "prompt": "Hello", "max_tokens": 3, "temperature": 0.7, "n": 3}
+        response = client.post("/v1/completions", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "choices" in data and len(data["choices"]) == 3
+
+        # Check each choice has correct index and structure
+        for i, choice in enumerate(data["choices"]):
+            assert choice["index"] == i
+            assert "text" in choice and "finish_reason" in choice
+            assert choice["text"].startswith("Hello")
+
+        # Check usage reflects multiple generations
+        usage = data["usage"]
+        assert usage["prompt_tokens"] > 0
+        assert usage["completion_tokens"] >= 3  # At least 1 token per generation
+        assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+
+    def test_models_endpoint(self, client: TestClient):
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["object"] == "list"
+        assert "data" in data and len(data["data"]) >= 1
+        model = data["data"][0]
+        assert model["object"] == "model"
+        assert server_mod._service is not None
+        assert model["id"] == server_mod._service.model_id
+        assert "created" in model
+        assert model["owned_by"] == "levanter"
+
     def test_model_metadata(self, client: TestClient):
         payload = {"model": "local-test", "prompt": "Hello", "max_tokens": 1, "temperature": 0.7}
         response = client.post("/v1/completions", json=payload)
         assert response.status_code == 200
         data = response.json()
-        assert "model" in data and data["model"] == server_mod._service.model_id  # type: ignore
+        assert server_mod._service is not None
+        assert "model" in data and data["model"] == server_mod._service.model_id
         assert data["object"] == "text_completion"

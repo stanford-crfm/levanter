@@ -24,6 +24,7 @@ class CompletionRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=5.0)
     stop: Optional[str | list[str]] = None
     seed: Optional[int] = None
+    n: int = Field(default=1, ge=1, le=16)  # Number of completions to generate
 
 
 class Choice(BaseModel):
@@ -54,28 +55,73 @@ def healthz():
     return {"status": "ok", "ready": ready, "detail": detail}
 
 
+@app.get("/v1/models")
+def list_models():
+    """List available models."""
+    if _service is None or not _service.ready():
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": _service.model_id,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "levanter"
+            }
+        ]
+    }
+
+
 @app.post("/v1/completions", response_model=CompletionResponse)
 def completions(req: CompletionRequest):
     if not req.prompt:
         raise HTTPException(status_code=400, detail="prompt must be non-empty")
     if _service is None or not _service.ready():
         raise HTTPException(status_code=503, detail=(getattr(_service, "last_error", None) if _service else "model not ready"))
+
     created = int(time.time())
-    opts = GenerationOptions(
-        max_tokens=req.max_tokens,
-        temperature=req.temperature,
-        stop=(req.stop if isinstance(req.stop, list) else ([req.stop] if req.stop else None)),
-        seed=req.seed if req.seed is not None else created,
+    choices = []
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+
+    # Generate n completions
+    for i in range(req.n):
+        # Use different seeds for each generation if seed is provided
+        seed = None
+        if req.seed is not None:
+            seed = req.seed + i  # Offset seed for each generation
+        else:
+            seed = created + i  # Use different seeds based on timestamp
+
+        opts = GenerationOptions(
+            max_tokens=req.max_tokens,
+            temperature=req.temperature,
+            stop=(req.stop if isinstance(req.stop, list) else ([req.stop] if req.stop else None)),
+            seed=seed,
+        )
+
+        result = _service.generate_once(req.prompt, opts)
+        choice = Choice(index=i, text=result.text, finish_reason=result.finish_reason)
+        choices.append(choice)
+
+        # Accumulate token counts (prompt tokens should be the same for all)
+        total_prompt_tokens = result.prompt_tokens
+        total_completion_tokens += result.completion_tokens
+
+    usage = Usage(
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
+        total_tokens=total_prompt_tokens + total_completion_tokens
     )
-    result = _service.generate_once(req.prompt, opts)
-    choice = Choice(index=0, text=result.text, finish_reason=result.finish_reason)
-    usage = Usage(prompt_tokens=result.prompt_tokens, completion_tokens=result.completion_tokens, total_tokens=result.total_tokens)
+
     return CompletionResponse(
         id=f"cmpl-{uuid.uuid4().hex[:12]}",
         object="text_completion",
         created=created,
         model=_service.model_id,
-        choices=[choice],
+        choices=choices,
         usage=usage,
     )
 

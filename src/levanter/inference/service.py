@@ -45,10 +45,6 @@ class GenerationResult:
     completion_tokens: int
     total_tokens: int
     finish_reason: str = "stop"
-    # Future fields we might want:
-    # logprobs: Optional[list[float]] = None
-    # top_logprobs: Optional[list[dict[str, float]]] = None
-    # usage: Optional[dict[str, int]] = None
 
 
 class GenerationService:
@@ -224,10 +220,16 @@ class GenerationService:
             # Persist updated components for subsequent requests
             self._table, self._cache, self._sched, self._decode_state = table, cache, sched, decode_state
 
-            # Decode tokens to text
-            seq_outputs = [tok for tok in outputs[0] if tok != self._tokenizer_obj.pad_token_id and tok != INVALID]
-            text = self._tokenizer_obj.decode(seq_outputs, skip_special_tokens=True)
-            return GenerationResult(text=text, prompt_tokens=prompt_tokens, completion_tokens=len(outputs[0]) - prompt_tokens, total_tokens=len(outputs[0]))
+        # Decode tokens to text
+        seq_outputs = [tok for tok in outputs[0] if tok != self._tokenizer_obj.pad_token_id and tok != INVALID]
+        text = self._tokenizer_obj.decode(seq_outputs, skip_special_tokens=True)
+
+        return GenerationResult(
+            text=text,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=len(outputs[0]) - prompt_tokens,
+            total_tokens=len(outputs[0])
+        )
 
     # ---- Internal helpers ----
     def _initialize(self):
