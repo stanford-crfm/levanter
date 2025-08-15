@@ -201,8 +201,6 @@ def test_variable_multislice_run():
         assert isinstance(results[i], np.ndarray)
         assert results[i].shape == (4,)
         if i > 0:
-            # Due to MEGASCALE_SLICE_ID, the PRNG key might differ effectively if the code used it.
-            # simple_jax_fn uses a fixed PRNGKey(0) so all slices should produce identical results.
             assert np.array_equal(results[i], results[0])
 
 
