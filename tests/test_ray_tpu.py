@@ -243,6 +243,28 @@ def test_multislice_simple_run():
 
 
 @pytest.mark.ray
+def test_variable_multislice_run():
+    """1. Run a simple function on a multislice and verify it runs correctly."""
+    if not _MULTISLICE_POSSIBLE:  # Redundant due to marker, but good for clarity
+        pytest.skip("Not enough TPUs for multislice test")
+
+    num_slices = [1, 2]
+    tpu_type = "v4-8"  # Each slice is a v4-8
+
+    results = run_on_pod(simple_jax_fn, tpu_type, num_slices=num_slices)
+
+    assert results is not None
+    assert len(results) in num_slices  # num_slices * hosts_per_slice (assuming 1 host per v4-8 slice)
+
+    for i in range(len(results)):
+        assert isinstance(results[i], np.ndarray)
+        assert results[i].shape == (4,)
+        if i > 0:
+            assert np.array_equal(results[i], results[0])
+
+
+
+@pytest.mark.ray
 def test_multislice_run_twice():
     """2. Run a second function after the first one and verify it runs correctly."""
     if not _MULTISLICE_POSSIBLE:
