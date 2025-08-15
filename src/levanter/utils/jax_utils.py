@@ -297,9 +297,9 @@ def best_effort_sharding(shape, *, devices=None, mesh=None):
             num_devices //= gcd
             device_shape = (num_devices, gcd) + device_shape[1:]
 
-        device_mesh = np.array(devices).reshape(list(device_shape[1:]))
+        device_mesh = np.array(devices).reshape(list(device_shape))
         axis_names = [f"d{i}" for i in range(len(shape))]
-        mesh = Mesh(device_mesh, axis_names)
+        mesh = Mesh(device_mesh, ["b"] + axis_names)
         sharding = NamedSharding(mesh, PartitionSpec(*axis_names))
         return sharding
     else:

@@ -154,6 +154,7 @@ class Olmo2Config(HFCompatConfig):
             rope_scaling=rope_scaling,
             vocab_size=vocab_size,
             pad_token_id=None,
+            _attn_implementation="eager",
             **config_overrides,
         )
 
