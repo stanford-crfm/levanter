@@ -181,8 +181,7 @@ def test_olmo2_decoder_layer_vs_hf(num_kv_heads):
         x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
     )
 
-    # Handle HF output shape - same fix as Llama/Gemma decoder layer
-    import torch
+    # Handle the case where HF returns separate batch elements vs single tensor
     if isinstance(hf_out, torch.Tensor):
         hf_array = hf_out.detach().cpu().numpy()
     else:
