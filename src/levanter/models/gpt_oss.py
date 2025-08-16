@@ -1,13 +1,11 @@
 from dataclasses import dataclass
 import dataclasses
-from functools import partial
 from typing import Dict, Optional, Type, Union
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
+import jax.lax
 import jax.random as jrandom
-from jax import Array
 
 import haliax as hax
 import haliax.nn as hnn
@@ -15,6 +13,8 @@ from haliax import Axis, NamedArray
 from haliax.jax_utils import maybe_rng_split, named_call, shaped_rng_split
 from haliax.nn.scan import Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
+from haliax.specialized_fns import top_k
+from haliax.ops import bincount
 
 import levanter.tracker
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
@@ -26,6 +26,7 @@ from levanter.models.llama import LlamaEmbedding
 from levanter.utils.activation import ActivationFunctionEnum
 from levanter.utils.flop_utils import lm_flops_per_token
 from levanter.utils.types import BlockFoldable
+from transformers import GptOssConfig as HfGptOssConfig
 
 
 @LmConfig.register_subclass("gpt_oss")
@@ -39,7 +40,7 @@ class GptOssConfig(MistralConfig):
     output_router_logits: bool = False
     sliding_window: Optional[int] = None
     layer_types: Optional[tuple[str, ...]] = None
-    reference_checkpoint: str = "hf_gpt_oss"
+    reference_checkpoint: str = "openai/gpt-oss-20b"
     tokenizer: Optional[str] = None
 
     # Axis helpers
@@ -70,14 +71,13 @@ class GptOssConfig(MistralConfig):
         return GptOssLMHeadModel
 
     def mk_LayerNorm(self, axis: Axis) -> hnn.RmsNorm:
-        return hnn.RmsNorm.init(axis, eps=self.layer_norm_epsilon, use_bias=self.use_bias)
+        return hnn.RmsNorm.init(axis, eps=self.layer_norm_epsilon, use_bias=False)
 
     # HF compatibility -----------------------------------------------------------------
 
     def hf_checkpoint_converter(
         self, ref_checkpoint: Optional[str] = None, tokenizer: Optional[str] = None
     ) -> HFCheckpointConverter["GptOssConfig"]:  # type: ignore[misc]
-        from hf_gpt_oss import GptOssConfig as HfGptOssConfig
 
         return HFCheckpointConverter(
             self.__class__,
@@ -114,8 +114,6 @@ class GptOssConfig(MistralConfig):
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None):
-        from hf_gpt_oss import GptOssConfig as HfGptOssConfig
-
         if config_overrides is None:
             config_overrides = {}
 
@@ -170,7 +168,7 @@ class GptOssExperts(eqx.Module):
         k1, k2 = maybe_rng_split(key, 2)
         Mlp2 = self.Mlp.resize(self.Mlp.size * 2)
         gate_up = self.gate_up_proj(x, group_sizes, key=k1).rename({self.gate_up_proj.Out: Mlp2})
-        gate, up = hax.split(gate_up, Mlp2, [self.Mlp.size, self.Mlp.size])
+        gate, up = hax.split(gate_up, Mlp2, [self.Mlp, self.Mlp])
         gate = hax.clip(gate, -self.limit, self.limit)
         up = hax.clip(up, -self.limit, self.limit)
         glu = gate * hnn.sigmoid(self.alpha * gate)
@@ -198,42 +196,37 @@ class GptOssSparseMoeBlock(eqx.Module):
         return GptOssSparseMoeBlock(config, gate, experts)
 
     def _route(self, router_probs: NamedArray, Token: Axis, TopExperts: Axis):
-        topk = jax.lax.top_k(router_probs.array, self.config.num_experts_per_tok)
-        selected_weights_ = topk[0]
-        selected_experts_ = topk[1]
-        selected_weights = NamedArray(selected_weights_, axes=(Token, TopExperts))
-        selected_experts = NamedArray(selected_experts_, axes=(Token, TopExperts))
-        selected_weights = selected_weights / hax.sum(selected_weights, axis=TopExperts, keepdims=True)
+        selected_weights, selected_experts = top_k(
+            router_probs, 
+            axis=self.config.Experts, 
+            k=self.config.num_experts_per_tok,
+            new_axis=TopExperts
+        )
+        normalizer = hax.sum(selected_weights, axis=TopExperts).broadcast_axis(TopExperts)
+        selected_weights = selected_weights / normalizer
         return selected_weights, selected_experts
 
     def _permute(self, x_flat: NamedArray, topk_idx_flat: NamedArray, TokenRepeat: Axis):
         Experts = self.config.Experts
-
-        @partial(
-            hax.shard_map,
-            mesh=hax.partitioning._get_mesh(),
-            in_specs=(
-                hax.partitioning.pspec_for_axis(x_flat.axes),
-                hax.partitioning.pspec_for_axis(topk_idx_flat.axes),
-            ),
-            out_specs=(
-                hax.partitioning.pspec_for_axis((TokenRepeat, self.config.Embed)),
-                hax.partitioning.pspec_for_axis((Experts,)),
-                hax.partitioning.pspec_for_axis((TokenRepeat,)),
-            ),
-            check_rep=False,
-        )
-        def permute_sharded(x_flat_: Array, topk_idx_flat_: Array):
-            sort_idx_ = jnp.argsort(topk_idx_flat_, axis=-1)
-            x_repeat_sort_ = jnp.take(x_flat_, sort_idx_ // self.config.num_experts_per_tok, axis=0)
-            group_sizes_ = jnp.bincount(topk_idx_flat_, length=self.config.num_local_experts)
-            return x_repeat_sort_, group_sizes_, sort_idx_
-
+        Token = x_flat.axes[0]  # Get the token axis statically
+        
         with jax.named_scope("permute"):
-            x_repeat_sort_, group_sizes_, sort_idx_ = permute_sharded(x_flat.array, topk_idx_flat.array)
-            x_repeat_sort = NamedArray(x_repeat_sort_, axes=(TokenRepeat, self.config.Embed))
-            group_sizes = NamedArray(group_sizes_, axes=(Experts,))
-            sort_idx = NamedArray(sort_idx_, axes=(TokenRepeat,))
+            # Sort indices by expert assignment
+            sort_idx = hax.argsort(topk_idx_flat, axis=TokenRepeat)
+            
+            # Create expert assignments for tokens by dividing by num_experts_per_tok
+            # Use raw array for integer division to avoid tracer leaks
+            token_assignments_raw = sort_idx.array // self.config.num_experts_per_tok
+            token_assignments = hax.named(token_assignments_raw, sort_idx.axes)
+            x_repeat_sort = hax.take(x_flat, axis=Token, index=token_assignments)
+            
+            # Count how many tokens are assigned to each expert
+            group_sizes = bincount(
+                topk_idx_flat, 
+                Counts=Experts, 
+                minlength=self.config.num_local_experts
+            )
+            
         return x_repeat_sort, group_sizes, sort_idx
 
     def _unpermute(
@@ -245,27 +238,20 @@ class GptOssSparseMoeBlock(eqx.Module):
         TokenRepeat: Axis,
         TopExperts: Axis,
     ):
-        @partial(
-            hax.shard_map,
-            mesh=hax.partitioning._get_mesh(),
-            in_specs=(
-                hax.partitioning.pspec_for_axis(out_repeat_sort.axes),
-                hax.partitioning.pspec_for_axis(sort_idx.axes),
-            ),
-            out_specs=hax.partitioning.pspec_for_axis((Token, TopExperts, self.config.Embed)),
-            check_rep=False,
-        )
-        def unpermute_sharded(out_repeat_sort_: Array, sort_idx_: Array):
-            inv_sort_idx_ = jnp.argsort(sort_idx_)
-            out_repeat_ = jnp.take(out_repeat_sort_, inv_sort_idx_, axis=0)
-            out_repeat_unflat_ = jnp.reshape(
-                out_repeat_, (-1, self.config.num_experts_per_tok, self.config.hidden_dim)
-            )
-            return out_repeat_unflat_
-
         with jax.named_scope("unpermute"):
-            out_repeat_unflat_ = unpermute_sharded(out_repeat_sort.array, sort_idx.array)
-            out_repeat_unflat = NamedArray(out_repeat_unflat_, axes=(Token, TopExperts, self.config.Embed))
+            # Get the inverse sort indices to restore original order
+            inv_sort_idx = hax.argsort(sort_idx, axis=TokenRepeat)
+            
+            # Restore the original token order
+            out_repeat = hax.take(out_repeat_sort, axis=TokenRepeat, index=inv_sort_idx)
+            
+            # Reshape to (Token, TopExperts, Embed) dimensions
+            out_repeat_unflat = hax.unflatten_axis(
+                out_repeat, 
+                axis=TokenRepeat, 
+                new_axes=(Token, TopExperts)
+            )
+            
         return out_repeat_unflat
 
     @named_call
@@ -307,6 +293,12 @@ class GptOssSparseMoeBlock(eqx.Module):
             extras["load_balancing_loss"] = self.config.router_aux_loss_coef * hax.sum(f * p, axis=Experts)
         return hax.unflatten_axis(out, axis=Token, new_axes=squash_axes), extras
 
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        """Map from Levanter MoE block names to HF checkpoint names."""
+        return {
+            "gate": "router",
+        }
+
 
 class GptOssDecoderLayer(eqx.Module):
     config: GptOssConfig = eqx.field(static=True)
@@ -321,8 +313,8 @@ class GptOssDecoderLayer(eqx.Module):
         attn_config = config.attention_config()
         attn = AttentionWithSink.init(attn_config, key=k_attn)
         block_sparse_moe = GptOssSparseMoeBlock.init(config, key=k_moe)
-        ln_1 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
-        ln_2 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+        ln_1 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=False)
+        ln_2 = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=False)
         return GptOssDecoderLayer(config, attn, block_sparse_moe, ln_1, ln_2)
 
     @named_call
@@ -338,6 +330,12 @@ class GptOssDecoderLayer(eqx.Module):
         moe_output, extras = self.block_sparse_moe(x, key=k_mlp)
         output = residual + moe_output
         return output, extras
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        """Map from Levanter decoder layer names to HF checkpoint names."""
+        return {
+            "block_sparse_moe": "mlp",
+        }
 
 
 class GptOssTransformer(eqx.Module):
@@ -367,15 +365,69 @@ class GptOssTransformer(eqx.Module):
         expert_loads = extras["expert_loads"]
         entropy = -hax.sum(expert_loads * hax.log(expert_loads + 1e-6), axis=self.config.Experts)
         stats = {}
+        # Use stop_gradient to prevent tracer leaks when logging
+        entropy_stopped = jax.lax.stop_gradient(entropy.array)
+        expert_loads_stopped = jax.lax.stop_gradient(expert_loads.array)
         for i in range(self.config.num_layers):
-            stats[f"moe/layer{i}/routing_entropy"] = entropy.array[i]
+            stats[f"moe/layer{i}/routing_entropy"] = entropy_stopped[i]
             for j in range(self.config.num_local_experts):
-                stats[f"moe/layer{i}/expert{j}_load"] = expert_loads.array[i, j]
+                stats[f"moe/layer{i}/expert{j}_load"] = expert_loads_stopped[i, j]
         if self.config.router_aux_loss_coef is not None:
             extras["load_balancing_loss"] = hax.sum(extras["load_balancing_loss"], axis=self.config.Layers)
-            stats["train/load_balancing_loss"] = extras["load_balancing_loss"].array
+            stats["train/load_balancing_loss"] = jax.lax.stop_gradient(extras["load_balancing_loss"].array)
         levanter.tracker.jit_log(stats)
         return x, extras
+
+    def from_state_dict(self, state_dict, prefix: str | None = None):
+        """Custom state dict loading to handle GPT-OSS specific transformations.
+        
+        1. Handles sinks tensor conversion from (layers, num_heads) to (layers, kv_heads, q_heads_per_group)
+        2. Adds .weight/.bias suffixes to MoE expert parameters to match Haliax expectations
+        """
+        from haliax._src.state_dict import with_prefix, default_eqx_module_from_state_dict
+        import jax.numpy as jnp
+        
+        # Make a copy to avoid mutating the original
+        state_dict = dict(state_dict)
+        
+        # STEP 1: Add .weight/.bias suffixes to MoE expert parameters
+        # GPT-OSS checkpoint has: experts.gate_up_proj, experts.gate_up_proj_bias  
+        # Haliax expects: experts.gate_up_proj.weight, experts.gate_up_proj.bias
+        keys_to_transform = list(state_dict.keys())
+        for key in keys_to_transform:
+            if 'experts.' in key:
+                # Handle expert bias parameters: experts.gate_up_proj_bias -> experts.gate_up_proj.bias
+                if key.endswith('_bias'):
+                    new_key = key[:-5] + '.bias'  # Replace '_bias' with '.bias'
+                    state_dict[new_key] = state_dict.pop(key)
+                # Handle expert weight parameters: experts.gate_up_proj -> experts.gate_up_proj.weight
+                elif not key.endswith('.weight') and not key.endswith('.bias'):
+                    # Only add .weight if it doesn't already have a suffix
+                    new_key = key + '.weight'
+                    state_dict[new_key] = state_dict.pop(key)
+        
+        # STEP 2: Convert sinks tensors that need reshaping  
+        # Look for pattern: model.layers.{N}.self_attn.sinks
+        for key in list(state_dict.keys()):
+            if 'sinks' in key and key.endswith('.self_attn.sinks'):
+                sinks_tensor = state_dict[key]
+                
+                if hasattr(sinks_tensor, 'shape') and len(sinks_tensor.shape) == 1:
+                    # This is a 1D tensor (num_heads,) that needs to become (kv_heads, q_heads_per_group)
+                    heads_dim = sinks_tensor.shape[0]
+                    expected_heads = self.config.num_heads
+                    
+                    if heads_dim == expected_heads:
+                        # Reshape from (num_heads,) to (kv_heads, q_heads_per_group)
+                        kv_heads = self.config.num_kv_heads
+                        q_heads_per_group = self.config.num_heads // self.config.num_kv_heads
+                        
+                        reshaped = jnp.reshape(sinks_tensor, (kv_heads, q_heads_per_group))
+                        state_dict[key] = reshaped
+                    
+        # STEP 3: Load with the normalized state dict
+        result = default_eqx_module_from_state_dict(self, state_dict, prefix)
+        return result
 
 
 class GptOssLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[GptOssConfig]):
@@ -437,3 +489,40 @@ class GptOssLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[GptOssConf
         if self.config.router_aux_loss_coef is not None:
             aux_loss += extras.get("load_balancing_loss", 0)
         return x, aux_loss
+
+    def get_lm_head(self) -> hax.NamedArray:
+        if self.lm_head is None:
+            return self.embeddings.token_embeddings.weight
+        else:
+            return self.lm_head.weight
+
+    def resize_vocab(self, new_size: int, key=None) -> "LmHeadModel[GptOssConfig]":
+        new_Vocab = self.Vocab.resize(new_size)
+        k1, k2 = maybe_rng_split(key, 2)
+        new_embeddings = self.embeddings.resize_embeddings(new_size, key=k1)
+        if self.lm_head is not None:
+            new_lm_matrix = hax.tree_util.resize_axis(self.lm_head.weight, self.Vocab, new_size, key=k2)
+            new_lm_head = dataclasses.replace(self.lm_head, Out=new_Vocab, weight=new_lm_matrix)
+            return dataclasses.replace(self, embeddings=new_embeddings, lm_head=new_lm_head)
+        else:
+            return dataclasses.replace(self, embeddings=new_embeddings)
+
+    def _state_dict_key_map(self) -> Dict[str, Optional[str]]:
+        """Map from Levanter model names to HF checkpoint names.
+        
+        Key insight from checkpoint inspector:
+        - HF checkpoint uses: layers.N.mlp.experts.*, layers.N.mlp.router.*
+        - Levanter model uses: layers.N.block_sparse_moe.experts.*, layers.N.block_sparse_moe.gate.*
+        
+        We need to map:
+        - Levanter's block_sparse_moe → HF's mlp  
+        - Levanter's gate → HF's router
+        """
+        return {
+            "transformer": "model", 
+            "embeddings": None,
+            # Map Levanter's block_sparse_moe to HF's mlp
+            "block_sparse_moe": "mlp",
+            # Map Levanter's gate to HF's router
+            "gate": "router",
+        }
