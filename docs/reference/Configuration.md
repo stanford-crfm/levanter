@@ -477,6 +477,25 @@ trainer:
 
 ::: levanter.distributed.RayConfig
 
+### Model Averaging
+
+Levanter can average model weights during training. Specify one of the
+registered strategies in `trainer.model_averaging`:
+
+```yaml
+trainer:
+  model_averaging:
+    type: ema          # or 'ema_decay_sqrt'
+```
+
+* `ema` – classic exponential moving average with parameter `beta`.
+* `ema_decay_sqrt` – EMA until `switch_step`, then decays with
+  :math:`1 - \sqrt{x}` over `decay_steps`.
+
+::: levanter.optim.model_averaging.EmaModelAveragingConfig
+
+::: levanter.optim.model_averaging.EmaDecaySqrtConfig
+
 ### Optimizer
 
 ::: levanter.optim.OptimizerConfig
