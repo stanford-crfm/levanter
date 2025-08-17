@@ -93,6 +93,8 @@ class GptOssConfig(MistralConfig):
             hf_config.rope_theta, getattr(hf_config, "rope_scaling", None)
         )
         layer_types = tuple(hf_config.layer_types) if getattr(hf_config, "layer_types", None) is not None else None
+        # GPT-OSS models use bias parameters for attention and MoE components
+        use_bias = getattr(hf_config, "attention_bias", True)
         return cls(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
@@ -111,6 +113,7 @@ class GptOssConfig(MistralConfig):
             router_aux_loss_coef=getattr(hf_config, "router_aux_loss_coef", None),
             output_router_logits=getattr(hf_config, "output_router_logits", False),
             layer_types=layer_types,
+            use_bias=use_bias,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None):
@@ -359,7 +362,59 @@ class GptOssTransformer(eqx.Module):
     @named_call
     def __call__(self, x: NamedArray, attn_mask: Optional[NamedArray], *, key, pos_ids: NamedArray | None = None):
         keys = maybe_rng_split(key, self.config.num_layers) if key is not None else None
-        x, extras = self.layers.scan(x, mask=attn_mask, key=keys)
+        
+        # GPT-OSS specific: Create per-layer attention masks based on layer_types
+        if self.config.layer_types is not None and attn_mask is not None:
+            # Create per-layer masks based on layer_types configuration
+            layer_masks = []
+            for i in range(self.config.num_layers):
+                layer_type = self.config.layer_types[i % len(self.config.layer_types)]
+                if layer_type == "sliding_attention" and self.config.sliding_window is not None:
+                    # Apply sliding window to this layer
+                    layer_mask = attn_mask.with_sliding_window(self.config.sliding_window)
+                else:
+                    # Use base attention mask (full attention)
+                    layer_mask = attn_mask
+                layer_masks.append(layer_mask)
+            
+            # Apply each layer with its specific mask
+            carry = x
+            all_extras = {"expert_loads": [], "load_balancing_loss": []}
+            
+            # For Stacked layers, we need to manually iterate
+            for i in range(self.config.num_layers):
+                # Get the i-th layer - Stacked layers have a stacked attribute
+                if hasattr(self.layers, 'stacked'):
+                    # It's a Stacked module - extract i-th layer along Block axis
+                    layer = hax.tree_util.tree_map(
+                        lambda x: x[self.config.Layers, i], 
+                        self.layers.stacked
+                    )
+                else:
+                    # Fallback - try to access directly
+                    layer = self.layers.blocks[i] if hasattr(self.layers, 'blocks') else None
+                
+                if layer is not None:
+                    layer_key = keys[i] if keys is not None else None
+                    carry, layer_extras = layer(carry, mask=layer_masks[i], key=layer_key)
+                    
+                    # Accumulate extras
+                    if "expert_loads" in layer_extras:
+                        all_extras["expert_loads"].append(layer_extras["expert_loads"])
+                    if "load_balancing_loss" in layer_extras:
+                        all_extras["load_balancing_loss"].append(layer_extras["load_balancing_loss"])
+            
+            # Stack the extras along the layer axis
+            if all_extras["expert_loads"]:
+                all_extras["expert_loads"] = hax.stack(self.config.Layers, all_extras["expert_loads"])
+            if all_extras["load_balancing_loss"]:
+                all_extras["load_balancing_loss"] = hax.stack(self.config.Layers, all_extras["load_balancing_loss"])
+            
+            x, extras = carry, all_extras
+        else:
+            # Original behavior for non-GPT-OSS or when layer_types is None
+            x, extras = self.layers.scan(x, mask=attn_mask, key=keys)
+        
         x = self.norm(x)
 
         expert_loads = extras["expert_loads"]
@@ -383,28 +438,41 @@ class GptOssTransformer(eqx.Module):
         
         1. Handles sinks tensor conversion from (layers, num_heads) to (layers, kv_heads, q_heads_per_group)
         2. Adds .weight/.bias suffixes to MoE expert parameters to match Haliax expectations
+        3. Transforms router bias key: mlp.router.bias -> block_sparse_moe.gate.bias
         """
-        from haliax._src.state_dict import with_prefix, default_eqx_module_from_state_dict
+        from haliax._src.state_dict import default_eqx_module_from_state_dict
         import jax.numpy as jnp
         
         # Make a copy to avoid mutating the original
         state_dict = dict(state_dict)
         
-        # STEP 1: Add .weight/.bias suffixes to MoE expert parameters
-        # GPT-OSS checkpoint has: experts.gate_up_proj, experts.gate_up_proj_bias  
-        # Haliax expects: experts.gate_up_proj.weight, experts.gate_up_proj.bias
+        # STEP 1: Handle MoE expert parameter transformations and reshaping
         keys_to_transform = list(state_dict.keys())
         for key in keys_to_transform:
+            # Handle MoE expert parameters
             if 'experts.' in key:
                 # Handle expert bias parameters: experts.gate_up_proj_bias -> experts.gate_up_proj.bias
                 if key.endswith('_bias'):
                     new_key = key[:-5] + '.bias'  # Replace '_bias' with '.bias'
-                    state_dict[new_key] = state_dict.pop(key)
-                # Handle expert weight parameters: experts.gate_up_proj -> experts.gate_up_proj.weight
+                    bias_tensor = state_dict.pop(key)
+                    
+                    # HF format: (num_experts, feature_dim) -> Levanter format: shared bias (feature_dim,)
+                    # In Levanter MoELinear, all experts share the same bias parameter
+                    if len(bias_tensor.shape) == 2:  # (num_experts, feature_dim)
+                        import jax.numpy as jnp
+                        # Use first expert's bias as the shared bias (MoELinear design)
+                        shared_bias = bias_tensor[0]  # Shape: (feature_dim,)
+                        state_dict[new_key] = shared_bias
+                    else:
+                        state_dict[new_key] = bias_tensor
+                        
+                # Handle expert weight parameters: experts.gate_up_proj -> experts.gate_up_proj.weight  
                 elif not key.endswith('.weight') and not key.endswith('.bias'):
                     # Only add .weight if it doesn't already have a suffix
                     new_key = key + '.weight'
                     state_dict[new_key] = state_dict.pop(key)
+            
+            # Router bias should be handled by automatic key mapping via _state_dict_key_map methods
         
         # STEP 2: Convert sinks tensors that need reshaping  
         # Look for pattern: model.layers.{N}.self_attn.sinks
@@ -518,11 +586,8 @@ class GptOssLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[GptOssConf
         - Levanter's block_sparse_moe → HF's mlp  
         - Levanter's gate → HF's router
         """
+        # Map transformer to HF's 'model' and drop the 'embeddings' prefix so LlamaEmbedding can map to 'model.embed_tokens'.
         return {
-            "transformer": "model", 
+            "transformer": "model",
             "embeddings": None,
-            # Map Levanter's block_sparse_moe to HF's mlp
-            "block_sparse_moe": "mlp",
-            # Map Levanter's gate to HF's router
-            "gate": "router",
         }
