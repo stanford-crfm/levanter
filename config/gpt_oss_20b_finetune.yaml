@@ -1,0 +1,106 @@
+# GPT-OSS-20B Fine-tuning Configuration
+# Based on the exact HF GPT-OSS-20B model parameters
+
+data:
+  id: kothasuhas/dclm_10B_tokens
+  cache_dir: "gs://marin-us-central2/tokenized/dclm_10B_tokens_gpt_oss-cbbde7"
+  tokenizer: "openai/gpt-oss-20b"
+
+# Model configuration - EXACT match to HF GPT-OSS-20B
+model:
+  type: gpt_oss
+  
+  # Core architecture (from HF config) - Memory optimized
+  seq_len: 1024                    # Memory-efficient sequence length  
+  hidden_dim: 2880                 # hidden_size  
+  intermediate_dim: 2880           # intermediate_size (CORRECT from HF config - matches checkpoint!)
+  num_layers: 24                   # num_hidden_layers (from correct HF config)
+  num_heads: 64                    # num_attention_heads  
+  num_kv_heads: 8                  # num_key_value_heads
+  head_dim: 64                     # head_dim (explicitly specified)
+  
+  # MoE configuration (from HF config)
+  num_local_experts: 32            # num_local_experts (from correct HF config)
+  num_experts_per_tok: 4           # num_experts_per_tok (HF uses "experts_per_token")
+  router_aux_loss_coef: 0.9        # router_aux_loss_coef
+  output_router_logits: false      # output_router_logits
+  
+  # Attention configuration - 24 layers from correct HF config
+  layer_types: [
+    "sliding_attention", "full_attention", "sliding_attention", "full_attention",
+    "sliding_attention", "full_attention", "sliding_attention", "full_attention",
+    "sliding_attention", "full_attention", "sliding_attention", "full_attention",
+    "sliding_attention", "full_attention", "sliding_attention", "full_attention",
+    "sliding_attention", "full_attention", "sliding_attention", "full_attention",
+    "sliding_attention", "full_attention", "sliding_attention", "full_attention"
+  ]
+  sliding_window: 128              # sliding_window - matches HF model for memory efficiency
+  
+  # Architecture details (from HF config)
+  use_bias: true                   # attention_bias: true
+  layer_norm_epsilon: 1e-05        # rms_norm_eps
+  initializer_range: 0.02          # initializer_range
+  activation_function: "silu"      # hidden_act
+  tie_word_embeddings: false       # tie_word_embeddings
+  
+  # RoPE configuration (from HF rope_scaling)
+  rope:
+    type: "yarn"                   # Required for Levanter config parser
+    theta: 150000.0                # rope_theta
+    factor: 32.0                   # factor
+    beta_fast: 32.0                # beta_fast  
+    beta_slow: 1.0                 # beta_slow
+    original_max_position_embeddings: 4096  # original_max_position_embeddings
+  
+  # Memory optimizations for large model
+  gradient_checkpointing: true     # CRITICAL: Enable gradient checkpointing to save memory
+  flash_attention_block_size: 128  # Optimize for memory - matches fast config
+  scan_layers: false               # Use BlockSeq for per-layer flexibility (GPT-OSS needs different attention masks per layer)
+
+# Initialize from HuggingFace GPT-OSS-20B checkpoint
+initialize_from_hf: "/opt/gcsfuse_mount/models/unsloth--gpt-oss-20b-BF16--cc89b3e/"
+use_hf_model_config: false
+
+# Training configuration for 20B model
+trainer:
+  # Experiment tracking
+  tracker:
+    - type: wandb
+      project: "gpt-oss-20b-finetune"
+      tags: ["gpt-oss", "20b", "moe", "finetune"]
+  
+  # Mixed precision for large model
+  mp: p=f32,c=bfloat16             # Keep parameters in fp32 for stability
+  
+  # Batch and training settings (conservative for 20B)
+  train_batch_size: 64             # Smaller batch for 20B model
+  num_train_steps: 2000            # Conservative training steps
+  steps_per_eval: 100              # Evaluate frequently
+  
+  # Parallelism configuration for large MoE model  
+  tensor_parallel_axes: ["heads", "experts"]  # Parallelize across heads and experts
+  fsdp_axis: "embed"               # FSDP across embedding
+  batch_axis: "batch"              # Batch parallelism
+  
+  # Checkpointing configuration (inside trainer)
+  checkpointer:
+    base_path: "gs://marin-us-central2/checkpoints/gpt_oss_20b_finetune/"
+    save_interval: 10m             # Save frequently due to cost
+
+# Conservative optimizer for large model fine-tuning
+optimizer:
+  learning_rate: 5e-6              # Very low LR for 20B fine-tuning
+  weight_decay: 0.01               # Light weight decay
+  min_lr_ratio: 0.05               # Don't decay too much
+  lr_schedule: "cosine"            # Cosine schedule
+  warmup: 0.05                     # 5% warmup
+  
+  # Gradient clipping for stability
+  max_grad_norm: 1.0               # Clip gradients
+
+# HuggingFace model export
+hf_save_steps: 500                # Export to HF format
+hf_save_path: "gs://marin-us-central2/checkpoints/gpt_oss_20b_finetune/hf/"
+
+# Vocab size from HF config
+# Note: vocab_size: 201088 will be automatically inferred from tokenizer
