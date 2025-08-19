@@ -45,6 +45,9 @@ class GptOssConfig(MistralConfig):
     
     # GPT-OSS specific: Use BlockSeq by default for per-layer flexibility
     scan_layers: bool = False
+    
+    # GPT-OSS specific: Explicit head dimension (not hidden_dim // num_heads)
+    head_dim: int = 64
 
     # Axis helpers
     Experts = property(lambda self: Axis(name="experts", size=self.num_local_experts))
@@ -76,6 +79,26 @@ class GptOssConfig(MistralConfig):
     def mk_LayerNorm(self, axis: Axis) -> hnn.RmsNorm:
         return hnn.RmsNorm.init(axis, eps=self.layer_norm_epsilon, use_bias=False)
 
+    def attention_config(self) -> "AttentionConfig":
+        """Override attention_config to use explicit head_dim instead of calculated value.
+        
+        GPT-OSS uses explicit head_dim from HF config, not hidden_dim // num_heads.
+        This ensures correct projection shapes for grouped query attention.
+        """
+        from levanter.layers.attention import AttentionConfig
+        
+        return AttentionConfig(
+            Embed=self.Embed,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            use_bias=self.use_bias,
+            upcast_attn=self.upcast_attn,
+            attn_backend=self.attn_backend,
+            flash_attention_block_size=self.flash_attention_block_size,
+            rope=self.rope,
+        )
+
     # HF compatibility -----------------------------------------------------------------
 
     def hf_checkpoint_converter(
@@ -98,6 +121,8 @@ class GptOssConfig(MistralConfig):
         layer_types = tuple(hf_config.layer_types) if getattr(hf_config, "layer_types", None) is not None else None
         # GPT-OSS models use bias parameters for attention and MoE components
         use_bias = getattr(hf_config, "attention_bias", True)
+        # GPT-OSS models have explicit head_dim (not hidden_size // num_heads)
+        head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
         return cls(
             seq_len=hf_config.max_position_embeddings,
             hidden_dim=hf_config.hidden_size,
@@ -117,6 +142,7 @@ class GptOssConfig(MistralConfig):
             output_router_logits=getattr(hf_config, "output_router_logits", False),
             layer_types=layer_types,
             use_bias=use_bias,
+            head_dim=head_dim,
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None):
@@ -131,7 +157,7 @@ class GptOssConfig(MistralConfig):
             vocab_size=vocab_size,
             hidden_size=self.hidden_dim,
             intermediate_size=self.intermediate_dim,
-            head_dim=self.hidden_dim // self.num_heads,
+            head_dim=self.head_dim,
             num_attention_heads=self.num_heads,
             num_key_value_heads=self.num_kv_heads,
             sliding_window=self.sliding_window if self.sliding_window is not None else 0,
@@ -435,17 +461,62 @@ class GptOssTransformer(eqx.Module):
         from haliax._src.state_dict import default_eqx_module_from_state_dict
         import jax.numpy as jnp
         
+        # DEBUG: Log entry to the method
+        print(f"🔍 GPT-OSS from_state_dict called with prefix: {prefix}", flush=True)
+        print(f"📊 State dict has {len(state_dict)} keys", flush=True)
+        
+        # DEBUG: Show sample of keys to understand structure
+        all_keys = list(state_dict.keys())
+        expert_keys = [k for k in all_keys if 'experts.' in k]
+        router_keys = [k for k in all_keys if 'router' in k or 'gate' in k]
+        
+        print(f"🔧 Expert keys found: {len(expert_keys)}", flush=True)
+        if expert_keys:
+            print(f"   First expert key: {expert_keys[0]}", flush=True)
+            has_weight_suffix = [k for k in expert_keys if k.endswith('.weight')]
+            has_bias_suffix = [k for k in expert_keys if k.endswith('.bias')]
+            has_underscore_bias = [k for k in expert_keys if k.endswith('_bias')]
+            no_suffix = [k for k in expert_keys if not k.endswith('.weight') and not k.endswith('.bias') and not k.endswith('_bias')]
+            
+            print(f"   Keys with .weight: {len(has_weight_suffix)}", flush=True)
+            print(f"   Keys with .bias: {len(has_bias_suffix)}", flush=True)
+            print(f"   Keys with _bias: {len(has_underscore_bias)}", flush=True)
+            print(f"   Keys with no suffix: {len(no_suffix)}", flush=True)
+            
+            # Show examples of each type
+            if has_weight_suffix:
+                print(f"     Example with .weight: {has_weight_suffix[0]}", flush=True)
+            if has_bias_suffix:
+                print(f"     Example with .bias: {has_bias_suffix[0]}", flush=True)
+            if has_underscore_bias:
+                print(f"     Example with _bias: {has_underscore_bias[0]}", flush=True)
+            if no_suffix:
+                print(f"     Example with no suffix: {no_suffix[0]}", flush=True)
+        
+        print(f"🎯 Router/gate keys found: {len(router_keys)}", flush=True)
+        if router_keys:
+            for key in router_keys[:3]:  # Show first 3
+                print(f"   Router key: {key}", flush=True)
+        
         # Make a copy to avoid mutating the original
         state_dict = dict(state_dict)
         
         # STEP 1: Handle MoE expert parameter transformations and reshaping
+        print("🔄 Starting MoE parameter transformations...", flush=True)
         keys_to_transform = list(state_dict.keys())
+        transformation_count = 0
+        
         for key in keys_to_transform:
-            # Handle MoE expert parameters
-            if 'experts.' in key:
-                # Handle expert bias parameters: experts.gate_up_proj_bias -> experts.gate_up_proj.bias
+            # Handle MoE expert parameters with full paths like "model.layers.0.mlp.experts.gate_up_proj"
+            # Only transform if they don't already have .weight/.bias suffixes
+            if 'experts.' in key and not key.endswith('.weight') and not key.endswith('.bias'):
+                print(f"🔧 Transforming expert key: {key}", flush=True)
+                transformation_count += 1
+                
+                # Handle expert bias parameters: model.layers.N.mlp.experts.gate_up_proj_bias -> model.layers.N.mlp.experts.gate_up_proj.bias
                 if key.endswith('_bias'):
                     new_key = key[:-5] + '.bias'  # Replace '_bias' with '.bias'
+                    print(f"   Bias transformation: {key} -> {new_key}", flush=True)
                     bias_tensor = state_dict.pop(key)
                     
                     # HF format: (num_experts, feature_dim) -> Levanter format: shared bias (feature_dim,)
@@ -455,27 +526,37 @@ class GptOssTransformer(eqx.Module):
                         # Use first expert's bias as the shared bias (MoELinear design)
                         shared_bias = bias_tensor[0]  # Shape: (feature_dim,)
                         state_dict[new_key] = shared_bias
+                        print(f"   Shared bias shape: {shared_bias.shape}", flush=True)
                     else:
                         state_dict[new_key] = bias_tensor
+                        print(f"   Direct bias shape: {bias_tensor.shape}", flush=True)
                         
-                # Handle expert weight parameters: experts.gate_up_proj -> experts.gate_up_proj.weight  
-                elif not key.endswith('.weight') and not key.endswith('.bias'):
-                    # Only add .weight if it doesn't already have a suffix
+                # Handle expert weight parameters: model.layers.N.mlp.experts.gate_up_proj -> model.layers.N.mlp.experts.gate_up_proj.weight  
+                else:
+                    # Only add .weight if it doesn't already have a suffix and isn't a bias parameter
                     new_key = key + '.weight'
+                    print(f"   Weight transformation: {key} -> {new_key}", flush=True)
                     state_dict[new_key] = state_dict.pop(key)
             
             # Router bias should be handled by automatic key mapping via _state_dict_key_map methods
         
+        print(f"✅ Completed {transformation_count} MoE parameter transformations", flush=True)
+        
         # STEP 2: Convert sinks tensors that need reshaping  
+        print("🔄 Starting sinks tensor reshaping...", flush=True)
+        sinks_count = 0
         # Look for pattern: model.layers.{N}.self_attn.sinks
         for key in list(state_dict.keys()):
             if 'sinks' in key and key.endswith('.self_attn.sinks'):
+                print(f"🔧 Processing sinks tensor: {key}", flush=True)
+                sinks_count += 1
                 sinks_tensor = state_dict[key]
                 
                 if hasattr(sinks_tensor, 'shape') and len(sinks_tensor.shape) == 1:
                     # This is a 1D tensor (num_heads,) that needs to become (kv_heads, q_heads_per_group)
                     heads_dim = sinks_tensor.shape[0]
                     expected_heads = self.config.num_heads
+                    print(f"   Sinks shape: {sinks_tensor.shape}, expected heads: {expected_heads}", flush=True)
                     
                     if heads_dim == expected_heads:
                         # Reshape from (num_heads,) to (kv_heads, q_heads_per_group)
@@ -484,10 +565,35 @@ class GptOssTransformer(eqx.Module):
                         
                         reshaped = jnp.reshape(sinks_tensor, (kv_heads, q_heads_per_group))
                         state_dict[key] = reshaped
+                        print(f"   Reshaped to: {reshaped.shape}", flush=True)
+                    else:
+                        print(f"   ⚠️ Heads dimension mismatch: {heads_dim} != {expected_heads}", flush=True)
+        
+        print(f"✅ Processed {sinks_count} sinks tensors", flush=True)
                     
         # STEP 3: Load with the normalized state dict
-        result = default_eqx_module_from_state_dict(self, state_dict, prefix)
-        return result
+        print(f"🔄 Calling default_eqx_module_from_state_dict with {len(state_dict)} keys...", flush=True)
+        
+        # DEBUG: Show final key sample before calling default loader
+        final_expert_keys = [k for k in state_dict.keys() if 'experts.' in k]
+        print(f"📊 Final expert keys count: {len(final_expert_keys)}", flush=True)
+        if final_expert_keys:
+            print(f"   Example final expert key: {final_expert_keys[0]}", flush=True)
+        
+        try:
+            result = default_eqx_module_from_state_dict(self, state_dict, prefix)
+            print("✅ default_eqx_module_from_state_dict completed successfully", flush=True)
+            return result
+        except Exception as e:
+            print(f"❌ ERROR in default_eqx_module_from_state_dict: {e}", flush=True)
+            print(f"❌ Error type: {type(e)}", flush=True)
+            if "KeyError" in str(e):
+                missing_key = str(e).split("'")[1] if "'" in str(e) else "unknown"
+                print(f"❌ Missing key: {missing_key}", flush=True)
+                # Check if this key exists with different naming
+                similar_keys = [k for k in state_dict.keys() if missing_key.split('.')[-1] in k]
+                print(f"❌ Similar keys found: {similar_keys[:5]}", flush=True)
+            raise
 
 
 class GptOssLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[GptOssConfig]):
