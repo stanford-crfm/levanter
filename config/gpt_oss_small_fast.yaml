@@ -32,6 +32,7 @@
     tracker:
       - type: wandb
         project: "gpt-oss-sft"
+        name: "gpt-oss-small-fast"
         tags: ["gpt-oss", "sft", "tulu-3"]
 
     mp: p=f32,c=bfloat16

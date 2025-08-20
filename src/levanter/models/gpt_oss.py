@@ -40,11 +40,8 @@ class GptOssConfig(MistralConfig):
     output_router_logits: bool = False
     sliding_window: Optional[int] = None
     layer_types: Optional[tuple[str, ...]] = None
-    reference_checkpoint: str = "openai/gpt-oss-20b"
+    reference_checkpoint: str = "unsloth/gpt-oss-20b-BF16"
     tokenizer: Optional[str] = None
-    
-    # GPT-OSS specific: Use BlockSeq by default for per-layer flexibility
-    scan_layers: bool = False
     
     # GPT-OSS specific: Explicit head dimension (not hidden_dim // num_heads)
     head_dim: int = 64
@@ -462,7 +459,7 @@ class GptOssTransformer(eqx.Module):
         import jax.numpy as jnp
         
         # DEBUG: Log entry to the method
-        print(f"🔍 GPT-OSS from_state_dict called with prefix: {prefix}", flush=True)
+        print(f"🔍 GPT-OSS Transformer from_state_dict called with prefix: {prefix}", flush=True)
         print(f"📊 State dict has {len(state_dict)} keys", flush=True)
         
         # DEBUG: Show sample of keys to understand structure
@@ -473,72 +470,64 @@ class GptOssTransformer(eqx.Module):
         print(f"🔧 Expert keys found: {len(expert_keys)}", flush=True)
         if expert_keys:
             print(f"   First expert key: {expert_keys[0]}", flush=True)
-            has_weight_suffix = [k for k in expert_keys if k.endswith('.weight')]
-            has_bias_suffix = [k for k in expert_keys if k.endswith('.bias')]
-            has_underscore_bias = [k for k in expert_keys if k.endswith('_bias')]
-            no_suffix = [k for k in expert_keys if not k.endswith('.weight') and not k.endswith('.bias') and not k.endswith('_bias')]
-            
-            print(f"   Keys with .weight: {len(has_weight_suffix)}", flush=True)
-            print(f"   Keys with .bias: {len(has_bias_suffix)}", flush=True)
-            print(f"   Keys with _bias: {len(has_underscore_bias)}", flush=True)
-            print(f"   Keys with no suffix: {len(no_suffix)}", flush=True)
-            
-            # Show examples of each type
-            if has_weight_suffix:
-                print(f"     Example with .weight: {has_weight_suffix[0]}", flush=True)
-            if has_bias_suffix:
-                print(f"     Example with .bias: {has_bias_suffix[0]}", flush=True)
-            if has_underscore_bias:
-                print(f"     Example with _bias: {has_underscore_bias[0]}", flush=True)
-            if no_suffix:
-                print(f"     Example with no suffix: {no_suffix[0]}", flush=True)
+            print(f"   Sample expert key shapes:", flush=True)
+            for key in expert_keys[:3]:  # Show first 3
+                if key in state_dict:
+                    tensor = state_dict[key]
+                    print(f"     {key} -> {tensor.shape}", flush=True)
         
         print(f"🎯 Router/gate keys found: {len(router_keys)}", flush=True)
         if router_keys:
             for key in router_keys[:3]:  # Show first 3
-                print(f"   Router key: {key}", flush=True)
+                if key in state_dict:
+                    tensor = state_dict[key]
+                    print(f"   {key} -> {tensor.shape}", flush=True)
         
         # Make a copy to avoid mutating the original
         state_dict = dict(state_dict)
         
-        # STEP 1: Handle MoE expert parameter transformations and reshaping
+        # STEP 1: Add .weight/.bias suffixes to MoE expert parameters
+        # GPT-OSS checkpoint has: experts.gate_up_proj, experts.gate_up_proj_bias  
+        # Haliax expects: experts.gate_up_proj.weight, experts.gate_up_proj.bias
         print("🔄 Starting MoE parameter transformations...", flush=True)
         keys_to_transform = list(state_dict.keys())
         transformation_count = 0
         
         for key in keys_to_transform:
-            # Handle MoE expert parameters with full paths like "model.layers.0.mlp.experts.gate_up_proj"
-            # Only transform if they don't already have .weight/.bias suffixes
-            if 'experts.' in key and not key.endswith('.weight') and not key.endswith('.bias'):
-                print(f"🔧 Transforming expert key: {key}", flush=True)
+            if 'experts.' in key:
+                print(f"🔧 Processing expert key: {key}", flush=True)
+                if key in state_dict:
+                    tensor = state_dict[key]
+                    print(f"   Original shape: {tensor.shape}", flush=True)
+                
                 transformation_count += 1
                 
-                # Handle expert bias parameters: model.layers.N.mlp.experts.gate_up_proj_bias -> model.layers.N.mlp.experts.gate_up_proj.bias
+                # Handle expert bias parameters: experts.gate_up_proj_bias -> experts.gate_up_proj.bias
                 if key.endswith('_bias'):
                     new_key = key[:-5] + '.bias'  # Replace '_bias' with '.bias'
                     print(f"   Bias transformation: {key} -> {new_key}", flush=True)
                     bias_tensor = state_dict.pop(key)
+                    print(f"   Bias tensor shape: {bias_tensor.shape}", flush=True)
                     
                     # HF format: (num_experts, feature_dim) -> Levanter format: shared bias (feature_dim,)
                     # In Levanter MoELinear, all experts share the same bias parameter
                     if len(bias_tensor.shape) == 2:  # (num_experts, feature_dim)
-                        import jax.numpy as jnp
                         # Use first expert's bias as the shared bias (MoELinear design)
                         shared_bias = bias_tensor[0]  # Shape: (feature_dim,)
                         state_dict[new_key] = shared_bias
-                        print(f"   Shared bias shape: {shared_bias.shape}", flush=True)
+                        print(f"   Converted to shared bias shape: {shared_bias.shape}", flush=True)
                     else:
                         state_dict[new_key] = bias_tensor
                         print(f"   Direct bias shape: {bias_tensor.shape}", flush=True)
-                        
-                # Handle expert weight parameters: model.layers.N.mlp.experts.gate_up_proj -> model.layers.N.mlp.experts.gate_up_proj.weight  
-                else:
-                    # Only add .weight if it doesn't already have a suffix and isn't a bias parameter
+                    
+                # Handle expert weight parameters: experts.gate_up_proj -> experts.gate_up_proj.weight
+                elif not key.endswith('.weight') and not key.endswith('.bias'):
+                    # Only add .weight if it doesn't already have a suffix
                     new_key = key + '.weight'
                     print(f"   Weight transformation: {key} -> {new_key}", flush=True)
-                    state_dict[new_key] = state_dict.pop(key)
-            
-            # Router bias should be handled by automatic key mapping via _state_dict_key_map methods
+                    weight_tensor = state_dict.pop(key)
+                    print(f"   Weight tensor shape: {weight_tensor.shape}", flush=True)
+                    state_dict[new_key] = weight_tensor
         
         print(f"✅ Completed {transformation_count} MoE parameter transformations", flush=True)
         
@@ -579,6 +568,9 @@ class GptOssTransformer(eqx.Module):
         print(f"📊 Final expert keys count: {len(final_expert_keys)}", flush=True)
         if final_expert_keys:
             print(f"   Example final expert key: {final_expert_keys[0]}", flush=True)
+            if final_expert_keys[0] in state_dict:
+                tensor = state_dict[final_expert_keys[0]]
+                print(f"   Example final expert tensor shape: {tensor.shape}", flush=True)
         
         try:
             result = default_eqx_module_from_state_dict(self, state_dict, prefix)
@@ -587,12 +579,12 @@ class GptOssTransformer(eqx.Module):
         except Exception as e:
             print(f"❌ ERROR in default_eqx_module_from_state_dict: {e}", flush=True)
             print(f"❌ Error type: {type(e)}", flush=True)
-            if "KeyError" in str(e):
-                missing_key = str(e).split("'")[1] if "'" in str(e) else "unknown"
-                print(f"❌ Missing key: {missing_key}", flush=True)
-                # Check if this key exists with different naming
-                similar_keys = [k for k in state_dict.keys() if missing_key.split('.')[-1] in k]
-                print(f"❌ Similar keys found: {similar_keys[:5]}", flush=True)
+            if "Shape mismatch" in str(e):
+                print(f"❌ Shape mismatch details: {str(e)}", flush=True)
+                # Try to find which parameter is causing the issue
+                for key, tensor in state_dict.items():
+                    if hasattr(tensor, 'shape') and 'experts.' in key:
+                        print(f"   Expert tensor: {key} -> {tensor.shape}", flush=True)
             raise
 
 

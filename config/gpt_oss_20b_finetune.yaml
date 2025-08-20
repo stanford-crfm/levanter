@@ -54,8 +54,8 @@ model:
   
   # Memory optimizations for large model
   gradient_checkpointing: true     # CRITICAL: Enable gradient checkpointing to save memory
-  flash_attention_block_size: 128  # Optimize for memory - matches fast config
-  scan_layers: false               # Use BlockSeq for per-layer flexibility (GPT-OSS needs different attention masks per layer)
+  flash_attention_block_size: 64   # Aggressive memory optimization (128→64)
+  scan_layers: true               # Use BlockSeq for per-layer flexibility (GPT-OSS needs different attention masks per layer)
 
 # Initialize from HuggingFace GPT-OSS-20B checkpoint
 initialize_from_hf: "/opt/gcsfuse_mount/models/unsloth--gpt-oss-20b-BF16--cc89b3e/"
@@ -67,20 +67,24 @@ trainer:
   tracker:
     - type: wandb
       project: "gpt-oss-20b-finetune"
+      name: "gpt-oss-20b-finetune_bf16_aggressive_memory"
       tags: ["gpt-oss", "20b", "moe", "finetune"]
   
-  # Mixed precision for large model
-  mp: p=f32,c=bfloat16             # Keep parameters in fp32 for stability
+  # Mixed precision for large model - AGGRESSIVE MEMORY SAVING
+  mp: p=bfloat16,c=bfloat16        # Store params in bf16 to save memory
   
   # Batch and training settings (conservative for 20B)
-  train_batch_size: 64             # Smaller batch for 20B model
+  train_batch_size: 64             # Drastically reduce batch for memory
   num_train_steps: 2000            # Conservative training steps
   steps_per_eval: 100              # Evaluate frequently
   
   # Parallelism configuration for large MoE model  
   tensor_parallel_axes: ["heads", "experts"]  # Parallelize across heads and experts
-  fsdp_axis: "embed"               # FSDP across embedding
-  batch_axis: "batch"              # Batch parallelism
+  fsdp_axis: ["embed", "vocab", "mlp"]        # FSDP across embedding and mlp
+  
+  # Memory-critical device configuration
+  model_axis_size: 1                          # Single model axis for memory efficiency
+  per_device_parallelism: 1                   # Conservative parallelism
   
   # Checkpointing configuration (inside trainer)
   checkpointer:
