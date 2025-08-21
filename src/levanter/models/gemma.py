@@ -200,6 +200,7 @@ class GemmaConfig(HFCompatConfig):
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
+            _attn_implementation="eager",
             **config_overrides,
         )
         return config
@@ -526,6 +527,7 @@ class Gemma2Config(GemmaConfig):
         # Merge user-overrides last so callers can tweak anything.
         cfg = _HFGemma2Config(
             **common_args,
+            _attn_implementation="eager",
             **config_overrides,
         )
 
@@ -855,6 +857,7 @@ class Gemma3Config(Gemma2Config):
 
         cfg = _HFGemma3Config(
             **common_args,
+            _attn_implementation="eager",
             **config_overrides,
         )
         return cfg
