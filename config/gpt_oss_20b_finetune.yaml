@@ -66,7 +66,7 @@ trainer:
   # Experiment tracking
   tracker:
     - type: wandb
-      project: "gpt-oss-20b-finetune"
+      project: "gpt-oss"
       name: "gpt-oss-20b-finetune_bf16_aggressive_memory"
       tags: ["gpt-oss", "20b", "moe", "finetune"]
   

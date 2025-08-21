@@ -31,7 +31,7 @@
   trainer:
     tracker:
       - type: wandb
-        project: "gpt-oss-sft"
+        project: "gpt-oss"
         name: "gpt-oss-small-fast"
         tags: ["gpt-oss", "sft", "tulu-3"]
 
