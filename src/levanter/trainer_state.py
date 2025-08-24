@@ -1,19 +1,22 @@
 import dataclasses
 import typing
-from typing import TYPE_CHECKING, Callable, Generic, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, Optional, TypeVar
 
 import equinox as eqx
 import jax
 import jmp
 from jax import numpy as jnp
+from jax._src.random import PRNGKey
 from jaxtyping import PRNGKeyArray, PyTree
 from optax import GradientTransformation, OptState
 
-from haliax.quantization import Fp8Config, apply_updates, fp8_linear_layers, partition_for_grad_overwrite
+from haliax.quantization import QuantizationConfig, apply_updates, partition_for_grad_overwrite, quantize_linear_layers
 from haliax.types import IntScalar, Scalar
 
-from levanter.types import FilterTree
+from levanter.optim.model_averaging import ModelAveraging, ModelAveragingConfig
 from levanter.utils.jax_utils import is_inexact_arrayish
+from levanter.utils.tree_utils import inference_mode
+from levanter.utils.types import FilterTree
 
 
 M = TypeVar("M", bound=PyTree)
@@ -55,6 +58,8 @@ class TrainerState(eqx.Module, Generic[M]):
     is_trainable: FilterTree = eqx.field(static=True)
     mp: jmp.Policy = eqx.field(static=True)
 
+    model_averaging: ModelAveraging[M]
+
     @property
     def int_step(self) -> int:
         """
@@ -70,6 +75,21 @@ class TrainerState(eqx.Module, Generic[M]):
     def saveable_state(self) -> FilterTree:
         return eqx.filter(self, saveable_training_mask(self, self.is_trainable))
 
+    @property
+    def eval_model(self) -> M:
+        """
+        Returns the model in evaluation mode, using the inference mode of the model averaging if it exists.
+        Otherwise, it uses the inference mode of the model.
+        """
+        if self.model_averaging is not None:
+            # model averaging only gets the trainable params so we have to patch in the trainables
+            m = self.model_averaging.model_params
+            m = eqx.combine(m, self.model)
+        else:
+            m = self.model
+
+        return inference_mode(m, True)
+
     @classmethod
     def init(
         cls,
@@ -79,7 +99,8 @@ class TrainerState(eqx.Module, Generic[M]):
         key: PRNGKeyArray,
         is_trainable: FilterTree = True,
         mp: Optional[jmp.Policy] = None,
-        fp8: Fp8Config = None,
+        quantization: Optional[QuantizationConfig] = None,
+        model_averaging: ModelAveragingConfig[M] | None = None,
         **kwargs,
     ) -> "TrainerState[M]":
         if mp is not None:
@@ -87,31 +108,77 @@ class TrainerState(eqx.Module, Generic[M]):
         else:
             mp = jmp.get_policy("f32")
 
-        if fp8 is not None:
-            model = fp8_linear_layers(model, fp8)
+        if quantization is not None:
+            model = quantize_linear_layers(model, quantization)
 
-        opt_state = init_optimizer_for_trainables(optimizer, model, is_trainable)
-        return cls(0, model, optimizer, opt_state, key, is_trainable=is_trainable, mp=mp, *args, **kwargs)
+        trainable_model = trainables_only(model, is_trainable)
 
-    def take_step(self: S, grads: PyTree, obj_fun: Optional[Callable[[M], Scalar]] = None) -> S:
+        if model_averaging is not None:
+            model_averaging = model_averaging.create(trainable_model)
+
+        opt_state = init_optimizer_for_trainables(optimizer, trainable_model)
+
+        return cls(
+            0,
+            model,
+            optimizer,
+            opt_state,
+            key,
+            is_trainable=is_trainable,
+            mp=mp,
+            model_averaging=model_averaging,
+            *args,
+            **kwargs,
+        )
+
+    def take_step(
+        self: S,
+        grads: PyTree,
+        *,
+        obj_fun: Callable[[M], Scalar] | None = None,
+        loss: float | None = None,
+        key: PRNGKey,
+    ) -> tuple[S, M]:
         assert isinstance(self, TrainerState)  # make mypy happy
-        model, opt_state = take_train_step(
+        model, opt_state, updates = take_train_step(
             self.optimizer,
             self.model,
             self.opt_state,
             grads,
             obj_fun=obj_fun,
+            loss=loss,
             is_trainable=self.is_trainable,
         )
-        return dataclasses.replace(self, model=model, opt_state=opt_state, step=self.step + 1)
+
+        if self.model_averaging is not None:
+            ma = self.model_averaging.update(trainables_only(model, self.is_trainable), self.step)
+        else:
+            ma = None
+
+        return (
+            dataclasses.replace(
+                self, model=model, opt_state=opt_state, model_averaging=ma, step=self.step + 1, training_key=key
+            ),
+            updates,
+        )
 
 
-def init_optimizer_for_trainables(optimizer, model, is_trainable):
+class InsideJitInfo(eqx.Module, Generic[M]):
+    """
+    This class holds intermediate state that is tracked inside a JIT-compiled function. It is primarily used for
+    [levanter.callbacks.JitCallback][] to store the gradients, updates, and other information that a callback might need
+    to access.
+    """
+
+    grads: M
+    updates: M
+
+
+def init_optimizer_for_trainables(optimizer, trainable_model):
     """
     Initializes the optimizer state for the trainable parameters of the model.
     """
-    trainable = trainables_only(model, is_trainable)
-    _, trainable = partition_for_grad_overwrite(trainable)  # doesn't make a huge difference, but saves some ram
+    _, trainable = partition_for_grad_overwrite(trainable_model)  # doesn't make a huge difference, but saves some ram
     opt_state = optimizer.init(trainable)
     return opt_state
 
@@ -165,7 +232,8 @@ def saveable_training_mask(trainer_state: S, is_trainable_param: FilterTree = Tr
     is_trainable_param = make_floating_point_trainable_filter(is_trainable_param)
 
     trainer_state = jax.tree_util.tree_map(lambda x: True, trainer_state)
-    saveable_state = dataclasses.replace(trainer_state, model=is_trainable_param)  # type: ignore
+    saveable_state = dataclasses.replace(trainer_state, step=True, training_key=True)  # type: ignore
+    saveable_state = dataclasses.replace(saveable_state, model=is_trainable_param)  # type: ignore
     return saveable_state  # type: ignore
 
 
@@ -176,15 +244,32 @@ def take_train_step(
     grads,
     *,
     obj_fun: Optional[Callable[[M], Scalar]] = None,
+    loss: Optional[float] = None,
     is_trainable: FilterTree = True,
-) -> Tuple[M, OptState]:
+) -> tuple[M, OptState, M]:
+    """
+
+    Takes a single training step for the model using the provided optimizer and gradients. This function takes into account:
+    - The optimizer to update the model parameters based on the gradients.
+    - The model parameters that are trainable based on the provided filter.
+    - The optional objective function for Sophia, etc.
+    - quantized state updates (Gradient Overwrite) if applicable.
+
+    Returns:
+    - The updated model after applying the optimizer updates.
+    - The updated optimizer state.
+    - The updates that were applied to the model parameters.
+
+    """
     train_grads = trainables_only(grads, is_trainable)
     overwrites, train_grads = partition_for_grad_overwrite(train_grads)
     trainable_model = trainables_only(model, is_trainable)
-    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun)
+    _, trainable_model = partition_for_grad_overwrite(trainable_model)
+
+    updates, opt_state = optimizer.update(train_grads, opt_state, params=trainable_model, obj_fn=obj_fun, loss=loss)
     model = apply_updates(model, updates, overwrites)
 
-    return model, opt_state
+    return model, opt_state, updates
 
 
 def make_floating_point_trainable_filter(is_trainable: FilterTree) -> FilterTree:

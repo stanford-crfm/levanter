@@ -1,27 +1,33 @@
 import tempfile
 
+import chex
 import equinox as eqx
-import jax
+import numpy
 import numpy as np
 import pytest
 import transformers
 from jax import random
 
 import haliax as hax
+import haliax.nn as hnn
 
-from levanter.models.attention import AttentionMask
-from levanter.models.llama import LlamaAttention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel, LlamaRMSNorm
-from levanter.models.llama import _apply_rotary_pos_emb as levanter_apply_rotary_pos_emb
-from levanter.models.llama import _rotate_half as levanter_rotate_half
-from levanter.models.llama import llama_rotary_pos_emb
+from levanter.layers.attention import AttentionBackend, AttentionMask
+from levanter.models.llama import Attention, LlamaConfig, LlamaDecoderLayer, LlamaLMHeadModel
 from levanter.utils.jax_utils import parameter_count
-from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+from test_utils import (
+    check_load_config,
+    check_model_works_with_seqlen,
+    parameterize_with_configs,
+    skip_if_hf_model_not_accessible,
+    skip_if_no_torch,
+)
 
 
 @skip_if_no_torch
+@skip_if_hf_model_not_accessible("NousResearch/Llama-2-7b-hf")
 def test_llama_config():
     # load HF config and convert to levanter config
-    hf_config = transformers.LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
     llama_config = LlamaConfig.from_hf_config(hf_config)
 
     # convert back to HF config
@@ -29,6 +35,7 @@ def test_llama_config():
         "_name_or_path": hf_config._name_or_path,
         "architectures": hf_config.architectures,
         "torch_dtype": hf_config.torch_dtype,
+        "pad_token_id": hf_config.pad_token_id,
     }
     new_hf_config = llama_config.to_hf_config(
         vocab_size=hf_config.vocab_size,
@@ -37,88 +44,30 @@ def test_llama_config():
 
     # assert the content in new_hf_config is the same as hf_config
     for k in new_hf_config.__dict__.keys():
-        if k in ["_commit_hash", "transformers_version"]:
+        if k in ["_commit_hash", "transformers_version", "_attn_implementation_internal"]:
             continue
         assert getattr(new_hf_config, k) == getattr(
             hf_config, k
         ), f"{k} {getattr(new_hf_config, k)} != {getattr(hf_config, k)}"
 
 
-@skip_if_no_torch
-def test_llama_rotary_embedding():
-    import torch
-    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
-
-    llama_config = _get_llama_config()
-    HeadSize = llama_config.HeadSize
-    Pos = llama_config.Pos
-    hidden_dim = HeadSize.size
-    seq_len = Pos.size
-    key = random.PRNGKey(0)
-    device = "cpu"
-
-    x = random.normal(key, (1, seq_len))
-    x_torch = torch.from_numpy(np.array(x))
-
-    levanter_output = llama_rotary_pos_emb(HeadSize=HeadSize, Pos=Pos)
-    hf_rope = HFLlamaRotaryEmbedding(dim=hidden_dim, max_position_embeddings=seq_len, device=device)
-    hf_output = hf_rope(x_torch, torch.arange(seq_len).reshape(1, -1), seq_len=seq_len)
-
-    for jax_out, torch_out in zip(levanter_output, hf_output):
-        torch_out = torch_out.numpy()
-        assert np.isclose(torch_out, np.array(jax_out.array), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
+def test_llama_flops():
+    # Check that the forward flops is within 10% of the naive calculation
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
+    llama_config = LlamaConfig.from_hf_config(hf_config)
+    n_params = 6.738415616e9
+    ratio = llama_config.flops_per_token(hf_config.vocab_size) / (2 * n_params)
+    assert ratio > 1.1, f"ratio {ratio} < 1.1"
+    assert ratio < 1.2, f"ratio {ratio} > 1.2"
 
 
-@skip_if_no_torch
-def test_apply_rotary_pos_emb():
-    import torch
-    from transformers.models.llama.modeling_llama import apply_rotary_pos_emb as hf_apply_rotary_pos_emb
-    from transformers.models.llama.modeling_llama import rotate_half as hf_rotate_half
-
-    def assert_equal_out(hax_out, torch_out: torch.Tensor):
-        assert np.isclose(
-            torch_out.numpy(), np.array(hax_out.array), rtol=1e-2, atol=1e-2
-        ).all(), f"{torch_out} != {hax_out}"
-
-    def named_array_to_tensor(named_array):
-        return torch.from_numpy(np.array(named_array.array))
-
-    llama_config = _get_llama_config()
-
-    Pos = llama_config.Pos
-    Heads = llama_config.Heads
-    HeadSize = llama_config.HeadSize
-    Batch = hax.Axis("batch", 2)
-
-    # note here we switch Heads and Pos for the shape of the output tensors
-    q = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Heads, HeadSize))
-    k = hax.random.normal(random.PRNGKey(1), (Batch, Pos, Heads, HeadSize))
-
-    # Check the output of _rotate_half() from levanter and hf
-    levanter_out_rf_q = levanter_rotate_half(q)
-    levanter_out_rf_k = levanter_rotate_half(k)
-
-    q_tensor = named_array_to_tensor(q).transpose(1, 2)  # needed for HF
-    k_tensor = named_array_to_tensor(k).transpose(1, 2)
-    hf_out_rf_q = hf_rotate_half(q_tensor).transpose(1, 2)  # re-transpose to match levanter
-    hf_out_rf_k = hf_rotate_half(k_tensor).transpose(1, 2)
-
-    assert_equal_out(levanter_out_rf_q, hf_out_rf_q)
-    assert_equal_out(levanter_out_rf_k, hf_out_rf_k)
-
-    # Check the output of _apply_rotary_pos_emb() from levanter and hf
-    cos = hax.random.normal(random.PRNGKey(2), (Pos, HeadSize))
-    sin = hax.random.normal(random.PRNGKey(3), (Pos, HeadSize))
-
-    levanter_out_rope_q, levanter_out_rope_k = levanter_apply_rotary_pos_emb(q, k, cos, sin)
-    cos_tensor = named_array_to_tensor(cos)[None, :, :]
-    sin_tensor = named_array_to_tensor(sin)[None, :, :]
-
-    hf_out_rope_q, hf_out_rope_k = hf_apply_rotary_pos_emb(q_tensor, k_tensor, cos_tensor, sin_tensor)
-    hf_out_rope_q = hf_out_rope_q.transpose(1, 2)  # re-transpose to match levanter
-    hf_out_rope_k = hf_out_rope_k.transpose(1, 2)
-    assert_equal_out(levanter_out_rope_q, hf_out_rope_q)
-    assert_equal_out(levanter_out_rope_k, hf_out_rope_k)
+def test_llama_params():
+    # Check that the computed number of trainable params is close to the actual number of params
+    hf_config = transformers.LlamaConfig.from_pretrained("NousResearch/Llama-2-7b-hf")
+    llama_config = LlamaConfig.from_hf_config(hf_config)
+    actual_params = 6.738415616e9
+    params = llama_config.total_trainable_params(hf_config.vocab_size)
+    assert np.isclose(actual_params, params, rtol=1e-2)
 
 
 @skip_if_no_torch
@@ -127,14 +76,19 @@ def test_apply_rotary_pos_emb():
 def test_llama_attention(use_flash, num_kv_heads):
     import torch
     from transformers.models.llama.modeling_llama import LlamaAttention as HFLlamaAttention
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     config = _get_llama_config(use_flash=use_flash, num_kv_heads=num_kv_heads)
 
-    attention = LlamaAttention.init(config=config, key=random.PRNGKey(0))
+    attention_config = config.attention_config()
+    attention = Attention.init(config=attention_config, key=random.PRNGKey(0))  # type: ignore
 
-    state = attention.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(attention)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_attention = HFLlamaAttention(config.to_hf_config(32000))
+    hf_config = config.to_hf_config(32000)
+
+    hf_rotary_emb = HFLlamaRotaryEmbedding(config=hf_config)
+    hf_attention = HFLlamaAttention(hf_config, layer_idx=0)
     hf_attention.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(config)
@@ -142,17 +96,16 @@ def test_llama_attention(use_flash, num_kv_heads):
     batch_size = x_torch.shape[0]
     explicit_mask = torch.from_numpy(np.array(mask.materialize(config.Pos, config.KeyPos).array))
     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
-
-    # the torch mask is really a bias, so we need to invert it and make it a big negative number
     mask_torch = (mask_torch == 0).float() * -1e9
 
     out = attention(x, mask)
-    position_ids = torch.arange(config.Pos.size).reshape(1, -1)
-    hf_out = hf_attention(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+    position_ids = torch.arange(config.Pos.size).unsqueeze(0)  # [1, seq_len]
+    cos, sin = hf_rotary_emb(x_torch, position_ids)  # Pass x_torch instead of zeros tensor
+    hf_out = hf_attention(
+        x_torch, position_ids=position_ids, attention_mask=mask_torch, position_embeddings=(cos, sin)
+    )
 
-    assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    ).all(), f"{hf_out[0]} != {out}"
+    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
 
 def test_llama_param_counts_dont_change_with_seqlen():
@@ -167,7 +120,7 @@ def test_llama_rms_norm():
     from transformers.models.llama.modeling_llama import LlamaRMSNorm as HFLlamaRMSNorm
 
     config = _get_llama_config()
-    ln = LlamaRMSNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
+    ln = hnn.RmsNorm.init(config.Embed, eps=config.layer_norm_epsilon, use_bias=config.use_bias)
     hf_ln = HFLlamaRMSNorm(config.Embed.size, eps=config.layer_norm_epsilon)
 
     x, _ = _get_random_inputs(config)
@@ -186,14 +139,16 @@ def test_llama_rms_norm():
 def test_llama_decoder_layer(num_kv_heads):
     import torch
     from transformers.models.llama.modeling_llama import LlamaDecoderLayer as HFLlamaDecoderLayer
+    from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding as HFLlamaRotaryEmbedding
 
     llama_config = _get_llama_config(num_kv_heads=num_kv_heads)
     key = random.PRNGKey(0)
     llama_decoder_layer = LlamaDecoderLayer.init(config=llama_config, key=key)
 
-    state = llama_decoder_layer.to_state_dict()
+    state = hax.state_dict.to_torch_compatible_state_dict(llama_decoder_layer)
     state = {k: torch.from_numpy(np.array(v)) for k, v in state.items()}
-    hf_decoder_layer = HFLlamaDecoderLayer(llama_config.to_hf_config(32000), layer_idx=0)
+    hf_config = llama_config.to_hf_config(32000)
+    hf_decoder_layer = HFLlamaDecoderLayer(hf_config, layer_idx=0)
     hf_decoder_layer.load_state_dict(state, strict=True)
 
     x, mask = _get_random_inputs(llama_config)
@@ -201,16 +156,27 @@ def test_llama_decoder_layer(num_kv_heads):
     batch_size = x_torch.shape[0]
     explicit_mask = torch.from_numpy(np.array(mask.materialize(llama_config.Pos, llama_config.KeyPos).array))
     mask_torch = explicit_mask.broadcast_to((batch_size, 1, -1, -1))
-    mask_torch = (mask_torch == 0).float() * -1e9
+    mask_torch = (mask_torch == 0).float() * -1e10
 
-    position_ids = torch.arange(llama_config.Pos.size).reshape(1, -1)
+    position_ids = torch.arange(llama_config.Pos.size).unsqueeze(0)
+    hf_rotary_emb = HFLlamaRotaryEmbedding(config=hf_config)
+    cos, sin = hf_rotary_emb(x_torch, position_ids)
 
     out = llama_decoder_layer(x, mask)
-    hf_out = hf_decoder_layer(x_torch, position_ids=position_ids, attention_mask=mask_torch)
+    hf_out = hf_decoder_layer(
+        x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
+    )
 
-    assert np.isclose(
-        hf_out[0].detach().cpu().numpy(), np.array(out.array), rtol=1e-4, atol=1e-4
-    ).all(), f"{hf_out[0]} != {out}"
+    # Handle the case where HF returns separate batch elements vs single tensor
+    if isinstance(hf_out, torch.Tensor):
+        # Single tensor case - should preserve batch dimension
+        hf_array = hf_out.detach().cpu().numpy()
+    else:
+        # Multiple tensors case - need to stack them back together
+        hf_stacked = torch.stack(hf_out)
+        hf_array = hf_stacked.detach().cpu().numpy()
+
+    chex.assert_trees_all_close(hf_array, out.array, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
@@ -253,7 +219,7 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
-    converter = LlamaConfig.default_hf_checkpoint_converter
+    converter = LlamaConfig().hf_checkpoint_converter()
 
     config = LlamaConfig(
         seq_len=128,
@@ -278,24 +244,27 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
 
     torch_out = torch_model(input_torch)
     torch_out = torch_out.logits[0].detach().cpu().numpy()
-    torch_out = jax.nn.softmax(torch_out, axis=-1)
+    # torch_out = jax.nn.softmax(torch_out, axis=-1)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            LlamaLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            LlamaLMHeadModel, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
-        def compute(input):
+        @hax.named_jit
+        def compute(model, input):
             model_output = model(input, attn_mask=attn_mask)
-            return hax.nn.softmax(model_output, axis=model.Vocab)
+            return model_output
 
-        compute = jax.jit(compute)
-        jax_out = compute(input).array
+        jax_out = compute(model, input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
+
+        # now we're going to magnify the model parameters enough that differences should actualy show up
+        jax_out = compute(model, input).array
 
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
@@ -303,31 +272,28 @@ def test_llama_roundtrip(scan_layers, num_kv_heads):
 
         torch_out2 = torch_model2(input_torch)
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
-        torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
+        numpy.testing.assert_allclose(torch_out2, jax_out, rtol=1e-5, atol=1e-5)
 
 
 def _get_llama_config(use_flash=False, num_kv_heads=4, seq_len=128) -> LlamaConfig:
-    rope_scaling = {
-        "type": "linear",
-        "factor": 2.0,
-    }
     return LlamaConfig(
         seq_len=seq_len,
-        hidden_dim=16,
+        hidden_dim=32,
         num_heads=4,
         num_kv_heads=num_kv_heads,
-        rope_scaling=rope_scaling,
         gradient_checkpointing=False,  # disable for tests so debugging is easier
-        use_flash_attention=use_flash,
+        attn_backend=AttentionBackend.DEFAULT if use_flash else AttentionBackend.VANILLA,
         flash_attention_block_size=8 if use_flash else None,
     )
 
 
-def _get_random_inputs(config: LlamaConfig):
+def _get_random_inputs(config: LlamaConfig, override_Pos=None):
     Embed = config.Embed
-    Pos = config.Pos
+    if override_Pos is not None:
+        Pos = override_Pos
+    else:
+        Pos = config.Pos
     Batch = hax.Axis("batch", 2)
     x = hax.random.normal(random.PRNGKey(0), (Batch, Pos, Embed))
     mask = AttentionMask.causal()
@@ -351,6 +317,57 @@ def test_pass_different_length_seq(num_kv_heads):
         intermediate_dim=32,
         num_heads=2,
         num_kv_heads=num_kv_heads,
-        use_flash_attention=True,
     )
     check_model_works_with_seqlen(LlamaLMHeadModel, config, 16)
+
+
+@skip_if_no_torch
+@pytest.mark.parametrize("scan_layers", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [2, 4])
+def test_state_dict_consistency(scan_layers, num_kv_heads):
+    from transformers import LlamaForCausalLM
+
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_layers=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+        scan_layers=scan_layers,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+    hf_config = config.to_hf_config(Vocab.size)
+    hf_model = LlamaForCausalLM(hf_config)
+    levanter_state_dict = hax.state_dict.to_torch_compatible_state_dict(model)
+    assert set(hf_model.state_dict().keys()) == set(levanter_state_dict.keys())
+
+
+@pytest.mark.parametrize("num_kv_heads", [2, 4])
+def test_llama_seq_len_doesnt_change_predictions(num_kv_heads):
+    config = LlamaConfig(
+        seq_len=128,
+        hidden_dim=16,
+        num_heads=4,
+        num_kv_heads=num_kv_heads,
+        gradient_checkpointing=False,
+    )
+    Vocab = hax.Axis("vocab", 1000)
+
+    # Make input and attn_mask
+    input_256 = hax.random.randint(random.PRNGKey(0), config.Pos, 0, Vocab.size)
+    input_128 = input_256[config.Pos, :128]
+    attn_mask = AttentionMask.causal()
+
+    model = LlamaLMHeadModel.init(Vocab=Vocab, config=config, key=random.PRNGKey(0))
+
+    @hax.named_jit
+    def compute(model, input):
+        model_output = model(input, attn_mask=attn_mask)
+        return model_output
+
+    jax_out_1 = compute(model, input_128)
+    jax_out_2 = compute(model, input_256)[config.Pos, :128]
+
+    assert np.allclose(jax_out_1.array, jax_out_2.array, rtol=1e-6, atol=1e-6)

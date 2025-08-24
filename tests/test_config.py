@@ -5,7 +5,7 @@ import fsspec
 from haliax.partitioning import ResourceAxis
 
 import levanter.config
-from levanter.data.text import LMDatasetConfig, LMMixtureDatasetConfig
+from levanter.data.text import HfSingleDatasetLMConfig, LMMixtureDatasetConfig
 from levanter.trainer import TrainerConfig
 
 
@@ -39,7 +39,7 @@ def test_new_style_axis_mapping():
 
     assert config.tensor_parallel_axes == ["a1", "a2"]
     assert config.compute_axis_mapping == {
-        "batch": ResourceAxis.DATA,
+        "batch": (ResourceAxis.REPLICA, ResourceAxis.DATA),
         "a1": ResourceAxis.MODEL,
         "a2": ResourceAxis.MODEL,
     }
@@ -47,14 +47,14 @@ def test_new_style_axis_mapping():
         "embed": ResourceAxis.DATA,
         "a1": ResourceAxis.MODEL,
         "a2": ResourceAxis.MODEL,
-        "batch": ResourceAxis.DATA,
+        "batch": (ResourceAxis.REPLICA, ResourceAxis.DATA),
     }
 
 
 def test_lm_dataset_config():
     @dataclasses.dataclass
     class Config:
-        data: LMDatasetConfig = dataclasses.field(default_factory=LMDatasetConfig)
+        data: HfSingleDatasetLMConfig = dataclasses.field(default_factory=HfSingleDatasetLMConfig)
 
     yaml_config = """
     data:

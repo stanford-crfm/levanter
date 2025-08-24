@@ -4,48 +4,50 @@ This guide is meant to be a detailed walkthrough of training a model on your own
 
 The basic steps are:
 
-- [ ] [Configure your environment/cloud](#environment-setup)
-- [ ] [Prepare your data and upload to cloud](#data-preparation)
-- [ ] [Configure your training run](#configuration)
-- [ ] [Upload the training configuration file](#upload-config-to-gcs)
-- [ ] [Launch training](#launching-training)
-- [ ] [Evaluate](#evaluation)
-- [ ] [Export your model to Huggingface](#huggingface-export)
+1. [Configure your environment/cloud](#environment-setup)
+1. [Prepare your data and upload to cloud](#data-preparation)
+1. [Configure your training run](#configuration)
+1. [Upload the training configuration file](#upload-config-to-gcs)
+1. [Launch training](#launching-training)
+1. [Evaluate](#evaluation)
+1. [Export your model to Huggingface](#huggingface-export)
 
+If you're training on data that isn't text (or [audio-to-text](./guides/Training-On-Audio-Data.md)), you'll need to
+write a custom cache. See the guide on [Direct Cache Construction](./guides/Direct-Cache-Construction.md).)
 
 ## Environment Setup
 
 ### TPU Setup
 
-See the [TPU guide](./Getting-Started-TPU-VM.md) for instructions on setting up a TPU VM instance. You should go through
+See the [TPU guide](./Getting-Started-TPU-VM.md). You should go through
 the installation steps in that guide before continuing. Don't spin up a TPU VM instance yet, though.
 
-### CUDA Setup
+### GPU Setup
 
-See the [GPU guide](./Getting-Started-GPU.md) for instructions on setting up a CUDA machine.
+See the [GPU guide](./Getting-Started-GPU.md).
 
 ### WandB Setup
 
-Levanter mainly uses [WandB](https://wandb.ai) for logging. You should create a WandB account and [get an API key](https://wandb.ai/authorize).
+Levanter mainly uses [WandB](https://wandb.ai) for logging. Create a WandB account and [get an API key](https://wandb.ai/authorize).
 
 ## Data Preparation
 
 The key ingredient for training an LM is a lot of plain-text data.
 We have two top-level ways of consuming training data: a [**single source**](#single-data-source) and [**mixture of sources**](#mixture-of-sources).
 Single source is simpler and probably closer to what you're used to, while multiple
-source allows you to have multiple evaluation sets or use techniques like [DoReMi](https://arxiv.org/abs/2305.10429).
+source allows you to have multiple evaluation sets or have fine-grained control over the training schedule.
 
 ### Data Sources
 
 In Levanter, a data source can either be a list of training and validation URLs pointing to
 (possibly compressed) JSONL files, or a Huggingface Dataset. In either case,
 we assume there is a single field, by default called `"text"`, that contains the text of the example.
-If you have a sequence-to-sequence task, as of September 2023, you should turn each example into a single text
-by e.g. using a templating mechanism with a prompt (a la Alpaca).
+
+See the [Training Data Guide](./guides/Training-Data-Guide.md) and the [Data Formats Reference](./reference/Data-Formats.md) for more details.
 
 #### Data Format: JSONL
 
-The canonical format for training data in Levanter is (compressed) JSONL, or JSON Lines.
+The canonical format for training data in Levanter is (compressed) [JSONL, or JSON Lines](https://jsonlines.org/).
 Each line of the file is a JSON object, which is a dictionary of key-value pairs.
 The only required key is `"text"`, which should map to a string of plain text.
 Other keys are ignored, but you can use them to store metadata about your data.
@@ -63,7 +65,7 @@ Once you have done so, you can create the `data` section of your training config
 Levanter uses [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) to read data from files,
 so it can transparently handle compressed files and files in cloud storage (like Google Cloud Storage or AWS S3).
 Levanter uses [braceexpand](https://pypi.org/project/braceexpand/) to expand the `{1..32}` syntax.
-You can also use more than one entry if you have urls that don't follow a naming scheme:
+You can also use more than one entry if you have urls that don't follow a naming scheme.
 
 !!! tip
 
@@ -83,9 +85,9 @@ data:
     # name: "subset"
 ```
 
-This will be passed to `datasets.load_dataset`. If the dataset supports streaming, you can use `stream: true` to stream
-the data instead of loading it all into memory. If a streaming dataset is sharded, we will attempt to exploit the
-sharded structure to preprocess more efficiently.
+This will be passed to `datasets.load_dataset`. By default, we use `stream: true` to stream the data, which
+is much more efficient, as it avoids downloading the dataset onto every machine. If a streaming dataset is sharded,
+we will automatically process each shard in parallel.
 
 ### Single Data Source
 
@@ -101,12 +103,7 @@ data:
     tokenizer: "gpt2"  # any HF tokenizer path, or GCS path to an HF tokenizer
 ```
 
-
 ### Mixture of Sources
-
-!!! warning
-
-    This feature is experimental and may change in the future.
 
 If you have multiple sources of data (e.g., multiple domains, or distinct subsets of data), you can use the `data` section of your training configuration to specify them:
 
@@ -143,13 +140,13 @@ validation data.
 ## Data Preprocessing
 
 Levanter supports both online and offline preprocessing. Online preprocessing is done on-the-fly
-during training. With online preprocessing, you don't need to think about preprocessing your data.
+during training. With online preprocessing, you don't need to think about preprocessing your data
+except to make sure it's in the right format and where you'd like to store the cached preprocessing
+results.
 
 Our data loading pipeline will automatically break and concatenate documents into chunks equal
 to the model's `seq_len` parameter. It will also automatically add special tokens to the
 end of documents.
-
-We don't yet handle sequence-to-sequence tasks, but we plan to.
 
 ### Online Preprocessing
 
@@ -158,8 +155,7 @@ that builds a cache of preprocessed data on the fly. Online caching happens tran
 in the background, using the mostly-idle CPU-cores of the machine(s) you are training on.
 
 The cache that is built is fully reproducible, and can be used for future training runs.
-Training will start as soon as each training machine has its first shard of data cached
-and once the validation data is cached.
+Training will start as soon as the system has the data it needs.
 
 ### Offline Preprocessing
 
@@ -185,11 +181,17 @@ python -m levanter.main.cache_dataset \
     --auto_start_cluster false
 ```
 
+### Direct Cache Construction
+
+We also support direct cache construction. This is useful if you want to use a custom cache format.
+See our guide on [Direct Cache Construction](./guides/Direct-Cache-Construction.md) for more details.
+
+
 ## Configuration
 
 Levanter uses [Draccus](https://github.com/dlwh/draccus) to configure training runs. It's a YAML-to-dataclass
 library that also supports argument parsing via argparse. A detailed guide to configuring Levanter is available
-in the [Configuration Guide](./Configuration-Guide.md).
+in the [Configuration Guide](./reference/Configuration.md).
 
 This section will cover the basics of configuring a training run.
 
@@ -252,7 +254,7 @@ Levanter supports starting from an HF pretrained model. To do so, you should set
 ```yaml
 model:
   type: mpt
-initialize_from_hf: "mosaicml/mpt-7b" # can also reference a version, e.g. "mosaicml/mpt-7b@deadbeef"
+initialize_from_hf: "NousResearch/Llama-2-7b-hf"
 use_hf_model_config: true
 ```
 
@@ -260,31 +262,18 @@ You should probably reduce the learning rate by a factor of 10 or so. TODO: figu
 
 #### Llama 2
 
-For Llama 2 specifically (or other gated models), you'll need a few extra steps:
-
-If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
-
-Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token.
-Then, pass in the token as an environment variable:
-
-```bash
-HUGGING_FACE_HUB_TOKEN=hf...
-```
-
-Pass that in anywhere you're passing in a `WANDB_API_KEY`.
-
-Then, you can use the model like so:
+While some versions of Llama (and other gated models) require extra steps, `NousResearch/Llama-2-7b-hf` is freely accessible on the Hub, so no gating is required. You can initialize like so:
 
 ```yaml
 model:
   type: llama
-initialize_from_hf: "meta-llama/Llama-2-7b-hf"
+initialize_from_hf: "NousResearch/Llama-2-7b-hf"
 use_hf_model_config: true
 ```
 
 ### Checkpointing
 
-See also the [Checkpointing section of the Configuration Guide](./Configuration-Guide.md#checkpointing).
+See also the [Checkpointing section of the Configuration Guide](./reference/Configuration.md#checkpointing-and-initialization).
 
 Levanter supports checkpointing to both local and Google Cloud Storage, backed by [TensorStore](https://google.github.io/tensorstore/).
 If you're using multiple machines, you should probably use cloud storage or NFS.
@@ -365,13 +354,32 @@ bash infra/spin-up-tpu-vm.sh my-tpu -z us-east1-d -t v3-128
 
 This will spin up a TPU VM instance and install Levanter on it. You can then run a command like so:
 
-```bash
-gcloud compute tpus tpu-vm ssh my-tpu   --zone us-east1-d --worker=all --command="WANDB_API_KEY=... levanter/infra/launch.sh python levanter/src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
+
+```
+cat > .config <<EOF
+env:
+    WANDB_API_KEY:
+    WANDB_ENTITY:
+    WANDB_PROJECT:
+    HF_TOKEN:
+    TPU_STDERR_LOG_LEVEL: 2
+    TPU_MIN_LOG_LEVEL: 2
+    LIBTPU_INIT_ARGS: <extra args to libtpu>
+
+docker_repository: levanter
+zone: us-west4-a
+tpu_type: "v5litepod-16"
+vm_image: "tpu-ubuntu2204-base"
+preemptible: true
+autodelete: false
+subnetwork: "default"
+
+EOF
 ```
 
-### GPU
-
-TODO, but you can mostly follow the guide for [TPU](#tpu) above.
+```bash
+python infra/launch.py --tpu_name=my_tpu -- python src/levanter/main/train_lm.py --config_path gs://path/to/config.yaml"
+```
 
 ## Monitoring
 
@@ -421,5 +429,5 @@ tokenizer = AutoTokenizer.from_pretrained("/tmp/my_exported_model")
 After training, you can run a separate script to export levanter checkpoints to Huggingface:
 
 ```bash
-python -m levanter.main.export_to_hf --config_path my_config.yaml --output_dir gs://path/to/output
+python -m levanter.main.export_lm_to_hf --config_path my_config.yaml --output_dir gs://path/to/output
 ```

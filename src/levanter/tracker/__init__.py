@@ -1,9 +1,12 @@
-from levanter.tracker.helpers import log_optimizer_hyperparams
+from levanter.tracker.helpers import capture_time, log_optimizer_hyperparams
 from levanter.tracker.tracker import CompositeTracker, NoopConfig, NoopTracker, Tracker, TrackerConfig
 from levanter.tracker.tracker_fns import (
+    LoggableValue,
     current_tracker,
+    defer_tracker_for_jit,
     get_tracker,
-    jit_log_metrics,
+    jit_log,
+    log,
     log_configuration,
     log_hyperparameters,
     log_metrics,
@@ -20,10 +23,15 @@ __all__ = [
     "NoopTracker",
     "current_tracker",
     "get_tracker",
-    "jit_log_metrics",
+    "jit_log",
     "log_configuration",
-    "log_metrics",
+    "log",
     "log_summary",
     "log_hyperparameters",
     "set_global_tracker",
+    "capture_time",
+    "log_metrics",
+    "LoggableValue",
+    "defer_tracker_for_jit",
+    "NoopConfig",
 ]

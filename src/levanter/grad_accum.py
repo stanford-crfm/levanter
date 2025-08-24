@@ -11,7 +11,9 @@ from jax.sharding import PartitionSpec
 import haliax as hax
 from haliax import Axis
 from haliax.partitioning import ResourceAxis
-from haliax.util import is_jax_array_like, is_named_array
+from haliax.util import is_named_array
+
+from levanter.utils.jax_utils import zeros_like_tree
 
 
 Args = ParamSpec("Args")
@@ -25,6 +27,7 @@ class ReductionType(enum.Enum):
 
 
 # TODO: should we use a custom_jvp on microbatched?
+
 
 # cf https://github.com/google-research/t5x/blob/main/t5x/trainer.py#L617
 def microbatched(
@@ -90,7 +93,7 @@ def microbatched(
 
         # first, determine the shape and make accumulator arrays
         r_shape = eqx.filter_eval_shape(fn, *args, **kwargs)
-        acc = _zeros_like_tree(r_shape, accum_axis_mapping, accum_dtype)
+        acc = zeros_like_tree(r_shape, accum_axis_mapping, accum_dtype)
 
         # then, reshape the inputs from (Batch, ...) to (AccumStep, Microbatch, ...)
 
@@ -147,19 +150,3 @@ def _reshape_for_microbatch(Batch: Axis, Microbatch: Axis, AccumStep: Axis, inpu
             return x
 
     return jax.tree_util.tree_map(_reshape, inputs, is_leaf=is_named_array)
-
-
-def _zeros_like_tree(r_shape, axis_mapping, accum_dtype):
-    _zeros = functools.partial(_zeros_like, axis_mapping, accum_dtype)
-    acc = jax.tree_util.tree_map(_zeros, r_shape, is_leaf=is_named_array)
-    return acc
-
-
-def _zeros_like(mapping, dtype, n):
-    if isinstance(n, hax.NamedArray):
-        return hax.shard(hax.zeros_like(n, dtype=dtype), mapping)
-    elif is_jax_array_like(n):
-        return jnp.zeros_like(n, dtype)
-    else:
-        assert jnp.isscalar(n)
-        return 0.0

@@ -1,5 +1,9 @@
 /scratch
 
+# Configuration for TPU launches/secrets
+.levanter.yaml
+.levanter.yaml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -85,7 +89,6 @@ ipython_config.py
 
 # pyenv
 .python-version
-
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
 #   However, in case of collaboration, if having platform-specific dependencies or dependencies
@@ -133,16 +136,23 @@ dmypy.json
 # JetBrains
 .idea/
 
+# vscode
+.vscode
 
 # Wandb stuff
 /wandb
 
 # dataset cache files
+/cache
 *.parquet
 ledger.json
 
 /checkpoints
 *.jaxpr
 
-# local execution commands
 local_*.sh
+
+# aider
+.aider*
+
+.benchmarks

@@ -3,18 +3,19 @@ import os
 from dataclasses import dataclass, field
 
 import levanter
-from levanter.data.shard_cache import LoggingMetricsMonitor, RichMetricsMonitor, build_cache
-from levanter.data.text import BatchTokenizer, LMDatasetConfig
+from levanter.data.metrics_monitor import LoggingMetricsMonitor
+from levanter.data.text import BatchTokenizer, SingleDatasetLMConfigBase
 from levanter.distributed import RayConfig
-from levanter.logging import init_logging
+from levanter.store.cache import build_or_load_cache
 from levanter.tracker import NoopConfig, TrackerConfig
+from levanter.utils.logging import init_logging
 
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RayCachedLMDatasetConfig(LMDatasetConfig, RayConfig):
+@dataclass(frozen=True)
+class RayCachedLMDatasetConfig(SingleDatasetLMConfigBase, RayConfig):
     tracker: TrackerConfig = field(default_factory=NoopConfig)
 
 
@@ -30,23 +31,23 @@ def main(args: RayCachedLMDatasetConfig):
         print(f"Caching {split} to {args.cache_dir}.")
         # connect or start the actor
         batch_tokenizer = BatchTokenizer(tokenizer, enforce_eos=args.enforce_eos)
-        split_cache_dir = os.path.join(args.cache_dir, split)
+        split_cache_dir = os.path.join(args.cache_dir, split)  # type: ignore
         source = args.get_shard_source(split)
 
         if source is None:
             logger.warning(f"Skipping {split} because it is empty.")
             continue
 
-        monitors = [RichMetricsMonitor(source.num_shards), LoggingMetricsMonitor("preprocess/" + split, commit=True)]
+        monitors: list = []
+        if not isinstance(args.tracker, NoopConfig):
+            monitors.append(LoggingMetricsMonitor("preprocess/" + split, commit=True))
 
-        cache = build_cache(
+        cache = build_or_load_cache(
             cache_dir=split_cache_dir,
-            input_shards=source,
+            source=source,
             processor=batch_tokenizer,
-            rows_per_chunk=args.rows_per_chunk,
             await_finished=False,
             monitors=monitors,
-            batch_size=128,
         )
 
         cache.await_finished()

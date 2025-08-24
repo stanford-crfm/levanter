@@ -39,7 +39,7 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
 
     # this is mostly copy paste, but it looks at range of different env variables that slurm sometimes sets
     @classmethod
-    def get_coordinator_address(cls) -> str:
+    def get_coordinator_address(cls, timeout_secs: int | None = None) -> str:
         # Pick port in ephemeral range [(65535 - 2^12 + 1), 65535]
         id = os.environ[_JOBID_PARAM]
         port = _choose_port(id)
@@ -67,6 +67,22 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
     @classmethod
     def _node_list(cls):
         return next((os.environ[o] for o in _NODE_LIST_CHOICES if o in os.environ), None)
+
+    @classmethod
+    def get_process_count(cls) -> int:  # type: ignore[override]
+        if _PROCESS_COUNT in os.environ:
+            return int(os.environ[_PROCESS_COUNT])
+
+        if cls.is_env_present():
+            num_nodes = next(
+                (os.environ[o] for o in ["SLURM_JOB_NUM_NODES", _NUM_NODES, "SLURM_NNODES"] if o in os.environ),
+                None,
+            )
+            if num_nodes == "1":
+                logger.info("%s not set; assuming single-process job", _PROCESS_COUNT)
+                return 1
+
+        return super().get_process_count()
 
     @classmethod
     def get_local_device_ids_for_process(cls) -> Optional[List[int]]:
@@ -121,6 +137,10 @@ class LevanterSlurmCluster(clusters.SlurmCluster):
         # So we have to do some parsing to figure out how many tasks are on each node
         # and then figure out which node we are on
         # first replace the repeated values with the number of times they are repeated
+        if _TASKS_PER_NODE not in os.environ:
+            logger.warning("%s not set in environment, assuming a single task per node", _TASKS_PER_NODE)
+            return 1
+
         unrolled_tasks_per_node = []
         multi_match = re.compile(r"(\d+)\(x(\d+)\)")
         for x in os.environ[_TASKS_PER_NODE].split(","):
@@ -252,7 +272,11 @@ def auto_ray_cluster(
                             logger.info(f"Successfully started ray head on port {ray_port}.")
 
                         # install an atexit handler to kill the head when we exit
-                        atexit.register(lambda: os.system("ray stop -g 10 --force"))
+                        def kill_ray():
+                            # silence spam from ray stop
+                            os.system("bash -c 'ray stop -g 10 --force &> /dev/null'")
+
+                        atexit.register(kill_ray)
                     elif start_workers:
                         logger.info(
                             f"Starting ray worker and connecting to {address}. We are process {jax.process_index()}."
@@ -276,7 +300,12 @@ def auto_ray_cluster(
             else:
                 logger.warning(f"Failed to initialize ray with address {address}. Retrying...")
                 continue
-    atexit.register(lambda: ray.shutdown())
+
+    def do_shutdown():
+        logger.info("Shutting down ray...")
+        ray.shutdown()
+
+    atexit.register(do_shutdown)
     _already_initialized = True
 
 
@@ -313,9 +342,22 @@ class DistributedConfig:
                     device_ids = LevanterSlurmCluster.get_local_device_ids_for_process()
 
                 if coordinator_address is None:
-                    coordinator_address = LevanterSlurmCluster.get_coordinator_address()
+                    coordinator_address = LevanterSlurmCluster.get_coordinator_address(300.0)
 
-            jax.distributed.initialize(coordinator_address, self.num_processes, self.process_id, device_ids)
+                if self.num_processes is None:
+                    self_num_processes = LevanterSlurmCluster.get_process_count()
+                else:
+                    self_num_processes = self.num_processes
+            else:
+                self_num_processes = self.num_processes
+
+            jax.distributed.initialize(
+                coordinator_address,
+                self_num_processes,
+                self.process_id,
+                device_ids,
+                initialization_timeout=30 * 60,
+            )
             logger.info(
                 f"Initialized jax.distributed with {jax.device_count()} devices, {jax.process_count()} processes,"
                 f" coordinator_address={coordinator_address}, process_id={self.process_id}, my"
@@ -328,7 +370,7 @@ class DistributedConfig:
             )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RayConfig:
     address: Optional[str] = None
     start_workers: bool = True

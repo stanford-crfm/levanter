@@ -5,13 +5,17 @@ import equinox as eqx
 import jax
 import numpy as np
 import optax
+from chex import assert_trees_all_close
 from transformers import AutoModelForCausalLM
 
 import haliax as hax
 import haliax.nn as hnn
+from haliax.quantization import DefaultDotGeneralOp, DotGeneralOp
 
+from levanter.callbacks import StepInfo
 from levanter.checkpoint import Checkpointer
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
+from levanter.layers.attention import AttentionMask
 from levanter.lora import (
     LoraConfig,
     LoraLinear,
@@ -22,12 +26,10 @@ from levanter.lora import (
     save_merged_hf_model,
     save_peft_pretrained,
 )
-from levanter.models.attention import AttentionMask
-from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from levanter.trainer import StepInfo
+from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.trainer_state import TrainerState
 from levanter.utils.tree_utils import inference_mode
-from test_utils import skip_if_no_torch
+from test_utils import skip_if_module_missing, skip_if_no_torch
 
 
 In = hax.Axis("In", 10)
@@ -72,8 +74,8 @@ def test_lora_scan_layers():
         @staticmethod
         def init(*, key):
             k1, k2 = jax.random.split(key)
-            first = hnn.Linear.init(In, Mid, key=k1)
-            second = hnn.Linear.init(Mid, In, key=k2)
+            first = hnn.Linear.init(In, Mid, key=k1, out_first=True)
+            second = hnn.Linear.init(Mid, In, key=k2, out_first=True)
             return Module(first, second)
 
     Layers = hax.Axis("Layers", 3)
@@ -89,11 +91,12 @@ def test_lora_scan_layers():
     assert loraized.stacked.first.lora.lora_A.weight.axes == (Layers, hax.Axis("LORA_R", 8), In)
     assert loraized.stacked.first.lora.lora_B.weight.axes == (Layers, Mid, hax.Axis("LORA_R", 8))
 
-    assert loraized.stacked.second.weight.axes == (Layers, Mid, In)
+    assert loraized.stacked.second.weight.axes == (Layers, In, Mid)
     input = hax.random.normal(k0, (In,))
     assert not hax.all(hax.isclose(module.fold(input), loraized.fold(input)))
 
 
+@skip_if_module_missing("peft")
 @skip_if_no_torch
 def test_lora_peft_integration():
     import peft
@@ -110,11 +113,11 @@ def test_lora_peft_integration():
 
     hf_dict = get_peft_model_state_dict(model)
 
-    converter = Gpt2Config.default_hf_checkpoint_converter
-    lev_model = converter.load_pretrained(Gpt2LMHeadModel, "stanford-crfm/expanse-gpt2-small-x777")
+    converter = LlamaConfig().hf_checkpoint_converter()
+
+    lev_model = converter.load_pretrained(converter.default_config.model_type, "stanford-crfm/expanse-gpt2-small-x777")
 
     lora_lev_model = loraize(lev_model, LoraConfig(r=8, target_modules=["c_attn"]), key=jax.random.PRNGKey(0))
-    # for some dumb reason, the hf state dict starts with this prefix
     lev_dict = lora_state_dict(lora_lev_model)
 
     assert lev_dict.keys() == hf_dict.keys()
@@ -134,35 +137,56 @@ def test_merge_lora():
         @staticmethod
         def init(*, key):
             k1, k2 = jax.random.split(key)
-            first = hnn.Linear.init(In, Mid, key=k1)
-            second = hnn.Linear.init(Mid, In, key=k2)
+            first = hnn.Linear.init(In, Mid, key=k1, init_scale=0.02)
+            second = hnn.Linear.init(Mid, In, key=k2, init_scale=0.02)
             return Module(first, second)
 
-    Layers = hax.Axis("Layers", 3)
+    Layers = hax.Axis("Layers", 2)
+
+    # tpu matmuls are very imprecise, so we force higher precision
+    class PreciseDotGeneralOp(DotGeneralOp):
+        def __call__(self, lhs, rhs, dimension_numbers, precision=None, preferred_element_type=None):
+            return jax.lax.dot_general(
+                lhs,
+                rhs,
+                dimension_numbers,
+                precision=jax.lax.Precision.HIGHEST,
+                preferred_element_type=preferred_element_type,
+            )
 
     k0 = jax.random.PRNGKey(0)
-    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, 3))
+    module: hnn.Stacked[Module] = hnn.Stacked.init(Layers, Module)(key=jax.random.split(k0, Layers.size))
 
-    loraized = loraize(module, LoraConfig(r=8, target_modules=["first"]), key=k0)
+    loraized = loraize(module, LoraConfig(r=8, target_modules=["second"]), key=k0)
     assert isinstance(loraized, hnn.Stacked)
 
     merged = merge_lora_modules(loraized)
 
     assert isinstance(merged, hnn.Stacked)
 
+    def replace_dot_general(x):
+        if isinstance(x, DefaultDotGeneralOp):
+            return PreciseDotGeneralOp()
+        return x
+
+    merged = jax.tree.map(replace_dot_general, merged, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+    loraized = jax.tree.map(replace_dot_general, loraized, is_leaf=lambda x: isinstance(x, DefaultDotGeneralOp))
+
     input = hax.random.normal(k0, (In,))
-    assert hax.all(hax.isclose(loraized.fold(input), merged.fold(input)))
+    # light tolerances for TPU
+    assert_trees_all_close(merged.fold(input), loraized.fold(input), rtol=1e-3, atol=3e-3)
 
 
+@skip_if_module_missing("peft")
 @skip_if_no_torch
 def test_lora_load_in_peft():
     import torch
 
-    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
-    config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
+    converter: HFCheckpointConverter = LlamaConfig().hf_checkpoint_converter()
+    config = LlamaConfig(seq_len=128, intermediate_dim=512, num_layers=2, num_heads=2, num_kv_heads=2)
     Vocab = converter.Vocab
 
-    model = Gpt2LMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
+    model = LlamaLMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
     model = inference_mode(model, True)
 
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)
@@ -203,15 +227,16 @@ def test_lora_load_in_peft():
         assert not np.allclose(lev_lora_out, hf_out, atol=1e-4)
 
 
+@skip_if_module_missing("peft")
 @skip_if_no_torch
 def test_lora_merged_load_in_hf():
     import torch
 
-    converter: HFCheckpointConverter = Gpt2Config.default_hf_checkpoint_converter
-    config = Gpt2Config(seq_len=128, num_layers=2, num_heads=2)
+    converter: HFCheckpointConverter = LlamaConfig().hf_checkpoint_converter()
+    config = LlamaConfig(seq_len=128, intermediate_dim=512, num_layers=2, num_heads=2, num_kv_heads=2)
     Vocab = converter.Vocab
 
-    model = Gpt2LMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
+    model = LlamaLMHeadModel.init(Vocab, config=config, key=jax.random.PRNGKey(0))
     model = inference_mode(model, True)
 
     input = hax.random.randint(jax.random.PRNGKey(0), config.Pos, 0, Vocab.size)

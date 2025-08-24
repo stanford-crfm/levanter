@@ -24,7 +24,7 @@ Levanter is a framework for training large language models (LLMs) and other foun
 2. **Scalable**: Levanter scales to large models, and to be able to train on a variety of hardware, including GPUs and TPUs.
 3. **Reproducible**: Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 
-We built Levanter with [JAX](https:://github.com/google/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
+We built Levanter with [JAX](https://github.com/jax-ml/jax), [Equinox](https://github.com/patrick-kidger/equinox), and [Haliax](https://github.com/stanford-crfm/haliax).
 
 ## Documentation
 
@@ -33,16 +33,18 @@ Haliax's documentation is available at [haliax.readthedocs.io](https://haliax.re
 
 ## Features
 
-* **Distributed Training**: We support distributed training on TPUs (and soon, GPUs), including FSDP and tensor parallelism.
+* **Distributed Training**: We support distributed training on TPUs and GPUs, including FSDP and tensor parallelism.
 * **Compatibility**: Levanter supports importing and exporting models to/from the Hugging Face ecosystem, including tokenizers, datasets, and models via [SafeTensors](https://github.com/huggingface/safetensors).
 * **Performance**: Levanter's performance rivals commercially-backed frameworks like MosaicML's Composer or Google's MaxText.
+* **Resilience**: Levanter supports fast, distributed checkpointing and fast resume from checkpoints with no data seek, making Levanter robust to preemption and hardware failure.
 * **Cached On-Demand Data Preprocessing**: We preprocess corpora online, but we cache the results of preprocessing so
 that resumes are much faster and so that subsequent runs are even faster. As soon as the first part of the cache is complete, Levanter will start training.
-* **Optimization**: Levanter supports the new [Sophia](https://arxiv.org/abs/2305.14342) optimizer, which can be 2x as fast as Adam. We also support ses [Optax](https://github.com/deepmind/optax) for optimization with AdamW, etc.
-* **Logging**: Levanter supports a few different logging backends, including [WandB](https://wandb.ai/site) and [TensorBoard](https://www.tensorflow.org/tensorboard). (Adding a new logging backend is easy!) Levanter even exposes the ability
+* **Logging**: Levanter logs a rich and detailed set of metrics covering loss and performance. Levanter also supports a few different logging backends, including [WandB](https://wandb.ai/site) and [TensorBoard](https://www.tensorflow.org/tensorboard). (Adding a new logging backend is easy!) Levanter even exposes the ability
 to log inside of JAX `jit`-ted functions.
 * **Reproducibility**: On TPU, Levanter is bitwise deterministic, meaning that the same configuration will always produce the same results, even in the face of preemption and resumption.
 * **Distributed Checkpointing**: Distributed checkpointing is supported via Google's [TensorStore](https://google.github.io/tensorstore/) library. Training can even be resumed on a different number of hosts, though this breaks reproducibility for now.
+* * **Optimization**: Levanter supports the new [Sophia](https://arxiv.org/abs/2305.14342) optimizer, which can be 2x as fast as Adam. We also support [Optax](https://github.com/deepmind/optax) for optimization with AdamW, etc.
+* * **Flexible**: Levanter supports tuning data mixtures without having to retokenize or shuffle data.
 
 <!--levanter-intro-end-->
 
@@ -52,7 +54,7 @@ You can also find us in the #levanter channel on the unofficial [Jax LLM Discord
 ## Getting Started
 
 Here is a small set of examples to get you started. For more information about the various configuration options,
-please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](docs/Configuration-Guide.md).
+please see the [Getting Started](./docs/Getting-Started-Training.md) guide or the [In-Depth Configuration Guide](doc./reference/Configuration.md).
 You can also use `--help` or poke around other configs to see all the options available to you.
 
 
@@ -70,9 +72,7 @@ pip install levanter
 or using the latest version from GitHub:
 
 ```bash
-git clone https://github.com/stanford-crfm/levanter.git
-cd levanter
-pip install -e .
+pip install git+https://github.com/stanford-crfm/levanter.git
 wandb login  # optional, we use wandb for logging
 ```
 
@@ -87,7 +87,6 @@ cd haliax
 pip install -e .
 cd ../levanter
 ```
-
 
 <!--levanter-installation-end-->
 
@@ -110,16 +109,16 @@ python -m levanter.main.train_lm --config_path gpt2_nano
 
 This will train a GPT2-nano model on the [WikiText-103](https://blog.einstein.ai/the-wikitext-long-term-dependency-language-modeling-dataset/) dataset.
 
-### Training a GPT2-small on your own data
+### Training a Llama-small on your own data
 
 You can also change the dataset by changing the `dataset` field in the config file.
 If your dataset is a [Hugging Face dataset](https://huggingface.co/docs/datasets/loading_datasets.html), you can use the `data.id` field to specify it:
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext
 
 # optionally, you may specify a tokenizer and/or a cache directory, which may be local or on gcs
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext --data.tokenizer "EleutherAI/gpt-neox-20b" --data.cache_dir "gs://path/to/cache/dir"
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext --data.tokenizer "NousResearch/Llama-2-7b-hf" --data.cache_dir "gs://path/to/cache/dir"
 ```
 
 If instead your data is a list of URLs, you can use the `data.train_urls` and `data.validation_urls` fields to specify them.
@@ -127,13 +126,13 @@ Data URLS can be local files, gcs files, or http(s) URLs, or anything that [fssp
 Levanter (really, fsspec) will automatically uncompress `.gz` and `.zstd` files, and probably other formats too.
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
 ```
 
 ### Customizing a Config File
 
 You can modify the config file to change the model, the dataset, the training parameters, and more. Here's
-the `gpt2_small.yaml` file:
+the `llama_small_fast.yaml` file:
 
 ```yaml
 data:
@@ -143,18 +142,19 @@ data:
       - "gs://pubmed-mosaic/openwebtext-sharded/openwebtext_val.{1..8}-of-8.jsonl.gz"
   cache_dir: "gs://pubmed-mosaic/tokenized/openwebtext/"
 model:
-  gpt2:
-    hidden_dim: 768
-    num_heads: 12
-    num_layers: 12
-    seq_len: 1024
-    gradient_checkpointing: true
-    scale_attn_by_inverse_layer_idx: true
+  type: llama
+  hidden_dim: 768
+  intermediate_dim: 2048
+  num_heads: 12
+  num_kv_heads: 12
+  num_layers: 12
+  seq_len: 1024
+  gradient_checkpointing: true
 trainer:
   tracker:
     type: wandb
     project: "levanter"
-    tags: [ "openwebtext", "gpt2"]
+    tags: [ "openwebtext", "llama" ]
 
   mp: p=f32,c=bfloat16
   model_axis_size: 1
@@ -170,14 +170,21 @@ optimizer:
 ### Other Architectures
 
 Currently, we support the following architectures:
+
 * GPT-2
-* [LLama 1 or 2](https://ai.meta.com/llama/)
-* [Backpacks](http://backpackmodels.science/)
-* MosaicML's [MPT](https://www.mosaicml.com/blog/mpt-7b)
+* [LLama](https://ai.meta.com/llama/), including Llama 1, 2 and 3
+* [Gemma](https://ai.google.dev/gemma), including Gemma 1, 2 and Gemma 3.
+* [Qwen2](https://huggingface.co/Qwen/Qwen2.5-7B)
+* [Qwen3](https://huggingface.co/Qwen/Qwen3-8B)
+* [Mistral](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3)
+* [Mixtral](https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1)
+* [Olmo2](https://huggingface.co/allenai/Olmo-2-1124-7B)
 
 We plan to add more in the future.
 
-#### Continued Pretraining with Llama 1 or Llama 2
+For speech, we currently only support [Whisper](https://huggingface.co/openai/whisper-large-v3).
+
+#### Continued Pretraining with Llama
 
 Here's an example of how to continue pretraining a Llama 1 or Llama 2 model on the OpenWebText dataset:
 
@@ -199,6 +206,8 @@ Please see the [CUDA Getting Started](docs/Getting-Started-GPU.md) guide for mor
 <!--levanter-user-guide-end-->
 
 ## Contributing
+
+[![GitHub repo Good Issues for newbies](https://img.shields.io/github/issues/stanford-crfm/levanter/good%20first%20issue?style=flat&logo=github&logoColor=green&label=Good%20First%20issues)](https://github.com/stanford-crfm/levanter/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) [![GitHub Help Wanted issues](https://img.shields.io/github/issues/stanford-crfm/levanter/help%20wanted?style=flat&logo=github&logoColor=b545d1&label=%22Help%20Wanted%22%20issues)](https://github.com/stanford-crfm/levanter/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) [![GitHub Help Wanted PRs](https://img.shields.io/github/issues-pr/stanford-crfm/levanter/help%20wanted?style=flat&logo=github&logoColor=b545d1&label=%22Help%20Wanted%22%20PRs)](https://github.com/stanford-crfm/levanter/pulls?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) [![GitHub repo Issues](https://img.shields.io/github/issues/stanford-crfm/levanter?style=flat&logo=github&logoColor=red&label=Issues)](https://github.com/stanford-crfm/levanter/issues?q=is%3Aopen)
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more information.
 

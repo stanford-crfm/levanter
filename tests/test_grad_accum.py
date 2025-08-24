@@ -1,9 +1,10 @@
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import pytest
-from jax.sharding import Mesh
+from chex import assert_trees_all_close
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
+import haliax
 import haliax as hax
 import haliax.nn as hnn
 
@@ -17,9 +18,9 @@ class Mlp(eqx.Module):
 
     w_in: hax.NamedArray
     w_out: hax.NamedArray
-    In: hax.Axis = eqx.static_field()
-    Out: hax.Axis = eqx.static_field()
-    Mid: hax.Axis = eqx.static_field()
+    In: hax.Axis = eqx.field(static=True)
+    Out: hax.Axis = eqx.field(static=True)
+    Mid: hax.Axis = eqx.field(static=True)
 
     @staticmethod
     def init(In: hax.Axis, Out: hax.Axis, Mid: hax.Axis, *, key):
@@ -28,9 +29,9 @@ class Mlp(eqx.Module):
         return Mlp(w_in, w_out, In, Out, Mid)
 
     def __call__(self, x):
-        x = hax.dot(self.In, self.w_in, x)
+        x = hax.dot(self.w_in, x, axis=self.In)
         x = hnn.relu(x)
-        x = hax.dot(self.Mid, self.w_out, x)
+        x = hax.dot(self.w_out, x, axis=self.Mid)
         return x
 
 
@@ -48,7 +49,8 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
 
     x = hax.random.normal(jax.random.PRNGKey(0), (Batch, In))
 
-    x = jax.device_put(x, jax.sharding.PositionalSharding(jax.devices()).reshape((-1, 1)))
+    mesh_shard = Mesh(jax.devices(), ("data",))
+    x = jax.device_put(x, NamedSharding(mesh_shard, PartitionSpec("data", None)))
 
     axis_mapping = {"Batch": "data"}
 
@@ -65,11 +67,13 @@ def test_accumulate_gradients_sharded(parallelism, accum_steps):
         return acc_v, acc_g
 
     with mesh:
+        mlp = haliax.shard(mlp, axis_mapping)
+        x = haliax.shard(x, axis_mapping)
         grad_fn = eqx.filter_value_and_grad(loss_fn)
         acc_v, acc_g = jit_grad_accum(mlp, x)
         v, g = grad_fn(mlp, x)
 
-        assert jnp.allclose(acc_v, v, atol=1e-3, rtol=1e-3)
+        assert_trees_all_close(acc_v, v, atol=1e-3, rtol=1e-3)
 
         for l1, l2 in zip(jax.tree_util.tree_leaves(acc_g), jax.tree_util.tree_leaves(g)):
-            assert jnp.allclose(l1, l2, atol=1e-3, rtol=1e-3)
+            assert_trees_all_close(l1, l2, atol=1e-3, rtol=1e-3)

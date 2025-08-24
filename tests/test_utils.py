@@ -1,25 +1,24 @@
 import glob
 import os
 from functools import reduce
-from typing import Callable, List, Optional, Sequence, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar
 
 import draccus
 import equinox as eqx
 import jax
+import numpy as np
 import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
-from equinox import static_field
 from jax._src.random import PRNGKey
-from transformers import AutoTokenizer, BatchEncoding
+from transformers import AutoConfig, BatchEncoding
 
 import haliax as hax
 
 from levanter.checkpoint import _get_fs_and_plain_path
 from levanter.data._preprocessor import BatchProcessor
-from levanter.data.sharded_dataset import ShardedDataset
-from levanter.data.text import _stack_batch_encodings
-from levanter.models.attention import AttentionMask
+from levanter.data.sharded_datasource import ShardedDataSource
+from levanter.layers.attention import AttentionMask
 
 
 T = TypeVar("T")
@@ -33,12 +32,12 @@ class MLP(eqx.Module):
     """slightly less annoying MLP, used for testing purposes"""
 
     layers: List[nn.Linear]
-    activation: Callable = eqx.static_field()
-    final_activation: Callable = eqx.static_field()
-    in_size: int = static_field()
-    out_size: int = static_field()
-    width_size: int = static_field()
-    depth: int = static_field()
+    activation: Callable = eqx.field(static=True)
+    final_activation: Callable = eqx.field(static=True)
+    in_size: int = eqx.field(static=True)
+    out_size: int = eqx.field(static=True)
+    width_size: int = eqx.field(static=True)
+    depth: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -171,9 +170,7 @@ def skip_if_checkpoint_not_accessible(path: str):
 def skip_if_hf_model_not_accessible(model_id: str):
     def try_load_hf(model_id):
         try:
-            from transformers import AutoModel
-
-            AutoModel.from_pretrained(model_id)
+            AutoConfig.from_pretrained(model_id)
         except Exception:
             return False
         else:
@@ -182,17 +179,36 @@ def skip_if_hf_model_not_accessible(model_id: str):
     return pytest.mark.skipif(not try_load_hf(model_id), reason="HuggingFace model not accessible")
 
 
-class IdentityProcessor(BatchProcessor[BatchEncoding]):
+def skip_in_ci(fn_or_msg):
+    if isinstance(fn_or_msg, str):
+
+        def decorator(fn):
+            return pytest.mark.skipif("CI" in os.environ, reason=fn_or_msg)(fn)
+
+        return decorator
+
+    return pytest.mark.skipif("CI" in os.environ, reason="skipped in CI")(fn_or_msg)
+
+
+class IdentityProcessor(BatchProcessor[BatchEncoding, BatchEncoding]):
     def __call__(self, batch: Sequence[BatchEncoding]) -> BatchEncoding:
         stacked = reduce(_stack_batch_encodings, batch)
         return stacked
 
     @property
+    def output_exemplar(self):
+        return BatchEncoding({})
+
+    @property
     def num_cpus(self) -> int:
         return 0
 
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
-class ShardsDataset(ShardedDataset[T]):
+
+class ShardsDataSource(ShardedDataSource[T]):
     def __init__(self, docs: List[List[T]]):
         self.docs = docs
 
@@ -204,7 +220,7 @@ class ShardsDataset(ShardedDataset[T]):
         return self.docs[int(shard_name)][row:]
 
 
-class SingleShardDocumentSource(ShardedDataset[T]):
+class SingleShardDocumentSource(ShardedDataSource[T]):
     def __init__(self, docs: List[T]):
         self.docs = docs
 
@@ -242,4 +258,15 @@ def check_model_works_with_seqlen(model_type, config, input_len):
     assert a1.axis_size("position") == input_len
 
 
-gpt2_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+def _stack_batch_encodings(a: BatchEncoding, b: BatchEncoding) -> BatchEncoding:
+    """Stacks two batch encodings together, assuming that the keys are the same."""
+
+    def _ensure_batched(x):
+        if len(x) == 0:
+            return list(x)
+        elif isinstance(x[0], Sequence) or isinstance(x[0], np.ndarray):
+            return list(x)
+        else:
+            return [x]
+
+    return BatchEncoding({k: _ensure_batched(a[k]) + _ensure_batched(b[k]) for k in a.keys()})

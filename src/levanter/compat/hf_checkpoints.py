@@ -1,4 +1,5 @@
 import abc
+import contextlib
 import dataclasses
 import json
 import logging
@@ -10,7 +11,6 @@ import warnings
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
-from urllib.parse import urlparse
 
 import draccus
 import equinox as eqx
@@ -21,26 +21,31 @@ import jax.numpy as jnp
 import mergedeep
 import safetensors
 import safetensors.numpy
-from huggingface_hub import hf_hub_download, snapshot_download
-from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError
+import transformers.utils.hub
+from fsspec import AbstractFileSystem
+from huggingface_hub import HfApi, hf_hub_download, repo_exists, snapshot_download
+from huggingface_hub.file_download import repo_folder_name
+from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError, RepositoryNotFoundError
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
-from jaxtyping import Array
+from jaxtyping import Array, PRNGKeyArray
 from tqdm import tqdm
 
 import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceMapping
+from haliax.state_dict import from_torch_compatible_state_dict, save_state_dict, to_torch_compatible_state_dict
 
-from levanter.compat.torch_serialization import StateDictSerializationMixin, save_state_dict, to_numpy_state_dict
-from levanter.logging import silence_transformer_nag
+from levanter.callbacks import StepInfo
 from levanter.models.asr_model import ASRMixin
 from levanter.models.lm_model import LmConfig, LmHeadModel
-from levanter.trainer import StepInfo
 from levanter.utils import jax_utils
 from levanter.utils.cloud_utils import temp_dir_before_upload
+from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.jax_utils import best_effort_sharding, local_cpu_mesh, use_cpu_device
-from levanter.utils.py_utils import classproperty, dataclass_with_default_init, logical_cpu_memory_size
+from levanter.utils.json_utils import ConfigJSONEncoder
+from levanter.utils.logging import silence_transformer_nag
+from levanter.utils.py_utils import dataclass_with_default_init, logical_cpu_memory_size
 
 
 silence_transformer_nag()
@@ -117,9 +122,8 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
     def from_hf_config(cls, hf_config: HfConfig):
         pass
 
-    @classproperty
     @abc.abstractmethod
-    def default_hf_checkpoint_converter(cls) -> "HFCheckpointConverter":
+    def hf_checkpoint_converter(cls) -> "HFCheckpointConverter":
         """The default HFCheckpointConverter to use for this config class. We recommend that you
         define this as a @cached_property on your config class."""
         pass
@@ -128,7 +132,7 @@ class HFCompatConfig(LmConfig["LmWithHfSerializationMixin"]):
 MConfig = TypeVar("MConfig", bound=HFCompatConfig)
 
 
-class ModelWithHfSerializationMixin(Generic[MConfig], StateDictSerializationMixin):
+class ModelWithHfSerializationMixin(Generic[MConfig]):
     def get_hf_config(self):
         return self.config.to_hf_config(self.Vocab.size)
 
@@ -144,7 +148,7 @@ class ModelWithHfSerializationMixin(Generic[MConfig], StateDictSerializationMixi
 
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "ModelWithHfSerializationMixin":
+    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKeyArray) -> "ModelWithHfSerializationMixin":
         pass
 
 
@@ -155,7 +159,7 @@ class ASRWithHfSerializationMixin(ASRMixin, ModelWithHfSerializationMixin[MConfi
 class LmWithHfSerializationMixin(LmHeadModel, ModelWithHfSerializationMixin[MConfig]):
     @classmethod
     @abc.abstractmethod
-    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKey) -> "LmWithHfSerializationMixin":
+    def init(cls, Vocab: Axis, config: MConfig, *, key: PRNGKeyArray) -> "LmWithHfSerializationMixin":
         pass
 
 
@@ -280,7 +284,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # TODO: hacky hacky
         for k, v in LmConfig.get_known_choices().items():
             if issubclass(v, HFCompatConfig):
-                if v.default_hf_checkpoint_converter.HfConfigClass.__name__ == config_class.__name__:
+                if v().hf_checkpoint_converter().HfConfigClass.__name__ == config_class.__name__:
                     LevConfigClass = v
                     break
         else:
@@ -324,11 +328,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             if ref is None:
                 raise ValueError("Must provide either config class or reference_checkpoint")
             path, rev = ref.model_name_or_path, ref.revision
-            config = AutoConfig.from_pretrained(
-                path,
-                revision=rev,
-                trust_remote_code=trust_remote_code,
-            )
+            with _patch_hf_hub_download():
+                config = AutoConfig.from_pretrained(path, revision=rev, trust_remote_code=trust_remote_code)
             clss = type(config)
         elif isinstance(hf_config_class, str):
             if ref is None:
@@ -423,7 +424,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
     def hf_config_from_hf_checkpoint(self, ref: Optional[Union[str, RepoRef]] = None) -> HfConfig:
         path, rev = self._get_ref(ref)
-        config = AutoConfig.from_pretrained(path, revision=rev, trust_remote_code=self.trust_remote_code)
+
+        with _patch_hf_hub_download():
+            config = AutoConfig.from_pretrained(path, revision=rev, trust_remote_code=self.trust_remote_code)
         return config
 
     def _get_ref(self, ref) -> Tuple[str, Optional[str]]:
@@ -435,10 +438,19 @@ class HFCheckpointConverter(Generic[LevConfig]):
         return ref.model_name_or_path, ref.revision
 
     def load_state_dict(self, ref: Optional[Union[str, RepoRef]] = None, dtype: Optional[jnp.dtype] = None) -> dict:
+        """Load a state dict from either HF Hub or a GCS path"""
         if ref is None:
             ref = self.reference_checkpoint
         if ref is None:
             raise ValueError("Must provide a checkpoint to load from")
+
+        # Handle GCS paths directly
+        if isinstance(ref, RepoRef) and ref.model_name_or_path.startswith("gs://"):
+            logger.info("\n\n loading hf from GCS! \n\n")
+            return self._load_from_gcs(ref.model_name_or_path, dtype)
+        elif isinstance(ref, str) and ref.startswith("gs://"):
+            logger.info("\n\n loading hf from GCS! \n\n")
+            return self._load_from_gcs(ref, dtype)
 
         id, rev = self._get_ref(ref)
 
@@ -450,56 +462,105 @@ class HFCheckpointConverter(Generic[LevConfig]):
             except HFValidationError:
                 pass
 
-        # TODO: load models from gcs etc.
-        if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
-            state_dict = _load_safe_tensors(os.path.join(id, SAFE_TENSORS_MODEL), dtype)
-        elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
-            state_dict = _load_torch(os.path.join(id, PYTORCH_MODEL), dtype)
-        else:
-            try:
-                model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
-                state_dict = _load_safe_tensors(model_path, dtype)
-            except (EntryNotFoundError, HFValidationError):
-                model_path = hf_hub_download(id, PYTORCH_MODEL, revision=rev)
-                state_dict = _load_torch(model_path, dtype)
+        with _patch_hf_hub_download() as hf_hub_download:
+            # TODO: load models from gcs etc.
+            if os.path.exists(os.path.join(id, SAFE_TENSORS_MODEL)):
+                state_dict = _load_safe_tensors(os.path.join(id, SAFE_TENSORS_MODEL), dtype)
+            elif os.path.exists(os.path.join(id, PYTORCH_MODEL)):
+                state_dict = _load_torch(os.path.join(id, PYTORCH_MODEL), dtype)
+            else:
+                try:
+                    model_path = hf_hub_download(id, SAFE_TENSORS_MODEL, revision=rev)
+                    state_dict = _load_safe_tensors(model_path, dtype)
+                except (EntryNotFoundError, HFValidationError):
+                    model_path = hf_hub_download(id, PYTORCH_MODEL, revision=rev)
+                    state_dict = _load_torch(model_path, dtype)
 
-        return state_dict
+            return state_dict
 
     def _load_shards(self, id: str, index_file: str, rev: Optional[str], dtype) -> dict:
         """Load model from sharded files based on the provided index."""
-        index_path = os.path.join(id, index_file)
-        if not os.path.exists(index_path):
-            # Download the index file if not found locally
-            index_path = hf_hub_download(id, index_file, revision=rev)
+        with _patch_hf_hub_download() as hf_hub_download:
+            index_path = os.path.join(id, index_file)
+            if not os.path.exists(index_path):
+                # Download the index file if not found locally
+                index_path = hf_hub_download(id, index_file, revision=rev)
 
-        with open(index_path, "r", encoding="utf-8") as f:
-            index = json.load(f)
+            with open(index_path, "r", encoding="utf-8") as f:
+                index = json.load(f)
 
-        shard_files = list(set(index["weight_map"].values()))
-        final_state_dict = {}
+            shard_files = list(set(index["weight_map"].values()))
+            final_state_dict = {}
 
-        # right now we do safe tensors thing
-        # where we load into memory then update some dict
-        if "safetensors" in index_file:
-            loader = _load_safe_tensors
-        else:
-            loader = _load_torch
+            # right now we do safe tensors thing
+            # where we load into memory then update some dict
+            if "safetensors" in index_file:
+                loader = _load_safe_tensors
+            else:
+                loader = _load_torch
 
-        for shard_file in shard_files:
-            shard_path = os.path.join(id, shard_file)
-            if not os.path.exists(shard_path):
-                # Download the shard if not found locally
-                shard_path = hf_hub_download(id, shard_file, revision=rev)
+            for shard_file in shard_files:
+                shard_path = os.path.join(id, shard_file)
+                if not os.path.exists(shard_path):
+                    # Download the shard if not found locally
+                    shard_path = hf_hub_download(id, shard_file, revision=rev)
 
-            shard_state_dict = loader(shard_path, dtype)
-            final_state_dict.update(shard_state_dict)
+                shard_state_dict = loader(shard_path, dtype)
+                final_state_dict.update(shard_state_dict)
 
         return final_state_dict
 
+    def _load_from_gcs(self, gcs_path: str, dtype: Optional[jnp.dtype] = None) -> dict:
+        """Load a state dict from a GCS path"""
+        fs: AbstractFileSystem
+        fs, path = fsspec.core.url_to_fs(gcs_path)
+
+        # First try to load sharded checkpoint
+        for index_file in [SAFE_TENSORS_INDEX_NAME, PYTORCH_WEIGHTS_INDEX_NAME]:
+            index_path = os.path.join(path, index_file)
+            if fs.exists(index_path):
+                with fs.open(index_path, "r") as f:
+                    index = json.load(f)
+
+                shard_files = list(set(index["weight_map"].values()))
+                final_state_dict = {}
+
+                if "safetensors" in index_file:
+                    loader = _load_safe_tensors
+                else:
+                    loader = _load_torch
+
+                for shard_file in shard_files:
+                    shard_path = os.path.join(path, shard_file)
+                    if not fs.exists(shard_path):
+                        raise FileNotFoundError(f"Shard file {shard_path} not found")
+
+                    # Download shard to temporary file
+                    with tempfile.NamedTemporaryFile() as tmp:
+                        fs.get(shard_path, tmp.name)
+                        shard_state_dict = loader(tmp.name, dtype)
+                        final_state_dict.update(shard_state_dict)
+
+                return final_state_dict
+
+        # If no index file found, try loading single file checkpoint
+        for model_file in [SAFE_TENSORS_MODEL, PYTORCH_MODEL]:
+            model_path = os.path.join(path, model_file)
+            if fs.exists(model_path):
+                with tempfile.NamedTemporaryFile() as tmp:
+                    fs.get(model_path, tmp.name)
+                    if model_file == SAFE_TENSORS_MODEL:
+                        return _load_safe_tensors(tmp.name, dtype)
+                    else:
+                        return _load_torch(tmp.name, dtype)
+
+        raise FileNotFoundError(f"No checkpoint files found in {gcs_path}")
+
     def load_pretrained(
         self,
-        lm_model_cls: Union[Type[ModelWithHfSerializationMixin], LevConfig],
+        lm_model_cls: Type[ModelWithHfSerializationMixin],
         ref: Optional[Union[str, RepoRef]] = None,
+        config: Optional[HFCompatConfig] = None,
         axis_mapping: Optional[ResourceMapping] = None,
         resize_vocab_to_match_tokenizer: bool = True,
         dtype: Optional[jnp.dtype] = None,
@@ -508,18 +569,16 @@ class HFCheckpointConverter(Generic[LevConfig]):
         Loads a levanter model from a huggingface checkpoint.
 
         Args:
-            lm_model_cls: The model class to load or the config to use to load the model class
+            config: The config to use to load the model class
             ref: The reference to load from. If None, will use the reference_checkpoint
             axis_mapping: The axis mapping to use for sharding. If None, will use the context axis mapping
         """
         from contextlib import ExitStack
 
         hf_config = self.hf_config_from_hf_checkpoint(ref)
-        if isinstance(lm_model_cls, type(self.default_config)):
-            config = lm_model_cls
-            lm_model_cls = config.model_type
-        else:
+        if config is None:
             config = self.config_from_hf_config(hf_config)
+        lm_model_cls = config.model_type
 
         # Vocab: first we have to resize the vocab as loaded from the checkpoint
         tokenizer_Vocab = self.Vocab
@@ -546,9 +605,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     ignore_prefix = self.ignore_prefix
                     break
 
-        def load_from_state_dict(state_dict):
-            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
-            lev_model = lev_model.from_state_dict(state_dict, prefix=ignore_prefix)
+        def load_from_state_dict(template, state_dict):
+            lev_model = from_torch_compatible_state_dict(template, state_dict, prefix=ignore_prefix)
 
             # However, this might miss some buffers that don't get persisted in the state dict
             # (e.g. pytorch buffers with persistent=false), so we have to reinitialize them. We then init the model
@@ -575,7 +633,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
         if just_use_cpu:
             cpu_device = jax.local_devices(backend="cpu")[0]
             with local_cpu_mesh():
-                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(state_dict)
+                lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+                lev_model = eqx.filter_jit(load_from_state_dict, donate="all", device=cpu_device)(
+                    lev_model, state_dict
+                )
 
             del state_dict
             # gotta move it to the accelerator now (assuming there is one!)
@@ -584,23 +645,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
             load_from_state_dict = haliax.named_jit(
                 load_from_state_dict, axis_resources=axis_mapping, out_axis_resources=axis_mapping, donate_args=(True,)
             )
-            lev_model = load_from_state_dict(state_dict)
-
-        # all_arrays: list[jax.Array] = get_backend().live_arrays()
-        # total_size = sum(a.size * a.itemsize for a in all_arrays)
-        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
-        # gc.collect()  # sometimes takes a while to free buffers otherwise
-        # try:
-        #     get_backend().defragment()
-        # except Exception as e:
-        #     warnings.warn(f"Could not defragment because {e}")
-        #     pass
-        # all_arrays = get_backend().live_arrays()
-        # total_size = sum(a.size * a.itemsize for a in all_arrays)
-        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
-        # all_arrays = get_backend().live_arrays()
-        # total_size = sum(a.size * a.itemsize for a in all_arrays)
-        # print(f"Total size of live arrays: {total_size / 1e9:.2f} GB")
+            lev_model = eqx.filter_eval_shape(lm_model_cls.init, Vocab, config, key=PRNGKey(0))
+            lev_model = load_from_state_dict(lev_model, state_dict)
 
         return lev_model
 
@@ -612,6 +658,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         save_reference_code: Optional[bool],
         max_shard_size: int,
         save_feature_extractor: bool = False,
+        dtype: Optional[jnp.dtype] = None,
     ):
         """
         Saves a HF-compatible checkpoint to a local path.
@@ -693,10 +740,19 @@ class HFCheckpointConverter(Generic[LevConfig]):
             dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
 
         with open(os.path.join(path, "config.json"), "w") as f:
-            json.dump(dict_config, f)
+            json.dump(dict_config, f, cls=ConfigJSONEncoder)
 
         # Model
-        state_dict = to_numpy_state_dict(model)
+        state_dict = to_torch_compatible_state_dict(model)
+
+        if dtype is not None:
+            logger.info(f"Converting floating-point arrays in state_dict to {dtype}")
+            for k, v in state_dict.items():
+                if jnp.issubdtype(v.dtype, jnp.floating):
+                    state_dict[k] = v.astype(dtype)
+                else:
+                    logger.debug(f"Skipping dtype conversion for non-floating point array {k} with dtype {v.dtype}")
+
         shards, index = _shard_hf_checkpoint(state_dict, max_shard_size, SAFE_TENSORS_MODEL)
         if index is None:
             save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
@@ -719,13 +775,15 @@ class HFCheckpointConverter(Generic[LevConfig]):
         save_tokenizer: bool = True,
         max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
         save_feature_extractor: bool = False,
+        dtype: Optional[jnp.dtype] = None,
         **hf_upload_kwargs,
     ):
         """
         Saves a Levanter model to a huggingface "pretrained model" checkpoint.
 
         If hf_repo is provided, this will upload the checkpoint to the huggingface hub, passing
-        any additional kwargs to the huggingface_hub.upload_folder function.
+        any additional kwargs to the huggingface_hub.upload_folder function. A new private model
+        repository will be created in the huggingface hub if one does not exist already.
 
         :param path: the path to save the checkpoint to. path may be a GCS bucket path or other fsspec path,
         in which case the checkpoint will be uploaded to GCS after being written to a tmpdir
@@ -749,6 +807,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 save_tokenizer=save_tokenizer,
                 save_feature_extractor=save_feature_extractor,
                 max_shard_size=max_shard_size,
+                dtype=dtype,
             )
 
             if upload_to_hf is True:
@@ -757,11 +816,10 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 upload_to_hf = self.reference_checkpoint
             if not isinstance(upload_to_hf, bool):
                 assert isinstance(upload_to_hf, (str, RepoRef))
-                try:
-                    upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
-                except Exception as e:
-                    warnings.warn("upload_to_hub errors")
-                    warnings.warn(str(e))
+                if isinstance(upload_to_hf, str) and not repo_exists(upload_to_hf, repo_type="model"):
+                    api = HfApi()
+                    api.create_repo(repo_id=upload_to_hf, repo_type="model", exist_ok=True, private=True)
+                upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
 
     def _save_code_local(self, path):
         if self.reference_checkpoint is None:
@@ -840,6 +898,7 @@ def save_hf_checkpoint_callback(
     base_path,
     converter: HFCheckpointConverter,
     upload_to_hf: Union[bool, str, RepoRef] = False,
+    save_dtype: Optional[jnp.dtype] = None,
     **hf_upload_kwargs,
 ):
     """
@@ -863,56 +922,30 @@ def save_hf_checkpoint_callback(
         else:
             my_upload_kwargs = hf_upload_kwargs
         converter.save_pretrained(
-            cast(ModelWithHfSerializationMixin, step.model),
+            cast(ModelWithHfSerializationMixin, step.eval_model),
             os.path.join(base_path, f"step-{step.step}"),
             upload_to_hf=upload_to_hf,
+            dtype=save_dtype,
             **my_upload_kwargs,
         )
 
     return cb
 
 
-def arbitrary_load_from_hf(
-    model_name_or_path, from_pretrained_lambda, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> Union[PreTrainedTokenizerBase | ProcessorMixin]:
-    is_url_like = urlparse(model_name_or_path).scheme != ""
-    if is_url_like:
-        if revision is not None:
-            raise ValueError("revision is not supported for URLs")
-        # tokenizers are directories, so we have to copy them locally
-        if local_cache_dir is None:
-            local_cache_dir = tempfile.mkdtemp()
-
-        fs, path = fsspec.core.url_to_fs(model_name_or_path)
-        fs.get(path, local_cache_dir, recursive=True)
-        base_path = os.path.basename(path)
-        return from_pretrained_lambda(os.path.join(local_cache_dir, base_path), trust_remote_code=trust_remote_code)
-    else:
-        return from_pretrained_lambda(model_name_or_path, revision=revision, trust_remote_code=trust_remote_code)
-
-
-def load_tokenizer(
-    model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True
-) -> PreTrainedTokenizerBase:
+def load_tokenizer(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True) -> HfTokenizer:
     """Like AutoTokenizer.from_pretrained, but works with gs:// paths or anything on fsspec"""
-    return arbitrary_load_from_hf(
-        model_name_or_path,
-        AutoTokenizer.from_pretrained,
-        revision=revision,
-        local_cache_dir=local_cache_dir,
-        trust_remote_code=trust_remote_code,
-    )
+    with _patch_hf_hub_download():
+        return AutoTokenizer.from_pretrained(
+            model_name_or_path, revision=revision, cache_dir=local_cache_dir, trust_remote_code=trust_remote_code
+        )
 
 
 def load_processor(model_name_or_path, revision=None, local_cache_dir=None, trust_remote_code=True) -> ProcessorMixin:
     """Like AutoProcessor.from_pretrained, but works with gs:// paths or anything on fsspec"""
-    return arbitrary_load_from_hf(
-        model_name_or_path,
-        AutoProcessor.from_pretrained,
-        revision=revision,
-        local_cache_dir=local_cache_dir,
-        trust_remote_code=trust_remote_code,
-    )
+    with _patch_hf_hub_download():
+        return AutoProcessor.from_pretrained(
+            model_name_or_path, revision=revision, cache_dir=local_cache_dir, trust_remote_code=trust_remote_code
+        )
 
 
 _sync_count = 0
@@ -977,7 +1010,7 @@ def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key
             else:
                 return None
 
-        return jax.tree_map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
+        return jax.tree.map(select_if_missing, dtype_structs, new_model, is_leaf=lambda x: x is None)
 
     new_buffers = _init_buffers()
 
@@ -1050,7 +1083,7 @@ def _shard_hf_checkpoint(
     shards = {}
     for idx, shard in enumerate(sharded_state_dicts):
         # NOTE(dlwh): this is how it is in the HF code. it hurts me
-        shard_file = weights_name.replace(".bin", f"-{idx+1:05d}-of-{len(sharded_state_dicts):05d}.bin")
+        shard_file = weights_name.replace(".bin", f"-{idx + 1:05d}-of-{len(sharded_state_dicts):05d}.bin")
         shard_file = shard_file.replace(
             ".safetensors", f"-{idx + 1:05d}-of-{len(sharded_state_dicts):05d}.safetensors"
         )
@@ -1111,3 +1144,78 @@ def _should_use_cpu_for_checkpoint_loading():
         return False
     if sum(accel_memory) < cpu_memory:
         return True
+
+
+def _is_hf_hub_model(ref: RepoRef):
+    api = HfApi()
+
+    try:
+        api.model_info(repo_id=ref.model_name_or_path)
+        return True
+    except RepositoryNotFoundError:
+        return False
+
+
+@contextlib.contextmanager
+def _patch_hf_hub_download():
+    """
+    Temporarily monkeypatch `hf_hub_download` to handle fsspec URLs, ensuring the temporary directory
+    persists for the lifetime of the context manager.
+    """
+    original_hf_hub_download = transformers.utils.hub.hf_hub_download
+
+    # Create a temporary directory that persists through the context manager
+    with tempfile.TemporaryDirectory() as tmpdir:
+
+        def custom_hf_hub_download(*args, **kwargs):
+            """
+            Custom implementation of hf_hub_download to handle fsspec URLs.
+            """
+            repo_id = kwargs.get("repo_id", args[0] if len(args) > 0 else None)
+            filename = kwargs.get("filename", args[1] if len(args) > 1 else None)
+            cache_dir = kwargs.get("cache_dir", tmpdir)
+            repo_type = kwargs.get("repo_type")
+            revision = kwargs.get("revision")
+            if repo_type is None:
+                repo_type = "model"
+
+            if revision is None:
+                revision = "main"
+
+            if repo_id and filename and _is_url_like(repo_id):
+                fs, path = fsspec.core.url_to_fs(repo_id)
+                remote_path = os.path.join(path, filename)
+                # local_path = os.path.join(tmpdir, filename)
+                local_path = os.path.join(
+                    cache_dir, repo_folder_name(repo_id=repo_id, repo_type=repo_type), "snapshots", revision, filename
+                )
+
+                if not fs.exists(remote_path):
+                    raise EntryNotFoundError(f"File {remote_path} not found")
+
+                fs.get(remote_path, local_path)
+                return local_path
+
+            # Fallback to the original implementation
+            return original_hf_hub_download(*args, **kwargs)
+
+        # Monkeypatch hf_hub_download
+        transformers.utils.hub.hf_hub_download = custom_hf_hub_download
+
+        # we also need to monkeypatch huggingface_hub/utils/_validators.py:106 validate_repo_id
+        # to allow fsspec paths
+        original_validate_repo_id = huggingface_hub.utils._validators.validate_repo_id
+
+        def custom_validate_repo_id(repo_id):
+            if _is_url_like(repo_id):
+                return
+            return original_validate_repo_id(repo_id)
+
+        huggingface_hub.utils._validators.validate_repo_id = custom_validate_repo_id
+
+        try:
+            yield custom_hf_hub_download
+        finally:
+            # Restore the original implementation
+            transformers.utils.hub.hf_hub_download = original_hf_hub_download
+            huggingface_hub.utils._validators.validate_repo_id = original_validate_repo_id

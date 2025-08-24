@@ -7,18 +7,21 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 
 import jax
+import numpy as np
 from draccus import field
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from levanter.tracker import Tracker
 from levanter.tracker.helpers import generate_pip_freeze, infer_experiment_git_root
+from levanter.tracker.histogram import Histogram
 from levanter.tracker.tracker import TrackerConfig
 from levanter.utils import jax_utils
 
 
 if typing.TYPE_CHECKING:
-    import wandb
     import wandb.sdk.lib.disabled
+
+    import wandb
 
 
 logger = logging.getLogger(__name__)
@@ -45,28 +48,76 @@ class WandbTracker(Tracker):
         else:
             self.run = run
 
-    def log_hyperparameters(self, hparams: dict[str, Any]):
-        self.run.config.update(hparams, allow_val_change=True)
+        self._last_warning_step = -500
 
-    def log(self, metrics: dict[str, Any], *, step, commit=None):
+    def log_hyperparameters(self, hparams: dict[str, Any]):
+        self.run.config.update(_convert_value_to_loggable_rec(hparams), allow_val_change=True)
+
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         if step is None and not commit:
             step = self.run.step
 
         if step < self.run.step:
-            logger.warning(
-                f"Step {step} is less than the current step {self.run.step}. Cowardly refusing to log metrics."
-            )
+            if step - self._last_warning_step > 500:
+                logger.warning(
+                    f"Step {step} is less than the current step {self.run.step}. Cowardly refusing to log metrics."
+                )
+                self._last_warning_step = step
             return
 
         step = int(step)
 
-        self.run.log(metrics, step=step, commit=commit)
+        # wandb histograms are pretty limited: they log only the counts and the bin edges.
+        # Our histograms have the same set of things Tensorboard. we log those as separate values.
+        to_log = {}
+        for k, v in metrics.items():
+            if isinstance(v, Histogram):
+                # if the value is a Histogram, convert it to a wandb Histogram
+                # this will log the histogram counts and bin edges
+                import wandb
 
-    def log_summary(self, metrics: dict[str, Any]):
-        self.run.summary.update(metrics)
+                counts, limits = v.to_numpy_histogram()
+                wandb_hist = wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
+                to_log[f"{k}/histogram"] = wandb_hist
+                to_log[f"{k}/min"] = v.min
+                to_log[f"{k}/max"] = v.max
+                to_log[f"{k}/mean"] = v.mean
+                to_log[f"{k}/variance"] = v.variance
+            else:
+                # otherwise, just log the value normally
+                to_log[k] = _convert_value_to_loggable_rec(v)
+
+        self.run.log(to_log, step=step, commit=commit)
+
+    def log_summary(self, metrics: typing.Mapping[str, Any]):
+        self.run.summary.update(_convert_value_to_loggable_rec(metrics))
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         self.run.log_artifact(artifact_path, name=name, type=type)
+
+    def finish(self):
+        logger.info("Finishing wandb run...")
+        self.run.finish()
+
+
+def _convert_value_to_loggable_rec(value: Any):
+    if isinstance(value, (list, tuple)):
+        return [_convert_value_to_loggable_rec(v) for v in value]
+    elif isinstance(value, typing.Mapping):
+        return {k: _convert_value_to_loggable_rec(v) for k, v in value.items()}
+    elif isinstance(value, jax.Array):
+        if value.ndim == 0:
+            return value.item()
+        else:
+            return np.array(value)
+    elif isinstance(value, Histogram):
+        import wandb
+
+        counts, limits = value.to_numpy_histogram()
+
+        return wandb.Histogram(np_histogram=(counts.tolist(), limits.tolist()))
+    else:
+        return value
 
 
 def is_wandb_available():
@@ -85,7 +136,7 @@ class WandbConfig(TrackerConfig):
     """
 
     entity: Optional[str] = None  # An entity is a username or team name where you send runs
-    project: Optional[str] = None  # The name of the project where you are sending the enw run.
+    project: Optional[str] = "levanter"  # The name of the project where you are sending the enw run.
     name: Optional[str] = None  # A short display name for this run, which is how you'll identify this run in the UI.
     tags: List[str] = field(default_factory=list)  # Will populate the list of tags on this run in the UI.
     id: Optional[str] = None  # A unique ID for this run, used for resuming. It must be unique in the project
@@ -126,7 +177,7 @@ class WandbConfig(TrackerConfig):
         if jax.process_index() == 0:
             mode = self.mode
         else:
-            mode = "disabled"
+            mode = "offline"
 
         git_settings = self._git_settings()
 
@@ -155,7 +206,7 @@ class WandbConfig(TrackerConfig):
         if jax.process_count() > 1:
             # we need to share wandb run information across all hosts, because we use it for checkpoint paths and things
             metadata_to_share = dict(
-                entity=r.entity,
+                # entity=r.entity,
                 project=r.project,
                 name=r.name,
                 tags=r.tags,
@@ -166,10 +217,10 @@ class WandbConfig(TrackerConfig):
                 metadata_to_share, is_source=jax.process_index() == 0
             )
 
-            if jax.process_index() != 0:
-                assert r.mode == "disabled"
-                for k, v in metadata_to_share.items():
-                    setattr(r, k, v)
+            # if jax.process_index() != 0:
+            # assert r.mode == "disabled", f"Only the primary worker should be using wandb. Got {r.mode}"
+            # for k, v in metadata_to_share.items():
+            #     setattr(r, k, v)
 
             logger.info(f"Synced wandb run information from process 0: {r.name} {r.id}")
 
@@ -182,9 +233,9 @@ class WandbConfig(TrackerConfig):
             if wandb.run is not None:
                 wandb.run.log_artifact(str(requirements_path), name="requirements.txt", type="requirements")
 
-        wandb.summary["num_devices"] = jax.device_count()
-        wandb.summary["num_hosts"] = jax.process_count()
-        wandb.summary["backend"] = jax.default_backend()
+        wandb.summary["num_devices"] = jax.device_count()  # type: ignore
+        wandb.summary["num_hosts"] = jax.process_count()  # type: ignore
+        wandb.summary["backend"] = jax.default_backend()  # type: ignore
 
         return WandbTracker(r)
 
@@ -201,13 +252,20 @@ class WandbConfig(TrackerConfig):
             other_settings["code_dir"] = code_dir
             other_settings["git_root"] = code_dir
             # for some reason, wandb isn't populating the git commit, so we do it here
-            sha = self._get_git_sha(code_dir)
+            try:
+                sha = self._get_git_sha(code_dir)
+            except:  # noqa: E722
+                logger.warning(f"Could not get git sha for {code_dir}. Will not log git commit.")
+                sha = None
             if sha is not None:
                 other_settings["git_commit"] = sha
 
         return other_settings
 
     def _get_git_sha(self, code_dir) -> Optional[str]:
+        if "GIT_COMMIT" in os.environ:
+            return os.environ["GIT_COMMIT"]
+
         try:
             repo = Repo(code_dir)
             git_sha = repo.head.commit.hexsha

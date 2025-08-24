@@ -1,25 +1,4 @@
-# ---
-layout: blog
-title: Levanter — Legible, Scalable, Reproducible Foundation Models with JAX
-authors:
-    - name: David Hall
-      url: https://www.linkedin.com/in/dlwhall
-    - name: Ivan Zhou
-      url: https://www.ivanzhou.me/
-    - name: Percy Liang
-      url: https://cs.stanford.edu/~pliang/
-display: False
----
-> <div class="blog-tagline">
-    <strong> We introduce <a href="https://github.com/stanford-crfm/levanter" target="_blank">Levanter</a>, our codebase
-         for training reproducible, legible foundation models using JAX. We also
-        release a number of checkpoints for models trained with Levanter, including new architectures, on our
-        <a href="https://huggingface.co/stanford-crfm" target="_blank">Hugging Face Hub</a> page.
-    </strong>
-> </div>
-
-
-# Introduction
+# Levanter 1.0 Release Announcement
 
 We are excited to announce the release of [Levanter](https://github.com/stanford-crfm/levanter), a new [JAX](https://github.com/google/jax)-based codebase for training foundation models.
 Levanter is designed to be legible, scalable, and reproducible:
@@ -158,7 +137,7 @@ W = hax.random.uniform(PRNGKey(2), (Feature,))
 def mse(pred, target):
     return hax.mean((pred - target) * (pred - target), axis=Batch)
 
-y_pred = hax.dot(Feature, x, W)
+y_pred = hax.dot(x, W, axis=Feature)
 mse(y_pred, y)
 ```
 
@@ -218,7 +197,7 @@ Embed = hax.Axis("embed", 512)  # embedding size
 
 def attention(Key, KPos, query, key, value, mask):
     # how similar is each query to each key
-    scores = hax.dot(Key, query, key) / jnp.sqrt(Key.size)
+    scores = hax.dot(query, key, axis=Key) / jnp.sqrt(Key.size)
 
     # mask out invalid positions
     if mask is not None:
@@ -228,7 +207,7 @@ def attention(Key, KPos, query, key, value, mask):
     scores = hax.nn.softmax(scores, axis=KPos)
 
     # weighted sum of values
-    return hax.dot(KPos, scores, value)
+    return hax.dot(scores, value, axis=KPos)
 ```
 
 With named tensors, we can write the code in a way that conveys the semantics of the operation, rather than the
@@ -575,10 +554,10 @@ python -m levanter.main.train_lm --config_path gpt2_nano
 If your dataset is a [Hugging Face dataset](https://huggingface.co/docs/datasets/loading_datasets.html), you can use the `data.id` field to specify it:
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext
 
 # optionally, you may specify a tokenizer and/or a cache directory, which may be local or on gcs
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.id openwebtext --data.tokenizer "EleutherAI/gpt-neox-20b" --data.cache_dir "gs://path/to/cache/dir"
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.id openwebtext --data.tokenizer "NousResearch/Llama-2-7b-hf" --data.cache_dir "gs://path/to/cache/dir"
 ```
 
 If instead your data is a list of URLs, you can use the `data.train_urls` and `data.validation_urls` fields to specify them.
@@ -586,7 +565,7 @@ Data URLS can be local files, gcs files, or http(s) URLs, or anything that [fssp
 Levanter (really, fsspec) will automatically uncompress `.gz` and `.zstd` files, and probably other formats too.
 
 ```bash
-python -m levanter.main.train_lm --config_path config/gpt2_small.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
+python -m levanter.main.train_lm --config_path config/llama_small_fast.yaml --data.train_urls ["https://path/to/train/data_*.jsonl.gz"] --data.validation_urls ["https://path/to/val/data_*.jsonl.gz"]
 ```
 
 You can also change the dataset by changing the `dataset` field in the config file.

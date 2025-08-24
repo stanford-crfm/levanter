@@ -72,7 +72,7 @@ Let's begin by preparing the dataset.
 
 Since our dataset is already in a clean, tabular format, minimal preprocessing effort is required.
 Our main tasks are to rename the columns and convert the data into the JSONL format, which is compatible with Levanter.
-For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md#dataset-preparation).
+For detailed instructions, refer to the documentation [Training on Your Data](../Training-On-Your-Data.md#data-preparation).
 
 Below is a code snippet for dataset preparation:
 
@@ -122,7 +122,7 @@ Levanter provides good support for both methods. Therefore, we can easily try bo
 
 We start with full-weight fine-tuning. Below is our configuration. Noteably:
 
-- The base model is `meta-llama/Llama-2-7b-hf`. It is set as the default value, so we don't need to specify it explicitly.
+- The base model is `NousResearch/Llama-2-7b-hf`. It is set as the default value, so we don't need to specify it explicitly.
 - Batch size: We set the batch size to 128, which is the maximum batch size that can fit into a single TPUv3-8.
 - Learning rate: We compared the results with 3 epochs vs 2 epochs, and found that 2 epochs is sufficient to achieve the best results, while 3 epochs leads to overfitting.
 

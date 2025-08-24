@@ -3,8 +3,12 @@
 This guide assumes you've gone through the Docker setup section of the [Getting Started GPU](../Getting-Started-GPU.md) guide.
 We assume you're familiar with Docker and have a basic understanding of how to use it.
 
+## Option 1: Development Container
 
-## Mounting Your Levanter Repo inside the Docker Container
+`.devcontainer/nvidia/devcontainer.json` in the repo can be used with [VS Code, Cursor](https://code.visualstudio.com/docs/devcontainers/containers), and [IDEA-based](https://www.jetbrains.com/help/idea/connect-to-devcontainer.html) editors (e.g. PyCharm). [Full list of supported editors](https://containers.dev/supporting).
+
+## Option 2: Manually Mounting Your Levanter Repo inside the Docker Container
+
 If you are going to be adding to or extending Levanter for your own use case, these are the docker setup steps you should follow.
 
 Clone the Levanter repository:
@@ -32,7 +36,7 @@ Now you should be able to run training jobs in this container and it will use th
 
 ```bash
 python src/levanter/main/train_lm.py \
-    --config_path config/gpt2_small.yaml
+    --config_path config/gpt2_nano.yaml
 ```
 
 For more information on how to train models in Levanter see our [User Guide](../Getting-Started-Training.md).

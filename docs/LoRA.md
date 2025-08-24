@@ -1,5 +1,10 @@
 # LoRA: GSM8K on Llama-2 7b
 
+!!! warning
+
+    This tutorial has been superseded by Levanter now supporting chat and supervised datasets directly in the main
+    entry points. See the [Training Data Guide](./guides/Training-Data-Guide.md) for more information.
+
 In the [Fine-Tuning tutorial](./Fine-Tuning.md), we demonstrated how to replicate Alpaca using Levanter with either the Llama 1 or Llama 2 models.
 The Alpaca methodology is a good way to make a pretty good general-purpose instruction-tuned model, but what
 if we want to make a model that's good at a specific task?
@@ -98,7 +103,7 @@ By default, we LoRA-ize all linear modules in the model, which we recommend. Thi
 options: [\[1\]](https://twitter.com/Tim_Dettmers/status/1689375417189412864), [\[2\] Section 4](https://arxiv.org/pdf/2305.14314.pdf). If you wanted something more targeted, you can use `target_modules`.
 `target_modules` is usually specified as a regex which is matched against the module's "path" from the root of the model.
 For example, if you wanted to LoRA-ize only the attention layers of our GPT2 implementation, you could do `target_modules=".*\.attn\..*"`.
-(In Levanter, these settings can be adjusted either in the config file or through command line flags, as detailed in our [Configuration Guide](Configuration-Guide.md))
+(In Levanter, these settings can be adjusted either in the config file or through command line flags, as detailed in our [Configuration Guide](./reference/Configuration.md))
 
 In our script below, we apply `loraize` inside of a [`haliax.named_jit`](https://haliax.readthedocs.io/en/latest/partitioning/#haliax.named_jit) function. This ensures that the
 parameters are sharded correctly, if you're using more than one device.
@@ -192,7 +197,7 @@ Here's the complete configuration file for training the adapter. We're using the
 [Fine-Tuning tutorial](./Fine-Tuning.md), but we're using a different dataset and a different training script.
 
 ```yaml
-model_name_or_path: "meta-llama/Llama-2-7b-hf"
+model_name_or_path: "NousResearch/Llama-2-7b-hf"
 data: gsm8k
 trainer:
   mp: p=f32,c=bfloat16
@@ -367,11 +372,10 @@ helm-run --run-specs gsm:model=$MYMODEL --enable-huggingface-models $MYMODEL --s
 ```
 
 If you want to also evaluate the baseline Llama 2 model, you can do that by replacing `$MYMODEL` with
-`meta-llama/Llama-2-7b-hf`:
+`NousResearch/Llama-2-7b-hf`:
 
 ```bash
-export HUGGING_FACE_HUB_TOKEN=${YOUR TOKEN HERE}
-export MYMODEL="meta-llama/Llama-2-7b-hf"
+export MYMODEL="NousResearch/Llama-2-7b-hf"
 helm-run --run-specs gsm:model=$MYMODEL --enable-huggingface-models $MYMODEL --suite v1 --max-eval-instances 1000
 ```
 

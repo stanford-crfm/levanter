@@ -1,7 +1,8 @@
+import contextlib
 import os
 import sys
+import time
 from dataclasses import dataclass
-from typing import Callable, TypeVar
 
 
 def logical_cpu_core_count():
@@ -67,100 +68,6 @@ def dataclass_with_default_init(_cls=None, *args, **kwargs):
         return wrap(_cls)
 
 
-# slightly modified from https://github.com/tensorflow/tensorflow/blob/14ea9d18c36946b09a1b0f4c0eb689f70b65512c/tensorflow/python/util/decorator_utils.py
-# to make TF happy
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-
-class classproperty(object):  # pylint: disable=invalid-name
-    """Class property decorator.
-
-    Example usage:
-
-    class MyClass(object):
-
-      @classproperty
-      def value(cls):
-        return '123'
-
-    > print MyClass.value
-    123
-    """
-
-    def __init__(self, func):
-        self._func = func
-
-    def __get__(self, owner_self, owner_cls):
-        return self._func(owner_cls)
-
-
-class _CachedClassProperty(object):
-    """Cached class property decorator.
-
-    Transforms a class method into a property whose value is computed once
-    and then cached as a normal attribute for the life of the class.  Example
-    usage:
-
-    >>> class MyClass(object):
-    ...   @cached_classproperty
-    ...   def value(cls):
-    ...     print("Computing value")
-    ...     return '<property of %s>' % cls.__name__
-    >>> class MySubclass(MyClass):
-    ...   pass
-    >>> MyClass.value
-    Computing value
-    '<property of MyClass>'
-    >>> MyClass.value  # uses cached value
-    '<property of MyClass>'
-    >>> MySubclass.value
-    Computing value
-    '<property of MySubclass>'
-
-    This decorator is similar to `functools.cached_property`, but it adds a
-    property to the class, not to individual instances.
-    """
-
-    def __init__(self, func):
-        self._func = func
-        self._cache = {}
-
-    def __get__(self, obj, objtype):
-        if objtype not in self._cache:
-            self._cache[objtype] = self._func(objtype)
-        return self._cache[objtype]
-
-    def __set__(self, obj, value):
-        raise AttributeError("property %s is read-only" % self._func.__name__)
-
-    def __delete__(self, obj):
-        raise AttributeError("property %s is read-only" % self._func.__name__)
-
-
-# modification based on https://github.com/python/mypy/issues/2563
-PropReturn = TypeVar("PropReturn")
-
-
-def cached_classproperty(func: Callable[..., PropReturn]) -> PropReturn:
-    return _CachedClassProperty(func)  # type: ignore
-
-
-cached_classproperty.__doc__ = _CachedClassProperty.__doc__
-
-
 def actual_sizeof(obj):
     """similar to sys.getsizeof, but recurses into dicts and lists and other objects"""
     seen = set()
@@ -181,3 +88,68 @@ def actual_sizeof(obj):
                 need_to_see.extend(obj)
         objects = need_to_see
     return size
+
+
+class Stopwatch:
+    """Resumable stop watch for tracking time per call"""
+
+    def __init__(self):
+        self._start_time = time.time()
+        self._elapsed = 0.0
+        self._n = 0
+
+    def start(self):
+        self._start_time = time.time()
+        self._n += 1
+
+    def stop(self):
+        self._elapsed += time.time() - self._start_time
+
+    def reset(self):
+        self._elapsed = 0.0
+
+    def elapsed(self):
+        return self._elapsed
+
+    def average(self):
+        if self._n == 0:
+            return 0.0
+        return self._elapsed / self._n
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
+
+@contextlib.contextmanager
+def set_global_rng_seeds(seed):
+    import numpy as np
+
+    current_np_seed = np.random.get_state()
+    np.random.seed(seed)
+
+    import random
+
+    current_random_seed = random.getstate()
+    random.seed(seed)
+
+    try:
+        import torch
+
+        current_torch_seed = torch.random.get_rng_state()
+        torch.manual_seed(seed)
+    except ImportError:
+        torch = None
+        current_torch_seed = None
+        pass
+
+    try:
+        yield
+    finally:
+        np.random.set_state(current_np_seed)
+        random.setstate(current_random_seed)
+        if current_torch_seed is not None:
+            torch.random.set_rng_state(current_torch_seed)

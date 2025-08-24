@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import jax
 import jax.random as jrandom
 
 import haliax as hax
@@ -12,9 +13,9 @@ from haliax.partitioning import named_jit, round_axis_for_partitioning
 
 import levanter
 from levanter import callbacks
-from levanter.compat.hf_checkpoints import HFCompatConfig, save_hf_checkpoint_callback
-from levanter.data.audio import AudioIODatasetConfig, AudioTextDataset
-from levanter.models.asr_model import ASRConfig
+from levanter.compat.hf_checkpoints import HFCompatConfig, ModelWithHfSerializationMixin, save_hf_checkpoint_callback
+from levanter.data.audio import AudioIODatasetConfig, AudioMixtureDatasetConfig, AudioTextDataset
+from levanter.models.asr_model import ASRConfig, AudioTextExample
 from levanter.models.whisper import WhisperConfig
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainASRConfig:
-    data: AudioIODatasetConfig = field(default_factory=AudioIODatasetConfig)
+    data: Union[AudioIODatasetConfig, AudioMixtureDatasetConfig] = field(default_factory=AudioMixtureDatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     model: ASRConfig = field(default_factory=WhisperConfig)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
@@ -36,6 +37,7 @@ class TrainASRConfig:
     initialize_from_hf: Union[bool, str] = False
     """if provided, this will override the model config in the config. if true, use the default hf checkpoint for this model class"""
     use_hf_model_config: bool = False  # if true, replace the model config with the hf config from the checkpoint
+    data_seed: Optional[int] = None  # if provided, will override the data seed from the trainer
 
     # TODO: atm we don't support loading from a checkpoint that has a different tokenizer. this is a bit annoying
     # TODO: atm you have to at least specify a levanter model config with the same type as the hf checkpoint
@@ -55,7 +57,7 @@ def main(config: TrainASRConfig):
             raise ValueError("Cannot specify both initialize_from_hf and initialize_from")
 
         assert isinstance(config.model, HFCompatConfig)
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         if hasattr(tokenizer, "vocab") and tokenizer.vocab != converter.tokenizer.vocab:
             logger.warning("The tokenizers appear to be different. You may want to check this.")
 
@@ -73,7 +75,7 @@ def main(config: TrainASRConfig):
             # NB: gross mutability
             config.model = converter.config_from_hf_config(converter.default_hf_config)
     elif isinstance(config.model, HFCompatConfig):
-        converter = config.model.default_hf_checkpoint_converter
+        converter = config.model.hf_checkpoint_converter()
         converter = converter.replaced(tokenizer=tokenizer, feature_extractor=config.data.the_feature_extractor)
     else:
         converter = None
@@ -81,11 +83,21 @@ def main(config: TrainASRConfig):
     levanter.initialize(config)
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
+    def compute_loss(
+        m,
+        example: AudioTextExample,
+        *,
+        key=None,
+        reduction: Optional[hax.ReductionFunction] = hax.mean,
+        reduction_axis: Optional[hax.AxisSelection] = None,
+    ) -> jax.numpy.ndarray | hax.NamedArray:
+        return m.compute_loss(example, key=key, reduction=reduction, reduction_axis=reduction_axis)
+
     # Using the trainer as a context manager does 3 things:
     # 1. Sets the device mesh
     # 2. Sets the axis mapping (for fsdp)
     # 3. Sets the global metrics tracker
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, compute_loss) as trainer:  # type: ignore
         # randomness in jax is tightly controlled by "keys" which are the states of the random number generators
         # this makes deterministic training pretty easy
         seed = config.trainer.seed
@@ -102,9 +114,13 @@ def main(config: TrainASRConfig):
         Pos = config.model.Pos
         KeyPos = config.model.KeyPos
 
-        eval_datasets = config.data.validation_sets(config.batch_size)
+        if config.data_seed is not None:
+            logger.info(f"Overriding data seed with {config.data_seed}")
+            data_key = jrandom.PRNGKey(config.data_seed)
+
+        eval_datasets = config.data.validation_sets()
         train_dataset = AudioTextDataset(
-            config.data.train_set(config.batch_size),
+            config.data.train_set(key=data_key),
             Pos,
             [config.model.Mels, config.model.MelPos],
             KeyPos,
@@ -132,7 +148,8 @@ def main(config: TrainASRConfig):
                 )
                 # this is a bit gross, but we want to free up the memory from the model we just built
                 state = dataclasses.replace(state, model=None)
-                model = converter.load_pretrained(config.model, axis_mapping=parameter_axis_mapping)
+                assert isinstance(config.model.asr_model_type, ModelWithHfSerializationMixin)
+                model = converter.load_pretrained(config.model.asr_model_type, axis_mapping=parameter_axis_mapping)
                 model = named_jit(trainer.mp.cast_to_param, parameter_axis_mapping)(model)
                 state = dataclasses.replace(state, model=model)
             else:
@@ -177,16 +194,7 @@ def main(config: TrainASRConfig):
             logprobs = hax.roll(logprobs, 1, Pos)
             return logprobs.rearrange((EvalBatch, Pos)).array
 
-        # data loader. may need to seek to the right place if we're resuming
-        train_loader = iter(trainer.sharded_loader(train_dataset, Batch))
-
-        if int(state.step) > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(train_loader)
+        train_loader = trainer.data_loader(train_dataset, Batch).iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, train_loader)

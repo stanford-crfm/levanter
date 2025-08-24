@@ -10,7 +10,7 @@ import haliax.random
 import levanter
 from levanter import callbacks
 from levanter.compat.hf_checkpoints import HFCheckpointConverter
-from levanter.data.text import CausalLmDataset, LMDatasetConfig
+from levanter.data.text import SingleDatasetLMConfigBase
 from levanter.lora import (
     LoraConfig,
     lora_trainable_params_filter,
@@ -18,10 +18,10 @@ from levanter.lora import (
     save_merged_hf_checkpoint_callback,
     save_peft_checkpoint_callback,
 )
+from levanter.models.lm_model import compute_next_token_loss
 from levanter.optim import AdamConfig, OptimizerConfig
 from levanter.trainer import Trainer, TrainerConfig
 from levanter.utils.jax_utils import parameter_count
-from levanter.utils.py_utils import non_caching_cycle
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class LoraLmConfig:
     initialize_from_hf: str
     lora: LoraConfig = field(default_factory=LoraConfig)
-    data: LMDatasetConfig = field(default_factory=LMDatasetConfig)
+    data: SingleDatasetLMConfigBase = field(default_factory=SingleDatasetLMConfigBase)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     optimizer: OptimizerConfig = field(default_factory=AdamConfig)
 
@@ -75,23 +75,30 @@ def main(config: LoraLmConfig):
 
     optimizer = config.optimizer.build(config.trainer.num_train_steps)
 
-    with Trainer(config.trainer, optimizer) as trainer:
+    with Trainer(config.trainer, optimizer, loss_fn=compute_next_token_loss) as trainer:  # type: ignore
         # how we shard parameters across devices
         parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-        eval_datasets = config.data.validation_sets(Pos.size)
+        train_dataset = config.data.train_set(
+            Pos,
+            batch_schedule=config.trainer.batch_schedule,
+            key=data_key,
+        )
 
-        # data loaders
+        if train_dataset is None:
+            raise ValueError("No training set!")
+
+        eval_datasets = config.data.validation_sets(Pos)
+
         if len(eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
 
-        train_dataset = CausalLmDataset(config.data.train_set(Pos.size), Pos, KeyPos)
-        train_loader = trainer.sharded_loader(train_dataset, Batch)
+        train_loader = trainer.data_loader(train_dataset, Batch)
 
         # load the underlying hf model
         logger.info(f"Loading pretrained model from {converter.reference_checkpoint}")
         model = converter.load_pretrained(
-            model_config, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
+            model_config.model_type, axis_mapping=parameter_axis_mapping, dtype=trainer.mp.compute_dtype
         )
 
         @haliax.named_jit(axis_resources=parameter_axis_mapping, donate_args=(True))
@@ -120,17 +127,25 @@ def main(config: LoraLmConfig):
         logger.info(f"Trainable parameter count: {just_lora_params}")
         logger.info(f"Fraction of parameters that are trainable: {just_lora_params * 1.0 / all_param_count:.3e}")
 
-        for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos)
-            trainer.add_eval_hook(eval_dataset, name=name)
+        max_eval_examples_per_ds = config.trainer.max_eval_batches
+        if max_eval_examples_per_ds is not None:
+            max_eval_examples_per_ds *= config.trainer.eval_batch_size
 
-        # boilerplate hooks and such
-        if len(eval_datasets) == 0:
+        tagged_eval_datasets = config.data.tagged_eval_sets(Pos)
+
+        if len(tagged_eval_datasets) == 0:
             logger.warning("No evaluation datasets provided.")
-
-        for name, eval_dataset in eval_datasets.items():
-            eval_dataset = CausalLmDataset(eval_dataset, Pos, KeyPos, ignore_index=config.data.ignore_token_id)
-            trainer.add_eval_hook(eval_dataset, name=name)
+        else:
+            cb = levanter.eval.cb_tagged_lm_evaluate(
+                trainer.EvalBatch,
+                tagged_eval_datasets,
+                tokenizer,
+                trainer.device_mesh,
+                trainer.compute_axis_mapping,
+                max_eval_examples_per_ds,
+                mp=config.trainer.mp,
+            )
+            trainer.add_hook(cb, every=config.trainer.steps_per_eval)
 
         trainer.add_hook(callbacks.log_performance_stats(Pos.size, trainer.config.train_batch_size), every=1)
         if config.peft_save_path is not None:
@@ -149,16 +164,7 @@ def main(config: LoraLmConfig):
                 every=config.hf_save_steps,
             )
 
-        # data loader. may need to seek to the right place if we're resuming
-        iter_data = non_caching_cycle(train_loader)
-
-        if int(state.step) > 0:
-            # step is after the batch, so we need to seek to step
-            # TODO: implement iter_data.seek(resume_step +1)
-            import tqdm
-
-            for _ in tqdm.tqdm(range(state.step), desc="seeking data for resume"):
-                next(iter_data)
+        iter_data = train_loader.iter_from_step(state.step)
 
         ## OK, actually run training!
         trainer.train(state, iter_data)

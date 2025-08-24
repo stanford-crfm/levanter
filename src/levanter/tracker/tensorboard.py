@@ -1,12 +1,16 @@
 import logging
+import numbers
 import os
 import typing
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import fsspec
+import jax
+import numpy as np
 
 from levanter.tracker import Tracker, TrackerConfig
+from levanter.tracker.histogram import Histogram
 
 
 pylogger = logging.getLogger(__name__)
@@ -15,23 +19,58 @@ if typing.TYPE_CHECKING:
     from tensorboardX import SummaryWriter  # noqa: F401
 
 
+def _is_scalar(v) -> bool:
+    return isinstance(v, numbers.Number) or (isinstance(v, np.ndarray | jax.Array) and v.ndim == 0)
+
+
 class TensorboardTracker(Tracker):
     name: str = "tensorboard"
 
     def __init__(self, writer: "SummaryWriter"):
         self.writer = writer
 
-    def log_hyperparameters(self, hparams: dict[str, Any]):
+    def log_hyperparameters(self, hparams: typing.Mapping[str, Any]):
         self.writer.add_hparams(hparams, {"dummy": 0})
 
-    def log(self, metrics: dict[str, Any], *, step, commit=None):
+    def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
         del commit
-        for k, v in metrics.items():
-            self.writer.add_scalar(k, v, step)
+        metrics = _flatten_nested_dict(metrics)
+        for k, value in metrics.items():
+            if isinstance(value, jax.Array):
+                if value.ndim == 0:
+                    value = value.item()
+                else:
+                    value = np.array(value)
+            elif isinstance(value, Histogram):
+                num = value.num
+                if hasattr(num, "item"):
+                    num = num.item()
+                self.writer.add_histogram_raw(
+                    k,
+                    min=value.min.item(),
+                    max=value.max.item(),
+                    num=num,
+                    sum=value.sum.item(),
+                    sum_squares=value.sum_squares.item(),
+                    bucket_limits=np.array(value.bucket_limits).tolist(),
+                    bucket_counts=np.concatenate([[0], np.array(value.bucket_counts)]).tolist(),
+                    global_step=step,
+                )
+                continue
+            elif isinstance(value, str):
+                self.writer.add_text(k, value)
+                continue
+
+            self.writer.add_scalar(k, value, global_step=step)
 
     def log_summary(self, metrics: dict[str, Any]):
         for k, v in metrics.items():
-            self.writer.add_scalar(k, v, global_step=None)
+            if _is_scalar(v):
+                self.writer.add_scalar(k, v, global_step=None)
+            elif isinstance(v, str):
+                self.writer.add_text(k, v, global_step=None)
+            else:
+                pylogger.error(f"Unsupported metric type: {type(v)} for key {k}")
 
     def log_artifact(self, artifact_path, *, name: Optional[str] = None, type: Optional[str] = None):
         log_path = self.writer.logdir
@@ -42,6 +81,9 @@ class TensorboardTracker(Tracker):
         except Exception:
             pylogger.exception(f"Error logging artifact {artifact_path} to {log_path}")
             return
+
+    def finish(self):
+        self.writer.close()
 
 
 @TrackerConfig.register_subclass("tensorboard")

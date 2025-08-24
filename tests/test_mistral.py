@@ -9,7 +9,7 @@ from jax import random
 
 import haliax as hax
 
-from levanter.models.attention import AttentionMask
+from levanter.layers.attention import AttentionMask
 from levanter.models.mistral import MistralConfig, MistralLMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
 
@@ -49,8 +49,10 @@ def test_mistral_lm_head_model(num_kv_heads):
     input_ids = hax.random.randint(random.PRNGKey(0), (Batch, Pos), 0, Vocab.size)
     mask = AttentionMask.causal()
 
-    mistral_model = MistralLMHeadModel.init(Vocab=Vocab, config=mistral_config, key=random.PRNGKey(0))
-    out = mistral_model(input_ids, mask)
+    def fn(input_ids, mask):
+        return MistralLMHeadModel.init(Vocab=Vocab, config=mistral_config, key=random.PRNGKey(0))(input_ids, mask)
+
+    out = eqx.filter_eval_shape(fn, input_ids, mask)
     assert out.array.shape == (Batch.size, Pos.size, Vocab.size)
 
 
@@ -70,7 +72,7 @@ def test_mistral_lm_head_model_bwd(use_flash, num_kv_heads):
         out = llama_model(input_ids, mask)
         return hax.sum(out).scalar()
 
-    _, grads = eqx.filter_value_and_grad(f)(llama_model, input_ids, mask)
+    _, grads = eqx.filter_eval_shape(eqx.filter_value_and_grad(f), llama_model, input_ids, mask)
 
 
 @skip_if_no_torch
@@ -79,8 +81,6 @@ def test_mistral_roundtrip(num_kv_heads):
     import torch
     from transformers import AutoModelForCausalLM, MistralForCausalLM
 
-    converter = MistralConfig.default_hf_checkpoint_converter
-
     config = MistralConfig(
         seq_len=128,
         hidden_dim=16,
@@ -88,6 +88,8 @@ def test_mistral_roundtrip(num_kv_heads):
         num_kv_heads=num_kv_heads,
         gradient_checkpointing=False,
     )
+    converter = config.hf_checkpoint_converter()
+
     Vocab = hax.Axis("vocab", 1000)
     hf_config = config.to_hf_config(Vocab.size)
 
@@ -109,7 +111,7 @@ def test_mistral_roundtrip(num_kv_heads):
         torch_model.save_pretrained(f"{tmpdir}/torch_model")
 
         model = converter.load_pretrained(
-            MistralLMHeadModel, f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
+            converter.default_config.model_type, ref=f"{tmpdir}/torch_model", resize_vocab_to_match_tokenizer=False
         )
 
         def compute(input):
@@ -120,7 +122,7 @@ def test_mistral_roundtrip(num_kv_heads):
         jax_out = compute(input).array
 
         assert torch_out.shape == jax_out.shape, f"{torch_out.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out} != {jax_out}"
+        assert np.isclose(torch_out, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out} != {jax_out}"
 
         converter.save_pretrained(model, f"{tmpdir}/lev_model", save_reference_code=False)
         torch_model2 = AutoModelForCausalLM.from_pretrained(f"{tmpdir}/lev_model")
@@ -130,11 +132,12 @@ def test_mistral_roundtrip(num_kv_heads):
         torch_out2 = torch_out2.logits[0].detach().cpu().numpy()
         torch_out2 = jax.nn.softmax(torch_out2, axis=-1)
         assert torch_out2.shape == jax_out.shape, f"{torch_out2.shape} != {jax_out.shape}"
-        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-2, atol=1e-2).all(), f"{torch_out2} != {jax_out}"
+        assert np.isclose(torch_out2, np.array(jax_out), rtol=1e-4, atol=1e-4).all(), f"{torch_out2} != {jax_out}"
 
 
 def _get_mistral_config(use_flash=False, num_kv_heads=4) -> MistralConfig:
     return MistralConfig(
+        num_layers=2,
         seq_len=128,
         hidden_dim=16,
         num_heads=4,

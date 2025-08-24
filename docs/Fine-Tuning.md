@@ -1,5 +1,11 @@
 # Custom Fine-Tuning: Alpaca
 
+
+!!! warning
+
+    This tutorial has been superseded by Levanter now supporting chat and supervised datasets directly in the main
+    entry points. See the [Training Data Guide](./guides/Training-Data-Guide.md) for more information.
+
 While Levanter's main focus is pretraining, we can also use it for fine-tuning.
 As an example, we'll show how to reproduce [Stanford Alpaca](https://crfm.stanford.edu/2023/03/13/alpaca.html),
 using [Levanter](https://github.com/stanford-crfm/levanter) and either [Llama 1](https://arxiv.org/abs/2302.13971) or [Llama 2](https://ai.meta.com/llama/) 7B.
@@ -110,8 +116,8 @@ You'll also want to log into [WANDB](https://wandb.ai/).
 wandb login
 ```
 
-To use Llama 2, you'll need to request access to the model from [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf).
-Then, you'll need to log into the Hugging Face CLI:
+To use Llama 2 we recommend the open checkpoint [`NousResearch/Llama-2-7b-hf`](https://huggingface.co/NousResearch/Llama-2-7b-hf).
+Log into the Hugging Face CLI:
 
 ```bash
 huggingface-cli login
@@ -138,7 +144,7 @@ python examples/alpaca/alpaca.py --config_path levanter/examples/alpaca/alpaca-l
 Alternatively:
 
 ```bash
-python examples/alpaca/alpaca.py --config_path levanter/examples/alpaca/alpaca-llama2.yaml --model_name_or_path meta-llama/Llama-2-7b-hf
+python examples/alpaca/alpaca.py --config_path levanter/examples/alpaca/alpaca-llama2.yaml --model_name_or_path NousResearch/Llama-2-7b-hf
 ```
 
 !!! warning
@@ -260,10 +266,7 @@ to use a learning rate of 2e-5 and no weight decay. `trainer.per_device_parallel
 ### Llama 2 Config
 
 The [Llama 2 config](https://github.com/stanford-crfm/levanter/blob/main/examples/alpaca/alpaca-llama2.yaml) is identical, except for the model id.
-If you haven't already, go to [Llama 2's Hugging Face page](https://huggingface.co/meta-llama/Llama-2-7b-hf) and request access to the model.
-
-Once you have access, go to [Hugging Face's Tokens page](https://huggingface.co/settings/tokens) to get an API token. You'll need to provide this
-to the TPU VM as an environment variable. (We'll show you how to do this later.)
+`NousResearch/Llama-2-7b-hf` is freely accessible on the Hub so no additional token is required.
 
 ### Custom Datasets
 
@@ -406,7 +409,7 @@ def _get_data_source(path_or_id):
     if fsspec_utils.exists(path_or_id):
         return JsonDataset([path_or_id])
     else:
-        return levanter.data.dataset_from_hf(path_or_id, split="train")
+        return levanter.data.datasource_from_hf(path_or_id, split="train")
 ```
 
 Preprocessing in Levanter typically happens in two phases:
@@ -445,7 +448,7 @@ def mk_dataset(config: TrainArgs, tokenizer: transformers.PreTrainedTokenizerBas
         }
 
     dataset = dataset.map_batches(preprocess, batch_size=128, num_cpus=num_cpus_used_by_tokenizer(tokenizer))
-    dataset = dataset.build_cache(config.data_cache_dir, await_finished=True)
+    dataset = dataset.build_or_load_cache(config.data_cache_dir, await_finished=True)
 
     dataset = SupervisedDataset(dataset, tokenizer, mask_inputs=config.mask_inputs)
 

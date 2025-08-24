@@ -1,6 +1,8 @@
+import contextlib
 import dataclasses
 import logging
 import os
+import time
 from typing import Optional
 
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
@@ -28,7 +30,7 @@ def log_optimizer_hyperparams(opt_state, prefix: Optional[str] = None, *, step=N
 
     if hasattr(opt_state, "hyperparams"):
         params = {wrap_key(k): jnp_to_python(v) for k, v in opt_state.hyperparams.items()}
-        levanter.tracker.log_metrics(params, step=step)
+        levanter.tracker.log(params, step=step)
 
 
 def hparams_to_dict(hparams, **extra_hparams):
@@ -73,3 +75,19 @@ def generate_pip_freeze():
 
     dists = distributions()
     return "\n".join(f"{dist.name}=={dist.version}" for dist in dists)
+
+
+@contextlib.contextmanager
+def capture_time():
+    start = time.perf_counter()
+    done = False
+
+    def fn():
+        if done:
+            return end - start
+        else:
+            return time.perf_counter() - start
+
+    yield fn
+    end = time.perf_counter()
+    done = True
