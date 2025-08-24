@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 from chex import assert_trees_all_close
 from equinox import nn as nn
-from equinox import static_field
 from jax._src.random import PRNGKey
 from transformers import AutoConfig, BatchEncoding
 
@@ -35,10 +34,10 @@ class MLP(eqx.Module):
     layers: List[nn.Linear]
     activation: Callable = eqx.field(static=True)
     final_activation: Callable = eqx.field(static=True)
-    in_size: int = static_field()
-    out_size: int = static_field()
-    width_size: int = static_field()
-    depth: int = static_field()
+    in_size: int = eqx.field(static=True)
+    out_size: int = eqx.field(static=True)
+    width_size: int = eqx.field(static=True)
+    depth: int = eqx.field(static=True)
 
     def __init__(
         self,
