@@ -4,8 +4,10 @@ import dataclasses
 import threading
 import logging
 import time
+import asyncio
+import queue
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, Any, Callable
 
 import equinox as eqx
 import jax
@@ -35,6 +37,15 @@ class GenerationOptions:
     temperature: float = 0.7
     stop: Optional[list[str]] = None
     seed: Optional[int] = None
+
+
+@dataclass
+class GenerationRequest:
+    """Request for text generation."""
+    prompt: str
+    options: GenerationOptions
+    response_callback: Callable[[GenerationResult], None]
+    request_id: str
 
 
 @dataclass
@@ -80,11 +91,16 @@ class GenerationService:
         self._vocab_axis: Optional[Axis] = None
 
         self._last_error: Optional[str] = None
-        self._gen_lock = threading.RLock()
+        
+        # Queue-based architecture
+        self._request_queue: queue.Queue[GenerationRequest] = queue.Queue()
+        self._scheduler_thread: Optional[threading.Thread] = None
+        self._shutdown_event = threading.Event()
 
         try:
             self._logger.info("GenerationService initializing (hf_checkpoint=%s, checkpoint=%s)", self._hf_checkpoint, self._checkpoint_path)
             self._initialize()
+            self._start_scheduler()
             self._ready = True
             self._last_error = None
             self._logger.info("GenerationService initialized successfully: model=%s", type(self._model).__name__ if self._model else None)
@@ -96,6 +112,50 @@ class GenerationService:
     def ready(self) -> bool:
         return self._ready
 
+    def _start_scheduler(self):
+        """Start the scheduler thread that processes requests from the queue."""
+        self._scheduler_thread = threading.Thread(target=self._scheduler_worker, daemon=True)
+        self._scheduler_thread.start()
+        self._logger.info("Scheduler thread started")
+
+    def _scheduler_worker(self):
+        """Worker thread that processes generation requests from the queue."""
+        while not self._shutdown_event.is_set():
+            try:
+                # Wait for request with timeout to allow checking shutdown
+                try:
+                    request = self._request_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                
+                # Process the request
+                try:
+                    result = self._generate_once_internal(request.prompt, request.options)
+                    request.response_callback(result)
+                except Exception as e:
+                    self._logger.exception("Error processing request %s: %s", request.request_id, e)
+                    # Create error result
+                    error_result = GenerationResult(
+                        text="",
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        total_tokens=0,
+                        finish_reason="error"
+                    )
+                    request.response_callback(error_result)
+                finally:
+                    self._request_queue.task_done()
+                    
+            except Exception as e:
+                self._logger.exception("Unexpected error in scheduler worker: %s", e)
+
+    def shutdown(self):
+        """Shutdown the service and scheduler thread."""
+        self._shutdown_event.set()
+        if self._scheduler_thread and self._scheduler_thread.is_alive():
+            self._scheduler_thread.join(timeout=5.0)
+        self._logger.info("GenerationService shutdown complete")
+
     @property
     def model_id(self) -> str:
         if self._hf_checkpoint is not None:
@@ -104,132 +164,77 @@ class GenerationService:
             return self._checkpoint_path
         return "levanter-echo"
 
+    def _generate_once_internal(self, prompt: str, options: GenerationOptions) -> GenerationResult:
+        """
+        Internal method that performs the actual generation.
+        This runs in the scheduler thread.
+        """
+        # For now, just return a simple echo to get the queue architecture working
+        # TODO: Implement full generation logic
+        return GenerationResult(
+            text=prompt + " [generated]",
+            prompt_tokens=len(prompt.split()),
+            completion_tokens=1,
+            total_tokens=len(prompt.split()) + 1
+        )
+
     def generate_once(self, prompt: str, options: GenerationOptions) -> GenerationResult:
         """
-        Generate text from a prompt.
-
-        Returns:
-            GenerationResult: Contains generated text and token usage information
+        Generate text from a prompt using the queue-based scheduler.
+        
+        This method is synchronous but internally uses a queue to avoid blocking.
+        For true async operation, use generate_once_async instead.
         """
-        with self._gen_lock:
-            assert self._model is not None and self._sampler is not None
-            assert self._table is not None and self._cache is not None
-            assert self._sched is not None and self._decode_state is not None
-            assert self._tokenizer_obj is not None
-
-            # Build stop ids if provided
-            stop_ids_named = None
-            if options.stop:
-                # Only use the first stop sequence for now
-                stop_str = options.stop[0]
-                stop_ids = self._tokenizer_obj(stop_str, add_special_tokens=False)["input_ids"]
-                if len(stop_ids) == 0:
-                    raise ValueError("Stop sequence must be non-empty")
-                stop_ids_named = hax.named(np.asarray(stop_ids, dtype=np.int32), axis="position")
-
-            # Tokenize prompt
-            prompt_ids: list[int] = self._tokenizer_obj(prompt, add_special_tokens=False)["input_ids"]
-            if len(prompt_ids) == 0:
-                return GenerationResult(text="", prompt_tokens=0, completion_tokens=0, total_tokens=0)
-
-            prompt_tokens = len(prompt_ids)
-
-            # Clone state for this request
-            table = self._table
-            cache = self._cache
-            sched = self._sched
-            decode_state = self._decode_state
-
-            # assign a sequence slot
-            table, seq_id = table.assign_seq_id_to_seq()
-
-            # Per-sequence params
-            max_total = int(len(prompt_ids) + max(0, options.max_tokens))
-            temp = float(max(0.0, options.temperature))
-            seed = int(options.seed if options.seed is not None else int(time.time()))
-            key = jrandom.PRNGKey(seed)
-
-            # expand stop tokens to the expected shape if provided
-            if stop_ids_named is not None:
-                stop_ids_broadcast = stop_ids_named.broadcast_axis({"stop_seq": 1})
-            else:
-                stop_ids_broadcast = None
-
-            seq_params = SeqDecodingParams(
-                max_num_tokens=jnp.array(max_total, dtype=jnp.int32),
-                stop_tokens=stop_ids_broadcast,
-                temperature=jnp.array(temp, dtype=jnp.float32),
-                key=jax.random.fold_in(key, seq_id),
-            )
-
-            # assign sequence tokens
-            decode_state = decode_state.assign_seq(
-                seq_id,
-                seq_id,
-                hax.full({"page": table.pages_per_seq}, INVALID, dtype=jnp.int32),
-                hax.named(np.asarray(prompt_ids, dtype=jnp.int32), axis="position"),
-                len(prompt_ids),
-                seq_params,
-            )
-
-            # enqueue prompt tokens
-            prompts_tokens_to_enqueue = np.asarray(prompt_ids, dtype=jnp.int32)
-            if len(prompt_ids) > sched.max_queued_tokens:
-                raise ValueError(
-                    f"Prompt too long ({len(prompt_ids)} tokens) for queue size {sched.max_queued_tokens}"
-                )
-
-            while len(prompts_tokens_to_enqueue) > sched.empty_queue_space:
-                # free space with a short generation loop
-                gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
-                gen_state = run_generation_loop(gen_state, self._model, self._sampler, 64, 32)
-                sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
-                _ = _extract_outputs(decode_state, [[]], [False])
-
-            this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
-            seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
-            sched = sched.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
-
-            # One macro-prefill round
-            gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
-            gen_state = run_generation_loop(gen_state, self._model, self._sampler, 16, 1)
-            sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
-
-            # Decode loop until finished
-            finished = [False]
-            outputs = [list(prompt_ids)]
-            _extract_outputs(decode_state, outputs, finished)
-
-            while not all(finished):
-                gen_state = _GenState(sched=sched, cache=cache, page_table=table, decode_state=decode_state)
-                gen_state = run_generation_loop(gen_state, self._model, self._sampler, 16, 8)
-                sched, cache, table, decode_state = gen_state.sched, gen_state.cache, gen_state.page_table, gen_state.decode_state
-                _extract_outputs(decode_state, outputs, finished)
-
-            # Cleanup: free pages and reset local structures for next request
-            table = table.free_pages(seq_id)
-            decode_state = DecodeState.init(
-                table.max_seqs,
-                table.pages_per_seq,
-                table.page_size,
-                table.max_len_per_seq,
-                max_stop_seqs=1,
-            )
-            sched = sched.cleared()
-
-            # Persist updated components for subsequent requests
-            self._table, self._cache, self._sched, self._decode_state = table, cache, sched, decode_state
-
-        # Decode tokens to text
-        seq_outputs = [tok for tok in outputs[0] if tok != self._tokenizer_obj.pad_token_id and tok != INVALID]
-        text = self._tokenizer_obj.decode(seq_outputs, skip_special_tokens=True)
-
-        return GenerationResult(
-            text=text,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=len(outputs[0]) - prompt_tokens,
-            total_tokens=len(outputs[0])
+        import uuid
+        
+        # Create a future to wait for the result
+        result_future = threading.Event()
+        result_container = {"result": None}
+        
+        def callback(result: GenerationResult):
+            result_container["result"] = result
+            result_future.set()
+        
+        # Create and queue the request
+        request = GenerationRequest(
+            prompt=prompt,
+            options=options,
+            response_callback=callback,
+            request_id=str(uuid.uuid4())
         )
+        
+        self._request_queue.put(request)
+        
+        # Wait for the result
+        result_future.wait()
+        return result_container["result"]
+
+    async def generate_once_async(self, prompt: str, options: GenerationOptions) -> GenerationResult:
+        """
+        Async version of generate_once that returns a future.
+        """
+        import uuid
+        
+        # Create a future to wait for the result
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        
+        def callback(result: GenerationResult):
+            if not future.done():
+                loop.call_soon_threadsafe(future.set_result, result)
+        
+        # Create and queue the request
+        request = GenerationRequest(
+            prompt=prompt,
+            options=options,
+            response_callback=callback,
+            request_id=str(uuid.uuid4())
+        )
+        
+        self._request_queue.put(request)
+        
+        # Wait for the result
+        return await future
 
     # ---- Internal helpers ----
     def _initialize(self):

@@ -117,7 +117,6 @@ class TestInferenceServerIntegration:
         assert "data" in data and len(data["data"]) >= 1
         model = data["data"][0]
         assert model["object"] == "model"
-        assert server_mod._service is not None
         assert model["id"] == server_mod._service.model_id
         assert "created" in model
         assert model["owned_by"] == "levanter"
@@ -127,6 +126,5 @@ class TestInferenceServerIntegration:
         response = client.post("/v1/completions", json=payload)
         assert response.status_code == 200
         data = response.json()
-        assert server_mod._service is not None
-        assert "model" in data and data["model"] == server_mod._service.model_id
+        assert "model" in data and data["model"] == server_mod._service.model_id  # type: ignore
         assert data["object"] == "text_completion"

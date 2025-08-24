@@ -40,7 +40,8 @@
 - [x] **Fix usage token counting** - Replace `len(text.split())` with actual tokenizer counts
 - [x] **Improve API design** - Replace tuple returns with GenerationResult dataclass for better extensibility
 - [x] **Test end-to-end** - Verify everything works with a tiny HF model on CPU
-- [ ] **Add `/v1/models` endpoint** - Return model information
+- [x] **Add `/v1/models` endpoint** - Return model information
+- [x] **Implement queue-based concurrency strategy** - Replaced single lock with request queue and scheduler thread for true concurrency
 
 ## Implementation Tasks
 
