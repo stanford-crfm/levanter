@@ -61,21 +61,23 @@
 ### 2. HTTP server scaffold
 - [x] Add optional dependency group `serve`: FastAPI + Uvicorn (or Starlette). Optional: Pydantic v2.
 - [x] New module `src/levanter/serve/min_server.py` exporting `app`.
-- [x] Endpoints:
-  - [x] `GET /healthz` returns 200 once model is loaded and warm.
-  - [ ] `GET /v1/models` returns loaded model id(s).
-  - [x] `POST /v1/completions` for text completion (prompt-based).
-  - [ ] `POST /v1/chat/completions` for chat.
+  - [x] Endpoints:
+    - [x] `GET /healthz` returns 200 once model is loaded and warm.
+    - [ ] `GET /v1/models` returns loaded model id(s).
+    - [x] `POST /v1/completions` for text completion (prompt-based).
+    - [x] `POST /v1/chat/completions` for chat.
 - [ ] Authentication: accept `Authorization: Bearer <token>` if `LEVANTER_API_KEY` set; otherwise open.
 - [ ] Streaming: if `stream=true`, return SSE with `data: {delta...}` chunks and `data: [DONE]` per OpenAI semantics.
 
 ### 3. Request/response schema mapping
 - [x] Define Pydantic models for requests/responses (subset of OpenAI spec):
   - [x] Completions: `prompt`, `model`, `max_tokens`, `temperature`, `stop`, `seed`.
-  - [ ] Chat: `messages`, `model`, `max_tokens`, `temperature`, `top_p`, `stop`, `stream`, `user`.
-- [x] Response objects include `id`, `object`, `created`, `model`, `choices`, `usage`.
-- [ ] Translate chat `messages` -> prompt via a simple, configurable chat template (default: Llama 3 style). Support `system` and `user` roles; ignore tools/functions initially.
-- [ ] Compute `usage` based on tokenized prefix and generated tokens.
+  - [x] Chat: `messages`, `model`, `max_tokens`, `temperature`, `top_p`, `stop`, `stream`, `user`.
+  - [x] Response objects include `id`, `object`, `created`, `model`, `choices`, `usage`.
+  - [x] Translate chat `messages` -> prompt via a simple, configurable chat template (default: Llama 3 style). Support `system` and `user` roles; ignore tools/functions initially.
+  - [ ] fix chat template / get from tokenizer by default.
+  - [ ] Default to using <eot> as turn end for chats
+  - [ ] Compute `usage` based on tokenized prefix and generated tokens.
 
 ### 4. Scheduling, batching, and backpressure
 - [ ] Async request queue that batches requests and feeds `JitScheduler`.
