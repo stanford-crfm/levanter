@@ -111,6 +111,24 @@ class ModularConfig(LmConfig):
     mlp_cls: Type[eqx.Module] = LlamaMlp
     norm_config: LayerNormConfigBase | None = None
 
+    def with_(self, **updates) -> "ModularConfig":
+        return dataclasses.replace(self, **updates)
+
+    def with_attention(
+        self,
+        *,
+        attention_cls: Type[Attention],
+        attention_config_cls: Type[AttentionConfig],
+        **attention_config_kwargs: Any,
+    ) -> "ModularConfig":
+        merged_kwargs = {**self.attention_config_kwargs, **attention_config_kwargs}
+        return dataclasses.replace(
+            self,
+            attention_cls=attention_cls,
+            attention_config_cls=attention_config_cls,
+            attention_config_kwargs=merged_kwargs,
+        )
+
     def __post_init__(self):
         if self.norm_config is None:
             object.__setattr__(
