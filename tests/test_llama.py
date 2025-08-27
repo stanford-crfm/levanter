@@ -35,6 +35,7 @@ def test_llama_config():
         "_name_or_path": hf_config._name_or_path,
         "architectures": hf_config.architectures,
         "torch_dtype": hf_config.torch_dtype,
+        "pad_token_id": hf_config.pad_token_id,
     }
     new_hf_config = llama_config.to_hf_config(
         vocab_size=hf_config.vocab_size,
@@ -43,7 +44,7 @@ def test_llama_config():
 
     # assert the content in new_hf_config is the same as hf_config
     for k in new_hf_config.__dict__.keys():
-        if k in ["_commit_hash", "transformers_version"]:
+        if k in ["_commit_hash", "transformers_version", "_attn_implementation_internal"]:
             continue
         assert getattr(new_hf_config, k) == getattr(
             hf_config, k
@@ -166,7 +167,16 @@ def test_llama_decoder_layer(num_kv_heads):
         x_torch, attention_mask=mask_torch, position_ids=position_ids, position_embeddings=(cos, sin)
     )
 
-    chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
+    # Handle the case where HF returns separate batch elements vs single tensor
+    if isinstance(hf_out, torch.Tensor):
+        # Single tensor case - should preserve batch dimension
+        hf_array = hf_out.detach().cpu().numpy()
+    else:
+        # Multiple tensors case - need to stack them back together
+        hf_stacked = torch.stack(hf_out)
+        hf_array = hf_stacked.detach().cpu().numpy()
+
+    chex.assert_trees_all_close(hf_array, out.array, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
