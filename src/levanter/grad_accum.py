@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax.lax import with_sharding_constraint
 from jax.sharding import PartitionSpec
+import jax.debug as debug
 
 import haliax as hax
 from haliax import Axis
@@ -107,6 +108,7 @@ def microbatched(
         args = _reshape_for_microbatch(Batch, Microbatch, AccumStep, args, compute_axis_mapping)
 
         def loop(acc, microbatch_and_key):
+            #debug.print("!!! LOOPing in microbatched !!!")
             microbatch, microbatch_kwargs, key = microbatch_and_key
             with jax.named_scope("compute"):
                 microbatch_kwargs = microbatch_kwargs.copy()
@@ -128,6 +130,7 @@ def microbatched(
             acc = hax.fold(loop, AccumStep)(acc, (args, kwargs, key))
 
             if reduce == ReductionType.MEAN:
+                #debug.print("!!! MEAN REDUCTION in microbatched !!!")
                 acc = jax.tree_util.tree_map(lambda x: x / num_micro_steps, acc)
 
         return acc

@@ -1,6 +1,7 @@
 import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
+import math
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -61,9 +62,9 @@ class Olmo2Config(HFCompatConfig):
     attention_dropout: float = 0.0
 
     # Attention-related config
-    upcast_attn: bool = False
-    use_flash_attention: Optional[bool] = True
-    attn_backend: Optional[AttentionBackend] = None
+    upcast_attn: bool = True
+    use_flash_attention: Optional[bool] = False
+    attn_backend: Optional[AttentionBackend] = AttentionBackend.VANILLA
     flash_attention_block_size: Optional[int] = None
 
     gradient_checkpointing: bool = True
@@ -259,12 +260,12 @@ class Olmo2MLP(eqx.Module):
 
     @staticmethod
     def init(
-        Embed: Axis, Mlp: Axis, activation_fn: Union[ActivationFunctionEnum, Callable], *, key, use_bias: bool = False
+        Embed: Axis, Mlp: Axis, activation_fn: Union[ActivationFunctionEnum, Callable], *, key, use_bias: bool = False, initializer_range: float = 0.02
     ) -> "Olmo2MLP":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
-        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias, out_first=True)
-        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias, out_first=True)
+        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True, init_scale=math.sqrt(Embed.size) * initializer_range)
+        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias, out_first=True, init_scale=math.sqrt(Embed.size) * initializer_range)
+        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias, out_first=True, init_scale=math.sqrt(Mlp.size) * initializer_range)
         if isinstance(activation_fn, ActivationFunctionEnum):
             activation_fn = activation_fn.to_fn()
         return Olmo2MLP(gate_proj, up_proj, down_proj, activation_fn)
@@ -299,11 +300,11 @@ class Olmo2Attention(ModuleWithStateDictSerialization, eqx.Module):
         k_q, k_k, k_v, k_o = jrandom.split(key, 4)
         # should this be the same os o_proj
         q_proj = hnn.Linear.init(
-            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, HeadSize), key=k_q, use_bias=use_bias, out_first=True
+            In=Embed, Out=(config.KVHeads, QHeadsPerGroup, HeadSize), key=k_q, use_bias=use_bias, out_first=True, init_scale=math.sqrt(Embed.size) * config.initializer_range
         )
-        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_k, use_bias=use_bias, out_first=True)
-        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_v, use_bias=use_bias, out_first=True)
-        o_proj = hnn.Linear.init(In=(config.Heads, HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True)
+        k_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_k, use_bias=use_bias, out_first=True, init_scale=math.sqrt(Embed.size) * config.initializer_range)
+        v_proj = hnn.Linear.init(In=Embed, Out=(config.KVHeads, HeadSize), key=k_v, use_bias=use_bias, out_first=True, init_scale=math.sqrt(Embed.size) * config.initializer_range)
+        o_proj = hnn.Linear.init(In=(config.Heads, HeadSize), Out=Embed, key=k_o, use_bias=use_bias, out_first=True, init_scale=math.sqrt(HeadSize.size) * config.initializer_range)
 
         # For q_norm, normalization is over the entire hidden dimension
         q_norm = config.mk_LayerNorm((config.KVHeads, QHeadsPerGroup, HeadSize))
@@ -392,6 +393,7 @@ class Olmo2DecoderLayer(ModuleWithStateDictSerialization, eqx.Module):
             config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
+            initializer_range=config.initializer_range,
         )
 
         post_attention_ln = config.mk_LayerNorm(config.Embed)
@@ -457,7 +459,7 @@ class Olmo2Embedding(ModuleWithStateDictSerialization, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: Olmo2Config, *, key) -> "Olmo2Embedding":
-        return Olmo2Embedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key))
+        return Olmo2Embedding(Vocab, hnn.Embedding.init(Vocab, config.Embed, key=key, initializer_range=config.initializer_range))
 
     @named_call
     def embed(self, input_ids, *args):
@@ -500,7 +502,7 @@ class Olmo2LMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[Olmo2Config
         if config.tie_word_embeddings:
             lm_head = None
         else:
-            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_head, use_bias=False, out_first=True)
+            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_head, use_bias=False, out_first=True, init_scale=math.sqrt(config.Embed.size) * config.initializer_range)
 
         return Olmo2LMHeadModel(transformer, embeddings, lm_head)
 

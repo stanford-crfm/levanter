@@ -1,10 +1,12 @@
 import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
+import math
 
 import equinox as eqx
 import jax.random as jrandom
 from jaxtyping import PRNGKeyArray
+import jax.debug as debug
 
 import haliax as hax
 import haliax.nn as hnn
@@ -14,7 +16,7 @@ from haliax.nn.scan import ScanCheckpointPolicy, Stacked
 from haliax.state_dict import ModuleWithStateDictSerialization
 
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, HFCompatConfig
-from levanter.layers import LayerNormConfigBase, RmsNormConfig
+from levanter.layers import LayerNormConfigBase, RmsNormConfig, LayerNormConfig
 from levanter.layers.attention import Attention, AttentionBackend, AttentionConfig, AttentionMask
 from levanter.layers.rotary import DefaultRotaryEmbeddingsConfig, RotaryEmbeddingsConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -26,6 +28,7 @@ from levanter.utils.types import BlockFoldable
 silence_transformer_nag()
 from transformers import LlamaConfig as HfLlamaConfig  # noqa: E402
 from transformers import PretrainedConfig as HfConfig  # noqa: E402
+from jax.nn import initializers
 
 
 @LmConfig.register_subclass("llama")
@@ -45,6 +48,8 @@ class LlamaConfig(HFCompatConfig):
         activation_function (str, optional): activation function for the hidden layer. Defaults to "silu".
         hybrid_norm (bool, optional): whether to use hybrid normalization with additional layer norms after attention and MLP. Defaults to False.
         input_embedding_norm (bool, optional): whether to use layer normalization after input embeddings. Defaults to False.
+        qk_norm (bool, optional): whether to use QK layernorms on query and key projections. Defaults to True.
+        post_norm (bool, optional): whether to use post-norm architecture (normalize outputs instead of inputs). Defaults to False.
     """
 
     seq_len: int = 2048
@@ -56,15 +61,16 @@ class LlamaConfig(HFCompatConfig):
     num_kv_heads: int = 32
     activation_function: ActivationFunctionEnum = ActivationFunctionEnum.silu
     initializer_range: float = 0.02
-    layer_norm_epsilon: float = 1e-5
+    layer_norm_epsilon: float = 1e-6
     tie_word_embeddings: bool = False
     hybrid_norm: bool = False
     input_embedding_norm: bool = False
 
     # Attention-related config
-    upcast_attn: bool = False
-    attn_backend: Optional[AttentionBackend] = None
+    upcast_attn: bool = True
+    attn_backend: Optional[AttentionBackend] = AttentionBackend.VANILLA # AttentionBackend.DEFAULT
     flash_attention_block_size: Optional[int] = None
+    qk_norm: bool = True
 
     gradient_checkpointing: bool | ScanCheckpointPolicy | str = True
     scan_layers: bool = True
@@ -75,6 +81,11 @@ class LlamaConfig(HFCompatConfig):
 
     reference_checkpoint: str = "meta-llama/Llama-2-7b-hf"
     tokenizer: Optional[str] = None
+
+    # It's best to add new fields at the end of the dataclass to avoid ordering issues.
+    # We also use metadata to tell draccus to ignore these fields, since they can't be set from the CLI.
+    custom_kernel_init: Optional[Callable] = dataclasses.field(default=None, metadata={"draccus_ignore": True})
+    custom_bias_init: Optional[Callable] = dataclasses.field(default=None, metadata={"draccus_ignore": True})
 
     # Axis
     Pos = property(lambda self: Axis(name="position", size=self.seq_len))
@@ -115,6 +126,7 @@ class LlamaConfig(HFCompatConfig):
             layer_norm_epsilon=hf_config.rms_norm_eps,
             tie_word_embeddings=hf_config.tie_word_embeddings,
             rope=rope_config,
+            qk_norm=False,  # HuggingFace Llama models don't use QK norm
         )
 
     def to_hf_config(self, vocab_size: int, config_overrides: Optional[Dict] = None) -> HfLlamaConfig:
@@ -128,12 +140,12 @@ class LlamaConfig(HFCompatConfig):
             HfLlamaConfig: HuggingFace's LlamaConfig
 
         Raises:
-            ValueError: If hybrid_norm or input_embedding_norm are enabled, as these features
+            ValueError: If hybrid_norm, input_embedding_norm, or qk_norm are enabled, as these features
                 are not supported in the HuggingFace config format.
         """
-        if self.hybrid_norm or self.input_embedding_norm:
+        if self.hybrid_norm or self.input_embedding_norm or self.qk_norm:
             raise ValueError(
-                "Cannot export to HuggingFace format with hybrid_norm or input_embedding_norm enabled. "
+                "Cannot export to HuggingFace format with hybrid_norm, input_embedding_norm, or qk_norm enabled. "
                 "These features are not supported in the HuggingFace config format. "
                 "Please disable these features before exporting."
             )
@@ -176,6 +188,14 @@ class LlamaConfig(HFCompatConfig):
             eps=self.layer_norm_epsilon,
         )
 
+    @property
+    def qk_norm_config(self) -> LayerNormConfigBase:
+        return LayerNormConfig(
+            use_weight=self.use_layer_norm_weight,
+            use_bias=self.use_bias,
+            eps=self.layer_norm_epsilon,
+        )
+
     def mk_LayerNorm(self, axis: AxisSpec):
         return self.norm_config.build(axis)
 
@@ -200,6 +220,11 @@ class LlamaConfig(HFCompatConfig):
         o_proj = head_size * self.num_heads * self.hidden_dim
         attn = q_proj + kv_proj + o_proj
 
+        # Add QK norm parameters if enabled
+        if self.qk_norm:
+            qk_norm_params = 2 * head_size * self.num_layers  # q_norm and k_norm per layer
+            attn += qk_norm_params
+
         mlp = 3 * self.hidden_dim * self.intermediate_dim
 
         transformer_layer = attn + mlp + 2 * self.hidden_dim  # plus 2 rmsnorm
@@ -214,6 +239,7 @@ class LlamaConfig(HFCompatConfig):
 
     def attention_config(self) -> AttentionConfig:
         """Convert this LlamaConfig to an AttentionConfig for use with Attention."""
+        qk_norm_config = self.qk_norm_config if self.qk_norm else None
         return AttentionConfig(
             Embed=self.Embed,
             num_heads=self.num_heads,
@@ -224,6 +250,8 @@ class LlamaConfig(HFCompatConfig):
             attn_backend=self.attn_backend,
             flash_attention_block_size=self.flash_attention_block_size,
             rope=self.rope,
+            qk_norm=qk_norm_config,
+            initializer_range=self.initializer_range,
         )
 
 
@@ -246,11 +274,33 @@ class LlamaMlp(eqx.Module):
         *,
         key,
         use_bias: bool = False,
+        initializer_range: float = 0.02,
     ) -> "LlamaMlp":
         k_fc, k_up_proj, k_down_proj = jrandom.split(key, 3)
-        gate_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_fc, use_bias=use_bias, out_first=True)
-        up_proj = hnn.Linear.init(Out=Mlp, In=Embed, key=k_up_proj, use_bias=use_bias, out_first=True)
-        down_proj = hnn.Linear.init(Out=Embed, In=Mlp, key=k_down_proj, use_bias=use_bias, out_first=True)
+        gate_proj = hnn.Linear.init(
+            Out=Mlp,
+            In=Embed,
+            key=k_fc,
+            use_bias=use_bias,
+            out_first=True,
+            init_scale=math.sqrt(Embed.size) * initializer_range,
+        )
+        up_proj = hnn.Linear.init(
+            Out=Mlp,
+            In=Embed,
+            key=k_up_proj,
+            use_bias=use_bias,
+            out_first=True,
+            init_scale=math.sqrt(Embed.size) * initializer_range,
+        )
+        down_proj = hnn.Linear.init(
+            Out=Embed,
+            In=Mlp,
+            key=k_down_proj,
+            use_bias=use_bias,
+            out_first=True,
+            init_scale=math.sqrt(Mlp.size) * initializer_range,
+        )
         if isinstance(activation_fn, ActivationFunctionEnum):
             activation_fn = activation_fn.to_fn()
         elif isinstance(activation_fn, str):
@@ -288,6 +338,7 @@ class LlamaDecoderLayer(eqx.Module):
             config.activation_function,
             key=k_mlp,
             use_bias=config.use_bias,
+            initializer_range=config.initializer_range,
         )
         ln_1 = config.mk_LayerNorm(config.Embed)
         ln_2 = config.mk_LayerNorm(config.Embed)
@@ -311,6 +362,8 @@ class LlamaDecoderLayer(eqx.Module):
             attn_output = self.post_attn_layernorm(attn_output)
         x = residual + attn_output
 
+        # debug.print('> Layer.__call__ attn_output {}', attn_output, ordered=True)
+
         # MLP and skip connection
         residual = x
         x = self.post_attention_layernorm(x)
@@ -318,6 +371,8 @@ class LlamaDecoderLayer(eqx.Module):
         if self.post_mlp_layernorm is not None:
             mlp_output = self.post_mlp_layernorm(mlp_output)
         output = residual + mlp_output
+
+        # debug.print('> Layer.__call__ mlp_output {}', output, ordered=True)
         return output
 
 
@@ -364,7 +419,7 @@ class LlamaEmbedding(ModuleWithStateDictSerialization, eqx.Module):
 
     @staticmethod
     def init(Vocab: Axis, config: LlamaConfig, *, key) -> "LlamaEmbedding":
-        token_embeddings = hnn.Embedding.init(Vocab, config.Embed, key=key)
+        token_embeddings = hnn.Embedding.init(Vocab, config.Embed, key=key, )
         norm = None
         if config.input_embedding_norm:
             norm = config.mk_LayerNorm(config.Embed)
@@ -421,7 +476,7 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         if config.tie_word_embeddings:
             lm_head = None
         else:
-            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True)
+            lm_head = hnn.Linear.init(In=config.Embed, Out=Vocab, key=k_emb, use_bias=False, out_first=True, init_scale=math.sqrt(config.Embed.size) * config.initializer_range)
 
         return LlamaLMHeadModel(transformer, embeddings, lm_head)
 
@@ -447,11 +502,15 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
         """
         k_t, k_head = maybe_rng_split(key, 2)
         x = self.embeddings.embed(input_ids)
+        # debug.print('> LlamaLMHeadModel.__call__ input_ids {}', input_ids, ordered=True)
+        # debug.print('> LlamaLMHeadModel.__call__ attn_mask {}', attn_mask, ordered=True)
+        # debug.print('> LlamaLMHeadModel.__call__ embeddings {}', x, ordered=True)
         x = self.transformer(x, attn_mask=attn_mask, key=k_t, pos_ids=pos_ids)
         if self.lm_head:
             lm_logits = self.lm_head(x, key=k_head)
         else:
             lm_logits = self.embeddings.unembed(x)
+        # debug.print('> LlamaLMHeadModel.__call__ lm_logits {}', lm_logits, ordered=True)
         return lm_logits
 
     def activations(
@@ -475,7 +534,15 @@ class LlamaLMHeadModel(ModuleWithStateDictSerialization, LmHeadModel[LlamaConfig
 
         """
         x = self.embeddings.embed(input_ids)
+        # debug.print('> LlamaLMHeadModel.activations input_ids {}', input_ids, ordered=True)
+        # debug.print('> LlamaLMHeadModel.activations attn_mask {}', attn_mask, ordered=True)
+        # debug.print('> LlamaLMHeadModel.activations embeddings {}', x, ordered=True)
+
         x = self.transformer(x, attn_mask=attn_mask, key=key, pos_ids=pos_ids)
+        # debug.print('> LlamaLMHeadModel.activations activations {}', x)
+
+        logits = self.lm_head(x)
+        # debug.print("> LlamaLMHeadModel.activations logits: {}", logits)
 
         return x
 
