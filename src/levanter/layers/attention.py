@@ -778,7 +778,7 @@ class AttentionMask(eqx.Module):
     # causal masking at all.
     causal_offset: int | None | NamedArray = None
     explicit_mask: Optional[NamedArray] = None
-    segment_ids: NamedArray | tuple[NamedArray, NamedArray] = None
+    segment_ids: NamedArray | tuple[NamedArray, NamedArray] | None = None
     sliding_window: Optional[int] = eqx.field(default=None, static=True)
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
     # TODO: add prefixlm
@@ -864,7 +864,7 @@ class AttentionMask(eqx.Module):
             kv_segment_ids = segment_ids
 
         return AttentionMask(
-            is_causal=self.is_causal,
+            causal_offset=self.causal_offset,
             explicit_mask=self.explicit_mask,
             segment_ids=(segment_ids, kv_segment_ids),
             sliding_window=self.sliding_window,
@@ -2399,9 +2399,9 @@ class AttentionWithSink(Attention):
             q = q_proj
             k = k_proj
 
-        q = q.rearrange((..., "kv_heads", "q_heads_per_group", "position", "head_size"))
-        k = k.rearrange((..., "kv_heads", "position", "head_size"))
-        v = v.rearrange((..., "kv_heads", "position", "head_size"))
+        q = q.rearrange((..., "kv_head", "q_heads_per_group", "position", "head_size"))
+        k = k.rearrange((..., "kv_head", "position", "head_size"))
+        v = v.rearrange((..., "kv_head", "position", "head_size"))
 
         if self.rot_embs is not None:
             if pos_ids is None:
@@ -2431,7 +2431,7 @@ class AttentionWithSink(Attention):
             prng=key,
         )
 
-        attn_output = attn_output.flatten_axes(("kv_heads", "q_heads_per_group"), "heads")
+        attn_output = attn_output.flatten_axes(("kv_head", "q_heads_per_group"), "heads")
         attn_output = attn_output.astype(x.dtype)
         attn_output = self.o_proj(attn_output, key=key_o)
 

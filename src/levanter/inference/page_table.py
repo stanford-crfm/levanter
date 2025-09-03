@@ -17,7 +17,7 @@ def _relative_positions(seg_ids: jnp.ndarray):
     is_start = jnp.concatenate([jnp.array([True]),
                                 seg_ids[1:] != seg_ids[:-1]])
     start_idx = idx * is_start.astype(idx.dtype)
-    seg_start = jnp.maximum.accumulate(start_idx)
+    seg_start = jax.lax.associative_scan(jnp.maximum, start_idx)
     return idx - seg_start  # 0,1,2,… inside each segment
 
 
