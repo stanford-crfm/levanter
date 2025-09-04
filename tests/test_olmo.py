@@ -185,8 +185,7 @@ def test_olmo2_decoder_layer_vs_hf(num_kv_heads):
     if isinstance(hf_out, torch.Tensor):
         hf_array = hf_out.detach().cpu().numpy()
     else:
-        hf_stacked = torch.stack(hf_out)
-        hf_array = hf_stacked.detach().cpu().numpy()
+        hf_array = hf_out[0].detach().cpu().numpy()
 
     chex.assert_trees_all_close(hf_array, out.array, rtol=1e-5, atol=1e-5)
 
