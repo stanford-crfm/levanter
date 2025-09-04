@@ -114,6 +114,7 @@ dev = [
   "pygments",
   "pre-commit",
   "httpx",
+  "fastapi",
 ]
 
 [tool.uv]

@@ -523,8 +523,10 @@ def stack_batches(example_iterator, Pos, Batch):
             yield stack_tree(Batch, batch)
 
 
-def _batchified_shape(Batch, leaf: hax.NamedArray | Array) -> ShapeSpec | NamedShapeSpec:
-    if is_named_array(leaf):
+def _batchified_shape(Batch, leaf: hax.NamedArray | Array | int | float) -> ShapeSpec | NamedShapeSpec:
+    if isinstance(leaf, int | float):
+        return ShapeSpec((Batch.size,), jnp.int32)
+    elif is_named_array(leaf):
         return NamedShapeSpec((Batch,) + leaf.axes, leaf.dtype)
     else:
         return ShapeSpec((Batch.size,) + leaf.shape, leaf.dtype)

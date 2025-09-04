@@ -14,7 +14,6 @@ import haliax.nn as hnn
 from haliax import AxisSelection, AxisSpec, ds
 from haliax.jax_utils import named_call
 from haliax.types import PrecisionLike
-from haliax.util import is_jax_or_hax_array_like
 
 from levanter.layers.attention import AttentionMask, materialize_mask
 
@@ -175,10 +174,10 @@ def _flash_attention_forward(
     ell = hax.zeros((*q_batch_axes, QPos))
     ell = hax.auto_sharded(ell)
 
-    causal_offset = mask.causal_offset if isinstance(mask, AttentionMask) else None
-
-    if causal_offset is not None and (is_jax_or_hax_array_like(causal_offset) or causal_offset > 0):
-        raise NotImplementedError(f"causal offset {causal_offset} not implemented")
+    is_causal = isinstance(mask, AttentionMask) and mask.is_causal
+    # Non-zero offsets (dynamic or otherwise) are not supported in this implementation
+    if isinstance(mask, AttentionMask) and mask.is_causal and mask.causal_offset is not None:
+        raise NotImplementedError("Non-zero causal offsets are not implemented for flash attention")
 
     # i refers to the block index in Q, j refers to the block index in K.
 
@@ -243,8 +242,8 @@ def _flash_attention_forward(
 
             return (i, j + 1, o_i, q_i, sumexp_i, max_i)
 
-        # TODO: this is incorrect for for causal offsets > 0
-        j_end = jnp.minimum(i + 1, Tc) if causal_offset is not None else Tc
+        # For causal (offset==0), limit key blocks up to the diagonal
+        j_end = jnp.minimum(i + 1, Tc) if is_causal else Tc
 
         _, _, o_i, _, sumexp_i, max_i = jax.lax.while_loop(
             lambda state: state[1] < j_end, do_qk_block, (i, 0, o_i, q_i, sumexp_i, max_i)

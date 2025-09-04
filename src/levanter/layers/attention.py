@@ -5,6 +5,7 @@ import logging
 import math
 import warnings
 from dataclasses import dataclass
+from numbers import Integral
 from enum import Enum
 from typing import Optional, Union, overload
 
@@ -574,8 +575,9 @@ def _te_materialize_mask(KPos, QPos, batch_size, mask):
             "Custom NamedArray masks are not implemented for flash attention. Please pass an AttentionMask object"
         )
     elif isinstance(mask, AttentionMask):
-        if mask.causal_offset is not None:
-            if mask.causal_offset != 0:
+        if mask.is_causal:
+            # NVTE fused attention does not support non-zero causal offsets.
+            if mask.causal_offset is not None:
                 raise NotImplementedError(
                     "Causal offset is not supported for NVTE fused attention. Please use the JAX reference"
                     " implementation."
@@ -770,13 +772,11 @@ class AttentionMask(eqx.Module):
 
     """
 
-    # If ``causal_offset`` is not ``None`` we apply a lower-triangular causal mask that is *shifted*
-    # by the given offset such that a query at position *i* can attend to key *j* whenever
-    # ``j <= i + causal_offset``.
-    #
-    # Note: ``causal_offset==0`` is equivalent to a standard causal mask; ``None`` means no
-    # causal masking at all.
-    causal_offset: int | None | NamedArray = None
+    # If ``is_causal`` is True we apply a lower-triangular causal mask. If ``causal_offset`` is not ``None``
+    # we apply a shifted causal mask such that a query at position *i* can attend to key *j* whenever
+    # ``j <= i + causal_offset``. A ``None`` offset means a static offset of 0 (i.e., standard causal masking).
+    is_causal: bool = eqx.field(default=False, static=True)
+    causal_offset: None | NamedArray = None
     explicit_mask: Optional[NamedArray] = None
     segment_ids: NamedArray | tuple[NamedArray, NamedArray] | None = None
     sliding_window: Optional[int] = eqx.field(default=None, static=True)
@@ -796,8 +796,10 @@ class AttentionMask(eqx.Module):
         if k_slice is None:
             k_slice = haliax.dslice(0, KPos.size)
 
-        if self.causal_offset is not None:
-            shifted_k_start = k_slice.start - self.causal_offset
+        if self.is_causal:
+            # None means static 0 offset
+            offset = 0 if self.causal_offset is None else self.causal_offset
+            shifted_k_start = k_slice.start - offset
             if isinstance(shifted_k_start, NamedArray):
                 # need to vmap
                 causal = hax.vmap(causal_mask, shifted_k_start.axes)(
@@ -835,15 +837,11 @@ class AttentionMask(eqx.Module):
 
         return mask
 
-    @property
-    def is_causal(self) -> bool:  # Back-compat shim
-        """Whether this mask includes a (possibly shifted) causal component."""
-        return self.causal_offset is not None
 
     # Static constructors --------------------------------------------------
 
     @staticmethod
-    def causal(*, sliding_window: Optional[int] = None, offset: int | NamedArray = 0) -> "AttentionMask":
+    def causal(*, sliding_window: Optional[int] = None, offset: int | NamedArray | None = None) -> "AttentionMask":
         """Create a causal AttentionMask.
 
         Args:
@@ -853,20 +851,30 @@ class AttentionMask(eqx.Module):
             behaviour; larger offsets loosen the restriction so that each query can
             see ``offset`` additional future tokens.
         """
-        return AttentionMask(causal_offset=offset, sliding_window=sliding_window)
+        if isinstance(offset, int | Integral):
+            causal_offset = hax.named(offset, ())
+        else:
+            causal_offset = offset
+
+        return AttentionMask(is_causal=True, causal_offset=causal_offset, sliding_window=sliding_window)
 
     @staticmethod
     def explicit(mask: NamedArray) -> "AttentionMask":
-        return AttentionMask(causal_offset=None, explicit_mask=mask)
+        return AttentionMask(is_causal=False, causal_offset=None, explicit_mask=mask)
 
     def with_segment_ids(self, segment_ids: NamedArray, kv_segment_ids: NamedArray | None = None) -> "AttentionMask":
+        # If kv_segment_ids is not provided, keep a single segment_ids NamedArray for back-compat.
+        seg_field: NamedArray | tuple[NamedArray, NamedArray]
         if kv_segment_ids is None:
-            kv_segment_ids = segment_ids
+            seg_field = segment_ids
+        else:
+            seg_field = (segment_ids, kv_segment_ids)
 
         return AttentionMask(
+            is_causal=self.is_causal,
             causal_offset=self.causal_offset,
             explicit_mask=self.explicit_mask,
-            segment_ids=(segment_ids, kv_segment_ids),
+            segment_ids=seg_field,
             sliding_window=self.sliding_window,
         )
 
@@ -874,19 +882,34 @@ class AttentionMask(eqx.Module):
         """Return a copy of this mask with ``sliding_window`` applied."""
         return AttentionMask(
             is_causal=self.is_causal,
+            causal_offset=self.causal_offset,
             explicit_mask=self.explicit_mask,
             segment_ids=self.segment_ids,
             sliding_window=sliding_window,
         )
 
     def __and__(self, other) -> "AttentionMask":
-        # Merge causal offsets – if both masks are causal we require they agree
-        if self.causal_offset is not None and other.causal_offset is not None:
-            causal_offset = eqx.error_if(
-                self.causal_offset, self.causal_offset != other.causal_offset, "Mismatched causal offsets cannot be combined with &"
-            )
+        # Conjunction: causal if either component is causal.
+        if self.is_causal and other.is_causal:
+            # If both are causal, offsets must agree if both specified; otherwise take the specified one.
+            if self.causal_offset is not None and other.causal_offset is not None:
+                causal_offset = eqx.error_if(
+                    self.causal_offset,
+                    self.causal_offset != other.causal_offset,
+                    "Mismatched causal offsets cannot be combined with &",
+                )
+            else:
+                causal_offset = self.causal_offset if self.causal_offset is not None else other.causal_offset
+            is_causal = True
+        elif self.is_causal:
+            causal_offset = self.causal_offset
+            is_causal = True
+        elif other.is_causal:
+            causal_offset = other.causal_offset
+            is_causal = True
         else:
-            causal_offset = self.causal_offset if self.causal_offset is not None else other.causal_offset
+            causal_offset = None
+            is_causal = False
         explicit_mask = combine_masks_and(self.explicit_mask, other.explicit_mask)
         segment_ids = self._check_for_same_segment_ids(other)
         if self.sliding_window is None:
@@ -897,6 +920,7 @@ class AttentionMask(eqx.Module):
             sliding_window = min(self.sliding_window, other.sliding_window)
 
         return AttentionMask(
+            is_causal=is_causal,
             causal_offset=causal_offset,
             explicit_mask=explicit_mask,
             segment_ids=segment_ids,
@@ -904,14 +928,15 @@ class AttentionMask(eqx.Module):
         )
 
     def __or__(self, other) -> "AttentionMask":
-        # Union: keep causal only if both have the *same* causal offset
-        if (
-            self.causal_offset is not None
-            and other.causal_offset is not None
-            and self.causal_offset == other.causal_offset
+        # Union: causal only if both are causal with the same offset; otherwise non-causal
+        if self.is_causal and other.is_causal and (
+            (self.causal_offset is None and other.causal_offset is None)
+            or (self.causal_offset is not None and self.causal_offset == other.causal_offset)
         ):
+            is_causal = True
             causal_offset = self.causal_offset
         else:
+            is_causal = False
             causal_offset = None
         explicit_mask = combine_masks_or(self.explicit_mask, other.explicit_mask)
         segment_ids = self._check_for_same_segment_ids(other)
@@ -920,6 +945,7 @@ class AttentionMask(eqx.Module):
         else:
             sliding_window = max(self.sliding_window, other.sliding_window)
         return AttentionMask(
+            is_causal=is_causal,
             causal_offset=causal_offset,
             explicit_mask=explicit_mask,
             segment_ids=segment_ids,
@@ -1227,13 +1253,12 @@ def _tpu_splash_attention(
         if mask is None:
             base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
         elif isinstance(mask, AttentionMask):
-            if isinstance(mask.causal_offset, NamedArray):
-                raise NotImplementedError(
-                    "NamedArray causal offsets are not supported for splash attention. Please use a constant causal"
-                    " offset."
-                )
-            if mask.causal_offset is not None:
-                base_mask = splash_attention_mask.CausalMask((Sq, Sk), mask.causal_offset)
+            if mask.is_causal:
+                if mask.causal_offset is not None:
+                    raise NotImplementedError(
+                        "Causal offsets are not supported for splash attention. Please use a standard causal mask."
+                    )
+                base_mask = splash_attention_mask.CausalMask((Sq, Sk), 0)
             else:
                 base_mask = splash_attention_mask.FullMask(_shape=(Sq, Sk))
             if mask.sliding_window is not None:

@@ -1,4 +1,6 @@
 import dataclasses
+
+import jax
 import jax.numpy as jnp
 import equinox as eqx
 import haliax as hax
@@ -28,6 +30,7 @@ def test_assign_seq():
         max_num_tokens=jnp.array(4, dtype=jnp.int32),
         stop_tokens=stop,
         temperature=jnp.array(0.5, dtype=jnp.float32),
+        key=jax.random.PRNGKey(0),
     )
     ds = eqx.filter_jit(ds.assign_seq)(0, 42, kv, toks, 2, params)
     assert ds.seq_id["seq", 0] == 42
@@ -46,7 +49,7 @@ def test_update_tokens_and_finish_max():
     ds = _make_state()
     kv = hax.named(jnp.array([0, 1], dtype=jnp.int32), axis=("page",))
     toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), axis=("position",))
-    params = SeqDecodingParams(max_num_tokens=jnp.array(4, dtype=jnp.int32), stop_tokens=None, temperature=jnp.array(1.0, dtype=jnp.float32))
+    params = SeqDecodingParams(max_num_tokens=jnp.array(4, dtype=jnp.int32), stop_tokens=None, temperature=jnp.array(1.0, dtype=jnp.float32), key=jax.random.PRNGKey(0))
     ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 2, params)
 
     logprobs = hax.full({"seq": 1, "position": 4}, 0.0, dtype=jnp.float32)
@@ -71,7 +74,7 @@ def test_stop_sequence_triggers_finished():
     kv = hax.named(jnp.array([0, 1], dtype=jnp.int32), axis=("page",))
     toks = hax.named(jnp.array([10, 11], dtype=jnp.int32), axis=("position",))
     stop = hax.named(jnp.array([[4]], dtype=jnp.int32), axis=("stop_seq", "position"))
-    params = SeqDecodingParams(max_num_tokens=jnp.array(6, dtype=jnp.int32), stop_tokens=stop, temperature=jnp.array(1.0, dtype=jnp.float32))
+    params = SeqDecodingParams(max_num_tokens=jnp.array(6, dtype=jnp.int32), stop_tokens=stop, temperature=jnp.array(1.0, dtype=jnp.float32), key=jax.random.PRNGKey(0))
     ds = eqx.filter_jit(ds.assign_seq)(0, 0, kv, toks, 2, params)
 
     new_toks = hax.named(jnp.array([3, 4], dtype=jnp.int32), axis=("position",))

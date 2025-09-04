@@ -238,6 +238,10 @@ class DecodeState(eqx.Module):
         Returns jnp.ndarray with the same shape as seq_id, where each entry is True if the sequence is finished.
         """
 
+        # if it's a scalar, we need to make it a vector for the vmap to work properly
+        if seq_id.ndim == 0:
+            seq_id = jnp.expand_dims(seq_id, axis=0)
+
         def body(i):
             sid = seq_id[i]
 

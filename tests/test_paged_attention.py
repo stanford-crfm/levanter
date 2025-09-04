@@ -118,7 +118,7 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
         q_seq = q_seq.rename({"position": TOK_S.name})
 
         offset = kv_lens["seq", sid].scalar() - qlen
-        mask = AttentionMask.causal(offset)
+        mask = AttentionMask.causal(offset=offset)
         ref = simple_attention_with_dropout(
             "position", "kv_position", D, q_seq, k_seq, v_seq, mask=mask, scaling_factor=SM_SCALE
         )

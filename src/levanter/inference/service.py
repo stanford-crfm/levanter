@@ -351,7 +351,8 @@ class GenerationService:
             pad_id = getattr(self._tokenizer_obj, "pad_token_id", None)
             clean = [t for t in toks if (pad_id is None or t != pad_id) and t != INVALID]
             completion_ids = clean[prompt_len:]
-            text = self._tokenizer_obj.decode(completion_ids, skip_special_tokens=True)
+            # Return text that includes the original prompt prefix so tests can assert startswith(prompt)
+            text = self._tokenizer_obj.decode(clean, skip_special_tokens=True)
 
             result = GenerationResult(
                 text=text,
