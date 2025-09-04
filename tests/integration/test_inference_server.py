@@ -117,7 +117,7 @@ class TestInferenceServerIntegration:
         assert "data" in data and len(data["data"]) >= 1
         model = data["data"][0]
         assert model["object"] == "model"
-        assert model["id"] == server_mod._service.model_id
+        assert model["id"] == server_mod._service.model_id  # type: ignore
         assert "created" in model
         assert model["owned_by"] == "levanter"
 
