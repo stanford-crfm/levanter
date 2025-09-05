@@ -30,7 +30,7 @@ from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.inference.jit_scheduler import TokenQueue, DecodeState, SeqDecodingParams
+from levanter.inference.jit_scheduler import DecodeState, SeqDecodingParams
 from levanter.inference.utils import INVALID
 from levanter.layers.attention import KvPageCache
 
@@ -42,7 +42,6 @@ class GenState(eqx.Module):
     Plain Old Data type for generation state.
     Contains all the components needed for language model generation.
     """
-    sched: TokenQueue
     cache: KvPageCache
     page_table: PageTable
     decode_state: DecodeState
@@ -121,13 +120,13 @@ def run_generation_loop(
 
     def cond(state: tuple[GenState, jax.Array, jax.Array]):
         _gen_state, finished, step = state
-        return (step < max_rounds) & (_gen_state.sched.num_queued_tokens > 0) & (~jnp.all(finished))
+        return (step < max_rounds) & (_gen_state.decode_state.tqueue.num_queued_tokens > 0) & (~jnp.all(finished))
 
     def body(state: tuple[GenState, jax.Array, jax.Array]) -> tuple[GenState, jax.Array, jax.Array]:
         gen_state, has_finished, step = state
 
         # Pack the next chunk from the queue
-        sched, packed_seq = gen_state.sched.pack_next_sequence(max_tokens_per_round)
+        tqueue, packed_seq = gen_state.decode_state.tqueue.pack_next_sequence(max_tokens_per_round)
 
         page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
 
@@ -153,20 +152,20 @@ def run_generation_loop(
         new_finished = decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
         has_finished = has_finished | new_finished
 
-        sched = sched.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
+        tqueue = tqueue.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
 
         # purge any finished sequencse
         finished_sequences = jnp.nonzero(new_finished, size=gen_state.page_table.max_seqs, fill_value=INVALID)[0]
         finished_sequences = hax.named(finished_sequences, axis="seq")
-        sched = sched.purge_queue_of_seq(finished_sequences)
+        tqueue = tqueue.purge_queue_of_seq(finished_sequences)
 
         # Update the gen_state with all the new components
+        new_decode_state = dataclasses.replace(decode_state, tqueue=tqueue)
         new_gen_state = dataclasses.replace(
             gen_state,
-            sched=sched,
             page_table=page_table,
             cache=cache,
-            decode_state=decode_state,
+            decode_state=new_decode_state,
         )
 
         return new_gen_state, has_finished, step + 1
@@ -211,16 +210,15 @@ def main(config: SampleLmConfig):
 
         table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
-        sched = TokenQueue.init(32)
         initial_decode_state = DecodeState.init(
             table.max_seqs,
             table.pages_per_seq,
             table.page_size,
             table.max_len_per_seq,
             max_stop_seqs=1,
+            max_queued_tokens=32,
         )
         gen_state = GenState(
-            sched=sched,
             cache=cache,
             page_table=table,
             decode_state=initial_decode_state,
@@ -258,7 +256,6 @@ def main(config: SampleLmConfig):
                 gen_state,
                 # in theory, we can just reuse the cache and not recreate it every time
                 page_table=page_table,
-                sched=sched.cleared(),
                 decode_state=initial_decode_state,
             )
             del page_table
@@ -298,18 +295,18 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
         )
 
         prompts_tokens_to_enqueue = np.asarray(tokens, dtype=jnp.int32)
-        if len(tokens) > gen_state.sched.max_queued_tokens:
+        if len(tokens) > gen_state.decode_state.tqueue.max_queued_tokens:
             raise ValueError(
                 f"Prompt is too long ({len(tokens)} tokens), "
-                f"max queued tokens is {gen_state.sched.max_queued_tokens}. "
+                f"max queued tokens is {gen_state.decode_state.tqueue.max_queued_tokens}. "
             )
 
         target_len = len(prompts_tokens_to_enqueue)
-        if target_len > gen_state.sched.max_queued_tokens:
+        if target_len > gen_state.decode_state.tqueue.max_queued_tokens:
             print(
-                f"Queue is full ({gen_state.sched.num_queued_tokens} tokens), running generation loop to free up space.")
+                f"Queue is full ({gen_state.decode_state.tqueue.num_queued_tokens} tokens), running generation loop to free up space.")
 
-        while target_len > gen_state.sched.empty_queue_space:
+        while target_len > gen_state.decode_state.tqueue.empty_queue_space:
             # if the queue is too full, we run generation loop to free up space
             # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
             gen_state = run_generation_loop(
@@ -325,9 +322,12 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
 
         this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
         seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
-        new_sched = gen_state.sched.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
-        gen_state = dataclasses.replace(gen_state, sched=new_sched)
-        del new_sched
+        new_tqueue = gen_state.decode_state.tqueue.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
+        gen_state = dataclasses.replace(
+            gen_state,
+            decode_state=dataclasses.replace(gen_state.decode_state, tqueue=new_tqueue),
+        )
+        del new_tqueue
 
         # do one macro-prefill round
         gen_state = run_generation_loop(

@@ -114,6 +114,9 @@ class DecodeState(eqx.Module):
     prng_keys: jaxtyping.PRNGKeyArray
     """one per sequence, used for sampling. This is a JAX PRNG key, so it can be split to get new keys."""
 
+    # Token queue for pending decode work
+    tqueue: "TokenQueue"
+
     def prng_keys_for(self, seq_ids: ht.i32[NamedArray, "position"], pos_ids: ht.i32[NamedArray, "position"]) -> jaxtyping.PRNGKeyArray:  # type: ignore[name-defined]
         """
         Get the PRNG keys for the given sequence IDs and positions.
@@ -300,10 +303,11 @@ max_num_tokens: {max_num_tokens}
         max_seqs: int,
         max_pages: int,
         page_size: int,
-        max_tokens: int,
+        max_seq_len: int,
         pad_token_id: int = INVALID,
         max_stop_seqs: int = 0,
         max_stop_tokens: int = 16,
+        max_queued_tokens: int = 0,
     ) -> "DecodeState":
         """
         Initialize a DecodeState with empty buffers.
@@ -312,7 +316,7 @@ max_num_tokens: {max_num_tokens}
             kv_pages=hax.full({"seq": max_seqs, "page": max_pages}, INVALID, dtype=jnp.int32),
             page_size=page_size,
             seq_id=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
-            tokens=hax.full({"seq": max_seqs, "position": max_tokens}, pad_token_id, dtype=jnp.int32),
+            tokens=hax.full({"seq": max_seqs, "position": max_seq_len}, pad_token_id, dtype=jnp.int32),
             logprobs=None,
             prefix_len=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             num_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
@@ -323,7 +327,8 @@ max_num_tokens: {max_num_tokens}
                 dtype=jnp.int32,
             ) if max_stop_tokens > 0 else None,
             temperature=hax.ones({"seq": max_seqs}, dtype=jnp.float32),
-            prng_keys=jax.vmap(jax.random.PRNGKey, axis_size=max_seqs, in_axes=None)(0)
+            prng_keys=jax.vmap(jax.random.PRNGKey, axis_size=max_seqs, in_axes=None)(0),
+            tqueue=TokenQueue.init(max_queued_tokens) if max_queued_tokens > 0 else TokenQueue.init(0),
         )
 
 
