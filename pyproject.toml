@@ -28,8 +28,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "haliax>=1.4.dev351",
+    "haliax>=1.4.dev386",
     "equinox>=0.11.7,!=0.12.0",
+    "jax>=0.5.1",
     "jaxtyping>=0.2.34",
     "tokenizers>=0.15.2",
     "transformers>=4.53.0,<5.0",
@@ -57,10 +58,11 @@ dependencies = [
     "tqdm-loggable>=0.2",
     "deepdiff",
     "lenses",
-  "jinja2",  # needed for apply_chat_template
-  "protobuf<7",  # causes issues with ray if newer
-  # "lm-eval==0.4.2",
-  # "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+    "jinja2", # needed for apply_chat_template
+    "protobuf<7", # causes issues with ray if newer
+    # "lm-eval==0.4.2",
+    "torch>=2.7.1",
+    "sentencepiece>=0.2.1",
 ]
 
 [project.urls]
@@ -74,16 +76,26 @@ torch_test = [
   "torch>=2.7.0",
   "peft>=0.12.0",
 ]
+eval_harness = [
+    "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
+]
+serve = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+]
 
 [dependency-groups]
 test = [
-  "pytest",
-  "pytest-forked",
-  "pytest-asyncio",
-  "soundfile",
-  "librosa",
-  "tensorboardX>=2.6",
-  "chex>=0.1.86",
+    "pytest>=8.3.2",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pytest-cov",
+    "tensorboardX",
+]
+
+lint = [
+    "pre-commit",
+    "chex>=0.1.86",
 ]
 
 docs = [
@@ -101,6 +113,8 @@ docs = [
 dev = [
   "pygments",
   "pre-commit",
+  "httpx",
+  "fastapi",
 ]
 
 [tool.uv]
@@ -119,11 +133,11 @@ extend-exclude = ["scripts/"]
 
 [tool.ruff.lint]
 ignore = [
-  "E203", "E501", "W605", "F821", "E266", "E722", "E731", "E741"
+  "E203", "E501", "W605", "F821", "E266", "F722", "E731", "E741"
 ]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 mypy_path = ["src"]
 
 [tool.mypy-haliax.core]

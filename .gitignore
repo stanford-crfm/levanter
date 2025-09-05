@@ -1,5 +1,9 @@
 /scratch
 
+/cache/*
+
+/checkpoints
+
 # Configuration for TPU launches/secrets
 .levanter.yaml
 .levanter.yaml

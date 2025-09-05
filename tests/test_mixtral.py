@@ -23,6 +23,7 @@ from test_utils import (  # , check_model_works_with_seqlen
     parameterize_with_configs,
     skip_if_no_torch,
 )
+from tests.test_utils import skip_if_hf_model_not_accessible
 
 
 # from jax.sharding import Mesh
@@ -31,6 +32,7 @@ from test_utils import (  # , check_model_works_with_seqlen
 # from haliax.partitioning import ResourceAxis
 
 
+@skip_if_hf_model_not_accessible("mistralai/Mixtral-8x7B-v0.1")
 @skip_if_no_torch
 def test_mixtral_config():
     # load HF config and convert to levanter config
@@ -247,6 +249,7 @@ def test_mixtral_config():
 #         assert np.isclose(jax_g, torch_g, rtol=1e-2, atol=1e-2).all(), f"{jax_key}: {jax_g} != {torch_g}"
 
 
+@skip_if_hf_model_not_accessible("mistralai/Mixtral-8x7B-v0.1")
 @skip_if_no_torch
 def test_mixtral_roundtrip():
     import torch

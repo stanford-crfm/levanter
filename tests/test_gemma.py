@@ -24,11 +24,13 @@ from levanter.models.gemma import (
 from levanter.models.llama import LlamaMlp
 from levanter.utils.jax_utils import parameter_count
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+from tests.test_utils import skip_if_hf_model_not_accessible
 
 
 # N.B. Gemma uses LLamaAttention directly so we skip tests for attention and rotary embeddings.
 
 
+@skip_if_hf_model_not_accessible("google/gemma-2b")
 @skip_if_no_torch
 def test_gemma_config():
     # load HF config and convert to levanter config
@@ -73,6 +75,7 @@ def test_gemma_param_counts_dont_change_with_seqlen():
     assert parameter_count(model) == parameter_count(model2)
 
 
+@skip_if_hf_model_not_accessible("google/gemma-2b")
 @skip_if_no_torch
 @pytest.mark.parametrize("gemma_version", [1, 2])
 def test_gemma_rms_norm(gemma_version):
@@ -101,6 +104,7 @@ def test_gemma_rms_norm(gemma_version):
     ).all(), f"{hf_out} != {out}"
 
 
+@skip_if_hf_model_not_accessible("google/gemma-2b")
 @skip_if_no_torch
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
 def test_gemma1_decoder_layer(num_kv_heads):
@@ -259,6 +263,7 @@ def test_gemma_attention(use_flash, num_kv_heads, gemma_version):
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), out.array, rtol=1e-5, atol=1e-5)
 
 
+@skip_if_hf_model_not_accessible("google/gemma-2b")
 @skip_if_no_torch
 def test_gemma_mlp():
     import torch
@@ -281,6 +286,7 @@ def test_gemma_mlp():
     chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-4, atol=1e-4)
 
 
+@skip_if_hf_model_not_accessible("google/gemma-2b")
 @skip_if_no_torch
 def test_gemma2_mlp():
     import torch
@@ -303,6 +309,7 @@ def test_gemma2_mlp():
     chex.assert_trees_all_close(hf_out.detach().cpu().numpy(), out.array, rtol=1e-5, atol=1e-5)
 
 
+@skip_if_hf_model_not_accessible("google/gemma-2b")
 @skip_if_no_torch
 def test_gemma2_roundtrip():
     import torch
@@ -490,6 +497,7 @@ def test_gemma3_decoder_layer(num_kv_heads):
     chex.assert_trees_all_close(hf_out[0].detach().cpu().numpy(), lev_out.array, rtol=1e-4, atol=1e-4)
 
 
+@skip_if_hf_model_not_accessible("google/gemma-2b")
 @skip_if_no_torch
 def test_gemma3_roundtrip():
     import torch

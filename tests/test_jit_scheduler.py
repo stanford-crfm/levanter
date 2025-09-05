@@ -1,0 +1,108 @@
+import jax.numpy as jnp
+import haliax as hax
+import equinox as eqx
+
+from levanter.inference.jit_scheduler import JitScheduler
+from levanter.inference.utils import INVALID
+
+
+def test_enqueue_and_pack():
+    sched = JitScheduler.init(8)
+    toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), "position")
+    seqs = hax.named(jnp.array([0, 1], dtype=jnp.int32), "position")
+    sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 2)
+
+    pack = eqx.filter_jit(lambda s: s.pack_next_sequence(2))
+    sched, packed_seq = pack(sched)
+    ptoks = packed_seq.tokens
+    pseqs = packed_seq.seq_ids
+    assert jnp.array_equal(ptoks.array, jnp.array([1, 2], dtype=jnp.int32))
+    assert jnp.array_equal(pseqs.array, jnp.array([0, 1], dtype=jnp.int32))
+    assert sched.num_queued_tokens == 0
+
+
+def test_enqueue_and_pack_over_length():
+    sched = JitScheduler.init(8)
+    toks = hax.named(jnp.array([1, 2], dtype=jnp.int32), "position")
+    seqs = hax.named(jnp.array([0, 1], dtype=jnp.int32), "position")
+    sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 2)
+
+    pack = eqx.filter_jit(lambda s: s.pack_next_sequence(4))
+
+    sched, packed_seq = pack(sched)
+    ptoks = packed_seq.tokens
+    pseqs = packed_seq.seq_ids
+    assert jnp.array_equal(ptoks.array, jnp.array([1, 2, INVALID, INVALID], dtype=jnp.int32))
+    assert jnp.array_equal(pseqs.array, jnp.array([0, 1, INVALID, INVALID], dtype=jnp.int32))
+
+
+def test_partial_dequeue():
+    sched = JitScheduler.init(8)
+    toks = hax.named(jnp.array([1, 2, 3], dtype=jnp.int32), "position")
+    seqs = hax.named(jnp.array([0, 0, 0], dtype=jnp.int32), "position")
+    sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 3)
+
+    assert sched.num_queued_tokens == 3
+    assert jnp.array_equal(sched.queued_tokens["position", 0:3].array, jnp.array([1, 2, 3], dtype=jnp.int32))
+    assert jnp.array_equal(sched.queued_seq_ids["position", 0:3].array, jnp.array([0, 0, 0], dtype=jnp.int32))
+
+    sched, packed = eqx.filter_jit(lambda s: s.pack_next_sequence(2))(sched)
+    ptoks = packed.tokens
+    pseqs = packed.seq_ids
+    assert jnp.array_equal(ptoks.array, jnp.array([1, 2], dtype=jnp.int32))
+    assert jnp.array_equal(pseqs.array, jnp.array([0, 0], dtype=jnp.int32))
+    assert sched.num_queued_tokens == 1
+
+
+def _make_scheduler_with_tokens(max_tokens=8):
+    # Build a scheduler and push four tokens: [10,20,30,40]
+    # with seq-ids [0,1,0,1].
+    sched = JitScheduler.init(max_tokens)
+    toks = hax.named(jnp.array([10, 20, 30, 40], dtype=jnp.int32), axis=("position",))
+    seqs = hax.named(jnp.array([0, 1, 0, 1], dtype=jnp.int32), axis=("position",))
+    return eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 4)
+
+
+def test_purge_queue_of_seq():
+    sched = JitScheduler.init(8)
+    # Enqueue tokens with seq_ids: [0, 1, 0, 2, 1, 2]
+    toks = hax.named(jnp.array([10, 20, 30, 40, 50, 60], dtype=jnp.int32), "position")
+    seqs = hax.named(jnp.array([0, 1, 0, 2, 1, 2], dtype=jnp.int32), "position")
+    sched = eqx.filter_jit(sched.enqueue_tokens)(toks, seqs, 6)
+
+    # Purge seq_id 1
+    sched2 = eqx.filter_jit(sched.purge_queue_of_seq)(1)
+    # After purge, tokens with seq_id 1 (positions 1 and 4) should be INVALID
+    expected_tokens = jnp.array([10, 30, 40, 60, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    expected_seqids = jnp.array([0, 0, 2, 2, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    assert jnp.array_equal(sched2.queued_tokens.array, expected_tokens)
+    assert jnp.array_equal(sched2.queued_seq_ids.array, expected_seqids)
+    # num_queued_tokens should be 4 (6 - 2 purged)
+    assert sched2.num_queued_tokens == 4
+
+    # Purge seq_id 0
+    sched3 = eqx.filter_jit(sched2.purge_queue_of_seq)(0)
+    expected_tokens2 = jnp.array([40, 60, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    expected_seqids2 = jnp.array([2, 2, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID], dtype=jnp.int32)
+    assert jnp.array_equal(sched3.queued_tokens.array, expected_tokens2)
+    assert jnp.array_equal(sched3.queued_seq_ids.array, expected_seqids2)
+    assert sched3.num_queued_tokens == 2
+
+    # Purge seq_id 2 (should clear all remaining tokens)
+    sched4 = eqx.filter_jit(sched3.purge_queue_of_seq)(2)
+    assert jnp.all(sched4.queued_tokens.array == INVALID)
+    assert jnp.all(sched4.queued_seq_ids.array == INVALID)
+    assert sched4.num_queued_tokens == 0
+
+
+def test_pack_multiple_sequences():
+    sched = JitScheduler.init(16)
+    # Enqueue tokens with seq_ids: [1, 1, 1, 1, 1, 0]
+    toks = hax.named(jnp.array([10, 20, 30, 40, 50, 60], dtype=jnp.int32), "position")
+    seq_ids = hax.named(jnp.array([1, 1, 1, 1, 1, 0], dtype=jnp.int32), "position")
+
+    sched = sched.enqueue_tokens(toks, seq_ids, 6)
+
+    sched, packed_sequence = sched.pack_next_sequence(8)
+
+    assert packed_sequence.num_tokens == 6

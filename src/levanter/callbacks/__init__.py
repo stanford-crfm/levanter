@@ -106,32 +106,40 @@ def profile(path: str, start_step: int, num_steps: int, create_perfetto_link: bo
     def profiler_callback_fn(step: StepInfo):
         # -1 b/c step is the finished step
         if step.step == start_step - 1:
-            _create_perfetto_link = create_perfetto_link and jax.process_index() == 0
             logger.info(f"Starting profiler until step {start_step + num_steps}.")
-            jax.profiler.start_trace(path, create_perfetto_link=_create_perfetto_link, create_perfetto_trace=True)
+            start_profiler(path, create_perfetto_link=create_perfetto_link)
         elif step.step == start_step + num_steps - 1:
-            if create_perfetto_link:
-                logger.info(
-                    f"Stopping profiler. Process 0 will open a perfetto link. I am process {jax.process_index()}"
-                )
-            else:
-                logger.info("Stopping profiler.")
-            # so, annoyingly, gcloud ssh doesn't reliably flush stdout here, so we need to spin up
-            # a thread to flush and print periodically until we make it past stop_trace
-            # (note: stop_trace blocks if perfetto is enabled)
-            event = threading.Event()
-            if create_perfetto_link and jax.process_index() == 0:
-                _flush_while_waiting(event)
-
-            jax.profiler.stop_trace()
-
-            if create_perfetto_link and jax.process_index() == 0:
-                event.set()
+            stop_profiler_and_maybe_wait(create_perfetto_link)
 
             levanter.tracker.current_tracker().log_artifact(path, type="jax_profile")
             barrier_sync()
 
     return profiler_callback_fn
+
+
+def start_profiler(path: str, create_perfetto_link: bool = False):
+    _create_perfetto_link = create_perfetto_link and jax.process_index() == 0
+    jax.profiler.start_trace(path, create_perfetto_link=_create_perfetto_link, create_perfetto_trace=True)
+
+
+def stop_profiler_and_maybe_wait(create_perfetto_link):
+    if create_perfetto_link:
+        logger.info(
+            f"Stopping profiler. Process 0 will open a perfetto link. I am process {jax.process_index()}.\n"
+            f"Sometimes, with docker or similar, the link may not show up in the terminal. It is usually:\n"
+            f"https://ui.perfetto.dev/#!/?url=http://127.0.0.1:9001/perfetto_trace.json.gz\n\n"
+        )
+    else:
+        logger.info("Stopping profiler.")
+    # so, annoyingly, gcloud ssh doesn't reliably flush stdout here, so we need to spin up
+    # a thread to flush and print periodically until we make it past stop_trace
+    # (note: stop_trace blocks if perfetto is enabled)
+    event = threading.Event()
+    if create_perfetto_link and jax.process_index() == 0:
+        _flush_while_waiting(event)
+    jax.profiler.stop_trace()
+    if create_perfetto_link and jax.process_index() == 0:
+        event.set()
 
 
 def _flush_while_waiting(event):

@@ -16,21 +16,26 @@ __all__ = [
     "initialize",
 ]
 
-import levanter.analysis as analysis
-import levanter.callbacks as callbacks
-import levanter.checkpoint as checkpoint
-import levanter.config as config
-import levanter.data as data
-import levanter.distributed as distributed
-import levanter.eval as eval
-import levanter.eval_harness as eval_harness
-import levanter.models as models
-import levanter.optim as optim
-import levanter.tracker as tracker
-import levanter.trainer as trainer
-import levanter.visualization as visualization
+# import levanter.analysis as analysis
+# import levanter.callbacks as callbacks
+# import levanter.checkpoint as checkpoint
+# import levanter.config as config
+# import levanter.data as data
+# import levanter.distributed as distributed
+# import levanter.eval as eval
+# import levanter.eval_harness as eval_harness
+# import levanter.models as models
+# import levanter.optim as optim
+# import levanter.tracker as tracker
+# import levanter.trainer as trainer
+# import levanter.visualization as visualization
 from levanter.tracker import current_tracker
-from levanter.trainer import initialize
+# from levanter.trainer import initialize
+
+def initialize(config):
+    from levanter.trainer import initialize as _initialize
+    return _initialize(config)
+
 
 
 __version__ = "1.2"

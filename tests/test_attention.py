@@ -1,5 +1,6 @@
 import math
 
+import equinox
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -10,12 +11,14 @@ from chex import assert_trees_all_close
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 import haliax as hax
-from haliax import Axis
+from haliax import Axis, NamedArray
 
 from levanter.layers.attention import (
+    Attention,
     AttentionBackend,
     AttentionConfig,
     AttentionMask,
+    KvPageCache,
     _bin_and_group_axes_by_function,
     _te_flash_attention,
     _tpu_splash_attention,
@@ -23,6 +26,7 @@ from levanter.layers.attention import (
     dot_product_attention,
     dot_product_attention_with_sink,
 )
+from levanter.inference.page_table import PageBatchInfo, PageTable
 from test_utils import skip_if_module_missing, skip_if_no_torch
 
 
@@ -364,10 +368,10 @@ def test_segment_ids_are_respected(impl):
     segment_ids = np.array([0, 0, 0] + [1] * (L - 3), dtype=np.int32)
     segment_ids = jax.device_put(segment_ids, NamedSharding(dp_mesh, PartitionSpec("dp")))
     segment_ids = hax.named(segment_ids, (Pos,))
-    mask = AttentionMask(is_causal=True, segment_ids=segment_ids)
+    mask = AttentionMask(causal_offset=0, segment_ids=segment_ids)
 
     with dp_mesh:
-        result = hax.named_jit(dot_product_attention)(
+        result = jit_dpa(
             Pos, KPos, Head, query, keys, values, attn_backend=AttentionBackend(impl), mask=mask, flash_block_size=128
         )
 
@@ -375,6 +379,431 @@ def test_segment_ids_are_respected(impl):
     assert_trees_all_close(result.array[0:3, 1], 300.0, atol=1e-3, rtol=1e-3)
     # the rest should be 0
     assert_trees_all_close(result.array[3:, 1], 0.0, atol=1e-3, rtol=1e-3)
+
+
+# TODO: fix flash attention for offsets
+@pytest.mark.parametrize("impl", ["vanilla"])
+def test_causal_offset_cross_attention(impl):
+    """Verify that a positive causal *offset* relaxes the masking during cross-attention.
+
+    We compare the output of ``dot_product_attention`` when provided the structured
+    ``AttentionMask`` with *offset* against the output obtained when passing the
+    *materialised* boolean mask explicitly – they should be identical.
+    """
+
+    offset = 2
+    FullPos = Axis("pos", 6)
+    Pos = FullPos.resize(offset)
+    KeyPos = Axis("key_pos", 6)
+    Head = Axis("head", 2)
+    KeyDim = Axis("embed", 4)
+
+    k = hax.random.normal(jrandom.PRNGKey(1), (KeyPos, Head, KeyDim))
+    v = hax.random.normal(jrandom.PRNGKey(2), (KeyPos, Head, KeyDim))
+    q = hax.random.normal(jrandom.PRNGKey(0), (FullPos, Head, KeyDim))
+    q_sub = q["pos", 4:6]
+
+    struct_mask = AttentionMask.causal(offset=FullPos.size - offset)
+
+    offset_out = jit_dpa(
+        Pos,
+        KeyPos,
+        KeyDim,
+        q_sub,
+        k,
+        v,
+        mask=struct_mask,
+        inference=True,
+        attn_backend=AttentionBackend(impl),
+        flash_block_size=1,
+    )
+
+    mask = AttentionMask.causal()
+
+    full_out = jit_dpa(
+        FullPos,
+        KeyPos,
+        KeyDim,
+        q,
+        k,
+        v,
+        mask=mask,
+        flash_block_size=1,
+    )
+
+    # The output should be the same, since the mask is relaxed by the offset
+    assert_trees_all_close(offset_out.array, full_out.array[4:6, :], atol=1e-4, rtol=1e-4)
+
+    # sanity check: output should be wrong if we don't use the offset
+    wrong_out = jit_dpa(
+        Pos,
+        KeyPos,
+        KeyDim,
+        q_sub,
+        k,
+        v,
+        mask=mask,
+        inference=True,
+        attn_backend=AttentionBackend(impl),
+        flash_block_size=1,
+    )
+
+    assert not jnp.allclose(
+        offset_out.array, wrong_out.array, atol=1e-4, rtol=1e-4
+    ), "Output should differ without offset"
+
+
+def test_attention_decode_matches_full_ar():
+    """Ensure incremental decode matches full-sequence forward pass."""
+    B = Axis("batch", 1)
+    Pos = Axis("position", 4)
+    Embed = Axis("embed", 8)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+
+    # Full forward pass
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    # Incremental decode ---------------------------------------------------
+    cache = cfg.empty_kv_cache(B, Pos, dtype=jnp.float32)
+    out_chunks = []
+    for i in range(Pos.size):
+        x_tok = x[Pos, hax.dslice(i, 1)]
+        sub_pos = x_tok.resolve_axis("position")
+        pos_ids_tok = hax.arange(sub_pos, start=i)
+        out_tok, cache = _jit_decode(attn, x_tok, pos_ids_tok, cache=cache)
+        out_chunks.append(out_tok.array)  # collect raw arrays for concat
+
+    # Concatenate along the position axis (axis index 1)
+    decoded_arr = jnp.concatenate(out_chunks, axis=1)
+
+    # Assert equality (within numerical tolerance)
+    assert_trees_all_close(full_out.array, decoded_arr, atol=1e-4, rtol=1e-4)
+
+
+def test_attention_decode_matches_full_prefill():
+    """Ensure prefill decode matches full-sequence forward pass."""
+    B = Axis("batch", 2)
+    Pos = Axis("position", 4)
+    Embed = Axis("embed", 16)
+
+    # Build a tiny attention module without ROPE so that pos_ids do not affect outputs
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    cache = cfg.empty_kv_cache(B, Pos, dtype=jnp.float32)
+    pos_ids = hax.arange(Pos, dtype=jnp.int32)
+    decode_out, new_cache = _jit_decode(attn, x, pos_ids, cache)
+
+    # Assert equality (within numerical tolerance)
+    assert_trees_all_close(full_out.array, decode_out.array, atol=1e-4, rtol=1e-4)
+
+
+# This is a bottleneck in tests
+jit_dpa = equinox.filter_jit(dot_product_attention)
+
+
+@equinox.filter_jit
+def _jit_decode(attn, x, pos_ids, cache):
+    return attn.decode(
+        x,
+        pos_ids=pos_ids,
+        key=jrandom.PRNGKey(2),
+        kv_cache=cache,
+    )
+
+
+# @equinox.filter_jit
+def _jit_paged_decode(attn, x, pos_ids, cache: KvPageCache, binfo: PageBatchInfo) -> tuple[NamedArray, KvPageCache]:
+    return attn.paged_decode(x, cache, binfo, pos_ids=pos_ids, key=jrandom.PRNGKey(2))
+
+
+@pytest.mark.parametrize("prefix_size", [1, 2, 3])
+@pytest.mark.parametrize("chunk_size", [1, 2, 3])
+def test_attention_decode_prefill_in_chunks(prefix_size, chunk_size):
+    """Ensure prefill decode matches full-sequence forward pass when decoding in chunks."""
+    B = Axis("batch", 2)
+    Pos = Axis("position", prefix_size + 4 * chunk_size)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    # prefill the prefix_size
+    prefix = x[Pos, 0:prefix_size]
+    cache = cfg.empty_kv_cache(B, Pos, dtype=jnp.float32)
+    prefill_chunk, cache = _jit_decode(
+        attn, prefix, pos_ids=hax.arange(Pos.resize(prefix_size), dtype=jnp.int32), cache=cache
+    )
+
+    # ok now decode the rest in chunks
+    out_chunks = [prefill_chunk]
+    for i in range(prefix_size, Pos.size, chunk_size):
+        x_tok = x[Pos, hax.dslice(i, chunk_size)]
+        sub_pos = x_tok.resolve_axis("position")
+        pos_ids_tok = hax.arange(sub_pos, dtype=jnp.int32, start=i)
+        out_tok, cache = _jit_decode(attn, x_tok, pos_ids_tok, cache)
+        out_chunks.append(out_tok)
+
+    # Concatenate along the position axis
+    decoded_arr = hax.concatenate("position", out_chunks)
+    assert_trees_all_close(full_out, decoded_arr, atol=1e-4, rtol=1e-4)
+
+
+def test_attention_decode_ragged_fill_in_chunks():
+    """
+    Ensure prefill decode matches full-sequence forward pass when decoding in chunks with ragged fill.
+
+    To test this, we will always do the attention computation in terms of a full Pos, but
+    we'll use pos_ids < 0 to control the length.
+    """
+    B = Axis("batch", 2)
+    Pos = Axis("position", 8)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+    x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    def padded_pos_ids(start, stop):
+        """Generate pos_ids with negative values for padding"""
+        pos_ids = hax.arange(Pos, dtype=jnp.int32, start=start)
+        # Fill with -1 to indicate unused positions
+        return hax.where(pos_ids >= stop, -1, pos_ids)
+
+    cache = cfg.empty_kv_cache(B, Pos, dtype=jnp.float32)
+
+    chunk_sizes = [
+        [4, 2],
+        [0, 1],
+        [0, 1],
+        [2, 1],
+        [1, 2],
+        [1, 1],
+    ]
+
+    off0, off1 = 0, 0
+    outputs0 = []
+    outputs1 = []
+    for step0, step1 in chunk_sizes:
+        pos_ids = hax.stack("batch", [padded_pos_ids(off0, off0 + step0), padded_pos_ids(off1, off1 + step1)])
+
+        # grab the right parts of x
+        x0 = x[B, 0, "position", off0 : off0 + step0]
+        x1 = x[B, 1, "position", off1 : off1 + step1]
+
+        x_q = hax.full((B, Pos, Embed), 100, dtype=x.dtype)
+        x_q = x_q.at[B, 0, "position", 0:step0].set(x0)
+        x_q = x_q.at[B, 1, "position", 0:step1].set(x1)
+
+        output, cache = _jit_decode(attn, x_q, pos_ids=pos_ids, cache=cache)
+        # slice the output to match the pos_ids
+        outputs0.append(output[B, 0, "position", hax.dslice(0, step0)])
+        outputs1.append(output[B, 1, "position", hax.dslice(0, step1)])
+        off0 += step0
+        off1 += step1
+
+    # Concatenate along the position axis
+    outputs0_cat = hax.concatenate("position", outputs0)
+    outputs1_cat = hax.concatenate("position", outputs1)
+
+    assert_trees_all_close(full_out[B, 0].array, outputs0_cat.array, atol=1e-4, rtol=1e-4)
+    assert_trees_all_close(full_out[B, 1].array, outputs1_cat.array, atol=1e-4, rtol=1e-4)
+
+    decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
+
+    # Assert equality (within numerical tolerance)
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
+
+
+def test_attention_paged_decode_matches_full_ar():
+    Pos = Axis("position", 4)
+    Embed = Axis("embed", 8)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+
+    x = hax.random.normal(x_key, (Pos, Embed)) * 0.2
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    pt = PageTable.init(max_pages=4, max_seqs=2, page_size=4, max_pages_per_seq=4)
+    pt, seq_id = pt.assign_seq_id_to_seq()
+    kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
+    out_chunks = []
+    for i in range(Pos.size):
+        pt, binfo = pt.allocate_for_seq(hax.named([seq_id], "position"))
+
+        x_tok = x[Pos, hax.dslice(i, 1)]
+        out_tok, kv_cache = _jit_paged_decode(attn, x_tok, binfo.pos_ids, kv_cache, binfo)
+        out_chunks.append(out_tok.array)
+
+    decoded_arr = jnp.concatenate(out_chunks, axis=0)
+    assert_trees_all_close(full_out.array, decoded_arr, atol=1e-4, rtol=1e-4)
+
+
+def test_attention_paged_decode_matches_full_prefill():
+    Pos = Axis("position", 16)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+
+    pt = PageTable.init(max_pages=4, max_seqs=2, page_size=4, max_pages_per_seq=4)
+    pt, seq1 = pt.assign_seq_id_to_seq()
+    pt, seq2 = pt.assign_seq_id_to_seq()
+
+    x = hax.random.normal(x_key, (Pos, Embed)) * 0.2
+    seg_ids = hax.named([0] * 4 + [1] * 3 + [-1] * 9, "position")
+    pt, binfo = pt.allocate_for_seq(seg_ids)
+
+    causal = AttentionMask.causal().with_segment_ids(seg_ids)
+    full_out = attn(x, causal, key=jrandom.PRNGKey(1))
+
+    kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
+
+    decode_out, _ = _jit_paged_decode(attn, x, binfo.pos_ids, kv_cache, binfo)
+
+    # we only care about the first 7 positions, since the rest are padding
+    full_out = full_out["position", hax.dslice(0, 7)]
+    decode_out = decode_out["position", hax.dslice(0, 7)]
+
+    assert_trees_all_close(full_out.array, decode_out.array, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("prefix_size", [1, 2, 3])
+@pytest.mark.parametrize("chunk_size", [1, 2, 3])
+def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
+    Pos = Axis("position", prefix_size + 4 * chunk_size)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+
+    B = Axis("batch", 2)
+    # x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    x = hax.arange((B, Pos, Embed), start=-2, step=0.1, dtype=jnp.float32)
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    pt = PageTable.init(max_pages=8, max_seqs=2, page_size=4, max_pages_per_seq=4)
+    pt, seq1 = pt.assign_seq_id_to_seq()
+    pt, seq2 = pt.assign_seq_id_to_seq()
+    kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
+
+    x0 = x[B, 0]
+    x1 = x[B, 1]
+
+    outputs0 = []
+    outputs1 = []
+
+    # prefill
+    tok_axis = Axis("position", 2 * prefix_size)
+    tokens = hax.named([seq1] * prefix_size + [seq2] * prefix_size, tok_axis)
+    pt, binfo = pt.allocate_for_seq(tokens)
+    x_prefill = hax.concatenate(
+        "position",
+        [x0[Pos, 0:prefix_size], x1[Pos, 0:prefix_size]],
+    )
+    out, kv_cache = _jit_paged_decode(attn, x_prefill, binfo.pos_ids, kv_cache, binfo)
+    outputs0.append(out["position", hax.dslice(0, prefix_size)])
+    outputs1.append(out["position", hax.dslice(prefix_size, prefix_size)])
+
+    # decode rest in chunks
+    for i in range(prefix_size, Pos.size, chunk_size):
+        tok_axis = Axis("position", 2 * chunk_size)
+        tokens = hax.named([seq1] * chunk_size + [seq2] * chunk_size, tok_axis)
+        pt, binfo = pt.allocate_for_seq(tokens)
+
+        x_chunk = hax.concatenate(
+            "position",
+            [x0[Pos, hax.dslice(i, chunk_size)], x1[Pos, hax.dslice(i, chunk_size)]],
+        )
+        out_chunk, kv_cache = _jit_paged_decode(attn, x_chunk, binfo.pos_ids, kv_cache, binfo)
+        outputs0.append(out_chunk["position", hax.dslice(0, chunk_size)])
+        outputs1.append(out_chunk["position", hax.dslice(chunk_size, chunk_size)])
+
+    outputs0_cat = hax.concatenate("position", outputs0)
+    outputs1_cat = hax.concatenate("position", outputs1)
+    decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
+
+
+def test_attention_paged_decode_ragged_fill_in_chunks():
+    B = Axis("batch", 2)
+    Pos = Axis("position", 8)
+    Embed = Axis("embed", 16)
+
+    cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, attn_backend=AttentionBackend.VANILLA)
+    attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
+    attn = Attention.init(cfg, key=attn_key)
+    # x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
+    x = hax.arange((B, Pos, Embed), start=-2, step=0.1, dtype=jnp.float32)
+    full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
+
+    pt = PageTable.init(max_pages=8, max_seqs=2, page_size=4, max_pages_per_seq=4)
+    pt, seq1 = pt.assign_seq_id_to_seq()
+    pt, seq2 = pt.assign_seq_id_to_seq()
+    kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
+
+    x0 = x[B, 0]
+    x1 = x[B, 1]
+
+    chunk_sizes = [[4, 2], [0, 1], [0, 1], [2, 1], [1, 2], [1, 1]]
+    off0 = off1 = 0
+    outputs0 = []
+    outputs1 = []
+
+    for step0, step1 in chunk_sizes:
+        tok_axis = Axis("position", step0 + step1)
+        seg_ids = hax.named([seq1] * step0 + [seq2] * step1, tok_axis)
+        pt, binfo = pt.allocate_for_seq(seg_ids)
+
+        x_chunk = hax.concatenate(
+            "position",
+            [x0[Pos, hax.dslice(off0, step0)], x1[Pos, hax.dslice(off1, step1)]],
+        )
+        output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=binfo.pos_ids, cache=kv_cache, binfo=binfo)
+        outputs0.append(output["position", hax.dslice(0, step0)])
+        outputs1.append(output["position", hax.dslice(step0, step1)])
+
+        # check each chunk individually
+        assert_trees_all_close(
+            full_out[B, 0, "position", hax.dslice(off0, step0)].array,
+            outputs0[-1].array,
+            atol=1e-4,
+            rtol=1e-4,
+        )
+        assert_trees_all_close(
+            full_out[B, 1, "position", hax.dslice(off1, step1)].array,
+            outputs1[-1].array,
+            atol=1e-4,
+            rtol=1e-4,
+        )
+
+        off0 += step0
+        off1 += step1
+
+    outputs0_cat = hax.concatenate("position", outputs0)
+    outputs1_cat = hax.concatenate("position", outputs1)
+
+    decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
 
 
 # Reference implementation of Attention Sink with Sliding Window from https://github.com/openai/gpt-oss/blob/main/gpt_oss/triton/attention.py

@@ -12,8 +12,10 @@ import haliax as hax
 from levanter.layers.attention import AttentionMask
 from levanter.models.mistral import MistralConfig, MistralLMHeadModel
 from test_utils import check_load_config, check_model_works_with_seqlen, parameterize_with_configs, skip_if_no_torch
+from tests.test_utils import skip_if_hf_model_not_accessible
 
 
+@skip_if_hf_model_not_accessible("mistralai/Mistral-7B-v0.1")
 @skip_if_no_torch
 def test_mistral_config():
     # load HF config and convert to levanter config
@@ -75,6 +77,7 @@ def test_mistral_lm_head_model_bwd(use_flash, num_kv_heads):
     _, grads = eqx.filter_eval_shape(eqx.filter_value_and_grad(f), llama_model, input_ids, mask)
 
 
+@skip_if_hf_model_not_accessible("mistralai/Mistral-7B-v0.1")
 @skip_if_no_torch
 @pytest.mark.parametrize("num_kv_heads", [1, 2, 4])
 def test_mistral_roundtrip(num_kv_heads):
