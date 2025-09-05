@@ -327,62 +327,10 @@ max_num_tokens: {max_num_tokens}
         )
 
 
-class JitScheduler(eqx.Module):
+class TokenQueue(eqx.Module):
     """
-    inside-JIT scheduler for sequences. We assume there is an outer scheduler that manages all sequences, and this
-    scheduler handles the sequences in a single macro-round of prefill/decodes. That is, we assume something like:
-
-    ```
-        # in an outer thread
-        outer_scheduler.enqueue_new_sequences(...)
-
-        # intiialization
-        page_table = PageTable.init(...)
-        cache = model.initial_cache(page_table, dtype=jnp.bfloat16)
-        jit_scheduler = JitScheduler.init(...)
-
-        while outer_scheduler.has_sequences():
-            # add new sequences to the jit scheduler
-            jit_scheduler = outer_scheduler.get_next_macro_round(jit_scheduler)
-            # do iterative prefill/decode
-            jit_scheduler = do_generate(jit_scheduler, page_table, cache, MAX_STEPS)
-
-        do_generate might look like this:
-        def do_generate(sched: JitScheduler, cache, page_table,  max_steps: int) -> JitScheduler:
-            def cond(state):
-                _sched, *_ , step = state
-                return (step < max_new_tokens) & (~jnp.all(_sched.is_finished(jnp.arange(_sched.seq_id.size))))
-
-            def body(state):
-                sched: JitScheduler
-                sched, page_table, cache, key, step = state
-
-                # Pack the next chunk from the queue
-                sched, chunk_tokens, chunk_seq_ids = sched.pack_next_sequence(max_tokens_per_round)
-
-                # Allocate cache pages for this chunk
-                page_table, binfo = page_table.allocate_for_seq(token_seq_ids=chunk_seq_ids)
-
-                # Decode logits and sample new tokens
-                logits, cache = model.decode(chunk_tokens, cache, binfo, binfo.pos_ids)
-                sample_key, key = jrandom.split(key)
-                logits = logits["position", binfo.last_token_idx]
-                new_tokens, _ = sampler(logits, temps, key=sample_key)
-
-                num_new_tokens = hax.sum(binfo.last_token_idx != -1).scalar()
-
-                # Update scheduler with the freshly sampled tokens
-                sched = sched.enqueue_tokens(
-                    new_tokens,
-                    chunk_seq_ids,
-                    num_new_tokens,
-                )
-                return sched, page_table, cache, key, step + 1
-
-            init_state = (sched, page_table, cache, key, jnp.array(0, dtype=jnp.int32))
-            sched, page_table, cache, key, _ = jax.lax.while_loop(cond, body, init_state)
-            return sched, cache, page_table, key
-
+    Manages a queue of tokens that are waiting to be processed. These are tokens that have been generated (or requestd for prefill)
+    but have not yet been consumed by the decoding process.
     """
     # Notes:
     # - ``queued_tokens`` are stored "flat" with accompanying ``queued_seq_ids``
@@ -403,9 +351,9 @@ class JitScheduler(eqx.Module):
         return self.queued_tokens.axis_size("position")
 
     @staticmethod
-    def init(max_queued_tokens: int) -> "JitScheduler":
+    def init(max_queued_tokens: int) -> "TokenQueue":
         """Create a ``JitScheduler`` with empty buffers."""
-        return JitScheduler(
+        return TokenQueue(
             queued_tokens=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             queued_seq_ids=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             num_queued_tokens=jnp.array(0, dtype=jnp.int32),
@@ -416,7 +364,7 @@ class JitScheduler(eqx.Module):
         new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
         new_seq_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
         num_new_tokens: int,
-    ) -> "JitScheduler":
+    ) -> "TokenQueue":
         """Append ``new_tokens`` and ``new_seq_ids`` to the queue."""
 
         new_q_tokens = masked_set(
@@ -443,7 +391,7 @@ class JitScheduler(eqx.Module):
 
     def pack_next_sequence(
         self, max_tokens: int
-    ) -> tuple["JitScheduler", PackedSequence]:  # type: ignore[name-defined]
+    ) -> tuple["TokenQueue", PackedSequence]:  # type: ignore[name-defined]
         """
         Dequeue up to ``max_tokens`` tokens from the queue and return them.
 
@@ -500,7 +448,7 @@ class JitScheduler(eqx.Module):
 
         return new_scheduler, sequence
 
-    def purge_queue_of_seq(self, seq_id: hax.NamedArray | int) -> "JitScheduler":
+    def purge_queue_of_seq(self, seq_id: hax.NamedArray | int) -> "TokenQueue":
         """
         Remove all tokens from the queue that belong to the given sequence IDs or sequence ids
         Slides remaining tokens to the front of the queue.
@@ -521,12 +469,12 @@ class JitScheduler(eqx.Module):
             num_queued_tokens=new_queued,
         )
 
-    def cleared(self) -> "JitScheduler":
+    def cleared(self) -> "TokenQueue":
         """
         Returns a new JitScheduler with all buffers cleared.
         This is useful for resetting the scheduler state.
         """
-        return JitScheduler.init(
+        return TokenQueue.init(
             max_queued_tokens=self.queued_tokens.axis_size("position"),
         )
 

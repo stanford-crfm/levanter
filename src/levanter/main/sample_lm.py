@@ -30,7 +30,7 @@ from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.inference.jit_scheduler import JitScheduler, DecodeState, SeqDecodingParams
+from levanter.inference.jit_scheduler import TokenQueue, DecodeState, SeqDecodingParams
 from levanter.inference.utils import INVALID
 from levanter.layers.attention import KvPageCache
 
@@ -42,7 +42,7 @@ class GenState(eqx.Module):
     Plain Old Data type for generation state.
     Contains all the components needed for language model generation.
     """
-    sched: JitScheduler
+    sched: TokenQueue
     cache: KvPageCache
     page_table: PageTable
     decode_state: DecodeState
@@ -211,7 +211,7 @@ def main(config: SampleLmConfig):
 
         table = PageTable.init(64, len(prompt_ids), 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
-        sched = JitScheduler.init(32)
+        sched = TokenQueue.init(32)
         initial_decode_state = DecodeState.init(
             table.max_seqs,
             table.pages_per_seq,
