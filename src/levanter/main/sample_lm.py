@@ -120,13 +120,13 @@ def run_generation_loop(
 
     def cond(state: tuple[GenState, jax.Array, jax.Array]):
         _gen_state, finished, step = state
-        return (step < max_rounds) & (_gen_state.decode_state.tqueue.num_queued_tokens > 0) & (~jnp.all(finished))
+        return (step < max_rounds) & (_gen_state.decode_state.num_queued_tokens > 0) & (~jnp.all(finished))
 
     def body(state: tuple[GenState, jax.Array, jax.Array]) -> tuple[GenState, jax.Array, jax.Array]:
         gen_state, has_finished, step = state
 
-        # Pack the next chunk from the queue
-        tqueue, packed_seq = gen_state.decode_state.tqueue.pack_next_sequence(max_tokens_per_round)
+        # Pack the next chunk from the queue via DecodeState
+        decode_state, packed_seq = gen_state.decode_state.pack_next_sequence(max_tokens_per_round)
 
         page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
 
@@ -148,24 +148,24 @@ def run_generation_loop(
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
 
         # Update scheduler with the freshly sampled tokens
-        decode_state = gen_state.decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
+        decode_state = decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
         new_finished = decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
         has_finished = has_finished | new_finished
 
-        tqueue = tqueue.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
+        # Enqueue newly sampled tokens via DecodeState forwarder
+        decode_state = decode_state.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
 
         # purge any finished sequencse
         finished_sequences = jnp.nonzero(new_finished, size=gen_state.page_table.max_seqs, fill_value=INVALID)[0]
         finished_sequences = hax.named(finished_sequences, axis="seq")
-        tqueue = tqueue.purge_queue_of_seq(finished_sequences)
+        decode_state = decode_state.purge_queue_of_seq(finished_sequences)
 
         # Update the gen_state with all the new components
-        new_decode_state = dataclasses.replace(decode_state, tqueue=tqueue)
         new_gen_state = dataclasses.replace(
             gen_state,
             page_table=page_table,
             cache=cache,
-            decode_state=new_decode_state,
+            decode_state=decode_state,
         )
 
         return new_gen_state, has_finished, step + 1
@@ -295,18 +295,18 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
         )
 
         prompts_tokens_to_enqueue = np.asarray(tokens, dtype=jnp.int32)
-        if len(tokens) > gen_state.decode_state.tqueue.max_queued_tokens:
+        if len(tokens) > gen_state.decode_state.max_queued_tokens:
             raise ValueError(
                 f"Prompt is too long ({len(tokens)} tokens), "
-                f"max queued tokens is {gen_state.decode_state.tqueue.max_queued_tokens}. "
+                f"max queued tokens is {gen_state.decode_state.max_queued_tokens}. "
             )
 
         target_len = len(prompts_tokens_to_enqueue)
-        if target_len > gen_state.decode_state.tqueue.max_queued_tokens:
+        if target_len > gen_state.decode_state.max_queued_tokens:
             print(
-                f"Queue is full ({gen_state.decode_state.tqueue.num_queued_tokens} tokens), running generation loop to free up space.")
+                f"Queue is full ({gen_state.decode_state.num_queued_tokens} tokens), running generation loop to free up space.")
 
-        while target_len > gen_state.decode_state.tqueue.empty_queue_space:
+        while target_len > gen_state.decode_state.empty_queue_space:
             # if the queue is too full, we run generation loop to free up space
             # TODO: would be better if we do partial/chunked prefill here, but hopefully this is rare
             gen_state = run_generation_loop(
@@ -322,12 +322,11 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
 
         this_tokens = hax.named(prompts_tokens_to_enqueue, axis="position")
         seq_ids = hax.full_like(this_tokens, seq_id, dtype=jnp.int32)
-        new_tqueue = gen_state.decode_state.tqueue.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
+        new_decode_state = gen_state.decode_state.enqueue_tokens(this_tokens, seq_ids, prompts_tokens_to_enqueue.size)
         gen_state = dataclasses.replace(
             gen_state,
-            decode_state=dataclasses.replace(gen_state.decode_state, tqueue=new_tqueue),
+            decode_state=new_decode_state,
         )
-        del new_tqueue
 
         # do one macro-prefill round
         gen_state = run_generation_loop(

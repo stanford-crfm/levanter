@@ -126,6 +126,41 @@ class DecodeState(eqx.Module):
         per_pos_keys = self.prng_keys[seq_ids.array]
         return jax.vmap(jax.random.fold_in)(per_pos_keys, pos_ids.array)
 
+    def enqueue_tokens(
+        self,
+        new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        new_seq_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        num_new_tokens: int,
+    ) -> "DecodeState":
+        """Forward ``enqueue_tokens`` to the underlying ``TokenQueue`` and return an updated ``DecodeState``."""
+        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
+        return dataclasses.replace(self, tqueue=new_tqueue)
+
+    def purge_queue_of_seq(self, seq_id: hax.NamedArray | int) -> "DecodeState":
+        """Forward ``purge_queue_of_seq`` to ``TokenQueue`` and return an updated ``DecodeState``."""
+        new_tqueue = self.tqueue.purge_queue_of_seq(seq_id)
+        return dataclasses.replace(self, tqueue=new_tqueue)
+
+    def pack_next_sequence(self, max_tokens: int) -> tuple["DecodeState", PackedSequence]:  # type: ignore[name-defined]
+        """Forward ``pack_next_sequence`` to ``TokenQueue`` and return updated ``DecodeState`` plus the ``PackedSequence``."""
+        new_tqueue, packed = self.tqueue.pack_next_sequence(max_tokens)
+        return dataclasses.replace(self, tqueue=new_tqueue), packed
+
+    @property
+    def empty_queue_space(self) -> jnp.ndarray:
+        """Expose remaining queue capacity from ``TokenQueue``."""
+        return self.tqueue.empty_queue_space
+
+    @property
+    def max_queued_tokens(self) -> int:
+        """Expose queue capacity from ``TokenQueue``."""
+        return self.tqueue.max_queued_tokens
+
+    @property
+    def num_queued_tokens(self) -> jax.Array:
+        """Expose current queued token count from ``TokenQueue``."""
+        return self.tqueue.num_queued_tokens
+
     @property
     def max_seqs(self) -> int:
         """Number of sequences in the buffer."""
