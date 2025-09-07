@@ -141,15 +141,15 @@ def run_generation_loop(
         num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = packed_seq.seq_ids["position", boundaries]
         new_pos_ids = binfo.pos_ids["position", boundaries]
-        prng_keys = gen_state.decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
+        prng_keys = decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
 
-        temps = gen_state.decode_state.temperature["seq", new_seq_ids]
+        temps = decode_state.temperature["seq", new_seq_ids]
 
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
-        new_finished = decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
+        new_finished = decode_state.is_finished(jnp.arange(decode_state.max_seqs))
         has_finished = has_finished | new_finished
 
         # purge any finished sequencse
