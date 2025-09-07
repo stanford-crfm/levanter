@@ -187,7 +187,7 @@ def main(config: SampleLmConfig):
 
     tokenizer = load_tokenizer(config.tokenizer)
 
-    key = jrandom.key(config.seed)
+    key = jrandom.PRNGKey(config.seed)
 
     # NB: we use the compute_axis_mapping b/c we're doing inference
     with config.trainer.device_mesh, hax.axis_mapping(config.trainer.compute_axis_mapping):
