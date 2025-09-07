@@ -31,10 +31,19 @@ from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 from levanter.inference.jit_scheduler import DecodeState, SeqDecodingParams, TokenQueue
-from levanter.inference.utils import INVALID
+from levanter.inference.utils import INVALID, is_valid
 from levanter.layers.attention import KvPageCache
 
 logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class Request:
+    """A request for generation of a single sequence."""
+    prompt_tokens: list[int]
+    request_id: int
+    decode_params: SeqDecodingParams
+
+SEQ_LENGTHS = [32, 64, 128, 256, 512, 1024, 2048, 4096]
 
 
 class GenState(eqx.Module):
@@ -317,21 +326,21 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
     time_in = time.time()
     finished = [False] * len(prompt_ids)
     outputs = [list(t) for t in prompt_ids]  # start with the prompts
-    # Phase 0: Cleanly separate prefill from decode using a fresh prefill queue
 
+    requests: list[Request] = []
     if stop_ids is not None:
         stop_ids = stop_ids.broadcast_axis({"stop_seq": 1})
 
-    # Prefill all prompts in a dedicated function
-    gen_state = prefill_prompts(
-        config=config,
-        gen_state=gen_state,
-        model=model,
-        sampler=sampler,
-        prompt_ids=prompt_ids,
-        stop_ids=stop_ids,
-        key=key,
-    )
+    for req_id, toks in enumerate(prompt_ids):
+        seq_params = SeqDecodingParams(
+            max_num_tokens=jnp.array(len(toks) + config.max_new_tokens, dtype=jnp.int32),
+            stop_tokens=stop_ids,
+            temperature=jnp.array(config.temperature, dtype=jnp.float32),
+            key=jax.random.fold_in(key, req_id),
+        )
+        requests.append(Request(prompt_tokens=toks, request_id=req_id, decode_params=seq_params))
+
+    gen_state = prefill_prompts(gen_state, model, sampler, requests)
 
     extract_outputs(gen_state.decode_state, outputs, finished)
 
@@ -348,7 +357,7 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
             model,
             sampler,
             # TODO: tune/configure
-            len(prompt_ids),
+            len(requests),
             8,
         )
         total_gen_loop = time.time() - time_gen_in
@@ -385,51 +394,71 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
     return outputs, gen_state, total_generated
 
 
+def pad_to_standard_length(tokens: np.ndarray, allowed_lengths: list[int], pad_token_id: int) -> np.ndarray:
+    """Pad the token array to the nearest allowed length using the pad_token_id."""
+    current_length = tokens.shape[0]
+    target_length = min((length for length in allowed_lengths if length >= current_length), default=None)
+
+    if target_length is None:
+        raise ValueError(f"Current length {current_length} exceeds all allowed lengths {allowed_lengths}")
+
+    padding_length = target_length - current_length
+    if padding_length > 0:
+        padding = np.full((padding_length,), pad_token_id, dtype=tokens.dtype)
+        tokens = np.concatenate([tokens, padding], axis=0)
+
+    return tokens
+
+
+
+
 def prefill_prompts(
-    *,
-    config: SampleLmConfig,
     gen_state: GenState,
     model,
     sampler,
-    prompt_ids,
-    stop_ids: NamedArray | None,
-    key,
+    prompts: list[Request],
 ) -> GenState:
     """Assign seq ids, set params, and run prefill via a fresh token queue for all prompts."""
     all_tokens = []
     all_seq_ids = []
 
-    for seq_tokens in prompt_ids:
+    for request in prompts:
+        seq_tokens = request.prompt_tokens
+        seq_params = request.decode_params
+
         page_table, seq_id = gen_state.page_table.assign_seq_id_to_seq()
+        if not bool(is_valid(seq_id)):
+            raise RuntimeError("Ran out of sequence IDs in the page table during prefill.")
+
         gen_state = dataclasses.replace(gen_state, page_table=page_table)
 
-        seq_params = SeqDecodingParams(
-            max_num_tokens=jnp.array(len(seq_tokens) + config.max_new_tokens, dtype=jnp.int32),
-            stop_tokens=stop_ids,
-            temperature=jnp.array(config.temperature, dtype=jnp.float32),
-            key=jax.random.fold_in(key, seq_id),
-        )
-
+        tokens_array = np.asarray(seq_tokens, dtype=jnp.int32)
+        # build allowed lengths = multiples of page size up to pages_per_seq
+        page_size = gen_state.page_table.page_size
+        pages_per_seq = gen_state.page_table.pages_per_seq
+        allowed_lengths = [page_size * k for k in range(1, pages_per_seq + 1)]
+        padded = pad_to_standard_length(tokens_array, allowed_lengths, INVALID)
         gen_state = dataclasses.replace(
             gen_state,
             decode_state=gen_state.decode_state.assign_seq(
-                seq_id,
-                seq_id,
-                hax.full({"page": gen_state.page_table.pages_per_seq}, INVALID, dtype=jnp.int32),
-                hax.named(np.asarray(seq_tokens, dtype=jnp.int32), axis="position"),
-                len(seq_tokens),
-                seq_params,
+                local_seq_id=int(jax.device_get(seq_id)),
+                global_seq_id=request.request_id,
+                tokens=hax.named(padded, axis="position"),
+                prefix_len=len(seq_tokens),
+                kv_pages=None,
+                seq_params=seq_params,
             ),
         )
 
-        toks = hax.named(np.asarray(seq_tokens, dtype=jnp.int32), axis="position")
-        sids = hax.full_like(toks, seq_id, dtype=jnp.int32)
-        all_tokens.append(toks)
+        sids = np.full_like(tokens_array, int(jax.device_get(seq_id)), dtype=jnp.int32)
+        all_tokens.append(tokens_array)
         all_seq_ids.append(sids)
 
     if len(all_tokens) > 0:
-        flat_tokens = hax.concatenate("position", all_tokens)
-        flat_seq_ids = hax.concatenate("position", all_seq_ids)
+        flat_tokens = jnp.concatenate(all_tokens)
+        flat_seq_ids = jnp.concatenate(all_seq_ids)
+        flat_tokens = hax.named(flat_tokens, axis="position")
+        flat_seq_ids = hax.named(flat_seq_ids, axis="position")
         gen_state = run_prefill_loop(gen_state, model, sampler, flat_tokens, flat_seq_ids, max_tokens_per_round=64)
 
     return gen_state
@@ -445,32 +474,31 @@ def extract_outputs(decode_state: DecodeState, outputs, finished):
     num_seqs = decode_state.max_seqs
     tokens = jax.device_get(decode_state.tokens.array)
     num_tokens = jax.device_get(decode_state.num_tokens.array)
+    seq_ids = jax.device_get(decode_state.seq_id.array)
     this_finished = jax.device_get(decode_state.is_finished(jnp.arange(num_seqs)))
-    for seq_id in range(num_seqs):
 
-        current_num_tokens = len(outputs[seq_id])
-
-        new_num_tokens = num_tokens[seq_id]
-        count_to_extract = new_num_tokens - current_num_tokens
-
-        # print(f"Sequence {seq_id} has {new_num_tokens} tokens. we have {current_num_tokens} tokens already extracted, "
-        #       f"We think the sequence is finished: {finished[seq_id]}, now {this_finished[seq_id]}")
-
-        if finished[seq_id]:
+    for local_seq in range(num_seqs):
+        global_id = int(seq_ids[local_seq])
+        if global_id < 0 or global_id == INVALID:
             continue
 
-        total_this_time += count_to_extract
+        current_num_tokens = len(outputs[global_id])
+        new_num_tokens = int(num_tokens[local_seq])
+        count_to_extract = new_num_tokens - current_num_tokens
 
-        if this_finished[seq_id]:
-            finished[seq_id] = True
+        if finished[global_id]:
+            continue
+
+        total_this_time += max(0, count_to_extract)
+
+        if bool(this_finished[local_seq]):
+            finished[global_id] = True
 
         if count_to_extract <= 0:
             continue
 
-        seq_tokens = tokens[seq_id, current_num_tokens:new_num_tokens]
-        # print(f"Extracting {count_to_extract} tokens for sequence {seq_id}: {seq_tokens}")
-
-        outputs[seq_id].extend(int(x) for x in seq_tokens)
+        seq_tokens = tokens[local_seq, current_num_tokens:new_num_tokens]
+        outputs[global_id].extend(int(x) for x in seq_tokens)
 
     return total_this_time
 

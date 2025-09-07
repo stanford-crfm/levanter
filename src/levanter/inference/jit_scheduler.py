@@ -182,9 +182,9 @@ class DecodeState(eqx.Module):
     def assign_seq(self,
                    local_seq_id: int,
                    global_seq_id: int,
-                   kv_pages: ht.i32[NamedArray, "page"],  # type: ignore[name-defined]
                    tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
                    prefix_len: int,
+                   kv_pages: ht.i32[NamedArray, "page"] | None = None,  # type: ignore[name-defined]
                    seq_params: SeqDecodingParams | None = None) -> "DecodeState":
         """Assign a new sequence to the given local slot."""
         num = tokens.axis_size("position")
@@ -192,6 +192,9 @@ class DecodeState(eqx.Module):
         row_tokens = self.tokens["seq", local_seq_id]
         row_tokens = masked_set(row_tokens, "position", 0, tokens, num)
         new_tokens = self.tokens.at["seq", local_seq_id].set(row_tokens)
+
+        if kv_pages is None:
+            kv_pages = hax.full_like(self.kv_pages["seq", local_seq_id], INVALID)
 
         new_state = dataclasses.replace(
             self,
