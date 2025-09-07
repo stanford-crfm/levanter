@@ -23,14 +23,14 @@ def test_page_table_free_pages():
     # manually set some ownership
     pt = dataclasses.replace(
         pt,
-        page_owners=hax.named(jnp.array([0, 0, -1, -1, -1, -1, -1, -1], dtype=jnp.int32), "page"),
+        page_ref_counts=hax.named(jnp.array([1, 1, 0, 0, 0, 0, 0, 0], dtype=jnp.int32), "page"),
         page_indices=pt.page_indices.at["seq", 0, "page", 0].set(0).at["seq", 0, "page", 1].set(1),
         seq_lens=pt.seq_lens.at["seq", 0].set(4),
     )
 
     freed = PageTable.free_pages(pt, 0)
 
-    assert jnp.all(freed.page_owners.array[:2] == INVALID)
+    assert jnp.all(freed.page_ref_counts.array[:2] == 0)
     assert jnp.all(freed.page_indices.array[0] == INVALID)
     assert freed.seq_lens.array[0] == INVALID
 
@@ -83,6 +83,6 @@ def test_free_pages_invalid_seq_id_noop():
     pt = _make_table()
     freed = PageTable.free_pages(pt, -1)
     fresh = _make_table()
-    assert jnp.array_equal(freed.page_owners.array, fresh.page_owners.array)
+    assert jnp.array_equal(freed.page_ref_counts.array, fresh.page_ref_counts.array)
     assert jnp.array_equal(freed.page_indices.array, fresh.page_indices.array)
     assert jnp.array_equal(freed.seq_lens.array, fresh.seq_lens.array)

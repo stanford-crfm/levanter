@@ -31,7 +31,7 @@ class PageTable(eqx.Module):
     """
 
     page_indices: NamedArray  # i32[Seq, PagePerSeq]
-    page_owners: NamedArray  # i32[Page]
+    page_ref_counts: NamedArray  # i32[Page]
     seq_lens: NamedArray  # i32[Seq]
     page_size: int = eqx.field(static=True)
 
@@ -40,7 +40,7 @@ class PageTable(eqx.Module):
     # ------------------------------------------------------------------
     @property
     def num_pages(self) -> int:
-        return self.page_owners.axis_size("page")
+        return self.page_ref_counts.axis_size("page")
 
     @property
     def pages_per_seq(self) -> int:
@@ -69,9 +69,9 @@ class PageTable(eqx.Module):
     @staticmethod
     def init(max_pages: int, max_seqs: int, page_size: int, max_pages_per_seq: int) -> "PageTable":
         page_indices = hax.full({"seq": max_seqs, "page": max_pages_per_seq}, INVALID, dtype=jnp.int32)
-        page_owners = hax.full({"page": max_pages}, INVALID, dtype=jnp.int32)
+        page_ref_counts = hax.full({"page": max_pages}, 0, dtype=jnp.int32)
         seq_lens = hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32)
-        return PageTable(page_indices, page_owners, seq_lens, page_size)
+        return PageTable(page_indices, page_ref_counts, seq_lens, page_size)
 
     # ------------------------------------------------------------------
     # Sequence management
@@ -109,24 +109,42 @@ class PageTable(eqx.Module):
         old_num_pages_needed = (self.seq_lens + self.page_size - 1) // self.page_size
 
         def _alloc_pages_for_seq(seq_id, carry):
-            page_indices, page_owners = carry
+            page_indices, page_ref_counts = carry
             num_needed = new_num_pages_needed["seq", seq_id].scalar()
             old_needed = old_num_pages_needed["seq", seq_id].scalar()
 
             def body(page_idx, state):
-                page_indices, page_owners = state
-                free_page_idx = hax.argmax(page_owners, "page")
-                page_owners = page_owners.at["page", free_page_idx].set(seq_id)
-                page_indices = page_indices.at["seq", seq_id, "page", page_idx].set(free_page_idx)
-                return page_indices, page_owners
+                page_indices, page_ref_counts = state
+                has_free = hax.any(page_ref_counts == 0).scalar()
 
-            new_page_indices, new_page_owners = jax.lax.fori_loop(
-                old_needed, num_needed, body, (page_indices, page_owners)
+                # Emit a runtime error if we are out of free pages
+                page_ref_counts = eqx.error_if(
+                    page_ref_counts,
+                    ~has_free,
+                    "Out of free pages during allocation",
+                )
+
+                def do_alloc(state):
+                    pic, prc = state
+                    # choose a page with the smallest ref count; when has_free, argmin will pick a zero-ref page
+                    free_page_idx = hax.argmin(prc, "page")
+                    prc = prc.at["page", free_page_idx].add(1)
+                    pic = pic.at["seq", seq_id, "page", page_idx].set(free_page_idx)
+                    return pic, prc
+
+                def no_alloc(state):
+                    # No-op; leave index INVALID so downstream gets INVALID destinations
+                    return state
+
+                return jax.lax.cond(has_free, do_alloc, no_alloc, (page_indices, page_ref_counts))
+
+            new_page_indices, new_page_ref_counts = jax.lax.fori_loop(
+                old_needed, num_needed, body, (page_indices, page_ref_counts)
             )
-            return new_page_indices, new_page_owners
+            return new_page_indices, new_page_ref_counts
 
         def outer(i, carry):
-            page_indices, page_owners = carry
+            page_indices, page_ref_counts = carry
             seq_id = updated_seqs["seq", i].scalar()
 
             def do_alloc(carry):
@@ -134,17 +152,17 @@ class PageTable(eqx.Module):
 
             # cond = jnp.logical_and(seq_id >= 0, seq_id < self.max_seqs)
             cond = is_valid(seq_id)
-            page_indices, page_owners = jax.lax.cond(cond, do_alloc, lambda c: c, (page_indices, page_owners))
-            return page_indices, page_owners
+            page_indices, page_ref_counts = jax.lax.cond(cond, do_alloc, lambda c: c, (page_indices, page_ref_counts))
+            return page_indices, page_ref_counts
 
-        page_indices, page_owners = jax.lax.fori_loop(
-            0, updated_seqs.axis_size("seq"), outer, ((self.page_indices), (self.page_owners))
+        page_indices, page_ref_counts = jax.lax.fori_loop(
+            0, updated_seqs.axis_size("seq"), outer, ((self.page_indices), (self.page_ref_counts))
         )
 
         new_table = dataclasses.replace(
             self,
             page_indices=page_indices,
-            page_owners=page_owners,
+            page_ref_counts=page_ref_counts,
             seq_lens=new_lens,
         )
 
@@ -207,13 +225,30 @@ class PageTable(eqx.Module):
 
     @eqx.filter_jit(donate="all")
     def free_pages(self, seq_id: int) -> "PageTable":
-        new_page_owners = hax.where(self.page_owners == seq_id, INVALID, self.page_owners)
+        # No-op for invalid sequence ids
+        if seq_id < 0 or seq_id >= self.max_seqs:
+            return self
+
+        # For the given sequence, decrement ref counts for all valid pages it used
+        seq_pages = self.page_indices["seq", seq_id]
+        is_valid_page = is_valid(seq_pages)
+
+        def body(i, ref_counts):
+            def dec(rc):
+                page = seq_pages["page", i].scalar()
+                return rc.at["page", page].add(-1)
+            return jax.lax.cond(is_valid_page["page", i].scalar(), dec, lambda x: x, ref_counts)
+
+        new_ref_counts = jax.lax.fori_loop(0, seq_pages.axis_size("page"), body, self.page_ref_counts)
+        # Clamp at zero to be safe
+        new_ref_counts = hax.maximum(new_ref_counts, hax.zeros_like(new_ref_counts))
+
         new_page_indices = self.page_indices.at["seq", seq_id].set(INVALID)
         new_seq_lens = self.seq_lens.at["seq", seq_id].set(INVALID)
 
         return dataclasses.replace(
             self,
-            page_owners=new_page_owners,
+            page_ref_counts=new_ref_counts,
             page_indices=new_page_indices,
             seq_lens=new_seq_lens,
         )
