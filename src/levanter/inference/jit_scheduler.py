@@ -236,11 +236,10 @@ class DecodeState(eqx.Module):
         return new_state
 
     def update_tokens(self,
-                      local_seq_ids:  ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
-                      new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
-                      new_log_probs: ht.Float[NamedArray, "position"],  # type: ignore[name-defined]
-                      num_new_tokens: jnp.ndarray  # scalar
-                      ) -> "DecodeState":
+                      new_tokens: ht.i32[NamedArray, " position"],  # type: ignore
+                      local_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore
+                      new_log_probs: ht.Float[NamedArray, " position"],  # type: ignore
+                      num_new_tokens: jnp.ndarray) -> "DecodeState":  # type: ignore
         """
         Update the tokens and (optional) log probabilities for the given local sequence IDs,
         and enqueue these tokens onto the pending TokenQueue.

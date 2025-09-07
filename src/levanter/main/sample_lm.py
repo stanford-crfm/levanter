@@ -148,7 +148,7 @@ def run_generation_loop(
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
-        decode_state = decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
+        decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
         new_finished = decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
         has_finished = has_finished | new_finished
 
