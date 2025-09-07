@@ -147,13 +147,10 @@ def run_generation_loop(
 
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
 
-        # Update scheduler with the freshly sampled tokens
+        # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_seq_ids, new_tokens, log_probs, num_new_tokens)
         new_finished = decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
         has_finished = has_finished | new_finished
-
-        # Enqueue newly sampled tokens via DecodeState forwarder
-        decode_state = decode_state.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
 
         # purge any finished sequencse
         finished_sequences = jnp.nonzero(new_finished, size=gen_state.page_table.max_seqs, fill_value=INVALID)[0]

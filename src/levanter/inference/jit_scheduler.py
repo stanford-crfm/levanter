@@ -242,7 +242,8 @@ class DecodeState(eqx.Module):
                       num_new_tokens: jnp.ndarray  # scalar
                       ) -> "DecodeState":
         """
-        Update the tokens and (optional) log probabilities for the given local sequence IDs.
+        Update the tokens and (optional) log probabilities for the given local sequence IDs,
+        and enqueue these tokens onto the pending TokenQueue.
         """
         tokens = self.tokens
         logprobs = self.logprobs
@@ -264,7 +265,9 @@ class DecodeState(eqx.Module):
 
         tokens, logprobs, counts = jax.lax.fori_loop(0, num_new_tokens, body, (tokens, logprobs, counts))
 
-        return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, num_tokens=counts)
+        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, local_seq_ids, num_new_tokens)
+
+        return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, num_tokens=counts, tqueue=new_tqueue)
 
     def is_finished(self, seq_id: jnp.ndarray) -> jnp.ndarray:
         """
