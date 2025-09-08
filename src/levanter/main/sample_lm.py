@@ -73,7 +73,7 @@ class SampleLmConfig:
         # "On the first day of Christmas, my true love gave to me",
         "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
     )
-    stop_sequence: str | None = "."
+    stop_sequence: str | None = "\n"
     "Stop sequences. Currently only does whole token sequences."
     max_new_tokens: int = 192
     temperature: float = 0.7
@@ -410,14 +410,12 @@ def pad_to_standard_length(tokens: np.ndarray, allowed_lengths: list[int], pad_t
     return tokens
 
 
-
-
 def prefill_prompts(
     gen_state: GenState,
     model,
     sampler,
     prompts: list[Request],
-) -> GenState:
+) -> tuple[GenState, dict[int, list[int]]]:
     """Assign seq ids, set params, and run prefill via a fresh token queue for all prompts."""
     all_tokens = []
     all_seq_ids = []
@@ -427,7 +425,9 @@ def prefill_prompts(
         seq_params = request.decode_params
 
         page_table, seq_id = gen_state.page_table.assign_seq_id_to_seq()
-        if not bool(is_valid(seq_id)):
+        seq_id = int(seq_id)
+
+        if not is_valid(seq_id):
             raise RuntimeError("Ran out of sequence IDs in the page table during prefill.")
 
         gen_state = dataclasses.replace(gen_state, page_table=page_table)
@@ -441,7 +441,7 @@ def prefill_prompts(
         gen_state = dataclasses.replace(
             gen_state,
             decode_state=gen_state.decode_state.assign_seq(
-                local_seq_id=int(jax.device_get(seq_id)),
+                local_seq_id=seq_id,
                 global_seq_id=request.request_id,
                 tokens=hax.named(padded, axis="position"),
                 prefix_len=len(seq_tokens),
@@ -450,7 +450,7 @@ def prefill_prompts(
             ),
         )
 
-        sids = np.full_like(tokens_array, int(jax.device_get(seq_id)), dtype=jnp.int32)
+        sids = np.full_like(tokens_array, seq_id, dtype=jnp.int32)
         all_tokens.append(tokens_array)
         all_seq_ids.append(sids)
 
