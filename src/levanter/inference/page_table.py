@@ -268,6 +268,102 @@ class PageTable(eqx.Module):
 
         return hax.named(pos_ids, "position")
 
+    # ------------------------------------------------------------------
+    # Page sharing / refcount helpers
+    # ------------------------------------------------------------------
+
+    def increment_ref_counts_for_pages(self, pages: NamedArray, count: int = 1) -> "PageTable":
+        """
+        Increment ref counts for the given page index row, ignoring INVALID entries.
+
+        Args:
+            pages: NamedArray of shape [page] containing page indices (or INVALID) for a single sequence.
+            count: amount to add to the ref count for each valid page (default 1).
+        """
+        is_valid_page = is_valid(pages)
+
+        def body(i, ref_counts):
+            def inc(rc):
+                page = pages["page", i].scalar()
+                return rc.at["page", page].add(count)
+            return jax.lax.cond(is_valid_page["page", i].scalar(), inc, lambda x: x, ref_counts)
+
+        new_ref_counts = jax.lax.fori_loop(0, pages.axis_size("page"), body, self.page_ref_counts)
+        return dataclasses.replace(self, page_ref_counts=new_ref_counts)
+
+    def clone_pages_from(self, src_seq_id: int, dst_seq_id: int) -> "PageTable":
+        """
+        Make ``dst_seq_id`` reference the same pages as ``src_seq_id`` for all fully used pages, and handle the
+        last (possibly partial) page as follows:
+
+        - If the source's last page is full (length divisible by ``page_size``), share it as well and increment
+          its refcount.
+        - If the source's last page is partial (length not divisible by ``page_size"), allocate a fresh page for the
+          clone's last page (do not increment the parent's last-page refcount). This ensures subsequent writes by the
+          clone do not affect the parent's partial page. The caller should copy the KV contents for the used slots
+          from the parent's last page to the clone's new page if needed.
+
+        The destination's ``seq_lens`` is set equal to the source's ``seq_lens`` (no rounding).
+        """
+        src_pages = self.page_indices["seq", src_seq_id]
+        src_len = self.seq_lens["seq", src_seq_id].scalar()
+        size = self.page_size
+
+        # How many pages are used by the source (ceil division)
+        used_pages = (src_len + size - 1) // size
+        last_idx = hax.maximum(used_pages - 1, 0)
+        is_boundary = (src_len % size) == 0
+
+        # Start by copying page mappings from source to dest
+        new_indices = self.page_indices.at["seq", dst_seq_id].set(src_pages)
+
+        # Increment refcounts for all fully used pages; if partial, exclude the last page from sharing
+        def inc_shared(ref_counts):
+            def body(i, rc):
+                page = src_pages["page", i]
+                def inc(rc):
+                    return rc.at["page", page].add(1)
+                return jax.lax.cond(is_valid(page).scalar(), inc, lambda x: x, rc)
+
+            # limit = used_pages if boundary else used_pages - 1
+            limit = used_pages - jnp.where(is_boundary, 0, 1)
+            return jax.lax.fori_loop(0, limit, body, ref_counts)
+
+        ref_counts = inc_shared(self.page_ref_counts)
+
+        # If partial, allocate a fresh page for the last slot
+        def handle_partial(state):
+            rc, indices = state
+            has_free = hax.any(rc == 0).scalar()
+            rc = eqx.error_if(rc, ~has_free, "Out of free pages during clone_pages_from")
+            free_idx = hax.argmax(rc == 0, "page")
+            indices = indices.at["seq", dst_seq_id, "page", last_idx].set(free_idx)
+            rc = rc.at["page", free_idx].add(1)
+            return rc, indices
+
+        ref_counts, new_indices = jax.lax.cond(
+            is_boundary,
+            lambda s: s,
+            handle_partial,
+            (ref_counts, new_indices),
+        )
+
+        # Keep destination length equal to source length
+        new_seq_lens = self.seq_lens.at["seq", dst_seq_id].set(src_len)
+
+        return dataclasses.replace(self, page_indices=new_indices, page_ref_counts=ref_counts, seq_lens=new_seq_lens)
+
+    def bump_seq_len_to_next_page(self, seq_id: int) -> "PageTable":
+        """
+        Increase ``seq_lens[seq_id]`` to the start of the next page to force the next token onto a fresh page.
+        Useful when creating clones that should start writing on a different page from the source.
+        """
+        cur = self.seq_lens["seq", seq_id]
+        size = jnp.array(self.page_size, dtype=jnp.int32)
+        next_page = ((cur + size - 1) // size) * size
+        new_seq_lens = self.seq_lens.at["seq", seq_id].set(next_page)
+        return dataclasses.replace(self, seq_lens=new_seq_lens)
+
 
 class PageBatchInfo(eqx.Module):
     """Page and length information for a batch of sequences."""

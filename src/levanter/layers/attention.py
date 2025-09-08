@@ -1910,6 +1910,14 @@ class KvPageCache(eqx.Module):
 
         return dataclasses.replace(self, kv_pages=kv_pages)
 
+    def copy_page(self, src_page: int, dst_page: int) -> "KvPageCache":
+        """Copy the entire contents of page ``src_page`` into ``dst_page``.
+
+        This is used when creating clones that should have an identical last partial page, but mapped to a fresh page.
+        """
+        new_kv = self.kv_pages.at["page", dst_page].set(self.kv_pages["page", src_page])
+        return dataclasses.replace(self, kv_pages=new_kv)
+
 
 def ragged_paged_attention(
     q: NamedArray,  # [Tok, KVHeads, QHeadsPerGroup, HeadSize]

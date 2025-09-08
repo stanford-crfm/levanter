@@ -55,6 +55,72 @@ class GenState(eqx.Module):
     page_table: PageTable
     decode_state: DecodeState
 
+    def clone_sequence(
+        self,
+        parent_local_id: int,
+        child_local_id: int | None = None,
+        *,
+        global_id: int | None = None,
+        seq_params: SeqDecodingParams | None = None,
+    ) -> tuple["GenState", int]:
+        """Clone a sequence into a new local slot, sharing all full pages and using a fresh page for the last partial page.
+
+        Steps:
+        - Allocate a child local id if not provided.
+        - Copy parent's prefix tokens into the child's decode_state (assign_seq), copying parent's kv_pages row.
+        - Clone pages in PageTable (shares fully used pages; allocates fresh page for last partial if needed).
+        - If last page is partial, copy its KV content from parent's last page into child's fresh last page in KvPageCache.
+
+        Returns the updated GenState and the child local id.
+        """
+        # Determine child slot
+        page_table = self.page_table
+        if child_local_id is None:
+            page_table, new_child = page_table.assign_seq_id_to_seq()
+            child_local_id = int(jax.device_get(new_child))
+
+        # Gather parent info
+        decode_state = self.decode_state
+        prefix_len = int(decode_state.num_tokens["seq", parent_local_id].scalar())
+        parent_prefix = decode_state.tokens["seq", parent_local_id, "position", 0:prefix_len]
+        parent_kv_pages_row = decode_state.kv_pages["seq", parent_local_id]
+        gid = (
+            int(decode_state.seq_id["seq", parent_local_id].scalar())
+            if global_id is None
+            else global_id
+        )
+
+        # Assign child sequence state (copies tokens up to prefix and kv_pages row)
+        decode_state = decode_state.assign_seq(
+            local_seq_id=child_local_id,
+            global_seq_id=gid,
+            tokens=parent_prefix,
+            prefix_len=prefix_len,
+            kv_pages=parent_kv_pages_row,
+            seq_params=seq_params,
+        )
+
+        # Clone pages (shares full pages; fresh page for last partial)
+        page_table = page_table.clone_pages_from(parent_local_id, child_local_id)
+
+        # If last page was partial, copy KV contents for that page into child's fresh page
+        page_size = page_table.page_size
+        src_len = int(page_table.seq_lens["seq", parent_local_id].scalar())
+
+        def _copy(_):
+            last_idx = (src_len + page_size - 1) // page_size - 1
+            src_page = int(page_table.page_indices["seq", parent_local_id, "page", last_idx].scalar())
+            dst_page = int(page_table.page_indices["seq", child_local_id, "page", last_idx].scalar())
+            return self.cache.copy_page(src_page, dst_page)
+
+        def _identity(_):
+            return self.cache
+
+        cache = jax.lax.cond((src_len % page_size != 0) and (src_len > 0), _copy, _identity, None)
+
+        new_state = dataclasses.replace(self, page_table=page_table, decode_state=decode_state, cache=cache)
+        return new_state, child_local_id
+
 
 @dataclass
 class SampleLmConfig:
