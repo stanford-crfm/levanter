@@ -1,10 +1,11 @@
 # Revised by Wanyun Xie (wanyun.xie@epfl.ch)
 # 1. Changed the scaling factor calculation in the `transform_linear_layer` function to use sqrt(d_out/d_in), removing the conditional maximum with 1. 
-# 2. Added the scaling factor 1/d_in in `scale_by_sign`.
-# 3. Added scaling factors `spectral_radius` and `sign_radius` to allow for additional scaling after orthogonalization.
-# 4. Removed weight decay, since Scion does a convex combination with learning rate directly.
-# 5. Removed scion_to_signum_lr as its role is replaced by the scaling factors `spectral_radius` and `sign_radius`.
-# 6. Added BiasRMS_transform that applies RMS normalization to bias parameters.
+# 2. Added the scaling factor 1/d_in in `scale_by_sign` with controllable `sign_normalized` parameter.
+# 3. Added layer-specific `sign_normalized` control: Embedding layers use sign_normalized=False, lm_head layers use sign_normalized=True.
+# 4. Added scaling factors `spectral_radius` and `sign_radius` to allow for additional scaling after orthogonalization.
+# 5. Removed weight decay, since Scion does a convex combination with learning rate directly.
+# 6. Removed scion_to_signum_lr as its role is replaced by the scaling factors `spectral_radius` and `sign_radius`.
+# 7. Added BiasRMS_transform that applies RMS normalization to bias parameters.
 
 # Other tips:
 # - Note that we usually set `sign_radius` larger than `spectral_radius`. This is opposite to the original setting `signum_lr = learning_rate * 0.25`.
@@ -70,11 +71,22 @@ class ScionConfig(OptimizerConfig):
                 optimizer = optax.chain(*components)
                 return optimizer
 
-            def Sign_transform():
+            def Sign_lmhead_transform():
                 components = []
                 if self.max_grad_norm:
                     components.append(optax.clip_by_global_norm(self.max_grad_norm))
-                components.append(scale_by_sign(self.beta1, self.sign_radius))
+                components.append(scale_by_sign(self.beta1, self.sign_radius, sign_normalized=True))
+                if not self.unconstrained:
+                    components.append(optax.add_decayed_weights(1, self.build_weight_decay_mask()))
+                components.append(optax.scale(-learning_rate))
+                optimizer = optax.chain(*components)
+                return optimizer
+
+            def Sign_embedding_transform():
+                components = []
+                if self.max_grad_norm:
+                    components.append(optax.clip_by_global_norm(self.max_grad_norm))
+                components.append(scale_by_sign(self.beta1, self.sign_radius, sign_normalized=False))
                 if not self.unconstrained:
                     components.append(optax.add_decayed_weights(1, self.build_weight_decay_mask()))
                 components.append(optax.scale(-learning_rate))
@@ -92,7 +104,8 @@ class ScionConfig(OptimizerConfig):
 
             transformations = {
                 "Spectral": Spectral_transform(),
-                "Sign": Sign_transform(),
+                "Sign_lmhead": Sign_lmhead_transform(),
+                "Sign_embedding": Sign_embedding_transform(),
                 "BiasRMS": BiasRMS_transform(),
             }
 
@@ -103,19 +116,21 @@ class ScionConfig(OptimizerConfig):
     def create_mask(self, params):
         """
         Creates a mask that labels parameters as 'Spectral' or 'Sign' based on their
-        dimensionality and module path, using AdamW for Embedding and lm_head parameters.
+        dimensionality and module path, using different Sign transforms for Embedding and lm_head parameters.
         """
         paths = leaf_key_paths(params)
 
         def mask_fn(param, path):
             path_str = ".".join(path) if isinstance(path, (list, tuple)) else str(path)
-            if "Embedding" in path_str or "lm_head" in path_str:
-                return "Sign"
+            if "Embedding" in path_str:
+                return "Sign_embedding"  # For Embedding layers: sign_normalized=False
+            elif "lm_head" in path_str:
+                return "Sign_lmhead"  # For lm_head layers: sign_normalized=True
             elif isinstance(param, Linear):
                 # scion for linear layers
                 return dataclasses.replace(param, weight="Spectral", bias="BiasRMS" if param.bias is not None else None)
             else:
-                return "Sign"
+                return "Sign_embedding"
 
         return jax.tree_util.tree_map(mask_fn, params, paths, is_leaf=lambda x: isinstance(x, Linear))
 
@@ -126,7 +141,7 @@ class ScaleByScionState(NamedTuple):
     momentum_buffer: optax.Updates
 
 
-def scale_by_sign(momentum=0.95, sign_radius=3000):
+def scale_by_sign(momentum=0.95, sign_radius=3000, sign_normalized=True):
     def init_fn(params):
         momentum_buffer = otu.tree_zeros_like(params)  # First moment
         return ScaleByScionState(momentum_buffer=momentum_buffer)
@@ -140,7 +155,16 @@ def scale_by_sign(momentum=0.95, sign_radius=3000):
             is_leaf=lambda x: x is None,
         )
 
-        updates = jax.tree_map(lambda u: None if u is None else sign_radius/u.shape[1] * jnp.sign(u), buf, is_leaf=lambda x: x is None)
+        def apply_sign_scaling(u):
+            if u is None:
+                return None
+            if sign_normalized and u.ndim >= 2:
+                scale = sign_radius / u.shape[1]
+            else:
+                scale = sign_radius
+            return scale * jnp.sign(u)
+
+        updates = jax.tree_map(apply_sign_scaling, buf, is_leaf=lambda x: x is None)
 
         return updates, ScaleByScionState(momentum_buffer=buf)
 
