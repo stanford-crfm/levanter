@@ -478,11 +478,16 @@ class TokenQueue(eqx.Module):
         # boundary if seq_id changes and not INVALID
         is_boundary: hax.NamedArray = (seq_ids != hax.roll(seq_ids, -1, "position")) & (seq_ids != INVALID)
 
+        # Determine boundary at the last valid token only if there is an actual
+        # next token enqueued after this packed slice. If the queue is drained
+        # (e.g., chunked prefill), the last token should NOT be considered a boundary.
         last_idx = num - 1
-        next_after_last = rolled_seq_ids["position", 0]
+        # Use the post-masked queue head so that drained-queue yields INVALID here
+        next_after_last = new_q_seq_ids["position", 0]
         boundary_last = (
-                (seq_ids["position", last_idx] != next_after_last)
-                & (seq_ids["position", last_idx] != INVALID)
+            (seq_ids["position", last_idx] != next_after_last)
+            & (seq_ids["position", last_idx] != INVALID)
+            & (next_after_last != INVALID)
         )
         is_boundary = is_boundary.at["position", last_idx].set(boundary_last)
 
