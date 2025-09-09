@@ -260,7 +260,6 @@ def run_prefill_loop(
     tokens,
     seq_id,
     seq_len: int,
-    max_tokens_per_round: int=32,
 ) -> GenState:
     """Run prefill using a fresh, local token queue. Newly sampled tokens are enqueued to the main decode queue via update_tokens."""
 
