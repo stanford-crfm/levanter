@@ -4,6 +4,7 @@ import equinox as eqx
 import haliax as hax
 import jaxtyping
 from haliax import NamedArray, haxtyping as ht
+from haliax.jax_utils import ensure_scalar
 from jax import numpy as jnp
 import jax
 
@@ -116,6 +117,14 @@ class DecodeState(eqx.Module):
 
     # Token queue for pending decode work
     tqueue: "TokenQueue"
+
+    def prng_key_for(self, seq_id: int, pos_id: int) -> jaxtyping.PRNGKeyArray:
+        """
+        Get the PRNG key for the given sequence ID and position.
+        This is used to sample new tokens for the given sequence ID and position.
+        """
+        per_pos_key = self.prng_keys[ensure_scalar(seq_id)]
+        return jax.random.fold_in(per_pos_key, ensure_scalar(pos_id))
 
     def prng_keys_for(self, seq_ids: ht.i32[NamedArray, "position"], pos_ids: ht.i32[NamedArray, "position"]) -> jaxtyping.PRNGKeyArray:  # type: ignore[name-defined]
         """
@@ -242,7 +251,7 @@ class DecodeState(eqx.Module):
                       new_tokens: ht.i32[NamedArray, " position"],  # type: ignore
                       local_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore
                       new_log_probs: ht.Float[NamedArray, " position"],  # type: ignore
-                      num_new_tokens: jnp.ndarray) -> "DecodeState":  # type: ignore
+                      num_new_tokens: jnp.ndarray | int) -> "DecodeState":  # type: ignore
         """
         Update the tokens and (optional) log probabilities for the given local sequence IDs,
         and enqueue these tokens onto the pending TokenQueue.

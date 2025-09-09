@@ -30,7 +30,7 @@ from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
-from levanter.inference.jit_scheduler import DecodeState, SeqDecodingParams, TokenQueue
+from levanter.inference.jit_scheduler import DecodeState, SeqDecodingParams
 from levanter.inference.utils import INVALID, is_valid
 from levanter.layers.attention import KvPageCache
 
@@ -42,8 +42,9 @@ class Request:
     prompt_tokens: list[int]
     request_id: int
     decode_params: SeqDecodingParams
+    n_generations: int
 
-SEQ_LENGTHS = [32, 64, 128, 256, 512, 1024, 2048, 4096]
+SEQ_LENGTHS = [8, 32, 64, 128, 256, 512, 1024, 2048, 4096]
 
 
 class GenState(eqx.Module):
@@ -139,11 +140,13 @@ class SampleLmConfig:
         # "On the first day of Christmas, my true love gave to me",
         "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
     )
-    stop_sequence: str | None = "\n"
+    stop_sequence: str | None = "."
     "Stop sequences. Currently only does whole token sequences."
     max_new_tokens: int = 192
     temperature: float = 0.7
     seed: int = 2
+
+    n_generations: int = 1
 
 
 def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
@@ -254,53 +257,38 @@ def run_prefill_loop(
     gen_state: GenState,
     model,
     sampler,
-    flat_tokens,
-    flat_seq_ids,
-    max_tokens_per_round: int,
+    tokens,
+    seq_id,
+    seq_len: int,
+    max_tokens_per_round: int=32,
 ) -> GenState:
     """Run prefill using a fresh, local token queue. Newly sampled tokens are enqueued to the main decode queue via update_tokens."""
 
-    prefill_queue = TokenQueue.init(flat_tokens.axis_size("position"))
-    prefill_queue = prefill_queue.enqueue_tokens(flat_tokens, flat_seq_ids, flat_tokens.axis_size("position"))
+    seq_ids = hax.full_like(tokens, seq_id)
+    # handle padding
+    seq_ids = hax.where(hax.arange(tokens.shape) < seq_len, seq_ids, INVALID)
 
-    def cond(state: tuple[GenState, jax.Array, TokenQueue]):
-        _gen_state, step, local_q = state
-        return (local_q.num_queued_tokens > 0) & (step < 10_000)
+    page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=seq_ids)
 
-    def body(state: tuple[GenState, jax.Array, TokenQueue]):
-        gen_state, step, local_q = state
+    logits, cache = model.decode(tokens, gen_state.cache, binfo, binfo.pos_ids)
+    last_logit = logits["position", seq_len-1]
 
-        local_q, packed_seq = local_q.pack_next_sequence(max_tokens_per_round)
+    prng_key = gen_state.decode_state.prng_key_for(seq_id, seq_len-1)
+    temps = gen_state.decode_state.temperature["seq", seq_id]
 
-        page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
+    # new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
+    new_token, log_prob = sampler(last_logit, temps, key=prng_key)
 
-        boundaries = packed_seq.boundary_indices(min(page_table.max_seqs, max_tokens_per_round))
+    # Update decode_state (also enqueues into the main decode queue)
 
-        logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
-        logits = logits["position", boundaries]
+    new_tokens = hax.broadcast_axis(new_token, {"position": 1})
+    log_probs = hax.broadcast_axis(log_prob, {"position": 1})
+    new_seq_ids = hax.named(jnp.expand_dims(seq_id, 0), axis="position")
+    num_new_tokens = 1
+    decode_state = gen_state.decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
 
-        num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
-        new_seq_ids = packed_seq.seq_ids["position", boundaries]
-        new_pos_ids = binfo.pos_ids["position", boundaries]
-        prng_keys = gen_state.decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
-        temps = gen_state.decode_state.temperature["seq", new_seq_ids]
+    gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
 
-        new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
-
-        # Update decode_state (also enqueues into the main decode queue)
-        decode_state = gen_state.decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
-
-        # Purge any finished sequences from the local prefill queue
-        new_finished = decode_state.is_finished(jnp.arange(decode_state.max_seqs))
-        finished_sequences = jnp.nonzero(new_finished, size=gen_state.page_table.max_seqs, fill_value=INVALID)[0]
-        finished_sequences = hax.named(finished_sequences, axis="seq")
-        local_q = local_q.purge_queue_of_seq(finished_sequences)
-
-        gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
-        return gen_state, step + 1, local_q
-
-    init_state = (gen_state, jnp.array(0, dtype=jnp.int32), prefill_queue)
-    gen_state, _, _ = jax.lax.while_loop(cond, body, init_state)
     return gen_state
 
 
@@ -391,7 +379,7 @@ def main(config: SampleLmConfig):
 def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_ids: NamedArray | None, key):
     time_in = time.time()
     finished = [False] * len(prompt_ids)
-    outputs = [list(t) for t in prompt_ids]  # start with the prompts
+    outputs: list[list] = [list() for _ in range(len(prompt_ids))]
 
     requests: list[Request] = []
     if stop_ids is not None:
@@ -404,11 +392,11 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
             temperature=jnp.array(config.temperature, dtype=jnp.float32),
             key=jax.random.fold_in(key, req_id),
         )
-        requests.append(Request(prompt_tokens=toks, request_id=req_id, decode_params=seq_params))
+        requests.append(Request(prompt_tokens=toks, request_id=req_id, decode_params=seq_params, n_generations=config.n_generations))
 
     gen_state = prefill_prompts(gen_state, model, sampler, requests)
 
-    extract_outputs(gen_state.decode_state, outputs, finished)
+    extract_outputs(tokenizer, gen_state.decode_state, outputs, finished)
 
     gen_state = jax.block_until_ready(gen_state)
     time_mid = time.time()
@@ -430,10 +418,10 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
         gen_state = jax.block_until_ready(gen_state)
         time_gen_in = time.time()
 
-        new_tokens = extract_outputs(gen_state.decode_state, outputs, finished)
+        new_tokens = extract_outputs(tokenizer, gen_state.decode_state, outputs, finished)
         print(f"Extracted outputs took {time.time() - time_gen_in:.3f} seconds")
         tps = new_tokens / total_gen_loop
-        print(f"Generation loop iter took {total_gen_loop :.3f} seconds, {tps:.2f} tokens/sec, ")
+        print(f"Generation loop iter took {total_gen_loop :.3f} seconds, {tps:.2f} tokens/sec, {new_tokens} new.")
 
     gen_state = jax.block_until_ready(gen_state)
     time_out = time.time()
@@ -481,10 +469,8 @@ def prefill_prompts(
     model,
     sampler,
     prompts: list[Request],
-) -> tuple[GenState, dict[int, list[int]]]:
+) -> GenState:
     """Assign seq ids, set params, and run prefill via a fresh token queue for all prompts."""
-    all_tokens = []
-    all_seq_ids = []
 
     for request in prompts:
         seq_tokens = request.prompt_tokens
@@ -499,38 +485,27 @@ def prefill_prompts(
         gen_state = dataclasses.replace(gen_state, page_table=page_table)
 
         tokens_array = np.asarray(seq_tokens, dtype=jnp.int32)
-        # build allowed lengths = multiples of page size up to pages_per_seq
-        page_size = gen_state.page_table.page_size
-        pages_per_seq = gen_state.page_table.pages_per_seq
-        allowed_lengths = [page_size * k for k in range(1, pages_per_seq + 1)]
-        padded = pad_to_standard_length(tokens_array, allowed_lengths, INVALID)
+        padded = pad_to_standard_length(tokens_array, SEQ_LENGTHS, INVALID)
+        padded_named = hax.named(padded, axis="position")
+
         gen_state = dataclasses.replace(
             gen_state,
             decode_state=gen_state.decode_state.assign_seq(
                 local_seq_id=seq_id,
                 global_seq_id=request.request_id,
-                tokens=hax.named(padded, axis="position"),
+                tokens=padded_named,
                 prefix_len=len(seq_tokens),
                 kv_pages=None,
                 seq_params=seq_params,
             ),
         )
-
-        sids = np.full_like(tokens_array, seq_id, dtype=jnp.int32)
-        all_tokens.append(tokens_array)
-        all_seq_ids.append(sids)
-
-    if len(all_tokens) > 0:
-        flat_tokens = jnp.concatenate(all_tokens)
-        flat_seq_ids = jnp.concatenate(all_seq_ids)
-        flat_tokens = hax.named(flat_tokens, axis="position")
-        flat_seq_ids = hax.named(flat_seq_ids, axis="position")
-        gen_state = run_prefill_loop(gen_state, model, sampler, flat_tokens, flat_seq_ids, max_tokens_per_round=64)
+        gen_state = run_prefill_loop(
+            gen_state, model, sampler, padded_named, jnp.asarray(seq_id, dtype=jnp.int32), seq_len=len(seq_tokens))
 
     return gen_state
 
 
-def extract_outputs(decode_state: DecodeState, outputs, finished):
+def extract_outputs(tokenizer, decode_state: DecodeState, outputs, finished):
     """
     drain generated tokens and append them to the outputs.
 
@@ -566,6 +541,8 @@ def extract_outputs(decode_state: DecodeState, outputs, finished):
         seq_tokens = tokens[local_seq, current_num_tokens:new_num_tokens]
         outputs[global_id].extend(int(x) for x in seq_tokens)
 
+    for o in outputs:
+        print(f"Current output tokens: {tokenizer.decode(o)}")
     return total_this_time
 
 
