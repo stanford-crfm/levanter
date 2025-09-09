@@ -208,7 +208,29 @@ def run_generation_loop(
 
         page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=packed_seq.seq_ids)
 
-        boundaries = packed_seq.boundary_indices(min(page_table.max_seqs, max_tokens_per_round))
+        # Compute boundary positions: last new token for each sequence within this packed slice.
+        # Primary rule: boundary when absolute pos_id equals the post-allocation seq_len - 1 for that sequence.
+        seq_lens_after = binfo.seq_lens["seq", packed_seq.seq_ids]
+        boundary_mask = packed_seq.pos_ids == (seq_lens_after - 1)
+        # Bound number of boundaries by number of sequences or chunk size
+        max_boundaries = min(page_table.max_seqs, max_tokens_per_round)
+        boundaries = hax.where(
+            boundary_mask,
+            fill_value=INVALID,
+            new_axis=packed_seq.tokens.resolve_axis("position").resize(max_boundaries),
+        )[0]
+
+        # Fallback: if none detected, pick the last token per sequence inside this packed slice.
+        # This mirrors the old boundary behavior and guarantees progress even if lengths mismatch.
+        num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
+        def compute_fallback():
+            is_last_in_seq = (packed_seq.seq_ids != hax.roll(packed_seq.seq_ids, -1, "position")) & (packed_seq.seq_ids != INVALID)
+            return hax.where(
+                is_last_in_seq,
+                fill_value=INVALID,
+                new_axis=packed_seq.tokens.resolve_axis("position").resize(max_boundaries),
+            )[0]
+        boundaries = jax.lax.cond(num_new_tokens == 0, compute_fallback, lambda: boundaries)
 
         # Decode logits and sample new tokens
         # Use pos_ids tracked by the TokenQueue/PackedSequence rather than from PageBatchInfo

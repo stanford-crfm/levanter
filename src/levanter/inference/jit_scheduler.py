@@ -16,19 +16,13 @@ class PackedSequence(eqx.Module):
     A sequence of tokens packed into a single array, with
     This is used to pack sequences into a single array for efficient processing.
 
-    Sequence boundaries are stored as indices in the `boundary_idx` array, which is used to
-    determine sequence end points (which in turn are used for sampling)
-    Note that this is basically just wherever the sequence id changes, except that if the last sequence is not full,
-    it will not have a boundary index.
-
-    (Sequence can be not-full in the case of chunked prefill.)
+    Boundaries for sampling are now computed using PageBatchInfo.seq_lens and these pos_ids in the generation loop.
     """
 
     tokens: ht.i32[NamedArray, "position"]  # packed tokens
     seq_ids: ht.i32[NamedArray, "position"]  # sequence ids for each token
     pos_ids: ht.i32[NamedArray, "position"]  # position ids for each token
     num_tokens: jax.Array  # number of tokens in the packed sequence
-    is_boundary: ht.bool_[NamedArray, "position"]  # boolean mask for sequence boundaries
 
     def token_counts_per_sequence(self, max_sequences: int) -> ht.i32[NamedArray, "seq"]:  # type: ignore[name-defined]
         """
@@ -40,16 +34,6 @@ class PackedSequence(eqx.Module):
         counts = jnp.bincount(raw_seq_ids, weights=weights, length=max_sequences)
 
         return hax.named(counts, axis=("seq",))
-
-    def boundary_indices(self, max_boundaries: int) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
-        """
-        Returns the indices of the sequence boundaries in the packed sequence.
-        The boundaries are determined by the `is_boundary` mask.
-        """
-        # Get the positions where the boundary is True
-        axis = self.is_boundary.resolve_axis("position").resize(max_boundaries)
-        boundary_positions = hax.where(self.is_boundary, fill_value=INVALID, new_axis=axis)[0]
-        return boundary_positions
 
 
 class SeqDecodingParams(eqx.Module):
@@ -500,36 +484,18 @@ class TokenQueue(eqx.Module):
             num_queued_tokens=self.num_queued_tokens - num
         )
 
-        # boundary if seq_id changes and not INVALID
-        is_boundary: hax.NamedArray = (seq_ids != hax.roll(seq_ids, -1, "position")) & (seq_ids != INVALID)
-
-        # Determine boundary at the last valid token only if there is an actual
-        # next token enqueued after this packed slice. If the queue is drained
-        # (e.g., chunked prefill), the last token should NOT be considered a boundary.
-        last_idx = num - 1
-        # Use the post-masked queue head so that drained-queue yields INVALID here
-        next_after_last = new_q_seq_ids["position", 0]
-        boundary_last = (
-            (seq_ids["position", last_idx] != next_after_last)
-            & (seq_ids["position", last_idx] != INVALID)
-            & (next_after_last != INVALID)
-        )
-        is_boundary = is_boundary.at["position", last_idx].set(boundary_last)
-
         # now ensure seqids are sorted
 
         seqids_sort_order = hax.argsort(seq_ids, axis="position")
         tokens = tokens["position", seqids_sort_order]
         seq_ids = seq_ids["position", seqids_sort_order]
         pos_ids = pos_ids["position", seqids_sort_order]
-        is_boundary = is_boundary["position", seqids_sort_order]
 
         sequence = PackedSequence(
             tokens=tokens,
             seq_ids=seq_ids,
             pos_ids=pos_ids,
             num_tokens=num,
-            is_boundary=is_boundary
         )
 
         return new_scheduler, sequence
