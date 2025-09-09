@@ -646,10 +646,16 @@ def test_attention_paged_decode_matches_full_ar():
     kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
     out_chunks = []
     for i in range(Pos.size):
-        pt, binfo = pt.allocate_for_seq(hax.named([seq_id], "position"))
+        # Compute pos_ids for this allocation using current seq_lens before allocation
+        seg_ids = hax.named([seq_id], "position")
+        # relative position inside this seg is 0 for this single token; absolute pos is current len
+        abs_pos = pt.seq_lens["seq", seg_ids].array
+        pos_ids = hax.named(abs_pos, "position")
+
+        pt, binfo = pt.allocate_for_seq(seg_ids)
 
         x_tok = x[Pos, hax.dslice(i, 1)]
-        out_tok, kv_cache = _jit_paged_decode(attn, x_tok, binfo.pos_ids, kv_cache, binfo)
+        out_tok, kv_cache = _jit_paged_decode(attn, x_tok, pos_ids, kv_cache, binfo)
         out_chunks.append(out_tok.array)
 
     decoded_arr = jnp.concatenate(out_chunks, axis=0)
@@ -677,7 +683,19 @@ def test_attention_paged_decode_matches_full_prefill():
 
     kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
 
-    decode_out, _ = _jit_paged_decode(attn, x, binfo.pos_ids, kv_cache, binfo)
+    # Compute absolute pos ids for this batch from current seq_lens
+    def _relative_positions(seg_ids):
+        idx = jnp.arange(seg_ids.shape[0])
+        is_start = jnp.concatenate([jnp.array([True]), seg_ids[1:] != seg_ids[:-1]])
+        start_idx = idx * is_start.astype(idx.dtype)
+        seg_start = jax.lax.associative_scan(jnp.maximum, start_idx)
+        return idx - seg_start
+
+    rel_pos = _relative_positions(seg_ids.array)
+    starts = pt.seq_lens["seq", seg_ids].array
+    pos_ids = hax.named(starts + rel_pos, "position")
+
+    decode_out, _ = _jit_paged_decode(attn, x, pos_ids, kv_cache, binfo)
 
     # we only care about the first 7 positions, since the rest are padding
     full_out = full_out["position", hax.dslice(0, 7)]
@@ -720,7 +738,18 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
         "position",
         [x0[Pos, 0:prefix_size], x1[Pos, 0:prefix_size]],
     )
-    out, kv_cache = _jit_paged_decode(attn, x_prefill, binfo.pos_ids, kv_cache, binfo)
+    # compute pos ids for prefill chunk from current seq_lens
+    def _relative_positions(seg_ids):
+        idx = jnp.arange(seg_ids.shape[0])
+        is_start = jnp.concatenate([jnp.array([True]), seg_ids[1:] != seg_ids[:-1]])
+        start_idx = idx * is_start.astype(idx.dtype)
+        seg_start = jax.lax.associative_scan(jnp.maximum, start_idx)
+        return idx - seg_start
+
+    rel_pos = _relative_positions(tokens.array)
+    starts = pt.seq_lens["seq", tokens].array
+    pos_ids = hax.named(starts + rel_pos, "position")
+    out, kv_cache = _jit_paged_decode(attn, x_prefill, pos_ids, kv_cache, binfo)
     outputs0.append(out["position", hax.dslice(0, prefix_size)])
     outputs1.append(out["position", hax.dslice(prefix_size, prefix_size)])
 
@@ -734,7 +763,10 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
             "position",
             [x0[Pos, hax.dslice(i, chunk_size)], x1[Pos, hax.dslice(i, chunk_size)]],
         )
-        out_chunk, kv_cache = _jit_paged_decode(attn, x_chunk, binfo.pos_ids, kv_cache, binfo)
+        rel_pos = _relative_positions(tokens.array)
+        starts = pt.seq_lens["seq", tokens].array
+        pos_ids = hax.named(starts + rel_pos, "position")
+        out_chunk, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids, kv_cache, binfo)
         outputs0.append(out_chunk["position", hax.dslice(0, chunk_size)])
         outputs1.append(out_chunk["position", hax.dslice(chunk_size, chunk_size)])
 
@@ -778,7 +810,18 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
             "position",
             [x0[Pos, hax.dslice(off0, step0)], x1[Pos, hax.dslice(off1, step1)]],
         )
-        output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=binfo.pos_ids, cache=kv_cache, binfo=binfo)
+        # compute pos ids for this ragged chunk
+        def _relative_positions(seg_ids):
+            idx = jnp.arange(seg_ids.shape[0])
+            is_start = jnp.concatenate([jnp.array([True]), seg_ids[1:] != seg_ids[:-1]])
+            start_idx = idx * is_start.astype(idx.dtype)
+            seg_start = jax.lax.associative_scan(jnp.maximum, start_idx)
+            return idx - seg_start
+
+        rel_pos = _relative_positions(seg_ids.array)
+        starts = pt.seq_lens["seq", seg_ids].array
+        pos_ids = hax.named(starts + rel_pos, "position")
+        output, kv_cache = _jit_paged_decode(attn, x_chunk, pos_ids=pos_ids, cache=kv_cache, binfo=binfo)
         outputs0.append(output["position", hax.dslice(0, step0)])
         outputs1.append(output["position", hax.dslice(step0, step1)])
 

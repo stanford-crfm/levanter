@@ -13,7 +13,8 @@ def test_pack_next_sequence_no_boundary_when_queue_drained_single_seq():
     tokens = hax.named(jnp.arange(capacity, dtype=jnp.int32), axis=("position",))
     seq_ids = hax.named(jnp.full((capacity,), 3, dtype=jnp.int32), axis=("position",))
 
-    tq = tq.enqueue_tokens(tokens, seq_ids, capacity)
+    pos_ids = hax.named(jnp.arange(capacity, dtype=jnp.int32), axis=("position",))
+    tq = tq.enqueue_tokens(tokens, seq_ids, pos_ids, capacity)
 
     tq2, packed = tq.pack_next_sequence(capacity)
 
@@ -43,7 +44,8 @@ def test_pack_next_sequence_boundary_between_sequences():
     tokens = hax.named(jnp.array([10, 11, 12, 20, 21, 22], dtype=jnp.int32), axis=("position",))
     seq_ids = hax.named(jnp.array([1, 1, 1, 2, 2, 2], dtype=jnp.int32), axis=("position",))
 
-    tq = tq.enqueue_tokens(tokens, seq_ids, capacity)
+    pos_ids = hax.named(jnp.arange(capacity, dtype=jnp.int32), axis=("position",))
+    tq = tq.enqueue_tokens(tokens, seq_ids, pos_ids, capacity)
 
     tq2, packed = tq.pack_next_sequence(capacity)
 

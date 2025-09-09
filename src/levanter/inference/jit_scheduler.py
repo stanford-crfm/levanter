@@ -26,6 +26,7 @@ class PackedSequence(eqx.Module):
 
     tokens: ht.i32[NamedArray, "position"]  # packed tokens
     seq_ids: ht.i32[NamedArray, "position"]  # sequence ids for each token
+    pos_ids: ht.i32[NamedArray, "position"]  # position ids for each token
     num_tokens: jax.Array  # number of tokens in the packed sequence
     is_boundary: ht.bool_[NamedArray, "position"]  # boolean mask for sequence boundaries
 
@@ -139,10 +140,11 @@ class DecodeState(eqx.Module):
         self,
         new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
         new_seq_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        new_pos_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
         num_new_tokens: int,
     ) -> "DecodeState":
         """Forward ``enqueue_tokens`` to the underlying ``TokenQueue`` and return an updated ``DecodeState``."""
-        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, new_seq_ids, num_new_tokens)
+        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, new_seq_ids, new_pos_ids, num_new_tokens)
         return dataclasses.replace(self, tqueue=new_tqueue)
 
     def purge_queue_of_seq(self, seq_id: hax.NamedArray | int) -> "DecodeState":
@@ -260,23 +262,30 @@ class DecodeState(eqx.Module):
         logprobs = self.logprobs
         counts = self.num_tokens
 
+        # We'll also compute per-token absolute position ids to feed into the TokenQueue.
+        pos_ids = hax.full_like(new_tokens, INVALID)
+
         def body(i, state):
             sid = local_seq_ids["position", i].scalar()
 
             def update(state):
-                tkns, lps, cnts = state
+                tkns, lps, cnts, pids = state
                 pos = cnts["seq", sid].scalar()
                 tkns = tkns.at["seq", sid, "position", pos].set(new_tokens["position", i])
                 if lps is not None:
                     lps = lps.at["seq", sid, "position", pos].set(new_log_probs["position", i])
                 cnts = cnts.at["seq", sid].add(1)
-                return tkns, lps, cnts
+                # record position id for this token in the outgoing queue payload
+                # pos here is the absolute position of this token in the sequence buffer
+                pids = pids.at["position", i].set(pos)
+                return tkns, lps, cnts, pids
 
             return jax.lax.cond(is_valid(sid), update, lambda s: s, state)
 
-        tokens, logprobs, counts = jax.lax.fori_loop(0, num_new_tokens, body, (tokens, logprobs, counts))
+        tokens, logprobs, counts, pos_ids = jax.lax.fori_loop(0, num_new_tokens, body, (tokens, logprobs, counts, pos_ids))
 
-        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, local_seq_ids, num_new_tokens)
+        # Enqueue tokens and their corresponding position ids into the queue
+        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, local_seq_ids, pos_ids, num_new_tokens)
 
         return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, num_tokens=counts, tqueue=new_tqueue)
 
@@ -390,6 +399,7 @@ class TokenQueue(eqx.Module):
     # - ``queued_tokens`` are stored "flat" with accompanying ``queued_seq_ids``
     queued_tokens: ht.i32[NamedArray, "position"]  # tokens queued for decoding
     queued_seq_ids: ht.i32[NamedArray, "position"]
+    queued_pos_ids: ht.i32[NamedArray, "position"]  # absolute position id for each queued token
     num_queued_tokens: jax.Array
 
     # TODO: per-seq sampling params
@@ -410,6 +420,7 @@ class TokenQueue(eqx.Module):
         return TokenQueue(
             queued_tokens=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             queued_seq_ids=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
+            queued_pos_ids=hax.full({"position": max_queued_tokens}, INVALID, dtype=jnp.int32),
             num_queued_tokens=jnp.array(0, dtype=jnp.int32),
         )
 
@@ -417,6 +428,7 @@ class TokenQueue(eqx.Module):
         self,
         new_tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
         new_seq_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        new_pos_ids: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
         num_new_tokens: int,
     ) -> "TokenQueue":
         """Append ``new_tokens`` and ``new_seq_ids`` to the queue."""
@@ -435,11 +447,19 @@ class TokenQueue(eqx.Module):
             new_seq_ids,
             num_new_tokens,
         )
+        new_q_pos_ids = masked_set(
+            self.queued_pos_ids,
+            "position",
+            self.num_queued_tokens,
+            new_pos_ids,
+            num_new_tokens,
+        )
 
         return dataclasses.replace(
             self,
             queued_tokens=new_q_tokens,
             queued_seq_ids=new_q_seq_ids,
+            queued_pos_ids=new_q_pos_ids,
             num_queued_tokens=self.num_queued_tokens + num_new_tokens,
         )
 
@@ -457,21 +477,26 @@ class TokenQueue(eqx.Module):
 
         tokens = self.queued_tokens["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
         seq_ids = self.queued_seq_ids["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+        pos_ids = self.queued_pos_ids["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
 
         rolled_tokens = hax.roll(self.queued_tokens, -num, "position")
         rolled_seq_ids = hax.roll(self.queued_seq_ids, -num, "position")
+        rolled_pos_ids = hax.roll(self.queued_pos_ids, -num, "position")
         idx = hax.arange(pos_axis)
         mask = idx >= (pos_axis.size - num)
         filler_tokens = hax.where(mask, hax.full_like(idx, INVALID), rolled_tokens)
         filler_seq_ids = hax.where(mask, hax.full_like(idx, INVALID), rolled_seq_ids)
+        filler_pos_ids = hax.where(mask, hax.full_like(idx, INVALID), rolled_pos_ids)
 
         new_q_tokens = filler_tokens
         new_q_seq_ids = filler_seq_ids
+        new_q_pos_ids = filler_pos_ids
 
         new_scheduler = dataclasses.replace(
             self,
             queued_tokens=new_q_tokens,
             queued_seq_ids=new_q_seq_ids,
+            queued_pos_ids=new_q_pos_ids,
             num_queued_tokens=self.num_queued_tokens - num
         )
 
@@ -496,11 +521,13 @@ class TokenQueue(eqx.Module):
         seqids_sort_order = hax.argsort(seq_ids, axis="position")
         tokens = tokens["position", seqids_sort_order]
         seq_ids = seq_ids["position", seqids_sort_order]
+        pos_ids = pos_ids["position", seqids_sort_order]
         is_boundary = is_boundary["position", seqids_sort_order]
 
         sequence = PackedSequence(
             tokens=tokens,
             seq_ids=seq_ids,
+            pos_ids=pos_ids,
             num_tokens=num,
             is_boundary=is_boundary
         )
@@ -519,12 +546,14 @@ class TokenQueue(eqx.Module):
             is_seq_id = self.queued_seq_ids == seq_id
         new_seq_ids = purge(self.queued_seq_ids, is_seq_id)
         new_tokens = purge(self.queued_tokens, is_seq_id)
+        new_pos_ids = purge(self.queued_pos_ids, is_seq_id)
         new_queued = hax.sum(new_seq_ids != INVALID).scalar()
 
         return dataclasses.replace(
             self,
             queued_tokens=new_tokens,
             queued_seq_ids=new_seq_ids,
+            queued_pos_ids=new_pos_ids,
             num_queued_tokens=new_queued,
         )
 

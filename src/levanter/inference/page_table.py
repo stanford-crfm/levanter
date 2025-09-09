@@ -211,14 +211,12 @@ class PageTable(eqx.Module):
                 hax.cumsum(new_token_counts, "seq", dtype=jnp.int32),
             ],
         )
-        pos_ids = self._pos_ids_from_seq_ids(tokens)
         batch_info = PageBatchInfo(
             page_indices=page_indices,
             seq_lens=seq_lens,
             cu_q_lens=cu_q_lens,
             num_seqs=num_seqs,
             new_token_dests=token_dests,
-            pos_ids=pos_ids,
             page_size=self.page_size,
         )
         return batch_info
@@ -253,20 +251,7 @@ class PageTable(eqx.Module):
             seq_lens=new_seq_lens,
         )
 
-    def _pos_ids_from_seq_ids(self, seq_ids: ht.i32[NamedArray, "position"]) -> ht.i32[NamedArray, "position"]:  # type: ignore[name-defined]
-        """
-        Given sequence IDs, compute the position IDs for each sequence.
-
-        seg_ids may be padded with negative numbers, which will be ignored in the output.
-        """
-        rel_pos = _relative_positions(seq_ids.array)
-        # We need to add the start position of the segment to the relative position
-        seg_pos_starts = self.seq_lens["seq", seq_ids].array
-
-        pos_ids = seg_pos_starts + rel_pos
-        pos_ids = jnp.where(is_invalid(seq_ids.array), INVALID, pos_ids)
-
-        return hax.named(pos_ids, "position")
+    # (pos id computation moved to call sites; no longer part of PageBatchInfo)
 
     # ------------------------------------------------------------------
     # Page sharing / refcount helpers
@@ -373,7 +358,6 @@ class PageBatchInfo(eqx.Module):
     cu_q_lens: ht.i32[NamedArray, " seq"]  # type: ignore[name-defined]
     num_seqs: ht.i32[jnp.ndarray, ""]
     new_token_dests: ht.i32[NamedArray, "position"]  # type: ignore[name-defined]
-    pos_ids: ht.i32[NamedArray, "position"]  # type: ignore[name-defined]
     page_size: int = eqx.field(static=True)
 
     def __post_init__(self):

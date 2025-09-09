@@ -211,14 +211,15 @@ def run_generation_loop(
         boundaries = packed_seq.boundary_indices(min(page_table.max_seqs, max_tokens_per_round))
 
         # Decode logits and sample new tokens
-        logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, binfo.pos_ids)
+        # Use pos_ids tracked by the TokenQueue/PackedSequence rather than from PageBatchInfo
+        logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, packed_seq.pos_ids)
         logits = logits["position", boundaries]
         # cache = eqx.error_if(cache, hax.any(hax.isnan(cache.kv_pages)).scalar(), "New Cache contains NaNs")
         # logits = eqx.error_if(logits, hax.any(hax.isnan(logits) & ~is_invalid(boundaries)).scalar(), "Logits contain NaNs")
 
         num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = packed_seq.seq_ids["position", boundaries]
-        new_pos_ids = binfo.pos_ids["position", boundaries]
+        new_pos_ids = packed_seq.pos_ids["position", boundaries]
         prng_keys = decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
 
         temps = decode_state.temperature["seq", new_seq_ids]
@@ -269,7 +270,11 @@ def run_prefill_loop(
 
     page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=seq_ids)
 
-    logits, cache = model.decode(tokens, gen_state.cache, binfo, binfo.pos_ids)
+    # For prefill, construct simple absolute pos ids [0..seq_len-1] with INVALID for padding
+    Pos = tokens.resolve_axis("position")
+    arange_pos = hax.arange(Pos, dtype=jnp.int32)
+    pos_ids = hax.where(arange_pos < seq_len, arange_pos, INVALID)
+    logits, cache = model.decode(tokens, gen_state.cache, binfo, pos_ids)
     last_logit = logits["position", seq_len-1]
 
     prng_key = gen_state.decode_state.prng_key_for(seq_id, seq_len-1)
