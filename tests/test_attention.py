@@ -271,6 +271,35 @@ def test_gpt2_attention_uses_te():
     assert_trees_all_close(out.array, 0.0)
 
 
+@skip_if_module_missing("transformer_engine")
+def test_te_flash_attention_non_causal_mask_raises():
+    QPos = hax.Axis("position", 16)
+    KPos = hax.Axis("key_position", 16)
+    B = hax.Axis("batch", 2)
+    Head = hax.Axis("heads", 2)
+    D = hax.Axis("head_size", 8)
+
+    q = hax.zeros((B, Head, QPos, D), dtype=jnp.bfloat16)
+    k = hax.zeros((B, Head, KPos, D), dtype=jnp.bfloat16)
+    v = hax.zeros((B, Head, KPos, D), dtype=jnp.bfloat16)
+
+    explicit = hax.ones((QPos, KPos))
+    mask = AttentionMask.explicit(explicit)
+
+    with pytest.raises(NotImplementedError):
+        _te_flash_attention(
+            "position",
+            "key_position",
+            "head_size",
+            q,
+            k,
+            v,
+            mask,
+            attention_dtype=jnp.bfloat16,
+            scaling_factor=1 / math.sqrt(D.size),
+        )
+
+
 def test_tpu_splash_attention():
     if jax.default_backend() != "tpu":
         pytest.skip("TPU only")
