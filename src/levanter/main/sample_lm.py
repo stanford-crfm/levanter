@@ -15,6 +15,7 @@ import jax.random as jrandom
 
 import haliax
 import haliax as hax
+import haliax.haxtyping as ht
 from haliax import Axis, NamedArray
 from haliax.partitioning import round_axis_for_partitioning
 
@@ -257,6 +258,92 @@ def run_generation_loop(
     final_gen_state, has_finished, _ = jax.lax.while_loop(cond, body, init_state)
 
     return final_gen_state
+
+
+def _do_multisample(
+    gen_state: GenState,
+    logits: ht.Float[NamedArray, " position vocab"],  # type: ignore
+    seq_ids: ht.Int[NamedArray, " position"],  # type: ignore
+    pos_ids: ht.Int[NamedArray, " position"],  # type: ignore
+    clone_sources: ht.Int[NamedArray, " seq"],  # type: ignore
+    clone_targets: ht.Int[NamedArray, " seq"],  # type: ignore
+    sampler: Sampler,
+) -> tuple[GenState, ht.bool_[NamedArray, " seq"]]:  # type: ignore
+    """
+    Sample alternative tokens for the given logits, seq_ids, pos_ids, and clone_targets.
+    This is used for the `n>1` case of `n_generations` in the `Request` class.
+
+    `clone_sources` are the sequences to clone from, `clone_targets` are the sequences to clone to.
+    We want to grab the logits for each valid seq from the clones where clone_sources is in the seq_ids, and then sample
+    from those logits to produce new tokens for the clone_targets and fill in the gen_state for that sequence.
+
+    It's assumed that:
+      1. gen_state already has the appropriate page table and decode state for the given `clone_sources` and `clone_targets`.
+      2. logits/seq_ids/pos_ids are already sliced
+
+    Returns the updated gen_state and a boolean array indicating which ids from `clone_targets` were sampled.
+    """
+    # Resolve axes
+    CloneSeq = clone_sources.resolve_axis("seq")
+
+    # For each clone source, find its index in the provided seq_ids (within this packed/sliced batch).
+    # If not present, mark as INVALID.
+    source_indices = hax.full((CloneSeq,), INVALID, dtype=jnp.int32)
+
+    def find_src(i, acc):
+        src = clone_sources["seq", i].scalar()
+
+        def do(acc):
+            # match positions where seq_ids == src; take first
+            eq = (seq_ids == src).array
+            idx = jnp.nonzero(eq, size=1, fill_value=INVALID)[0][0]
+            return acc.at["seq", i].set(idx)
+
+        return jax.lax.cond(is_valid(src), do, lambda x: x, acc)
+
+    source_indices = jax.lax.fori_loop(0, CloneSeq.size, find_src, source_indices)
+
+    # Determine which clone targets can be sampled this step:
+    # need a valid source index and a valid target id
+    can_sample = (source_indices != INVALID) & is_valid(clone_targets)
+
+    # Build a compact position index list of clones to process this time
+    selected_idx = jnp.nonzero(can_sample.array, size=CloneSeq.size, fill_value=INVALID)[0]
+    selected = hax.named(selected_idx, axis="position")
+
+    # If nothing to do, return early
+    num_new = hax.sum(selected != INVALID).scalar().astype(jnp.int32)
+    n_new = int(num_new)
+    if n_new == 0:
+        return gen_state, can_sample
+
+    # Gather per-clone data
+    # Truncate to the valid subset only
+    selected = selected["position", hax.dslice(0, n_new)]
+    tgt_ids = clone_targets["seq", selected]
+    src_pos = source_indices["seq", selected]
+    logits_this_time = logits["position", src_pos]
+    pos_ids_this_time = pos_ids["position", src_pos]
+
+    temps = gen_state.decode_state.temperature["seq", tgt_ids]
+    prng_keys = gen_state.decode_state.prng_keys_for(tgt_ids, pos_ids_this_time)
+
+    new_tokens, log_probs = hax.vmap(sampler, "position")(logits_this_time, temps, key=prng_keys)
+
+    # Enqueue/update tokens for the clone targets
+    decode_state = gen_state.decode_state.update_tokens(new_tokens, tgt_ids, log_probs, n_new)
+    gen_state = dataclasses.replace(gen_state, decode_state=decode_state)
+
+    # Return which clones we sampled this time (mask over clone_targets axis)
+    sampled_mask = can_sample
+    return gen_state, sampled_mask
+
+
+
+
+
+
+
 
 
 @haliax.named_jit(donate_args=(True, False, False, False, False))
