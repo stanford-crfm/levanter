@@ -148,6 +148,31 @@ class DecodeState(eqx.Module):
         new_tqueue, packed = self.tqueue.pack_next_sequence(max_tokens)
         return dataclasses.replace(self, tqueue=new_tqueue), packed
 
+    @eqx.filter_jit
+    def discharge_clone(
+        self,
+        target_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
+        num_targets: jnp.ndarray | int,
+    ) -> "DecodeState":
+        """
+        Mark the given target local sequence ids as no longer pending clones by setting ``clone_sources`` to INVALID
+        for the first ``num_targets`` entries of ``target_seq_ids``.
+
+        JIT-safe: uses a bounded fori_loop over ``num_targets``.
+        """
+        clone_map = self.clone_sources
+
+        def body(i, cmap):
+            tid = target_seq_ids["position", i].scalar()
+
+            def do(c):
+                return c.at["seq", tid].set(INVALID)
+
+            return jax.lax.cond(is_valid(tid), do, lambda c: c, cmap)
+
+        new_map = jax.lax.fori_loop(0, num_targets, body, clone_map)
+        return dataclasses.replace(self, clone_sources=new_map)
+
     @property
     def empty_queue_space(self) -> jnp.ndarray:
         """Expose remaining queue capacity from ``TokenQueue``."""

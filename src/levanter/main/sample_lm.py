@@ -363,6 +363,8 @@ def _handle_clones(
 
     # Enqueue/update tokens for the clone targets (only the first num_new entries will be used)
     decode_state = gen_state.decode_state.update_tokens(new_tokens, tgt_ids, log_probs, num_new)
+    # Discharge processed clones so they are not reprocessed in subsequent flushes
+    decode_state = decode_state.discharge_clone(tgt_ids, num_new)
     gen_state = dataclasses.replace(gen_state, decode_state=decode_state, page_table=page_table, cache=cache)
 
     # Return which clones we sampled this time (mask over seq axis)
