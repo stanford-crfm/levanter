@@ -8,7 +8,7 @@ In the latest version, we introduce the [levanter.tracker.Tracker][] interface, 
 The interface name is taken from the [HuggingFace Accelerate](https://github.com/huggingface/accelerate/blob/0f2686c8d3e6d949c4b7efa15d7f2dee44f7ce91/src/accelerate/tracking.py#L395)
 framework.
 
-Given Levanter's historical dependency on W&B, the interface is designed to look similar to W&B's API.
+Levanter ships with trackers for W&B, TensorBoard, and a lightweight JSON logger that emits structured log lines. The interface is designed to look similar to W&B's API.
 The methods currently exposed are:
 
 * [levanter.tracker.current_tracker][]: returns the current tracker instance or sets it.
@@ -94,7 +94,10 @@ TODO: expand this section.
 
 ::: levanter.tracker.wandb.WandbTracker
 
+
 ::: levanter.tracker.trackio.TrackioTracker
+
+::: levanter.tracker.json_logger.JsonLoggerTracker
 
 ### Tracker Config
 
@@ -106,4 +109,7 @@ TODO: expand this section.
 
 ::: levanter.tracker.wandb.WandbConfig
 
+
 ::: levanter.tracker.trackio.TrackioConfig
+
+::: levanter.tracker.json_logger.JsonLoggerConfig
