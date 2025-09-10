@@ -100,8 +100,9 @@ def test_do_multisample_missing_source_skips():
     # Only the first clone should be sampled
     assert jnp.array_equal(sampled_mask.array, jnp.asarray([True, False]))
     assert new_state.decode_state.last_num_new == 1
-    assert jnp.array_equal(new_state.decode_state.last_seq_ids.array, jnp.asarray([20]))
-    assert jnp.array_equal(new_state.decode_state.last_new_tokens.array, jnp.asarray([6]))
+    # Only the first entry is meaningful; others are ignored by num_new
+    assert jnp.array_equal(new_state.decode_state.last_seq_ids.array[:1], jnp.asarray([20]))
+    assert jnp.array_equal(new_state.decode_state.last_new_tokens.array[:1], jnp.asarray([6]))
 
 
 def test_do_multisample_invalid_target_skips():

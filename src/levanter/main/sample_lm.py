@@ -111,8 +111,8 @@ class GenState(eqx.Module):
 
         def _copy(_):
             last_idx = (src_len + page_size - 1) // page_size - 1
-            src_page = int(page_table.page_indices["seq", parent_local_id, "page", last_idx].scalar())
-            dst_page = int(page_table.page_indices["seq", child_local_id, "page", last_idx].scalar())
+            src_page = page_table.page_indices["seq", parent_local_id, "page", last_idx].scalar()
+            dst_page = page_table.page_indices["seq", child_local_id, "page", last_idx].scalar()
             return self.cache.copy_page(src_page, dst_page)
 
         def _identity(_):
@@ -220,7 +220,7 @@ def run_generation_loop(
 
         # Decode logits and sample new tokens
         logits, cache = model.decode(tokens, gen_state.cache, binfo, pos_ids)
-        logits = logits["position", sample_indices]
+        logits_at_samples = logits["position", sample_indices]
 
         num_new_tokens = hax.sum(sample_indices != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = seq_ids["position", sample_indices]
@@ -229,7 +229,8 @@ def run_generation_loop(
 
         temps = decode_state.temperature["seq", new_seq_ids]
 
-        new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
+        new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
+
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
@@ -311,38 +312,29 @@ def _do_multisample(
     selected_idx = jnp.nonzero(can_sample.array, size=CloneSeq.size, fill_value=INVALID)[0]
     selected = hax.named(selected_idx, axis="position")
 
-    # If nothing to do, return early
     num_new = hax.sum(selected != INVALID).scalar().astype(jnp.int32)
-    n_new = int(num_new)
-    if n_new == 0:
-        return gen_state, can_sample
 
     # Gather per-clone data
-    # Truncate to the valid subset only
-    selected = selected["position", hax.dslice(0, n_new)]
-    tgt_ids = clone_targets["seq", selected]
-    src_pos = source_indices["seq", selected]
+    # Use a masked/guarded gather to keep shapes static. First entries are valid clones.
+    selected_safe = hax.where(selected != INVALID, selected, 0)
+    tgt_ids = clone_targets["seq", selected_safe]
+    src_pos = source_indices["seq", selected_safe]
     logits_this_time = logits["position", src_pos]
     pos_ids_this_time = pos_ids["position", src_pos]
 
+    # Sample clones from the same boundary logits as their sources
     temps = gen_state.decode_state.temperature["seq", tgt_ids]
     prng_keys = gen_state.decode_state.prng_keys_for(tgt_ids, pos_ids_this_time)
 
     new_tokens, log_probs = hax.vmap(sampler, "position")(logits_this_time, temps, key=prng_keys)
 
-    # Enqueue/update tokens for the clone targets
-    decode_state = gen_state.decode_state.update_tokens(new_tokens, tgt_ids, log_probs, n_new)
+    # Enqueue/update tokens for the clone targets (only the first num_new entries will be used)
+    decode_state = gen_state.decode_state.update_tokens(new_tokens, tgt_ids, log_probs, num_new)
     gen_state = dataclasses.replace(gen_state, decode_state=decode_state)
 
     # Return which clones we sampled this time (mask over clone_targets axis)
     sampled_mask = can_sample
     return gen_state, sampled_mask
-
-
-
-
-
-
 
 
 
@@ -352,7 +344,9 @@ def run_prefill(
     model,
     sampler,
     queue: TokenQueue,
-    max_seqs_in_prefill: int  # static
+    max_seqs_in_prefill: int,  # static
+    clone_sources: NamedArray | None = None,
+    clone_targets: NamedArray | None = None,
 ) -> GenState:
     """Run prefill using a fresh, local token queue. Newly sampled tokens are enqueued to the main decode queue via update_tokens."""
 
@@ -366,7 +360,7 @@ def run_prefill(
     sample_indices = _compute_sample_indices(pos_ids, seq_ids, seq_lens, max_seqs_in_prefill)
 
     logits, cache = model.decode(tokens, gen_state.cache, binfo, pos_ids)
-    logits = logits["position", sample_indices]
+    logits_at_samples = logits["position", sample_indices]
 
     num_new_tokens = hax.sum(sample_indices != INVALID).scalar().astype(jnp.int32)
     new_seq_ids = seq_ids["position", sample_indices]
@@ -375,11 +369,26 @@ def run_prefill(
 
     temps = gen_state.decode_state.temperature["seq", new_seq_ids]
 
-    new_tokens, log_probs = hax.vmap(sampler, "position")(logits, temps, key=prng_keys)
+    new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
     jax.debug.print("Prefill sampled {num_new_tokens} new tokens for sequences {new_seq_ids}", num_new_tokens=num_new_tokens, new_seq_ids=new_seq_ids)
 
     # Update decode_state (also enqueues into the main decode queue)
     decode_state = gen_state.decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
+
+    # If clone targets specified, sample alternative tokens for clones using the same logits slice
+    if (clone_sources is not None) and (clone_targets is not None):
+        gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
+        gen_state, _ = _do_multisample(
+            gen_state,
+            logits_at_samples,
+            new_seq_ids,
+            new_pos_ids,
+            clone_sources,
+            clone_targets,
+            sampler,
+        )
+        # refresh working decode_state in case it changed
+        decode_state = gen_state.decode_state
 
     gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
 
@@ -432,7 +441,7 @@ def main(config: SampleLmConfig):
 
         prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
 
-        table = PageTable.init(64, len(prompt_ids), 8, 32)
+        table = PageTable.init(64, len(prompt_ids) * config.n_generations, 8, 32)
         cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
         initial_decode_state = DecodeState.init(
             table.max_seqs,
@@ -470,9 +479,9 @@ def main(config: SampleLmConfig):
             print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
                   f"generated {total_generated} tokens in {len(outputs)} sequences.")
 
-            # clear page table
+            # clear page table: free all local sequence slots, not just primaries
             page_table = gen_state.page_table
-            for seq_id in range(len(prompt_ids)):
+            for seq_id in range(page_table.max_seqs):
                 page_table = page_table.free_pages(seq_id)
 
             # Initialize GenState with all components
@@ -487,12 +496,25 @@ def main(config: SampleLmConfig):
 
 def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_ids: NamedArray | None, key):
     time_in = time.time()
-    finished = [False] * len(prompt_ids)
-    outputs: list[list] = [list() for _ in range(len(prompt_ids))]
+    # Build outputs for total generations across prompts
+    n_per_req = [config.n_generations for _ in prompt_ids]
+    total_outs = sum(n_per_req)
+    finished = [False] * total_outs
+    outputs: list[list] = [list() for _ in range(total_outs)]
 
     requests: list[Request] = []
     if stop_ids is not None:
         stop_ids = stop_ids.broadcast_axis({"stop_seq": 1})
+
+    # Compute global ID mapping for primaries and clones
+    primary_gid: list[int] = []
+    clone_gid_lists: list[list[int]] = []
+    gid_cursor = 0
+    for req_id, toks in enumerate(prompt_ids):
+        primary_gid.append(gid_cursor)
+        clone_gids = [gid_cursor + i for i in range(1, n_per_req[req_id])]
+        clone_gid_lists.append(clone_gids)
+        gid_cursor += n_per_req[req_id]
 
     for req_id, toks in enumerate(prompt_ids):
         seq_params = SeqDecodingParams(
@@ -501,9 +523,9 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
             temperature=jnp.array(config.temperature, dtype=jnp.float32),
             key=jax.random.fold_in(key, req_id),
         )
-        requests.append(Request(prompt_tokens=toks, request_id=req_id, decode_params=seq_params, n_generations=config.n_generations))
+        requests.append(Request(prompt_tokens=toks, request_id=primary_gid[req_id], decode_params=seq_params, n_generations=config.n_generations))
 
-    gen_state = prefill_prompts(gen_state, model, sampler, requests)
+    gen_state, primary_local_ids = prefill_prompts(gen_state, model, sampler, requests, primary_global_ids=primary_gid)
 
     extract_outputs(tokenizer, gen_state.decode_state, outputs, finished)
 
@@ -512,7 +534,6 @@ def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_id
     print(f"Prefill took {time_mid - time_in:.2f} seconds, ")
 
     # finish chunked prefills and run autoregressive generation
-
     while not all(finished):
         time_gen_in = time.time()
         gen_state = run_generation_loop(
@@ -578,7 +599,9 @@ def prefill_prompts(
     model,
     sampler,
     prompts: list[Request],
-) -> GenState:
+    *,
+    primary_global_ids: list[int] | None = None,
+) -> tuple[GenState, list[int]]:
     """Assign seq ids, set params, and run prefill via a fresh token queue for all prompts."""
 
     # TODO make configurable
@@ -589,7 +612,12 @@ def prefill_prompts(
     offset = 0
     num_seqs_in_prefill = 0
 
-    for request in prompts:
+    primary_local_ids: list[int] = []
+
+    clone_sources_list: list[int] = []
+    clone_targets_list: list[int] = []
+
+    for idx, request in enumerate(prompts):
         seq_tokens = request.prompt_tokens
         seq_params = request.decode_params
 
@@ -627,13 +655,25 @@ def prefill_prompts(
             gen_state,
             decode_state=gen_state.decode_state.assign_seq(
                 local_seq_id=seq_id,
-                global_seq_id=request.request_id,
+                global_seq_id=(primary_global_ids[idx] if primary_global_ids is not None else request.request_id),
                 tokens=hax.named(this_tokens, axis="position"),
                 prefix_len=len(this_tokens),
                 kv_pages=None,
                 seq_params=seq_params,
             ),
         )
+        primary_local_ids.append(seq_id)
+
+        # Create clones for multi-sample during prefill (if requested)
+        if request.n_generations > 1:
+            for k in range(1, request.n_generations):
+                gen_state, child_local = gen_state.clone_sequence(
+                    seq_id,
+                    global_id=(primary_global_ids[idx] + k if primary_global_ids is not None else request.request_id),
+                    seq_params=dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k)),
+                )
+                clone_sources_list.append(seq_id)
+                clone_targets_list.append(child_local)
 
     if offset > 0:
         token_queue = TokenQueue(
@@ -642,11 +682,39 @@ def prefill_prompts(
             queued_pos_ids=hax.named(pos_ids, axis="position"),
             num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
         )
-        gen_state = run_prefill(
-            gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL
-            )
+        # If we have clones, pass them to prefill so they get their initial token
+        if len(clone_sources_list) > 0:
+            clone_sources_arr = hax.named(jnp.asarray(clone_sources_list, dtype=jnp.int32), "seq")
+            clone_targets_arr = hax.named(jnp.asarray(clone_targets_list, dtype=jnp.int32), "seq")
+        else:
+            clone_sources_arr = None
+            clone_targets_arr = None
 
-    return gen_state
+        gen_state = run_prefill(
+            gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL, clone_sources=clone_sources_arr, clone_targets=clone_targets_arr
+        )
+
+    # After prefill is complete, ensure clones share the parent's KV pages and (if partial) copy the parent's last page
+    if len(clone_sources_list) > 0:
+        page_table = gen_state.page_table
+        cache = gen_state.cache
+        size = page_table.page_size
+
+        for src_seq_id, dst_seq_id in zip(clone_sources_list, clone_targets_list):
+            page_table = page_table.clone_pages_from(src_seq_id, dst_seq_id)
+
+            src_len = int(page_table.seq_lens["seq", src_seq_id].scalar())
+            used_pages = (src_len + size - 1) // size
+            last_idx = max(used_pages - 1, 0)
+            is_boundary = (src_len % size) == 0
+            if not is_boundary and src_len > 0:
+                src_page = int(page_table.page_indices["seq", src_seq_id, "page", last_idx].scalar())
+                dst_page = int(page_table.page_indices["seq", dst_seq_id, "page", last_idx].scalar())
+                cache = cache.copy_page(src_page, dst_page)
+
+        gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache)
+
+    return gen_state, primary_local_ids
 
 
 def extract_outputs(tokenizer, decode_state: DecodeState, outputs, finished):
