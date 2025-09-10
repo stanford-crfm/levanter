@@ -65,7 +65,7 @@ class DecodeState(eqx.Module):
     the "global" sequence ID. (That is, there might be more sequences than `seq_id.size`, but only the ones that are
     currently being decoded are stored in this buffer.)
     * `tokens` is a buffer of tokens for each sequence. It includes any prompt/prefix.
-    * `num_tokens` is a buffer of the number of tokens generated in the current cycle for each sequence.
+    * `seq_lens` is a buffer of sequence lengths for each sequence. This is the number of tokens in the `tokens` buffer that have been generated so far.
     * `prefix_len` is a buffer of prefix lengths for each sequence. This is the length of tokens in the `tokens` buffer
       that were provided and not generated in the current cycle.
     * `logprobs` is an optional buffer of log probabilities for the tokens. If not None, it should have the same shape
@@ -78,8 +78,9 @@ class DecodeState(eqx.Module):
     tokens: ht.i32[NamedArray, "seq position"]
     """ most recent tokens generated for each sequence. Should always start at a page boundary. """
     logprobs: ht.Float[NamedArray, "seq position"] | None  # log probabilities of the tokens
-    num_tokens: ht.i32[NamedArray, "seq"]
-    """Number of tokens in the buffer right now."""
+    seq_lens: ht.i32[NamedArray, "seq"]
+    """Sequence length for each sequence. This is the number of tokens currently in the sequence"""
+    # TODO: pretty sure we don't need prefix_len, delete
     prefix_len: ht.i32[NamedArray, "seq"]
     """ Length of the prefix for each sequence."""
 
@@ -198,7 +199,7 @@ class DecodeState(eqx.Module):
             tokens=new_tokens,
             # set log probs to nan for the prefix tokens
             logprobs=self.logprobs.at["seq", local_seq_id, "position", 0:prefix_len].set(jnp.nan) if self.logprobs is not None else None,
-            num_tokens=self.num_tokens.at["seq", local_seq_id].set(prefix_len),
+            seq_lens=self.seq_lens.at["seq", local_seq_id].set(prefix_len),
             prefix_len=self.prefix_len.at["seq", local_seq_id].set(prefix_len),
         )
 
@@ -244,7 +245,7 @@ class DecodeState(eqx.Module):
         """
         tokens = self.tokens
         logprobs = self.logprobs
-        counts = self.num_tokens
+        counts = self.seq_lens
 
         # We'll also compute per-token absolute position ids to feed into the TokenQueue.
         pos_ids = hax.full_like(new_tokens, INVALID)
@@ -271,7 +272,7 @@ class DecodeState(eqx.Module):
         # Enqueue tokens and their corresponding position ids into the queue
         new_tqueue = self.tqueue.enqueue_tokens(new_tokens, local_seq_ids, pos_ids, num_new_tokens)
 
-        return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, num_tokens=counts, tqueue=new_tqueue)
+        return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, seq_lens=counts, tqueue=new_tqueue)
 
     def is_finished(self, seq_id: jnp.ndarray) -> jnp.ndarray:
         """
@@ -290,13 +291,13 @@ class DecodeState(eqx.Module):
         def body(i):
             sid = seq_id[i]
 
-            done = ((self.num_tokens["seq", sid] != INVALID) &
-                    (self.num_tokens["seq", sid] >= self.max_num_tokens["seq", sid])
+            done = ((self.seq_lens["seq", sid] != INVALID) &
+                    (self.seq_lens["seq", sid] >= self.max_num_tokens["seq", sid])
                     ).scalar()
 
             if self.stop_tokens is not None:
                 stop_len = self.stop_tokens.axis_size("position")
-                num = self.num_tokens["seq", sid].scalar()
+                num = self.seq_lens["seq", sid].scalar()
                 tokens_row = self.tokens["seq", sid].array
                 padded_tokens = jnp.concatenate([
                     jnp.full((stop_len,), INVALID, dtype=jnp.int32),
@@ -329,7 +330,7 @@ logprobs: {logprobs}
 max_num_tokens: {max_num_tokens}
 """,
             seq_id=self.seq_id,
-            num_tokens=self.num_tokens,
+            num_tokens=self.seq_lens,
             prefix_len=self.prefix_len,
             finished=self.is_finished(jnp.arange(self.max_seqs, dtype=jnp.int32)),
             tokens=self.tokens,
@@ -361,7 +362,7 @@ max_num_tokens: {max_num_tokens}
             tokens=hax.full({"seq": max_seqs, "position": max_seq_len}, pad_token_id, dtype=jnp.int32),
             logprobs=None,
             prefix_len=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
-            num_tokens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
+            seq_lens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             max_num_tokens=hax.full({"seq": max_seqs}, 0, dtype=jnp.int32),
             stop_tokens=hax.full(
                 {"seq": max_seqs, "stop_seq": max_stop_seqs, "position": max_stop_tokens},
