@@ -594,8 +594,10 @@ def _te_materialize_mask(KPos, QPos, batch_size, mask):
             fused_attn_mask = jnp.dstack([fused_attn_mask] * batch_size)
 
         else:
-            attn_mask_type = AttnMaskType.NO_MASK
-            fused_attn_mask = jnp.ones((batch_size, QPos.size, KPos.size))
+            raise NotImplementedError(
+                "Non-causal AttentionMask is not supported for NVTE fused attention."
+                " Please use the JAX reference implementation."
+            )
     else:
         attn_mask_type = AttnMaskType.NO_MASK
         fused_attn_mask = jnp.ones((batch_size, QPos.size, KPos.size))
