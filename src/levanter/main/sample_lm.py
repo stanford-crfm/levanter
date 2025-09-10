@@ -261,7 +261,7 @@ def run_generation_loop(
     return final_gen_state
 
 
-def _do_multisample(
+def _handle_clones(
     gen_state: GenState,
     logits: ht.Float[NamedArray, " position vocab"],  # type: ignore
     seq_ids: ht.Int[NamedArray, " position"],  # type: ignore
@@ -319,6 +319,7 @@ def _do_multisample(
     selected_safe = hax.where(selected != INVALID, selected, 0)
     tgt_ids = clone_targets["seq", selected_safe]
     src_pos = source_indices["seq", selected_safe]
+    src_ids = seq_ids["position", src_pos]
     logits_this_time = logits["position", src_pos]
     pos_ids_this_time = pos_ids["position", src_pos]
 
@@ -328,9 +329,39 @@ def _do_multisample(
 
     new_tokens, log_probs = hax.vmap(sampler, "position")(logits_this_time, temps, key=prng_keys)
 
+    # update page table and cache for the clone targets
+    page_table = gen_state.page_table
+    cache = gen_state.cache
+    size = page_table.page_size
+
+    def copy_pages_for_updated_seq(
+        i,
+        state: tuple[PageTable, KvPageCache],
+    ) -> tuple[PageTable, KvPageCache]:
+        page_table, cache = state
+        src_seq_id = src_ids["position", i].scalar()
+        dst_seq_id = tgt_ids["position", i].scalar()
+        page_table = page_table.clone_pages_from(src_seq_id, dst_seq_id)
+
+        src_len = page_table.seq_lens["seq", src_seq_id].scalar()
+        used_pages = (src_len + size - 1) // size
+        last_idx = jnp.maximum(used_pages - 1, 0)
+        def _copy(_):
+            src_page = page_table.page_indices["seq", src_seq_id, "page", last_idx].scalar()
+            dst_page = page_table.page_indices["seq", dst_seq_id, "page", last_idx].scalar()
+            return cache.copy_page(src_page, dst_page)
+
+        def _identity(_):
+            return cache
+
+        cache = jax.lax.cond((src_len % size != 0) & (src_len > 0), _copy, _identity, None)
+        return page_table, cache
+
+    page_table, cache = jax.lax.fori_loop(0, num_new, copy_pages_for_updated_seq, (page_table, cache))
+
     # Enqueue/update tokens for the clone targets (only the first num_new entries will be used)
     decode_state = gen_state.decode_state.update_tokens(new_tokens, tgt_ids, log_probs, num_new)
-    gen_state = dataclasses.replace(gen_state, decode_state=decode_state)
+    gen_state = dataclasses.replace(gen_state, decode_state=decode_state, page_table=page_table, cache=cache)
 
     # Return which clones we sampled this time (mask over clone_targets axis)
     return gen_state, can_sample
@@ -378,7 +409,7 @@ def run_prefill(
 
     # If clone targets specified, sample alternative tokens for clones using the same logits slice
     if (clone_sources is not None) and (clone_targets is not None):
-        gen_state, _covered_clones = _do_multisample(
+        gen_state, _covered_clones = _handle_clones(
             gen_state,
             logits_at_samples,
             new_seq_ids,
@@ -700,27 +731,6 @@ def prefill_prompts(
         gen_state = run_prefill(
             gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL, clone_sources=clone_sources_arr, clone_targets=clone_targets_arr
         )
-
-    # After prefill is complete, ensure clones share the parent's KV pages and (if partial) copy the parent's last page
-    # TODO: push the actual cloning into do_multisample (which requires making it jit safe)
-    if len(clone_sources_list) > 0:
-        page_table = gen_state.page_table
-        cache = gen_state.cache
-        size = page_table.page_size
-
-        for src_seq_id, dst_seq_id in zip(clone_sources_list, clone_targets_list):
-            page_table = page_table.clone_pages_from(src_seq_id, dst_seq_id)
-
-            src_len = int(page_table.seq_lens["seq", src_seq_id].scalar())
-            used_pages = (src_len + size - 1) // size
-            last_idx = max(used_pages - 1, 0)
-            is_boundary = (src_len % size) == 0
-            if not is_boundary and src_len > 0:
-                src_page = page_table.page_indices["seq", src_seq_id, "page", last_idx].scalar()
-                dst_page = page_table.page_indices["seq", dst_seq_id, "page", last_idx].scalar()
-                cache = cache.copy_page(src_page, dst_page)
-
-        gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache)
 
     return gen_state, primary_local_ids
 

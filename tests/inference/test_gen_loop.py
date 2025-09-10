@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import haliax as hax
 
-from levanter.main.sample_lm import _do_multisample
+from levanter.main.sample_lm import _handle_clones
 from levanter.inference.utils import INVALID
 
 
@@ -66,7 +66,7 @@ def test_do_multisample_basic_two_clones():
     dstate = DummyDecodeState(temperature=temps)
     gstate = DummyGenState(decode_state=dstate)
 
-    new_state, sampled_mask = _do_multisample(gstate, logits, seq_ids, pos_ids, clone_sources, clone_targets, dummy_sampler)
+    new_state, sampled_mask = _handle_clones(gstate, logits, seq_ids, pos_ids, clone_sources, clone_targets, dummy_sampler)
 
     assert bool(hax.all(sampled_mask).scalar())
     # Expect tokens [5, 7] sampled for targets [10, 11]
@@ -95,7 +95,7 @@ def test_do_multisample_missing_source_skips():
     dstate = DummyDecodeState(temperature=temps)
     gstate = DummyGenState(decode_state=dstate)
 
-    new_state, sampled_mask = _do_multisample(gstate, logits, seq_ids, pos_ids, clone_sources, clone_targets, dummy_sampler)
+    new_state, sampled_mask = _handle_clones(gstate, logits, seq_ids, pos_ids, clone_sources, clone_targets, dummy_sampler)
 
     # Only the first clone should be sampled
     assert jnp.array_equal(sampled_mask.array, jnp.asarray([True, False]))
@@ -123,7 +123,7 @@ def test_do_multisample_invalid_target_skips():
     dstate = DummyDecodeState(temperature=temps)
     gstate = DummyGenState(decode_state=dstate)
 
-    new_state, sampled_mask = _do_multisample(gstate, logits, seq_ids, pos_ids, clone_sources, clone_targets, dummy_sampler)
+    new_state, sampled_mask = _handle_clones(gstate, logits, seq_ids, pos_ids, clone_sources, clone_targets, dummy_sampler)
 
     # Both clones should be skipped: one invalid target, one missing source
     assert jnp.array_equal(sampled_mask.array, jnp.asarray([False, False]))
