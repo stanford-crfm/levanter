@@ -309,8 +309,8 @@ def _do_multisample(
     can_sample = (source_indices != INVALID) & is_valid(clone_targets)
 
     # Build a compact position index list of clones to process this time
-    selected_idx = jnp.nonzero(can_sample.array, size=CloneSeq.size, fill_value=INVALID)[0]
-    selected = hax.named(selected_idx, axis="position")
+    selected = hax.where(can_sample, fill_value=INVALID, new_axis=CloneSeq)[0]
+    selected = selected.rename({"seq": "position"})
 
     num_new = hax.sum(selected != INVALID).scalar().astype(jnp.int32)
 
