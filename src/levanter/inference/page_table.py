@@ -351,7 +351,14 @@ class PageTable(eqx.Module):
 
 
 class PageBatchInfo(eqx.Module):
-    """Page and length information for a batch of sequences."""
+    """
+    Page and length information for a batch of sequences.
+
+    NOTE: the "sequence" indices here are not the same as the sequence indices in DecodeState. That is,
+    page_indices[0] does not in general correspond to the first sequence in DecodeState, but rather the first sequence
+    that has tokens **in this batch**.
+
+    """
 
     page_indices: ht.i32[NamedArray, " seq page"]  # type: ignore[name-defined]
     seq_lens: ht.i32[NamedArray, " seq"]  # type: ignore[name-defined]

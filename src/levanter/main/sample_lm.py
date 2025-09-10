@@ -210,7 +210,7 @@ def run_generation_loop(
 
         # Compute boundary positions: last new token for each sequence within this packed slice.
         # Primary rule: boundary when absolute pos_id equals the post-allocation seq_len - 1 for that sequence.
-        seq_lens_after = binfo.seq_lens["seq", packed_seq.seq_ids]
+        seq_lens_after = decode_state.num_tokens["seq", packed_seq.seq_ids]
         boundary_mask = packed_seq.pos_ids == (seq_lens_after - 1)
         # Bound number of boundaries by number of sequences or chunk size
         max_boundaries = min(page_table.max_seqs, max_tokens_per_round)
@@ -220,24 +220,9 @@ def run_generation_loop(
             new_axis=packed_seq.tokens.resolve_axis("position").resize(max_boundaries),
         )[0]
 
-        # Fallback: if none detected, pick the last token per sequence inside this packed slice.
-        # This mirrors the old boundary behavior and guarantees progress even if lengths mismatch.
-        num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
-        def compute_fallback():
-            is_last_in_seq = (packed_seq.seq_ids != hax.roll(packed_seq.seq_ids, -1, "position")) & (packed_seq.seq_ids != INVALID)
-            return hax.where(
-                is_last_in_seq,
-                fill_value=INVALID,
-                new_axis=packed_seq.tokens.resolve_axis("position").resize(max_boundaries),
-            )[0]
-        boundaries = jax.lax.cond(num_new_tokens == 0, compute_fallback, lambda: boundaries)
-
         # Decode logits and sample new tokens
-        # Use pos_ids tracked by the TokenQueue/PackedSequence rather than from PageBatchInfo
         logits, cache = model.decode(packed_seq.tokens, gen_state.cache, binfo, packed_seq.pos_ids)
         logits = logits["position", boundaries]
-        # cache = eqx.error_if(cache, hax.any(hax.isnan(cache.kv_pages)).scalar(), "New Cache contains NaNs")
-        # logits = eqx.error_if(logits, hax.any(hax.isnan(logits) & ~is_invalid(boundaries)).scalar(), "Logits contain NaNs")
 
         num_new_tokens = hax.sum(boundaries != INVALID).scalar().astype(jnp.int32)
         new_seq_ids = packed_seq.seq_ids["position", boundaries]
