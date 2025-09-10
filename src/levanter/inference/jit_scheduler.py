@@ -83,6 +83,12 @@ class DecodeState(eqx.Module):
     # TODO: pretty sure we don't need prefix_len, delete
     prefix_len: ht.i32[NamedArray, "seq"]
     """ Length of the prefix for each sequence."""
+    clone_sources: ht.i32[NamedArray, "seq"]
+    """
+    For each local sequence slot, the local source id it should be cloned from, or INVALID if it's either already
+    been cloned or is an original sequence. This is used to implement efficient cloning of sequences for multi-sample
+    decoding or potentially beam search / particle filtering.
+    """
 
     kv_pages: ht.i32[NamedArray, "seq page"]
     """Key-value pages for each sequence. This is used to store the key-value pairs for the sequences."""
@@ -363,6 +369,7 @@ max_num_tokens: {max_num_tokens}
             logprobs=None,
             prefix_len=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             seq_lens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
+            clone_sources=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
             max_num_tokens=hax.full({"seq": max_seqs}, 0, dtype=jnp.int32),
             stop_tokens=hax.full(
                 {"seq": max_seqs, "stop_seq": max_stop_seqs, "position": max_stop_tokens},

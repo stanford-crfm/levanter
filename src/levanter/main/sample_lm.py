@@ -101,6 +101,11 @@ class GenState(eqx.Module):
             kv_pages=parent_kv_pages_row,
             seq_params=seq_params,
         )
+        # Record clone mapping on the child slot
+        decode_state = dataclasses.replace(
+            decode_state,
+            clone_sources=decode_state.clone_sources.at["seq", child_local_id].set(parent_local_id),
+        )
 
         # Clone pages (shares full pages; fresh page for last partial)
         page_table = page_table.clone_pages_from(parent_local_id, child_local_id)
@@ -266,17 +271,13 @@ def _handle_clones(
     logits: ht.Float[NamedArray, " position vocab"],  # type: ignore
     seq_ids: ht.Int[NamedArray, " position"],  # type: ignore
     pos_ids: ht.Int[NamedArray, " position"],  # type: ignore
-    clone_sources: ht.Int[NamedArray, " seq"],  # type: ignore
-    clone_targets: ht.Int[NamedArray, " seq"],  # type: ignore
     sampler: Sampler,
 ) -> tuple[GenState, ht.bool_[NamedArray, " seq"]]:  # type: ignore
     """
     Sample alternative tokens for the given logits, seq_ids, pos_ids, and clone_targets.
     This is used for the `n>1` case of `n_generations` in the `Request` class.
 
-    `clone_sources` are the sequences to clone from, `clone_targets` are the sequences to clone to.
-    We want to grab the logits for each valid seq from the clones where clone_sources is in the seq_ids, and then sample
-    from those logits to produce new tokens for the clone_targets and fill in the gen_state for that sequence.
+    Uses ``gen_state.decode_state.clone_sources`` as a mapping from target local ids to source local ids.
 
     It's assumed that:
       1. gen_state already has the appropriate page table and decode state for the given `clone_sources` and `clone_targets`.
@@ -285,12 +286,12 @@ def _handle_clones(
     Returns the updated gen_state and a boolean array indicating which ids from `clone_targets` were sampled.
     """
     # Resolve axes
-    CloneSeq = clone_sources.resolve_axis("seq")
+    CloneSeq = gen_state.decode_state.clone_sources.resolve_axis("seq")
 
     # For each clone source, find its index in the provided seq_ids (within this packed/sliced batch).
     # If not present, mark as INVALID.
     def find_src(i):
-        src = clone_sources["seq", i].scalar()
+        src = gen_state.decode_state.clone_sources["seq", i].scalar()
 
         def do(src):
             # match positions where seq_ids == src; take first
@@ -300,13 +301,14 @@ def _handle_clones(
 
         return jax.lax.cond(is_valid(src), do, lambda x: x, src)
 
-    # source_indices = jax.lax.fori_loop(0, clone_sources.axis_size("seq"), find_src, source_indices)
-    source_indices = hax.vmap(find_src, "seq")(jnp.arange(CloneSeq.size))
-    source_indices = hax.named(source_indices, axis="seq")
+    # source_indices tells us, for each sequence that is a clone target, the index in the
+    # logits/seq_ids/pos_ids arrays of its source sequence.
+    # INVALID if either no source or source not in this batch.
+    source_indices = hax.named(hax.vmap(find_src, "seq")(jnp.arange(CloneSeq.size)), axis="seq")
 
     # Determine which clone targets can be sampled this step:
     # need a valid source index and a valid target id
-    can_sample = (source_indices != INVALID) & is_valid(clone_targets)
+    can_sample = (source_indices != INVALID)
 
     # Build a compact position index list of clones to process this time
     selected = hax.where(can_sample, fill_value=INVALID, new_axis=CloneSeq)[0]
@@ -317,7 +319,7 @@ def _handle_clones(
     # Gather per-clone data
     # Use a masked/guarded gather to keep shapes static. First entries are valid clones.
     selected_safe = hax.where(selected != INVALID, selected, 0)
-    tgt_ids = clone_targets["seq", selected_safe]
+    tgt_ids = selected_safe
     src_pos = source_indices["seq", selected_safe]
     src_ids = seq_ids["position", src_pos]
     logits_this_time = logits["position", src_pos]
@@ -363,7 +365,7 @@ def _handle_clones(
     decode_state = gen_state.decode_state.update_tokens(new_tokens, tgt_ids, log_probs, num_new)
     gen_state = dataclasses.replace(gen_state, decode_state=decode_state, page_table=page_table, cache=cache)
 
-    # Return which clones we sampled this time (mask over clone_targets axis)
+    # Return which clones we sampled this time (mask over seq axis)
     return gen_state, can_sample
 
 
@@ -375,9 +377,6 @@ def run_prefill(
     sampler,
     queue: TokenQueue,
     max_seqs_in_prefill: int,  # static
-    # TODO: push clone_sources/clone_targets into GenState
-    clone_sources: NamedArray | None = None,
-    clone_targets: NamedArray | None = None,
 ) -> GenState:
     """Run prefill using a fresh, local token queue. Newly sampled tokens are enqueued to the main decode queue via update_tokens."""
 
@@ -408,18 +407,14 @@ def run_prefill(
     gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
 
     # If clone targets specified, sample alternative tokens for clones using the same logits slice
-    if (clone_sources is not None) and (clone_targets is not None):
+    if decode_state.clone_sources is not None:
         gen_state, _covered_clones = _handle_clones(
             gen_state,
             logits_at_samples,
             new_seq_ids,
             new_pos_ids,
-            clone_sources,
-            clone_targets,
             sampler,
         )
-        # refresh working decode_state in case it changed
-        # TODO: remove covered_clones from clone_sources and clone_targets for next round of sampling if needed
 
 
     return gen_state
@@ -644,9 +639,6 @@ def prefill_prompts(
 
     primary_local_ids: list[int] = []
 
-    clone_sources_list: list[int] = []
-    clone_targets_list: list[int] = []
-
     for idx, request in enumerate(prompts):
         seq_tokens = request.prompt_tokens
         seq_params = request.decode_params
@@ -667,14 +659,7 @@ def prefill_prompts(
                 queued_pos_ids=hax.named(pos_ids, axis="position"),
                 num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
             )
-            # If we have clones, pass them to prefill so they get their initial token
-            if len(clone_sources_list) > 0:
-                clone_sources_arr = hax.named(jnp.asarray(clone_sources_list, dtype=jnp.int32), "seq")
-                clone_targets_arr = hax.named(jnp.asarray(clone_targets_list, dtype=jnp.int32), "seq")
-            else:
-                clone_sources_arr = None
-                clone_targets_arr = None
-            gen_state = run_prefill(gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL, clone_sources=clone_sources_arr, clone_targets=clone_targets_arr)
+            gen_state = run_prefill(gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL)
             # clear
             tokens[:] = INVALID
             seq_ids[:] = INVALID
@@ -703,15 +688,12 @@ def prefill_prompts(
 
         # Create clones for multi-sample during prefill (if requested)
         if request.n_generations > 1:
-            # TODO: don't clone here because we're not actually doing the clone thing yet really, just reserving the space and setting params
             for k in range(1, request.n_generations):
-                gen_state, child_local = gen_state.clone_sequence(
+                gen_state, _ = gen_state.clone_sequence(
                     seq_id,
                     global_id=(primary_global_ids[idx] + k if primary_global_ids is not None else request.request_id),
                     seq_params=dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k)),
                 )
-                clone_sources_list.append(seq_id)
-                clone_targets_list.append(child_local)
 
     if offset > 0:
         token_queue = TokenQueue(
@@ -720,17 +702,8 @@ def prefill_prompts(
             queued_pos_ids=hax.named(pos_ids, axis="position"),
             num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
         )
-        # If we have clones, pass them to prefill so they get their initial token
-        if len(clone_sources_list) > 0:
-            clone_sources_arr = hax.named(jnp.asarray(clone_sources_list, dtype=jnp.int32), "seq")
-            clone_targets_arr = hax.named(jnp.asarray(clone_targets_list, dtype=jnp.int32), "seq")
-        else:
-            clone_sources_arr = None
-            clone_targets_arr = None
-
-        gen_state = run_prefill(
-            gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL, clone_sources=clone_sources_arr, clone_targets=clone_targets_arr
-        )
+        # Run prefill for this batch; clones are handled via decode_state.clone_sources
+        gen_state = run_prefill(gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL)
 
     return gen_state, primary_local_ids
 
