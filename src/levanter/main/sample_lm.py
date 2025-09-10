@@ -289,20 +289,20 @@ def _do_multisample(
 
     # For each clone source, find its index in the provided seq_ids (within this packed/sliced batch).
     # If not present, mark as INVALID.
-    source_indices = hax.full((CloneSeq,), INVALID, dtype=jnp.int32)
-
-    def find_src(i, acc):
+    def find_src(i):
         src = clone_sources["seq", i].scalar()
 
-        def do(acc):
+        def do(src):
             # match positions where seq_ids == src; take first
             eq = (seq_ids == src).array
             idx = jnp.nonzero(eq, size=1, fill_value=INVALID)[0][0]
-            return acc.at["seq", i].set(idx)
+            return idx
 
-        return jax.lax.cond(is_valid(src), do, lambda x: x, acc)
+        return jax.lax.cond(is_valid(src), do, lambda x: x, src)
 
-    source_indices = jax.lax.fori_loop(0, CloneSeq.size, find_src, source_indices)
+    # source_indices = jax.lax.fori_loop(0, clone_sources.axis_size("seq"), find_src, source_indices)
+    source_indices = hax.vmap(find_src, "seq")(jnp.arange(CloneSeq.size))
+    source_indices = hax.named(source_indices, axis="seq")
 
     # Determine which clone targets can be sampled this step:
     # need a valid source index and a valid target id
@@ -333,8 +333,7 @@ def _do_multisample(
     gen_state = dataclasses.replace(gen_state, decode_state=decode_state)
 
     # Return which clones we sampled this time (mask over clone_targets axis)
-    sampled_mask = can_sample
-    return gen_state, sampled_mask
+    return gen_state, can_sample
 
 
 
@@ -345,6 +344,7 @@ def run_prefill(
     sampler,
     queue: TokenQueue,
     max_seqs_in_prefill: int,  # static
+    # TODO: push clone_sources/clone_targets into GenState
     clone_sources: NamedArray | None = None,
     clone_targets: NamedArray | None = None,
 ) -> GenState:
@@ -370,15 +370,15 @@ def run_prefill(
     temps = gen_state.decode_state.temperature["seq", new_seq_ids]
 
     new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
-    jax.debug.print("Prefill sampled {num_new_tokens} new tokens for sequences {new_seq_ids}", num_new_tokens=num_new_tokens, new_seq_ids=new_seq_ids)
 
     # Update decode_state (also enqueues into the main decode queue)
     decode_state = gen_state.decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
 
+    gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
+
     # If clone targets specified, sample alternative tokens for clones using the same logits slice
     if (clone_sources is not None) and (clone_targets is not None):
-        gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
-        gen_state, _ = _do_multisample(
+        gen_state, _covered_clones = _do_multisample(
             gen_state,
             logits_at_samples,
             new_seq_ids,
@@ -388,9 +388,8 @@ def run_prefill(
             sampler,
         )
         # refresh working decode_state in case it changed
-        decode_state = gen_state.decode_state
+        # TODO: remove covered_clones from clone_sources and clone_targets for next round of sampling if needed
 
-    gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache, decode_state=decode_state)
 
     return gen_state
 
@@ -637,7 +636,14 @@ def prefill_prompts(
                 queued_pos_ids=hax.named(pos_ids, axis="position"),
                 num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
             )
-            gen_state = run_prefill(gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL)
+            # If we have clones, pass them to prefill so they get their initial token
+            if len(clone_sources_list) > 0:
+                clone_sources_arr = hax.named(jnp.asarray(clone_sources_list, dtype=jnp.int32), "seq")
+                clone_targets_arr = hax.named(jnp.asarray(clone_targets_list, dtype=jnp.int32), "seq")
+            else:
+                clone_sources_arr = None
+                clone_targets_arr = None
+            gen_state = run_prefill(gen_state, model, sampler, token_queue, MAX_SEQS_IN_PREFILL, clone_sources=clone_sources_arr, clone_targets=clone_targets_arr)
             # clear
             tokens[:] = INVALID
             seq_ids[:] = INVALID
@@ -666,6 +672,7 @@ def prefill_prompts(
 
         # Create clones for multi-sample during prefill (if requested)
         if request.n_generations > 1:
+            # TODO: don't clone here because we're not actually doing the clone thing yet really, just reserving the space and setting params
             for k in range(1, request.n_generations):
                 gen_state, child_local = gen_state.clone_sequence(
                     seq_id,
@@ -695,6 +702,7 @@ def prefill_prompts(
         )
 
     # After prefill is complete, ensure clones share the parent's KV pages and (if partial) copy the parent's last page
+    # TODO: push the actual cloning into do_multisample (which requires making it jit safe)
     if len(clone_sources_list) > 0:
         page_table = gen_state.page_table
         cache = gen_state.cache
@@ -708,8 +716,8 @@ def prefill_prompts(
             last_idx = max(used_pages - 1, 0)
             is_boundary = (src_len % size) == 0
             if not is_boundary and src_len > 0:
-                src_page = int(page_table.page_indices["seq", src_seq_id, "page", last_idx].scalar())
-                dst_page = int(page_table.page_indices["seq", dst_seq_id, "page", last_idx].scalar())
+                src_page = page_table.page_indices["seq", src_seq_id, "page", last_idx].scalar()
+                dst_page = page_table.page_indices["seq", dst_seq_id, "page", last_idx].scalar()
                 cache = cache.copy_page(src_page, dst_page)
 
         gen_state = dataclasses.replace(gen_state, page_table=page_table, cache=cache)
