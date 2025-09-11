@@ -27,6 +27,7 @@ from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.inference.page_table import PageTable
 from levanter.layers.sampler import Sampler
+from levanter.inference.service import GenerationService
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
@@ -459,8 +460,6 @@ def main(config: SampleLmConfig):
         model = _load_model(config, Vocab, key=key)
         assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
 
-        sampler = Sampler(Vocab)
-
         prompts = config.prompts
 
         if isinstance(prompts, str):
@@ -468,20 +467,22 @@ def main(config: SampleLmConfig):
 
         prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
 
-        table = PageTable.init(64, len(prompt_ids) * config.n_generations, 8, 32)
-        cache = haliax.named_jit(model.initial_cache)(table, dtype=config.trainer.mp.compute_dtype)
-        initial_decode_state = DecodeState.init(
-            table.max_seqs,
-            table.pages_per_seq,
-            table.page_size,
-            table.max_len_per_seq,
-            max_stop_seqs=1,
+        # Initialize a reusable generation service with capacity sized to this batch
+        max_pages = 64
+        max_seqs = len(prompt_ids) * config.n_generations
+        page_size = 8
+        max_pages_per_seq = 32
+        service = GenerationService.from_model(
+            model=model,
+            tokenizer=tokenizer,
+            vocab_axis=Vocab,
+            max_pages=max_pages,
+            max_seqs=max_seqs,
+            page_size=page_size,
+            max_pages_per_seq=max_pages_per_seq,
+            compute_dtype=config.trainer.mp.compute_dtype,
             max_queued_tokens=32,
-        )
-        gen_state = GenState(
-            cache=cache,
-            page_table=table,
-            decode_state=initial_decode_state,
+            max_seqs_in_prefill=16,
         )
 
         # -------------------------------- Scheduler-based generation --------------------------------
@@ -491,7 +492,6 @@ def main(config: SampleLmConfig):
             stop_ids = tokenizer(stop_sequence, add_special_tokens=False)["input_ids"]
             if len(stop_ids) == 0:
                 raise ValueError("Stop sequence must be non-empty")
-            stop_ids = hax.named(np.asarray(stop_ids, dtype=np.int32), axis="position")
         else:
             stop_ids = None
 
@@ -500,25 +500,34 @@ def main(config: SampleLmConfig):
                 print(f"Prompt {i}: {toks}")
 
             time_in = time.time()
-            outputs, gen_state, total_generated = _one_round(
-                config, gen_state, model, prompt_ids, sampler, tokenizer, stop_ids, key
+            outputs, total_generated = service.generate(
+                prompts=prompt_ids,
+                n_generations=config.n_generations,
+                max_new_tokens=config.max_new_tokens,
+                temperature=config.temperature,
+                seed=config.seed,
+                stop_tokens=stop_ids,
+                max_tokens_per_round=max_seqs,
+                max_rounds=8,
             )
-            print(f"Round {R} took {time.time() - time_in:.2f} seconds, "
-                  f"generated {total_generated} tokens in {len(outputs)} sequences.")
-
-            # clear page table: free all local sequence slots, not just primaries
-            page_table = gen_state.page_table
-            for seq_id in range(page_table.max_seqs):
-                page_table = page_table.free_pages(seq_id)
-
-            # Initialize GenState with all components
-            gen_state = dataclasses.replace(
-                gen_state,
-                # in theory, we can just reuse the cache and not recreate it every time
-                page_table=page_table,
-                decode_state=initial_decode_state,
+            print(
+                f"Round {R} took {time.time() - time_in:.2f} seconds, "
+                f"generated {total_generated} tokens in {len(outputs)} sequences."
             )
-            del page_table
+
+            # Decode and print outputs
+            for seq_id, seq_outputs in enumerate(outputs):
+                seq_outputs = [tok for tok in seq_outputs if tok != tokenizer.pad_token_id and tok != INVALID]
+                text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
+                print(f"Tokens for sequence {seq_id} (len: {len(seq_outputs)}: {seq_outputs}")
+                print(f"Generated text for {seq_id}: {text}")
+                tokens_with_text = [
+                    f"{tok} ({tokenizer.decode([tok], skip_special_tokens=True)})" for tok in seq_outputs
+                ]
+                print(f"Tokens with text for sequence {seq_id}: {tokens_with_text}")
+
+            # Reset for next round
+            service.reset()
 
 
 def _one_round(config, gen_state, model, prompt_ids, sampler, tokenizer, stop_ids: NamedArray | None, key):
