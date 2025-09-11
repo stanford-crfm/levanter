@@ -160,10 +160,6 @@ def main(config: SampleLmConfig):
                 ]
                 print(f"Tokens with text for sequence {seq_id}: {tokens_with_text}")
 
-            # Reset for next round
-            service.reset()
-
-
 
 if __name__ == "__main__":
     levanter.config.main(main)()

@@ -1,0 +1,111 @@
+import jax
+import jax.numpy as jnp
+import haliax as hax
+
+from haliax import Axis
+
+from levanter.inference.service import GenerationService
+from levanter.layers.attention import KvPageCache
+from levanter.inference.page_table import PageTable
+from levanter.inference.utils import INVALID
+import pytest
+import logging
+
+
+class DummyModel:
+    """Minimal model stub to drive GenerationService for tests.
+
+    - `initial_cache` returns an empty KvPageCache sized to the PageTable.
+    - `decode` returns constant logits that strongly prefer token `EOS`.
+    """
+
+    def __init__(self, vocab_size: int, eos_id: int = 3):
+        self.vocab = Axis("vocab", vocab_size)
+        self.eos = eos_id
+
+    def initial_cache(self, page_table: PageTable, *, dtype):
+        # Use trivial cache dimensions; the cache is unused by this dummy model
+        kv_heads = Axis("kv_head", 1)
+        head_size = Axis("embed", 1)
+        return KvPageCache.init(page_table, kv_heads, head_size, dtype=dtype)
+
+    def decode(self, input_ids, kv_cache, batch_info, pos_ids):
+        # Produce logits that prefer `eos` for every sampled position
+        Pos = input_ids.resolve_axis("position")
+        Vocab = self.vocab
+        # One-hot on vocab axis for eos token, broadcast over positions
+        logits = hax.nn.one_hot(self.eos, Vocab, dtype=jnp.float32)
+        logits = logits.broadcast_axis(Pos)
+        return logits, kv_cache
+
+
+def _build_service(vocab_size=10):
+    model = DummyModel(vocab_size=vocab_size, eos_id=3)
+    service = GenerationService.from_model(
+        model=model,  # type: ignore
+        tokenizer=None,
+        vocab_axis=model.vocab,
+        max_pages=64,
+        max_seqs=8,
+        page_size=8,
+        max_pages_per_seq=4,
+        compute_dtype=jnp.float32,
+        max_queued_tokens=64,
+        max_seqs_in_prefill=4,
+    )
+    return service
+
+
+def test_release_on_finish_and_reuse_slots(caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO)
+    svc = _build_service()
+
+    prompts = [[7, 7], [1]]
+    stop_tokens = [3]  # Dummy model always emits 3, so immediate stop after first generated token
+
+    outputs, total_generated = svc.generate(
+        prompts,
+        n_generations=1,
+        max_new_tokens=5,
+        temperature=0.0,  # greedy
+        seed=0,
+        stop_tokens=stop_tokens,
+        max_tokens_per_round=8,
+        max_rounds=8,
+    )
+
+    # Each sequence should be original prompt + a single eos token
+    assert outputs[0] == prompts[0] + [3]
+    assert outputs[1] == prompts[1] + [3]
+    assert total_generated == 2  # one new token per prompt
+
+    # Finished sequences are auto-released; PageTable should have no active seqs
+    pt = svc.gen_state.page_table
+    ds = svc.gen_state.decode_state
+    # All seq_lens entries should be invalid now
+    seq_lens = jax.device_get(pt.seq_lens.array)
+    assert ((seq_lens < 0) | (seq_lens == INVALID)).all()
+    # All local seq ids should be INVALID
+    seq_ids = jax.device_get(ds.seq_id.array)
+    assert (seq_ids < 0).all() or ((seq_ids == 2_000_000) | (seq_ids < 0)).all()
+    # No pages should be held
+    ref_counts = jax.device_get(pt.page_ref_counts.array)
+    assert int(ref_counts.sum()) == 0
+
+    # Ensure we logged the release
+    assert any("Releasing finished sequences" in rec.message for rec in caplog.records)
+
+    # Now reuse service for another prompt without calling reset()
+    prompts2 = [[5, 5, 5]]
+    outputs2, total_generated2 = svc.generate(
+        prompts2,
+        n_generations=1,
+        max_new_tokens=3,
+        temperature=0.0,
+        seed=42,
+        stop_tokens=stop_tokens,
+        max_tokens_per_round=8,
+        max_rounds=8,
+    )
+    assert outputs2[0] == prompts2[0] + [3]
+    assert total_generated2 == 1

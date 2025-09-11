@@ -430,6 +430,65 @@ class GenerationService:
             decode_state=self._initial_decode_state,
         )
 
+    def _release_finished_sequences(self) -> None:
+        """Release resources for any sequences that have finished.
+
+        - Frees pages in the PageTable for finished local sequence ids.
+        - Clears DecodeState bookkeeping so the local slots can be reused.
+
+        This makes explicit `reset()` calls generally unnecessary between batches.
+        """
+        ds = self.gen_state.decode_state
+        pt = self.gen_state.page_table
+
+        # Determine which local sequence slots are finished
+        finished_mask = jax.device_get(ds.is_finished(jnp.arange(ds.max_seqs))).astype(bool)
+        finished_locals = [i for i, f in enumerate(finished_mask) if bool(f)]
+
+        if len(finished_locals) == 0:
+            return
+
+        # Capture current global ids for logging before we clear them
+        try:
+            seq_ids_host = jax.device_get(ds.seq_id.array)
+            finished_globals = [int(seq_ids_host[i]) for i in finished_locals]
+        except Exception:
+            finished_globals = []
+        logger.info(f"Releasing finished sequences: locals={finished_locals}, globals={finished_globals}")
+
+        # Free pages for finished sequences
+        for local_seq in finished_locals:
+            pt = pt.free_pages(local_seq)
+
+        # Clear DecodeState slot metadata for finished sequences
+        # Build a boolean NamedArray mask over the seq axis
+        Seq = ds.seq_id.resolve_axis("seq")
+        mask = hax.named(jnp.asarray(finished_mask, dtype=bool), axis=Seq)
+
+        # Invalidate ids and lengths for finished slots
+        new_seq_id = hax.where(mask, hax.full_like(ds.seq_id, INVALID), ds.seq_id)
+        new_seq_lens = hax.where(mask, hax.full_like(ds.seq_lens, INVALID), ds.seq_lens)
+        new_prefix_len = hax.where(mask, hax.full_like(ds.prefix_len, 0), ds.prefix_len)
+        new_clone_sources = hax.where(mask, hax.full_like(ds.clone_sources, INVALID), ds.clone_sources)
+
+        # Invalidate kv_pages rows for finished slots
+        new_kv_pages = ds.kv_pages
+        for local_seq in finished_locals:
+            new_kv_pages = new_kv_pages.at["seq", local_seq].set(INVALID)
+
+        self.gen_state = dataclasses.replace(
+            self.gen_state,
+            page_table=pt,
+            decode_state=dataclasses.replace(
+                ds,
+                seq_id=new_seq_id,
+                seq_lens=new_seq_lens,
+                prefix_len=new_prefix_len,
+                clone_sources=new_clone_sources,
+                kv_pages=new_kv_pages,
+            ),
+        )
+
     def _prefill_prompts(
         self,
         requests: Sequence[Request],
@@ -643,6 +702,8 @@ class GenerationService:
         self.gen_state = jax.block_until_ready(self.gen_state)
         # Drain prompt tokens so finished flags reflect prompt-contained stops
         _ = self._extract_outputs(outputs, finished)
+        # Free completed sequences promptly so slots/pages are reusable
+        self._release_finished_sequences()
 
         # Autoregressive generation loop with periodic extraction
         stagnant_iters = 0
@@ -658,6 +719,8 @@ class GenerationService:
             loop_time = time.time() - t0
             self.gen_state = jax.block_until_ready(self.gen_state)
             new_tokens = self._extract_outputs(outputs, finished)
+            # Release any sequences that finished in this step
+            self._release_finished_sequences()
             if loop_time > 0:
                 tps = new_tokens / loop_time
                 logger.info(f"Decode iter: {loop_time:.3f}s, {tps:.2f} tok/s, {new_tokens} new")
