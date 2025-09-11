@@ -51,7 +51,7 @@ class GenState(eqx.Module):
         *,
         global_id: int | None = None,
         seq_params: SeqDecodingParams | None = None,
-    ) -> tuple["GenState", int]:
+    ) -> "GenState":
         """Clone a sequence into a new local slot, sharing full pages and using a fresh page for the last partial page.
 
         Args:
@@ -61,7 +61,7 @@ class GenState(eqx.Module):
             seq_params: Per-sequence decoding parameters for the clone.
 
         Returns:
-            (updated GenState, child_local_id)
+            updated GenState
         """
         page_table = self.page_table
         if child_local_id is None:
@@ -78,6 +78,7 @@ class GenState(eqx.Module):
             else global_id
         )
 
+        # Assign child sequence state (copies tokens up to prefix and kv_pages row)
         decode_state = decode_state.assign_seq(
             local_seq_id=child_local_id,
             global_seq_id=gid,
@@ -86,6 +87,7 @@ class GenState(eqx.Module):
             kv_pages=parent_kv_pages_row,
             seq_params=seq_params,
         )
+        # Record clone mapping on the child slot
         decode_state = dataclasses.replace(
             decode_state,
             clone_sources=decode_state.clone_sources.at["seq", child_local_id].set(parent_local_id),
@@ -108,11 +110,15 @@ class GenState(eqx.Module):
         cache = jax.lax.cond((src_len % page_size != 0) and (src_len > 0), _copy, _identity, None)
 
         new_state = dataclasses.replace(self, page_table=page_table, decode_state=decode_state, cache=cache)
-        return new_state, child_local_id
+        return new_state
 
 
 def _compute_sample_indices(pos_ids, seq_ids, seq_lens, max_sample_indices):
-    """Compute positions of last tokens per sequence inside a packed slice."""
+    """
+    Compute positions of last tokens per sequence inside a packed slice.
+
+    Boundary when absolute pos_id equals the post-allocation seq_len - 1 for that sequence.
+    """
     seq_lens_per_seq = seq_lens["seq", seq_ids]
     boundary_mask = pos_ids == (seq_lens_per_seq - 1)
     sample_indices = hax.where(
@@ -369,7 +375,7 @@ class GenerationService:
         self.model = model
         self.tokenizer = tokenizer
         self.sampler = sampler
-        self.gen_state = GenState(cache=cache, page_table=table, decode_state=decode_state)
+        self.gen_state: GenState = GenState(cache=cache, page_table=table, decode_state=decode_state)
         self._initial_decode_state = decode_state
         self.max_seqs_in_prefill = int(max_seqs_in_prefill)
 
@@ -492,7 +498,7 @@ class GenerationService:
 
             if request.n_generations > 1:
                 for k in range(1, request.n_generations):
-                    self.gen_state, _ = self.gen_state.clone_sequence(
+                    self.gen_state = self.gen_state.clone_sequence(
                         seq_id,
                         global_id=(
                             primary_global_ids[idx] + k if primary_global_ids is not None else request.request_id
