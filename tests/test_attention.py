@@ -475,6 +475,7 @@ def test_causal_offset_cross_attention(impl):
         inference=True,
         attn_backend=AttentionBackend(impl),
         flash_block_size=1,
+        precision=Precision.HIGHEST,
     )
 
     assert not jnp.allclose(
