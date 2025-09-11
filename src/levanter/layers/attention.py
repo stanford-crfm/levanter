@@ -39,7 +39,6 @@ from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
 
 from ..inference.page_table import PageBatchInfo, PageTable
-from ..inference.utils import is_valid
 
 from .normalization import LayerNormConfigBase
 from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
@@ -1431,12 +1430,8 @@ class AttentionConfig:
         return self.attn_backend != AttentionBackend.VANILLA
 
     # ---------------------------------------------------------------------------------
-    # KV-cache helper
+    # KV-cache helper (paged only)
     # ---------------------------------------------------------------------------------
-
-    def empty_kv_cache(self, Batch: Axis, MaxLen: Axis, *, dtype=jnp.float32) -> "KvCache":
-        """Build a zero-initialised KvCache whose axes match this config."""
-        return KvCache.init(Batch, MaxLen, self.KVHeads, self.HeadSize, dtype)
 
 
 class Attention(eqx.Module):
@@ -1489,9 +1484,6 @@ class Attention(eqx.Module):
         rot_embs = config.rope.build(config.HeadSize) if config.rope is not None else None
 
         return Attention(config, q_proj, k_proj, v_proj, o_proj, q_norm, k_norm, rot_embs)
-
-    def empty_cache(self, Batch: Axis, MaxLen: Axis, *, dtype):
-        return self.config.empty_kv_cache(Batch, MaxLen, dtype=dtype)
 
     def empty_page_cache(self, page_table: PageTable, *, dtype) -> "KvPageCache":
         return KvPageCache.init(
@@ -1549,73 +1541,7 @@ class Attention(eqx.Module):
 
         return attn_output
 
-    @named_call
-    def decode(
-        self,
-        x: NamedArray,
-        pos_ids: NamedArray,
-        *,
-        key=None,
-        kv_cache: "KvCache",
-    ) -> tuple[NamedArray, "KvCache"]:
-        """Decode-time forward pass with KV cache support.
-
-        This method is intended for autoregressive decoding and prefill.
-
-        Note that for decode, we only support causal masks.
-
-        Also note that segment ids are inferred from the position ids:
-        For the q segments, any >= 0 position id is in one segment, and any < 0 position id is in a different segment.
-        For the kv segments, the first kv_cache.lengths position ids are in one segment, and the rest are in a different segment.
-
-        """
-
-        key_proj, key_o = maybe_rng_split(key, 2)
-
-        q, k, v = self._compute_qkv(x, key=key_proj, pos_ids=pos_ids)
-
-        # Determine how many new, non-padded tokens we are adding for each batch element
-        new_tokens_per_batch = hax.sum(is_valid(pos_ids), axis="position", dtype=jnp.int32)
-
-        kv_cache = kv_cache.extend(k, v, lengths=new_tokens_per_batch)
-
-        k = kv_cache.keys.rename({"position": "key_position"})
-        v = kv_cache.values.rename({"position": "key_position"})
-
-        # TODO: for now we only support causal masks in this mode
-        mask = AttentionMask.causal(offset=pos_ids["position", 0])
-        q_segment_ids = is_valid(pos_ids)
-        # TODO: really should just allow auto-broadcasting
-        kv_segment_ids = (
-            hax.arange(kv_cache.keys.resolve_axis("position")).broadcast_axis(kv_cache.lengths.axes) < kv_cache.lengths
-        )
-
-        mask = mask.with_segment_ids(q_segment_ids, kv_segment_ids)
-
-        # Apply attention
-        attn_output = dot_product_attention(
-            "position",
-            "key_position",
-            "head_size",
-            q,
-            k,
-            v,
-            mask,
-            attention_dtype=jnp.float32 if self.config.upcast_attn else x.dtype,
-            flash_block_size=self.config.flash_attention_block_size,
-            scaling_factor=self.config.scaling_factor,
-            logits_soft_cap=self.config.logits_soft_cap,
-            inference=True,
-            prng=key,
-            attn_backend=AttentionBackend("vanilla"),  # TODO: support faster kernels here
-        )
-
-        # Flatten heads and apply output projection
-        attn_output = attn_output.flatten_axes(("kv_head", "q_heads_per_group"), "heads")
-        attn_output = attn_output.astype(x.dtype)
-        attn_output = self.o_proj(attn_output, key=key_o)
-
-        return attn_output, kv_cache
+    # Note: the non-paged decode path has been removed. Use paged_decode.
 
     @named_call
     @jax.profiler.annotate_function
@@ -1696,180 +1622,12 @@ class Attention(eqx.Module):
         return q, k, v
 
 
-class KvCache(eqx.Module):
-    """Simple per-sequence KV cache for autoregressive decoding.
-
-    Shapes (named):
-        keys:   [batch, position, kv_heads, head_size]
-        values: [batch, position, kv_heads, head_size]
-        lengths: int32[Batch] - current sequence lengths
-
-    `extend` appends a single time-step worth of key/value vectors to the cache and
-    returns an updated cache instance
-    """
-
-    keys: NamedArray
-    values: NamedArray
-    lengths: NamedArray
-
-    def extend_one_position(self, keys: NamedArray, values: NamedArray):
-        """Append one position worth of `keys` / `values` to the cache.
-
-        Expect `keys` and `values` to have axes [Batch, kv_heads, head_size] (no
-        position axis); they will be written at `self.lengths` along the position
-        dimension.
-        """
-
-        return self.extend(keys, values, lengths=hax.named(1, ()))
-
-    def extend(self, keys: NamedArray, values: NamedArray, lengths: NamedArray):
-        """Prefill or ar-extend the cache with keys and values for multiple sequences."""
-        keys = keys.astype(self.keys.dtype)
-        values = values.astype(self.values.dtype)
-
-        if not lengths.shape:
-            lengths = lengths.broadcast_axis(keys.resolve_axis("batch"))
-
-        new_k, new_v, new_len = append_to_kv_cache(
-            self.keys.array,
-            self.values.array,
-            self.lengths.array,
-            keys.array,
-            values.array,
-            lengths.array,
-        )
-        new_keys = hax.named(new_k, self.keys.axes)
-        new_values = hax.named(new_v, self.values.axes)
-        new_lengths = hax.named(new_len, self.lengths.axes)
-
-        # Sanity: don't overflow maximum length
-        from jax.experimental import checkify
-
-        checkify.debug_check(
-            hax.all(new_lengths <= new_keys.shape["position"]).scalar(),
-            "Cache length exceeds maximum position length",
-        )
-
-        return KvCache(new_keys, new_values, new_lengths)
-
-    @staticmethod
-    def init(Batch: Axis, Pos: Axis, KVHeads: Axis, HeadDim: Axis, dtype) -> "KvCache":
-        assert Pos.name == "position", "Pos axis must be named 'position'"
-        keys = hax.zeros((Batch, Pos, KVHeads, HeadDim), dtype=dtype)
-        values = hax.zeros((Batch, Pos, KVHeads, HeadDim), dtype=dtype)
-        lengths = hax.zeros((Batch,), dtype=jnp.int32)
-        return KvCache(keys, values, lengths)
-
-
-@jax.jit
-def append_to_kv_cache(
-    keys: jax.Array,  # Shape: [batch, max_len, kv_heads, head_size]
-    values: jax.Array,  # Shape: [batch, max_len, kv_heads, head_size]
-    lengths: jax.Array,  # Shape: [batch]
-    new_keys: jax.Array,  # Shape: [batch, max_new_tokens, kv_heads, head_size]
-    new_values: jax.Array,  # Shape: [batch, max_new_tokens, kv_heads, head_size]
-    new_lengths: jax.Array,  # Shape: [batch]
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """
-    Appends a variable number of new keys and values to a KV cache.
-
-    This function includes a specialized, high-performance path for the common
-    autoregressive decoding case where all new token lengths are 1 or 0,
-    which it dispatches to using `jax.lax.cond`.
-
-    Args:
-        keys: The current key cache.
-        values: The current value cache.
-        lengths: The current length of each sequence in the batch.
-        new_keys: The new keys to append.
-        new_values: The new values to append.
-        new_lengths: The number of new tokens for each sequence.
-        max_len: The maximum sequence length capacity of the cache.
-        max_new_tokens: The maximum number of new tokens that can be added.
-
-    Returns:
-        A tuple containing:
-        - updated_keys: The key cache with new keys appended.
-        - updated_values: The value cache with new values appended.
-        - updated_lengths: The new lengths of the sequences.
-    """
-    max_new_tokens = new_values.shape[1]
-    max_len: int = keys.shape[1]
-
-    # Define the two computational paths. `lax.cond` requires them to be functions.
-    # The operands are passed as a tuple.
-    operands = (keys, values, lengths, new_keys, new_values, new_lengths)
-
-    def specialized_path(ops):
-        """
-        Simple path for the common case where new_lengths are all 0 or 1.
-        Uses a direct indexed update.
-        """
-        k, v, l, nk, nv, nl = ops
-        batch_size = k.shape[0]
-        batch_idx = jnp.arange(batch_size)
-
-        # The update positions are simply the current lengths.
-        pos_idx = l
-
-        # We only care about the first new token for each sequence.
-        update_vals_k = nk[:, 0]
-        update_vals_v = nv[:, 0]
-
-        # For sequences where new_length is 0, we don't want to update.
-        # We can achieve this by preparing the values to write: if the new_length is 1,
-        # use the new value; if it's 0, use the existing value at that position.
-        should_update = (nl == 1)[:, None, None]  # Broadcast for where
-
-        # Get the original values at the target positions for the no-op case.
-        original_vals_k = k[batch_idx, pos_idx]
-        original_vals_v = v[batch_idx, pos_idx]
-
-        vals_to_set_k = jnp.where(should_update, update_vals_k, original_vals_k)
-        vals_to_set_v = jnp.where(should_update, update_vals_v, original_vals_v)
-
-        # Perform the update. For rows where new_length was 0, this writes the
-        # original value back into the cache, effectively a no-op.
-        updated_k = k.at[batch_idx, pos_idx].set(vals_to_set_k)
-        updated_v = v.at[batch_idx, pos_idx].set(vals_to_set_v)
-
-        return updated_k, updated_v
-
-    def general_path(ops):
-        """
-        Robust general path for any combination of new_lengths.
-        Constructs the cache using coordinate grids and `where`.
-        """
-        k, v, l, nk, nv, nl = ops
-        batch_size, _, kv_heads, head_size = k.shape
-        b_coords, p_coords = jnp.indices((batch_size, max_len))
-        lengths_b = l[:, None]
-        new_lengths_b = nl[:, None]
-
-        update_mask = (p_coords >= lengths_b) & (p_coords < lengths_b + new_lengths_b)
-        source_indices = p_coords - lengths_b
-        clipped_source_indices = jnp.clip(source_indices, 0, max_new_tokens - 1)
-
-        values_to_write_k = nk[b_coords, clipped_source_indices]
-        values_to_write_v = nv[b_coords, clipped_source_indices]
-
-        broadcast_mask = update_mask[:, :, None, None]
-
-        updated_k = jnp.where(broadcast_mask, values_to_write_k, k)
-        updated_v = jnp.where(broadcast_mask, values_to_write_v, v)
-
-        return updated_k, updated_v
-
-    is_special_case = jnp.all(new_lengths <= 1)
-
-    updated_keys, updated_values = jax.lax.cond(is_special_case, specialized_path, general_path, operands)
-    updated_lengths = lengths + new_lengths
-
-    return updated_keys, updated_values, updated_lengths
-
 
 class KvPageCache(eqx.Module):
     """
+    KvPageCache for paged attention. It contains keys and values for all pages, including
+    potentially sequences that are not currently active.
+
     Contains a global view of all pages and their sequences. This can't be usefully used
     with an accompanying PageTable.
     """
