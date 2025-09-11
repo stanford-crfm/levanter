@@ -1,13 +1,11 @@
 # Contributors
 
-The following individuals have authored commits to this project (listed by commit count):
+The following individuals have authored commits to this project (listed by commit count as of September 2025):
 
-- 633 David Hall <dlwh@stanford.edu>
-- 508 David Hall <dlwh@cs.stanford.edu>
+- 1141 David Hall <dlwh@stanford.edu>
 - 124 Ahmed Ahmed <ahmedah@stanford.edu>
 - 46 Yifan Mai <yifan@cs.stanford.edu>
 - 33 Ivan Zhou <ivan.zhouyq@gmail.com>
-- 30 dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>
 - 29 William Held <Wbh230@nyu.edu>
 - 21 Jason Wang <blahblahj.wsy@gmail.com>
 - 16 Kaiyue Wen <kaiyue@sc.stanford.edu>
