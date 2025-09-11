@@ -975,14 +975,12 @@ class AllConfig(Protocol):
 def initialize(config: TrainerConfig | AllConfig):
     """Initializes jax, logging, setting the run name/id in the process. Also initializes tracking and saves config
     as hyperparameters and an artifact"""
-
     if isinstance(config, TrainerConfig):
         trainer_config = config
     else:
         trainer_config = config.trainer
 
     trainer_config.initialize()
-
     levanter.tracker.log_configuration(config)
 
 

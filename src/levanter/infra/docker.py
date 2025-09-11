@@ -174,31 +174,18 @@ def copy_extra_ctx(extra_ctx):
 
 def build_docker(docker_file, image_name, tag, build_args=None) -> str:
     """Builds a Docker image, enables artifact access, and pushes to Artifact Registry."""
-    print(f"Building Docker image {image_name}:{tag} from {docker_file}")
-
-    # Add timestamp-based cache busting for haliax installation
-    import time
-
-    if build_args is None:
-        build_args = {}
-    if "CACHEBUST" not in build_args:
-        build_args["CACHEBUST"] = str(int(time.time()))
-
     args = [
         "docker",
         "buildx",
         "build",
         "--platform=linux/amd64",
-        "--progress=plain",
-        # "--output=type=docker",  # Force consistent output format
-        "--no-cache",  # Force rebuild to ensure local haliax is installed
+        # "--progress=plain",
         "-t",
         f"{image_name}:{tag}",
     ]
 
     if build_args:
         for key, value in build_args.items():
-            print(f"Build arg: {key}={value}")
             args.extend(["--build-arg", f"{key}={value}"])
 
     args.extend(
@@ -208,9 +195,7 @@ def build_docker(docker_file, image_name, tag, build_args=None) -> str:
             ".",
         ]
     )
-    print(f"Running: {' '.join(args)}")
     _run(args)
-    print(f"Docker build completed for {image_name}:{tag}")
 
     return f"{image_name}:{tag}"
 
@@ -261,7 +246,7 @@ def make_docker_run_command(image_id, command, *, foreground, env, name="levante
         "-t" if foreground else "-d",
         f"--name={shlex.quote(name)}",
         "--privileged",
-        "--shm-size=300gb",
+        "--shm-size=32gb",
         "--net=host",
         "--init",
         "--mount",

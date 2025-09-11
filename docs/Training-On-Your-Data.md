@@ -401,27 +401,6 @@ python -m levanter.main.eval_lm --config_path gs://path/to/config.yaml --checkpo
 
 You can also use this script to evaluate on other datasets by modifying the config.
 
-For datasets cached with `SingleTurnChatProcessor`, you can compute per-token
-probabilities using `eval_sliding_lm.py`:
-
-```bash
-python -m levanter.main.eval_sliding_lm \
-    --config_path gs://path/to/config.yaml \
-    --checkpoint_path gs://path/to/checkpoint
-```
-The script masks the prompt portion of each example and plots a heat map of the
-completion probabilities. You can use `config/eval_llama3_sliding.yaml` as a
-starting point for a configuration.
-
-To evaluate a model checkpoint from Hugging Face directly, pass `initialize_from_hf`:
-
-```bash
-python -m levanter.main.eval_sliding_lm \
-    --config_path gs://path/to/config.yaml \
-    --initialize_from_hf meta-llama/Llama-2-7b-hf
-```
-If the model configuration should be derived from the checkpoint, set `use_hf_model_config: true` in your YAML config.
-
 
 ## Huggingface Export
 

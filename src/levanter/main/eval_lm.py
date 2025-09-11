@@ -15,7 +15,7 @@ import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef
 from levanter.data import DataLoader
-from levanter.data.text import LMMixtureDatasetConfig
+from levanter.data.text import LMMixtureDatasetConfig, SingleDatasetLMConfigBase
 from levanter.eval import TaggedEvaluator, eval_model
 from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmExample, LmHeadModel, compute_next_token_loss
@@ -32,9 +32,6 @@ class EvalLmConfig:
 
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
-    initialize_from_hf: Optional[RepoRef] = None
-    """If set, load the model weights from this HF checkpoint."""
-    use_hf_model_config: bool = False
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     data: SingleDatasetLMConfigBase | LMMixtureDatasetConfig = field(default_factory=SingleDatasetLMConfigBase)
     model: LmConfig = field(default_factory=LlamaConfig)
@@ -72,11 +69,9 @@ def main(config: EvalLmConfig):
     compute_axis_mapping = config.trainer.compute_axis_mapping
     parameter_axis_mapping = config.trainer.parameter_axis_mapping
 
-    hf_ref = config.hf_checkpoint or config.initialize_from_hf
-
-    if config.checkpoint_path is None and hf_ref is None:
+    if config.checkpoint_path is None and config.hf_checkpoint is None:
         raise ValueError("Must specify either checkpoint_path or hf_checkpoint")
-    if config.checkpoint_path is not None and hf_ref is not None:
+    if config.checkpoint_path is not None and config.hf_checkpoint is not None:
         raise ValueError("Must specify either checkpoint_path or hf_checkpoint, not both")
 
     with config.trainer.device_mesh, hax.axis_mapping(parameter_axis_mapping):
@@ -118,17 +113,16 @@ def main(config: EvalLmConfig):
                 model = load_checkpoint(model, config.checkpoint_path, subpath="model")
 
             model = hax.shard_with_axis_mapping(model, parameter_axis_mapping)
-        elif hf_ref is not None:
+        elif config.hf_checkpoint is not None:
             # load the huggingface model
             model_config = config.model
             if not hasattr(model_config, "hf_checkpoint_converter"):
                 raise ValueError("Model config does not have an HF checkpoint converter. Can't load HF checkpoint.")
             converter: HFCheckpointConverter = model_config.hf_checkpoint_converter()
-            converter = converter.replaced(reference_checkpoint=hf_ref, tokenizer=tokenizer)
-            if config.use_hf_model_config:
-                config.model = converter.config_from_hf_config(converter.default_hf_config)
-                model_config = config.model
-            model = converter.load_pretrained(model_config.model_type, ref=hf_ref, dtype=mp.compute_dtype)
+            converter = converter.replaced(reference_checkpoint=config.hf_checkpoint, tokenizer=tokenizer)
+            model = converter.load_pretrained(
+                model_config.model_type, ref=config.hf_checkpoint, dtype=mp.compute_dtype
+            )
         else:
             assert False, "Should not get here"
 
