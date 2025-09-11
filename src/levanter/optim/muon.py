@@ -1,5 +1,6 @@
 import dataclasses
 from dataclasses import dataclass
+from functools import partial
 from typing import NamedTuple
 
 import chex
@@ -74,7 +75,7 @@ class MuonConfig(OptimizerConfig):
                 "adamw": adamw_transform(),
             }
 
-            return optax.multi_transform(transformations, partial(self.create_mask, use_kimi_scaling = use_kimi_scaling))
+            return optax.multi_transform(transformations, partial(self.create_mask, use_kimi_scaling = self.use_kimi_scaling))
 
         return optax.inject_hyperparams(optimizer)(learning_rate=learning_rate_schedule, adam_lr=adam_lr_schedule)
 
