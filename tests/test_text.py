@@ -370,7 +370,7 @@ def test_supervised_processor_and_cache(dummy_supervised_file, hf_tokenizer):
         #    * leading tokens (input) have loss_mask==0
         #    * trailing tokens (answer) have loss_mask==1
         # -----------------------------------------------------------
-        seg_ids: np.ndarray = ex.attn_mask.segment_ids.array
+        seg_ids: np.ndarray = ex.attn_mask.segment_ids[0].array
         mask: np.ndarray = ex.loss_mask.array
 
         for seg in np.unique(seg_ids):
@@ -408,8 +408,8 @@ def test_supervised_processor_and_cache(dummy_supervised_file, hf_tokenizer):
             assert ex.loss_mask.axes == (Pos,)
             assert ex.attn_mask.segment_ids.axes == (Pos,)
 
-            assert set(int(i) for i in np.unique(ex.attn_mask.segment_ids.array)) == {idx, -1}
+            assert set(int(i) for i in np.unique(ex.attn_mask.segment_ids[0].array)) == {idx, -1}
 
-            assert ex.loss_mask.array.sum() == len(ex.attn_mask.segment_ids.array) - raw_ex["sources_len"] - np.sum(
-                ex.attn_mask.segment_ids.array == -1
+            assert ex.loss_mask.array.sum() == len(ex.attn_mask.segment_ids[0].array) - raw_ex["sources_len"] - np.sum(
+                ex.attn_mask.segment_ids[0].array == -1
             )

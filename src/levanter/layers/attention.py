@@ -780,7 +780,7 @@ class AttentionMask(eqx.Module):
     is_causal: bool = eqx.field(default=False, static=True)
     causal_offset: None | NamedArray = None
     explicit_mask: Optional[NamedArray] = None
-    segment_ids: NamedArray | tuple[NamedArray, NamedArray] | None = None
+    segment_ids: tuple[NamedArray, NamedArray] | None = None
     sliding_window: Optional[int] = eqx.field(default=None, static=True)
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
     # TODO: add prefixlm
@@ -864,11 +864,22 @@ class AttentionMask(eqx.Module):
     def explicit(mask: NamedArray) -> "AttentionMask":
         return AttentionMask(is_causal=False, causal_offset=None, explicit_mask=mask)
 
+    def __post_init__(self):
+        # Normalize legacy single-array segment_ids to a tuple for consistency
+        if self.segment_ids is not None and not isinstance(self.segment_ids, tuple):
+            warnings.warn("Storing segment_ids as a single NamedArray is deprecated. Use a tuple instead.")
+            object.__setattr__(self, "segment_ids", (self.segment_ids, self.segment_ids))
+
     def with_segment_ids(self, segment_ids: NamedArray, kv_segment_ids: NamedArray | None = None) -> "AttentionMask":
-        # If kv_segment_ids is not provided, keep a single segment_ids NamedArray for back-compat.
-        seg_field: NamedArray | tuple[NamedArray, NamedArray]
+        """Attach segment ids to the mask.
+
+        Always stores segment ids internally as a tuple ``(q_segment_ids, kv_segment_ids)``.
+        If only a single array is provided, it is used for both queries and keys/values.
+        """
+        # Always store as a tuple; duplicate if only one provided.
+        seg_field: tuple[NamedArray, NamedArray]
         if kv_segment_ids is None:
-            seg_field = segment_ids
+            seg_field = (segment_ids, segment_ids)
         else:
             seg_field = (segment_ids, kv_segment_ids)
 
@@ -955,31 +966,31 @@ class AttentionMask(eqx.Module):
         )
 
     def _check_for_same_segment_ids(self, other):
-        if self.segment_ids is not None and other.segment_ids is not None:
+        # Normalize possibly non-tuple representations to tuples for comparison.
+        def _as_tuple(si):
+            if si is None:
+                return None
+            if isinstance(si, tuple):
+                return si
+            else:
+                return (si, si)
+
+        self_si = _as_tuple(self.segment_ids)
+        other_si = _as_tuple(other.segment_ids)
+
+        if self_si is not None and other_si is not None:
             # only one segment mask is allowed
             # b/c we might do this in jit, we use eqx.error_if
             # in theory we can do this one by just assigning unique ids to each unique pair...
             # (but i don't really anticipate needing this)
-            if isinstance(self.segment_ids, tuple) != isinstance(other.segment_ids, tuple):
-                raise ValueError("Segment IDs must be either both tuples or both NamedArrays")
-
-            if isinstance(self.segment_ids, tuple):
-                segment_ids = eqx.error_if(
-                    hax.logical_or(
-                        self.segment_ids[0] != other.segment_ids[0], self.segment_ids[1] != other.segment_ids[1]
-                    ),
-                    "Only one segment mask is allowed",
-                )
-            else:
-                segment_ids = eqx.error_if(
-                    self.segment_ids,
-                    not haliax.all(self.segment_ids == other.segment_ids),
-                    "Only one segment mask is allowed",
-                )
-        elif self.segment_ids is not None:
-            segment_ids = self.segment_ids
+            segment_ids = eqx.error_if(
+                hax.logical_or(self_si[0] != other_si[0], self_si[1] != other_si[1]),
+                "Only one segment mask is allowed",
+            )
+        elif self_si is not None:
+            segment_ids = self_si
         else:
-            segment_ids = other.segment_ids
+            segment_ids = other_si
         return segment_ids
 
 
@@ -1194,11 +1205,16 @@ def _tpu_splash_attention(
     physical_axes_k = _physical_axis_for_binning(k_class)
     physical_axes_v = _physical_axis_for_binning(v_class)
 
-    # segment_ids
+    # segment_ids: handle both the new tuple form and legacy single-array form for robustness
     segment_ids = mask.segment_ids if isinstance(mask, AttentionMask) else None
-    if isinstance(segment_ids, tuple):
-        segment_ids = segment_ids[0]
-    physical_axes_segments = pspec_for_axis(segment_ids.axes) if segment_ids is not None else None
+    if segment_ids is not None:
+        if isinstance(segment_ids, tuple):
+            _seg_axes = segment_ids[0].axes
+        else:
+            _seg_axes = segment_ids.axes
+        physical_axes_segments = pspec_for_axis(_seg_axes)
+    else:
+        physical_axes_segments = None
     # do we have a batch axis in segment_ids? (needed for vmap below)
     if segment_ids is not None:
         if isinstance(segment_ids, tuple):
