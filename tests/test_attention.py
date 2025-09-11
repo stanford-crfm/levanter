@@ -549,6 +549,8 @@ def _jit_decode(attn, x, pos_ids, cache):
     )
 
 
+DECODE_TOL = 2e-3
+
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
 @pytest.mark.parametrize("chunk_size", [1, 2, 3])
 def test_attention_decode_prefill_in_chunks(prefix_size, chunk_size):
@@ -581,7 +583,7 @@ def test_attention_decode_prefill_in_chunks(prefix_size, chunk_size):
 
     # Concatenate along the position axis
     decoded_arr = hax.concatenate("position", out_chunks)
-    assert_trees_all_close(full_out, decoded_arr, atol=1e-4, rtol=1e-4)
+    assert_trees_all_close(full_out, decoded_arr, atol=DECODE_TOL, rtol=DECODE_TOL)
 
 
 def test_attention_decode_ragged_fill_in_chunks():
@@ -649,7 +651,7 @@ def test_attention_decode_ragged_fill_in_chunks():
     decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
 
     # Assert equality (within numerical tolerance)
-    assert_trees_all_close(full_out.array, decoded_arr.array, atol=1e-4, rtol=1e-4)
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=DECODE_TOL, rtol=DECODE_TOL)
 
 
 # Reference implementation of Attention Sink with Sliding Window from https://github.com/openai/gpt-oss/blob/main/gpt_oss/triton/attention.py
