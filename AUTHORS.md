@@ -2,5 +2,6 @@
 
 The Levanter Authors currently include:
 - The Board of Trustees of the Leland Stanford Junior University
+- William Held
 - Russell Power
 - Gary Miguel
