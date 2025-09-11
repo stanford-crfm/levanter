@@ -549,9 +549,6 @@ def _jit_decode(attn, x, pos_ids, cache):
     )
 
 
-# @equinox.filter_jit
-
-
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
 @pytest.mark.parametrize("chunk_size", [1, 2, 3])
 def test_attention_decode_prefill_in_chunks(prefix_size, chunk_size):
