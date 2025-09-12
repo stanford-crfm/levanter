@@ -14,6 +14,7 @@ import jax.numpy as jnp
 
 import haliax as hax
 import haliax.haxtyping as ht
+import numpy as np
 from haliax import Axis, NamedArray
 
 from levanter.inference.page_table import PageTable
@@ -57,6 +58,14 @@ class GenerationServiceConfig:
     """Capacity of the token queue used between sampling and decode packing."""
     max_seqs_in_prefill: int = 16
     """Maximum number of sequences to batch in prefill before flushing."""
+
+    # Prefill buffer sizing
+    max_prefill_size: Optional[int] = None
+    """Maximum number of tokens packed into the prefill buffer before a flush.
+
+    If None, inferred at construction time from `tokenizer.model_max_length` when available; otherwise
+    falls back to the page table's `max_len_per_seq` or 4096 as a final default.
+    """
 
     # Decode loop knobs
     max_tokens_per_round: int = 8
@@ -413,6 +422,20 @@ class GenerationService:
         self.sampler = sampler
         self.gen_state: GenState = GenState(cache=cache, page_table=table, decode_state=decode_state)
         self._initial_decode_state = decode_state
+        # Impute max_prefill_size if not set
+        if config.max_prefill_size is None:
+            inferred: Optional[int] = None
+            try:
+                inferred = int(getattr(tokenizer, "model_max_length")) if tokenizer is not None else None
+            except Exception:
+                inferred = None
+            if inferred is None or inferred <= 0:
+                # Fallback to per-sequence max length from the PageTable if available
+                try:
+                    inferred = int(table.max_len_per_seq)
+                except Exception:
+                    inferred = 4096
+            config = dataclasses.replace(config, max_prefill_size=inferred)
         self.config = config
         # Track free local sequence slots
         self.free_slots: int = int(table.max_seqs)
@@ -438,6 +461,7 @@ class GenerationService:
         compute_dtype,
         max_queued_tokens: int = 32,
         max_seqs_in_prefill: int = 16,
+        max_prefill_size: Optional[int] = None,
     ) -> "GenerationService":
         """Build a service with fresh PageTable/KV cache/DecodeState and a `Sampler` for `vocab_axis`."""
         table = PageTable.init(max_pages, max_seqs, page_size, max_pages_per_seq)
@@ -459,6 +483,7 @@ class GenerationService:
             compute_dtype=compute_dtype,
             max_queued_tokens=max_queued_tokens,
             max_seqs_in_prefill=max_seqs_in_prefill,
+            max_prefill_size=max_prefill_size,
         )
         return cls(
             model=model,
@@ -634,10 +659,11 @@ class GenerationService:
         primary_global_ids: Optional[Sequence[int]] = None,
     ) -> list[int]:
         """Assign sequence ids, set per-seq params, and run prefill using a local queue."""
-        MAX_SEQS_IN_PREFILL = int(self.config.max_seqs_in_prefill)
-        tokens = jnp.full((128,), INVALID, dtype=jnp.int32)
-        seq_ids = jnp.full((128,), INVALID, dtype=jnp.int32)
-        pos_ids = jnp.full((128,), INVALID, dtype=jnp.int32)
+        max_seqs_in_prefill = int(self.config.max_seqs_in_prefill)
+        max_prefill_size = self.config.max_prefill_size or self.model.Pos.size
+        tokens = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
+        seq_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
+        pos_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
         offset = 0
         num_seqs_in_prefill = 0
 
@@ -656,7 +682,7 @@ class GenerationService:
             self.gen_state = dataclasses.replace(self.gen_state, page_table=page_table)
 
             this_tokens = jnp.asarray(seq_tokens, dtype=jnp.int32)
-            if len(seq_tokens) + offset > tokens.shape[0] or num_seqs_in_prefill >= MAX_SEQS_IN_PREFILL:
+            if len(seq_tokens) + offset > tokens.shape[0] or num_seqs_in_prefill >= max_seqs_in_prefill:
                 token_queue = TokenQueue(
                     queued_tokens=hax.named(tokens, axis="position"),
                     queued_seq_ids=hax.named(seq_ids, axis="position"),
@@ -664,17 +690,18 @@ class GenerationService:
                     num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
                 )
                 self.gen_state = _run_prefill(
-                    self.gen_state, self.model, self.sampler, token_queue, MAX_SEQS_IN_PREFILL
+                    self.gen_state, self.model, self.sampler, token_queue, max_seqs_in_prefill
                 )
-                tokens = jnp.full((128,), INVALID, dtype=jnp.int32)
-                seq_ids = jnp.full((128,), INVALID, dtype=jnp.int32)
-                pos_ids = jnp.full((128,), INVALID, dtype=jnp.int32)
+                tokens[:] = INVALID
+                seq_ids[:] = INVALID
+                pos_ids[:] = INVALID
                 offset = 0
                 num_seqs_in_prefill = 0
 
-            tokens = tokens.at[offset : offset + len(seq_tokens)].set(this_tokens)
-            seq_ids = seq_ids.at[offset : offset + len(seq_tokens)].set(seq_id)
-            pos_ids = pos_ids.at[offset : offset + len(seq_tokens)].set(jnp.arange(len(seq_tokens), dtype=jnp.int32))
+            tokens[offset : offset + len(seq_tokens)] = np.asarray(this_tokens)
+            seq_ids[offset : offset + len(seq_tokens)] = seq_id
+            pos_ids[offset : offset + len(seq_tokens)] = np.arange(len(seq_tokens), dtype=np.int32)
+
             offset += len(seq_tokens)
             num_seqs_in_prefill += 1
 
@@ -719,7 +746,7 @@ class GenerationService:
                 queued_pos_ids=hax.named(pos_ids, axis="position"),
                 num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
             )
-            self.gen_state = _run_prefill(self.gen_state, self.model, self.sampler, token_queue, MAX_SEQS_IN_PREFILL)
+            self.gen_state = _run_prefill(self.gen_state, self.model, self.sampler, token_queue, max_seqs_in_prefill)
 
         return primary_local_ids
 
@@ -814,7 +841,8 @@ class GenerationService:
 
         stagnant_iters = 0
         while not _all_done():
-            t0 = time.time()
+            iter_start = time.time()
+            k0 = iter_start
             self.gen_state = _run_generation_loop(
                 self.gen_state,
                 self.model,
@@ -822,8 +850,9 @@ class GenerationService:
                 self.config.max_tokens_per_round,
                 self.config.max_rounds,
             )
-            loop_time = time.time() - t0
+            # Include device sync in kernel timing
             self.gen_state = jax.block_until_ready(self.gen_state)
+            kernel_time = time.time() - k0
             new_tokens = self._extract_outputs_for(outputs_for, finished_for)
             # Release any sequences that finished in this step
             self._release_finished_sequences()
@@ -831,9 +860,14 @@ class GenerationService:
             _ = self._admit_from_queue()
             _ = self._extract_outputs_for(outputs_for, finished_for)
             self._release_finished_sequences()
-            if loop_time > 0:
-                tps = new_tokens / loop_time
-                logger.info(f"Decode iter: {loop_time:.3f}s, {tps:.2f} tok/s, {new_tokens} new")
+            iter_time = time.time() - iter_start
+            if iter_time > 0:
+                tps_total = new_tokens / iter_time
+                host_overhead = max(iter_time - kernel_time, 0.0)
+                logger.info(
+                    f"Decode iter: total {iter_time:.3f}s (kernel {kernel_time:.3f}s, host {host_overhead:.3f}s), "
+                    f"{tps_total:.2f} tok/s, {new_tokens} new"
+                )
             # Safety: if nothing new was produced and queue is empty, avoid infinite loop
             if (
                 new_tokens == 0
@@ -856,7 +890,9 @@ class GenerationService:
             for k in range(int(r.n_generations)):
                 outputs_list.append(outputs_for[rid][k])
         total_generated = sum(len(seq_outputs) for seq_outputs in outputs_list) - total_prompt_tokens
-        logger.info(f"Batch generated in {time.time() - time_in:.2f}s, {total_generated} tokens")
+        total_time = time.time() - time_in
+        tps_overall = (total_generated / total_time) if total_time > 0 else 0.0
+        logger.info(f"Batch generated in {total_time:.2f}s, {total_generated} tokens, {tps_overall:.2f} tok/s")
         return outputs_list, total_generated
 
     def _extract_outputs_for(
