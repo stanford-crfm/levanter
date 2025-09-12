@@ -1,3 +1,5 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
 import logging
 import time
 from dataclasses import dataclass, field
@@ -22,6 +24,7 @@ from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class SampleLmConfig:
@@ -71,9 +74,12 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
     else:
         assert hasattr(config.model, "hf_checkpoint_converter"), "model config lacks HF loader"
         converter: HFCheckpointConverter = config.model.hf_checkpoint_converter()
-        converter = converter.replaced(reference_checkpoint=config.hf_checkpoint,
-                                       tokenizer=load_tokenizer(config.tokenizer))
-        model = converter.load_pretrained(config.model.model_type, ref=config.hf_checkpoint, dtype=config.trainer.mp.compute_dtype)
+        converter = converter.replaced(
+            reference_checkpoint=config.hf_checkpoint, tokenizer=load_tokenizer(config.tokenizer)
+        )
+        model = converter.load_pretrained(
+            config.model.model_type, ref=config.hf_checkpoint, dtype=config.trainer.mp.compute_dtype
+        )
         return model
 
 
@@ -107,11 +113,7 @@ def main(config: SampleLmConfig):
         prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
 
         # Initialize a reusable generation service with capacity from config
-        service = GenerationService.from_model_with_config(
-            model=model,
-            tokenizer=tokenizer,
-            config=config.service
-        )
+        service = GenerationService.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
 
         # -------------------------------- Scheduler-based generation --------------------------------
 
@@ -120,7 +122,9 @@ def main(config: SampleLmConfig):
             stop_ids_list = tokenizer(stop_sequence, add_special_tokens=False)["input_ids"]
             if len(stop_ids_list) == 0:
                 raise ValueError("Stop sequence must be non-empty")
-            stop_ids = hax.named(jnp.asarray(stop_ids_list, dtype=jnp.int32), axis="position").broadcast_axis({"stop_seq": 1})
+            stop_ids = hax.named(jnp.asarray(stop_ids_list, dtype=jnp.int32), axis="position").broadcast_axis(
+                {"stop_seq": 1}
+            )
         else:
             stop_ids = None
 

@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import atexit
 import functools
 import inspect
@@ -28,10 +31,10 @@ def register_codecs():
 
     # register raw dtypes
     import jax.numpy as jnp
+
     dtype = jnp.float32
     draccus.encode.register(type(dtype), lambda dtype, decl_type=None: str(dtype))
     draccus.decode.register(type(dtype), lambda dtype_name, decl_type=None: jnp.dtype(dtype_name))
-
 
     def policy_encode(policy: jmp.Policy):
         def name(dtype):
