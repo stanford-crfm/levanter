@@ -26,6 +26,13 @@ def register_codecs():
     # draccus.encode.register(type(jnp.float32), lambda meta: meta.dtype.name)
     # draccus.decode.register(jnp.dtype, lambda dtype_name: jnp.dtype(dtype_name))
 
+    # register raw dtypes
+    import jax.numpy as jnp
+    dtype = jnp.float32
+    draccus.encode.register(type(dtype), lambda meta, dtype=dtype: dtype.name)
+    draccus.decode.register(type(dtype), lambda dtype_name, dtype=dtype: jnp.dtype(dtype_name))
+
+
     def policy_encode(policy: jmp.Policy):
         def name(dtype):
             if hasattr(dtype, "name"):

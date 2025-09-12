@@ -414,6 +414,8 @@ class GenerationService:
         self.gen_state: GenState = GenState(cache=cache, page_table=table, decode_state=decode_state)
         self._initial_decode_state = decode_state
         self.config = config
+        # Track free local sequence slots
+        self.free_slots: int = int(table.max_seqs)
         # Mapping structures for active sequences
         # local_map: local seq id -> (request id, child id)
         # sequences: request id -> {child id -> local seq id}
@@ -510,6 +512,8 @@ class GenerationService:
             page_table=page_table,
             decode_state=self._initial_decode_state,
         )
+        # All local slots are free after reset
+        self.free_slots = int(page_table.max_seqs)
         self.local_map.clear()
         self.sequences.clear()
 
@@ -551,6 +555,8 @@ class GenerationService:
                     cmap.pop(cid, None)
                     if len(cmap) == 0:
                         self.sequences.pop(rid, None)
+            # Freed one local slot
+            self.free_slots += 1
 
         # Clear DecodeState slot metadata for finished sequences
         # Build a boolean NamedArray mask over the seq axis
@@ -580,6 +586,15 @@ class GenerationService:
                 kv_pages=new_kv_pages,
             ),
         )
+
+    def _free_page_count(self) -> int:
+        """Return number of free KV pages in the PageTable."""
+        prc = jax.device_get(self.gen_state.page_table.page_ref_counts.array)
+        return int((prc == 0).sum())
+
+    def _pages_needed_for_prompt(self, prompt_len: int) -> int:
+        size = int(self.gen_state.page_table.page_size)
+        return (int(prompt_len) + size - 1) // size
 
     def _prefill_prompts(
         self,
@@ -645,6 +660,8 @@ class GenerationService:
                     seq_params=seq_params,
                 ),
             )
+            # Consume one free slot for this primary
+            self.free_slots -= 1
             # Record mapping: primary child id is 0
             rid = int(request.request_id)
             self.local_map[seq_id] = (rid, 0)
@@ -660,6 +677,8 @@ class GenerationService:
                         ),
                         seq_params=dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k)),
                     )
+                    # Consume one free slot for the clone
+                    self.free_slots -= 1
                     # Record mapping for clone: child id is k
                     self.local_map[child_local_id] = (rid, k)
                     self.sequences.setdefault(rid, {})[k] = child_local_id
@@ -754,8 +773,40 @@ class GenerationService:
             gid_cursor += r.n_generations
 
         time_in = time.time()
-        _ = self._prefill_prompts(requests, primary_global_ids=primary_gid)
-        self.gen_state = jax.block_until_ready(self.gen_state)
+
+        # Enqueue prefills until out of room (free slots) or out of pages
+        pending = 0
+        total = len(requests)
+        while pending < total:
+            # Simulate admission to determine how many we can take this batch
+            sim_slots = int(self.free_slots)
+            sim_pages = self._free_page_count()
+            n_batch = 0
+            idx = pending
+            while idx < total:
+                req = requests[idx]
+                need_slots = int(req.n_generations)
+                need_pages = self._pages_needed_for_prompt(len(req.prompt_tokens))
+                if sim_slots < need_slots or sim_pages < need_pages:
+                    break
+                sim_slots -= need_slots
+                sim_pages -= need_pages
+                n_batch += 1
+                idx += 1
+            if n_batch == 0:
+                break
+            batch = requests[pending : pending + n_batch]
+            batch_gids = primary_gid[pending : pending + n_batch]
+            _ = self._prefill_prompts(batch, primary_global_ids=batch_gids)
+            # self.gen_state = jax.block_until_ready(self.gen_state)
+            # Drain prompt tokens so finished flags reflect prompt-contained stops
+            _ = self._extract_outputs(outputs, finished)
+            # Free completed sequences promptly so slots/pages are reusable
+            self._release_finished_sequences()
+            pending += n_batch
+
+        # If any remain unadmitted, they will be handled by a subsequent call or a higher-level queue
+        # self.gen_state = jax.block_until_ready(self.gen_state)
         # Drain prompt tokens so finished flags reflect prompt-contained stops
         _ = self._extract_outputs(outputs, finished)
         # Free completed sequences promptly so slots/pages are reusable
