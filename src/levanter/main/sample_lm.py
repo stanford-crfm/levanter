@@ -12,7 +12,7 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
-from levanter.inference.service import GenerationService
+from levanter.inference.service import GenerationService, GenerationServiceConfig
 from levanter.inference.utils import INVALID
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -32,6 +32,9 @@ class SampleLmConfig:
     model: LmConfig = field(default_factory=LlamaConfig)
 
     tokenizer: str | None = None
+
+    # Inference service/memory layout configuration
+    service: GenerationServiceConfig = field(default_factory=GenerationServiceConfig)
 
     prompts: list[str] | str | tuple[str, ...] = (
         "Four score and seven years ago, our",
@@ -101,22 +104,11 @@ def main(config: SampleLmConfig):
 
         prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
 
-        # Initialize a reusable generation service with capacity sized to this batch
-        max_pages = 64
-        max_seqs = len(prompt_ids) * config.n_generations
-        page_size = 8
-        max_pages_per_seq = 32
-        service = GenerationService.from_model(
+        # Initialize a reusable generation service with capacity from config
+        service = GenerationService.from_model_with_config(
             model=model,
             tokenizer=tokenizer,
-            vocab_axis=Vocab,
-            max_pages=max_pages,
-            max_seqs=max_seqs,
-            page_size=page_size,
-            max_pages_per_seq=max_pages_per_seq,
-            compute_dtype=config.trainer.mp.compute_dtype,
-            max_queued_tokens=32,
-            max_seqs_in_prefill=16,
+            config=config.service
         )
 
         # -------------------------------- Scheduler-based generation --------------------------------
@@ -141,7 +133,7 @@ def main(config: SampleLmConfig):
                 temperature=config.temperature,
                 seed=config.seed,
                 stop_tokens=stop_ids,
-                max_tokens_per_round=max_seqs,
+                max_tokens_per_round=config.service.max_seqs,
                 max_rounds=8,
             )
             print(

@@ -33,6 +33,34 @@ class Request:
     n_generations: int
 
 
+@dataclass(frozen=True)
+class GenerationServiceConfig:
+    """Configuration for GenerationService memory/layout knobs.
+
+    Exposes key buffer sizes and limits controlling prefill, decode queueing, and page table capacity.
+    """
+
+    max_pages: Optional[int] = None
+    """Total number of KV pages available. If None, computed as ``max_seqs * max_pages_per_seq``."""
+    max_seqs: int = 16
+    """Maximum concurrent sequences (local slots)."""
+    page_size: int = 128
+    """Tokens per KV page."""
+    max_pages_per_seq: int = 64
+    """Maximum pages a single sequence may use (max sequence length = page_size * max_pages_per_seq)."""
+    compute_dtype: jnp.dtype = jnp.bfloat16
+    """KV cache dtype. Default bfloat16 for performance/accuracy balance."""
+    max_queued_tokens: int = 512
+    """Capacity of the token queue used between sampling and decode packing."""
+    max_seqs_in_prefill: int = 16
+    """Maximum number of sequences to batch in prefill before flushing."""
+
+    @property
+    def imputed_max_pages(self) -> int:
+        """Return explicit `max_pages` or compute `max_seqs * max_pages_per_seq` when unset."""
+        return int(self.max_pages) if self.max_pages is not None else int(self.max_seqs * self.max_pages_per_seq)
+
+
 class GenState(eqx.Module):
     """Container for generation state used during decoding.
 
@@ -415,6 +443,37 @@ class GenerationService:
             sampler=sampler,
             max_seqs_in_prefill=max_seqs_in_prefill,
         )
+
+    @classmethod
+    def from_model_with_config(
+        cls,
+        *,
+        model: LmHeadModel,
+        tokenizer,
+        config: GenerationServiceConfig,
+    ) -> "GenerationService":
+        """Build a service using a GenerationServiceConfig for sizing knobs."""
+        table = PageTable.init(config.imputed_max_pages, config.max_seqs, config.page_size, config.max_pages_per_seq)
+        cache = hax.named_jit(model.initial_cache)(table, dtype=config.compute_dtype)
+        decode_state = DecodeState.init(
+            table.max_seqs,
+            table.pages_per_seq,
+            table.page_size,
+            table.max_len_per_seq,
+            max_stop_seqs=1,
+            max_queued_tokens=config.max_queued_tokens,
+        )
+        sampler = Sampler(model.Vocab)
+        return cls(
+            model=model,
+            tokenizer=tokenizer,
+            table=table,
+            cache=cache,
+            decode_state=decode_state,
+            sampler=sampler,
+            max_seqs_in_prefill=int(config.max_seqs_in_prefill),
+        )
+
 
     def reset(self) -> None:
         """Free all local sequence slots and reset to the initial `DecodeState`.
