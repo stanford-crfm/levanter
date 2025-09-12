@@ -7,7 +7,6 @@ from typing import Optional, Sequence
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
 
 import haliax as hax
 import haliax.haxtyping as ht
@@ -54,6 +53,15 @@ class GenerationServiceConfig:
     """Capacity of the token queue used between sampling and decode packing."""
     max_seqs_in_prefill: int = 16
     """Maximum number of sequences to batch in prefill before flushing."""
+
+    # Decode loop knobs
+    max_tokens_per_round: int = 8
+    """Pack size for each decode loop iteration."""
+    max_rounds: int = 8
+    """Maximum number of while-loop iterations per decode call."""
+
+    # Default PRNG seed for building per-request keys (optional convenience)
+    seed: int = 0
 
     @property
     def imputed_max_pages(self) -> int:
@@ -386,7 +394,7 @@ class GenerationService:
     Typical usage:
 
         svc = GenerationService.from_model(model, tokenizer, Vocab, max_seqs, max_pages, page_size, max_pages_per_seq, compute_dtype)
-        texts = svc.generate(prompts, n_generations=1, max_new_tokens=128, temperature=0.7, stop_tokens=None, seed=0)
+        texts = svc.generate(requests)
     """
 
     def __init__(
@@ -398,14 +406,14 @@ class GenerationService:
         cache: KvPageCache,
         decode_state: DecodeState,
         sampler: Sampler,
-        max_seqs_in_prefill: int = 16,
+        config: GenerationServiceConfig,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.sampler = sampler
         self.gen_state: GenState = GenState(cache=cache, page_table=table, decode_state=decode_state)
         self._initial_decode_state = decode_state
-        self.max_seqs_in_prefill = int(max_seqs_in_prefill)
+        self.config = config
 
     @classmethod
     def from_model(
@@ -434,6 +442,15 @@ class GenerationService:
             max_queued_tokens=max_queued_tokens,
         )
         sampler = Sampler(vocab_axis)
+        cfg = GenerationServiceConfig(
+            max_pages=max_pages,
+            max_seqs=max_seqs,
+            page_size=page_size,
+            max_pages_per_seq=max_pages_per_seq,
+            compute_dtype=compute_dtype,
+            max_queued_tokens=max_queued_tokens,
+            max_seqs_in_prefill=max_seqs_in_prefill,
+        )
         return cls(
             model=model,
             tokenizer=tokenizer,
@@ -441,7 +458,7 @@ class GenerationService:
             cache=cache,
             decode_state=decode_state,
             sampler=sampler,
-            max_seqs_in_prefill=max_seqs_in_prefill,
+            config=cfg,
         )
 
     @classmethod
@@ -471,7 +488,7 @@ class GenerationService:
             cache=cache,
             decode_state=decode_state,
             sampler=sampler,
-            max_seqs_in_prefill=int(config.max_seqs_in_prefill),
+            config=config,
         )
 
 
@@ -555,7 +572,7 @@ class GenerationService:
         primary_global_ids: Optional[Sequence[int]] = None,
     ) -> list[int]:
         """Assign sequence ids, set per-seq params, and run prefill using a local queue."""
-        MAX_SEQS_IN_PREFILL = self.max_seqs_in_prefill
+        MAX_SEQS_IN_PREFILL = int(self.config.max_seqs_in_prefill)
         tokens = jnp.full((128,), INVALID, dtype=jnp.int32)
         seq_ids = jnp.full((128,), INVALID, dtype=jnp.int32)
         pos_ids = jnp.full((128,), INVALID, dtype=jnp.int32)
@@ -674,48 +691,23 @@ class GenerationService:
 
         return total_this_time
 
-    def generate(
-        self,
-        prompts: Sequence[Sequence[int]],
-        *,
-        n_generations: int,
-        max_new_tokens: int,
-        temperature: float,
-        seed: int,
-        stop_tokens: Optional[Sequence[int]] = None,
-        max_tokens_per_round: int = 8,
-        max_rounds: int = 8,
-    ) -> tuple[list[list[int]], int]:
-        """Generate tokens for a batch of prompts.
+    def generate(self, requests: Sequence[Request]) -> tuple[list[list[int]], int]:
+        """Generate tokens for a batch of Requests.
 
-        Args:
-            prompts: List of token id sequences (no BOS/EOS added).
-            n_generations: Number of alternatives per prompt (top-level cloning in prefill).
-            max_new_tokens: Max tokens to generate per sequence after prefill.
-            temperature: Sampling temperature.
-            seed: PRNG seed to fold into per-sequence keys.
-            stop_tokens: Optional stop sequence as token ids.
-            max_tokens_per_round: Pack size for decode loop.
-            max_rounds: Max while-loop iterations per outer extract step.
-
-        Returns:
-            (outputs_per_sequence, total_generated_tokens)
+        Each Request provides prompt_tokens, decode_params, and n_generations (clones).
+        Returns (outputs_per_sequence, total_generated_tokens).
         """
         # Build global id mapping for primaries and clones
-        n_per_req = [n_generations for _ in prompts]
+        n_per_req = [req.n_generations for req in requests]
         total_outs = sum(n_per_req)
         finished = [False] * total_outs
         outputs: list[list[int]] = [list() for _ in range(total_outs)]
 
-        if stop_tokens is not None and len(stop_tokens) > 0:
-            stop_ids = hax.named(jnp.asarray(stop_tokens, dtype=jnp.int32), axis="position").broadcast_axis(
-                {"stop_seq": 1}
-            )
-        else:
-            stop_ids = None
-
-        # Ensure stop-token buffer capacity is sufficient (important if custom stop sequences are long)
-        desired_stop_len = 0 if stop_ids is None else stop_ids.axis_size("position")
+        # Ensure stop-token buffer capacity is sufficient based on the longest stop sequence requested
+        desired_stop_len = 0
+        for req in requests:
+            if req.decode_params.stop_tokens is not None:
+                desired_stop_len = max(desired_stop_len, int(req.decode_params.stop_tokens.axis_size("position")))
         ds = self.gen_state.decode_state
         current_stop_len = 0 if ds.stop_tokens is None else ds.stop_tokens.axis_size("position")
         if desired_stop_len > current_stop_len:
@@ -734,27 +726,9 @@ class GenerationService:
 
         primary_gid: list[int] = []
         gid_cursor = 0
-        for req_id, _ in enumerate(prompts):
+        for r in requests:
             primary_gid.append(gid_cursor)
-            gid_cursor += n_per_req[req_id]
-
-        requests: list[Request] = []
-        base_key = jrandom.PRNGKey(seed)
-        for req_id, toks in enumerate(prompts):
-            seq_params = SeqDecodingParams(
-                max_num_tokens=jnp.array(len(toks) + max_new_tokens, dtype=jnp.int32),
-                stop_tokens=stop_ids,
-                temperature=jnp.array(temperature, dtype=jnp.float32),
-                key=jax.random.fold_in(base_key, req_id),
-            )
-            requests.append(
-                Request(
-                    prompt_tokens=list(map(int, toks)),
-                    request_id=primary_gid[req_id],
-                    decode_params=seq_params,
-                    n_generations=n_generations,
-                )
-            )
+            gid_cursor += r.n_generations
 
         time_in = time.time()
         _ = self._prefill_prompts(requests, primary_global_ids=primary_gid)
@@ -772,8 +746,8 @@ class GenerationService:
                 self.gen_state,
                 self.model,
                 self.sampler,
-                len(requests) if max_tokens_per_round is None else max_tokens_per_round,
-                max_rounds,
+                self.config.max_tokens_per_round,
+                self.config.max_rounds,
             )
             loop_time = time.time() - t0
             self.gen_state = jax.block_until_ready(self.gen_state)
@@ -792,6 +766,7 @@ class GenerationService:
                 logger.warning("No progress in decoding for 2 consecutive iterations; breaking to avoid hang.")
                 break
 
-        total_generated = sum(len(seq_outputs) for seq_outputs in outputs) - sum(len(p) for p in prompts)
+        total_prompt_tokens = sum(len(r.prompt_tokens) * r.n_generations for r in requests)
+        total_generated = sum(len(seq_outputs) for seq_outputs in outputs) - total_prompt_tokens
         logger.info(f"Batch generated in {time.time() - time_in:.2f}s, {total_generated} tokens")
         return outputs, total_generated

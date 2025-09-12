@@ -5,6 +5,7 @@ from typing import Optional
 
 import equinox as eqx
 import haliax as hax
+import jax.numpy as jnp
 import jax.random as jrandom
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
@@ -12,7 +13,8 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
-from levanter.inference.service import GenerationService, GenerationServiceConfig
+from levanter.inference.service import GenerationService, GenerationServiceConfig, Request
+from levanter.inference.jit_scheduler import SeqDecodingParams
 from levanter.inference.utils import INVALID
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
@@ -115,9 +117,10 @@ def main(config: SampleLmConfig):
 
         stop_sequence = config.stop_sequence
         if stop_sequence is not None:
-            stop_ids = tokenizer(stop_sequence, add_special_tokens=False)["input_ids"]
-            if len(stop_ids) == 0:
+            stop_ids_list = tokenizer(stop_sequence, add_special_tokens=False)["input_ids"]
+            if len(stop_ids_list) == 0:
                 raise ValueError("Stop sequence must be non-empty")
+            stop_ids = hax.named(jnp.asarray(stop_ids_list, dtype=jnp.int32), axis="position").broadcast_axis({"stop_seq": 1})
         else:
             stop_ids = None
 
@@ -126,16 +129,26 @@ def main(config: SampleLmConfig):
                 print(f"Prompt {i}: {toks}")
 
             time_in = time.time()
-            outputs, total_generated = service.generate(
-                prompts=prompt_ids,
-                n_generations=config.n_generations,
-                max_new_tokens=config.max_new_tokens,
-                temperature=config.temperature,
-                seed=config.seed,
-                stop_tokens=stop_ids,
-                max_tokens_per_round=config.service.max_seqs,
-                max_rounds=8,
-            )
+            # Build Requests for this batch
+            base_key = jrandom.PRNGKey(config.service.seed)
+            reqs: list[Request] = []
+            for ridx, toks in enumerate(prompt_ids):
+                seq_params = SeqDecodingParams(
+                    max_num_tokens=jnp.array(len(toks) + config.max_new_tokens, dtype=jnp.int32),
+                    stop_tokens=stop_ids,
+                    temperature=jnp.array(config.temperature, dtype=jnp.float32),
+                    key=jrandom.fold_in(base_key, ridx),
+                )
+                reqs.append(
+                    Request(
+                        prompt_tokens=list(map(int, toks)),
+                        request_id=ridx,  # not used for indexing in this API
+                        decode_params=seq_params,
+                        n_generations=config.n_generations,
+                    )
+                )
+
+            outputs, total_generated = service.generate(reqs)
             print(
                 f"Round {R} took {time.time() - time_in:.2f} seconds, "
                 f"generated {total_generated} tokens in {len(outputs)} sequences."

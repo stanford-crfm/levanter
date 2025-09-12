@@ -4,7 +4,8 @@ import haliax as hax
 
 from haliax import Axis
 
-from levanter.inference.service import GenerationService
+from levanter.inference.service import GenerationService, Request
+from levanter.inference.jit_scheduler import SeqDecodingParams
 from levanter.layers.attention import KvPageCache
 from levanter.inference.page_table import PageTable
 from levanter.inference.utils import INVALID
@@ -63,16 +64,19 @@ def test_release_on_finish_and_reuse_slots(caplog: pytest.LogCaptureFixture):
     prompts = [[7, 7], [1]]
     stop_tokens = [3]  # Dummy model always emits 3, so immediate stop after first generated token
 
-    outputs, total_generated = svc.generate(
-        prompts,
-        n_generations=1,
-        max_new_tokens=5,
-        temperature=0.0,  # greedy
-        seed=0,
-        stop_tokens=stop_tokens,
-        max_tokens_per_round=8,
-        max_rounds=8,
-    )
+    # Build Requests for the new API
+    stop_ids = hax.named(jnp.asarray(stop_tokens, dtype=jnp.int32), axis=("position",)).broadcast_axis({"stop_seq": 1})
+    reqs = []
+    for i, toks in enumerate(prompts):
+        seq_params = SeqDecodingParams(
+            max_num_tokens=jnp.array(len(toks) + 5, dtype=jnp.int32),
+            stop_tokens=stop_ids,
+            temperature=jnp.array(0.0, dtype=jnp.float32),
+            key=jax.random.PRNGKey(i),
+        )
+        reqs.append(Request(prompt_tokens=toks, request_id=i, decode_params=seq_params, n_generations=1))
+
+    outputs, total_generated = svc.generate(reqs)
 
     # Each sequence should be original prompt + a single eos token
     assert outputs[0] == prompts[0] + [3]
@@ -97,15 +101,18 @@ def test_release_on_finish_and_reuse_slots(caplog: pytest.LogCaptureFixture):
 
     # Now reuse service for another prompt without calling reset()
     prompts2 = [[5, 5, 5]]
-    outputs2, total_generated2 = svc.generate(
-        prompts2,
-        n_generations=1,
-        max_new_tokens=3,
-        temperature=0.0,
-        seed=42,
-        stop_tokens=stop_tokens,
-        max_tokens_per_round=8,
-        max_rounds=8,
-    )
+    # Build a second set of Requests to ensure reuse works without reset()
+    stop_ids2 = hax.named(jnp.asarray(stop_tokens, dtype=jnp.int32), axis=("position",)).broadcast_axis({"stop_seq": 1})
+    reqs2 = []
+    for i, toks in enumerate(prompts2):
+        seq_params = SeqDecodingParams(
+            max_num_tokens=jnp.array(len(toks) + 3, dtype=jnp.int32),
+            stop_tokens=stop_ids2,
+            temperature=jnp.array(0.0, dtype=jnp.float32),
+            key=jax.random.PRNGKey(42 + i),
+        )
+        reqs2.append(Request(prompt_tokens=toks, request_id=i, decode_params=seq_params, n_generations=1))
+
+    outputs2, total_generated2 = svc.generate(reqs2)
     assert outputs2[0] == prompts2[0] + [3]
     assert total_generated2 == 1
