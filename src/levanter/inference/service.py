@@ -3,6 +3,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional, Sequence
+from collections import deque
 
 import equinox as eqx
 import jax
@@ -421,6 +422,8 @@ class GenerationService:
         # sequences: request id -> {child id -> local seq id}
         self.local_map: dict[int, tuple[int, int]] = {}
         self.sequences: dict[int, dict[int, int]] = {}
+        # FIFO request queue for incremental admission
+        self.request_queue: deque[Request] = deque()
 
     @classmethod
     def from_model(
@@ -587,6 +590,36 @@ class GenerationService:
             ),
         )
 
+    # ------------------------------- Queue helpers -------------------------------
+    def enqueue_requests(self, requests: Sequence[Request]) -> None:
+        for r in requests:
+            self.request_queue.append(r)
+
+    def _admit_from_queue(self) -> int:
+        """Admit a batch from the head of the queue that fits in free slots/pages.
+
+        Returns the number of admitted requests.
+        """
+        if not self.request_queue:
+            return 0
+        sim_slots = int(self.free_slots)
+        sim_pages = self._free_page_count()
+        batch: list[Request] = []
+        while self.request_queue:
+            nxt = self.request_queue[0]
+            need_slots = int(nxt.n_generations)
+            need_pages = self._pages_needed_for_prompt(len(nxt.prompt_tokens))
+            if sim_slots < need_slots or sim_pages < need_pages:
+                break
+            batch.append(self.request_queue.popleft())
+            sim_slots -= need_slots
+            sim_pages -= need_pages
+        if not batch:
+            return 0
+        _ = self._prefill_prompts(batch, primary_global_ids=list(range(len(batch))))
+        self.gen_state = jax.block_until_ready(self.gen_state)
+        return len(batch)
+
     def _free_page_count(self) -> int:
         """Return number of free KV pages in the PageTable."""
         prc = jax.device_get(self.gen_state.page_table.page_ref_counts.array)
@@ -739,11 +772,13 @@ class GenerationService:
         Each Request provides prompt_tokens, decode_params, and n_generations (clones).
         Returns (outputs_per_sequence, total_generated_tokens).
         """
-        # Build global id mapping for primaries and clones
-        n_per_req = [req.n_generations for req in requests]
-        total_outs = sum(n_per_req)
-        finished = [False] * total_outs
-        outputs: list[list[int]] = [list() for _ in range(total_outs)]
+        # Enqueue incoming requests to internal queue
+        self.enqueue_requests(requests)
+        # Track outputs and finished flags for only this call's requests
+        call_rids = [int(r.request_id) for r in requests]
+        expected_children: dict[int, int] = {rid: int(r.n_generations) for rid, r in zip(call_rids, requests)}
+        outputs_for: dict[int, dict[int, list[int]]] = {rid: {k: [] for k in range(expected_children[rid])} for rid in expected_children}
+        finished_for: dict[int, dict[int, bool]] = {rid: {k: False for k in range(expected_children[rid])} for rid in expected_children}
 
         # Ensure stop-token buffer capacity is sufficient based on the longest stop sequence requested
         desired_stop_len = 0
@@ -766,55 +801,21 @@ class GenerationService:
             self.gen_state = dataclasses.replace(self.gen_state, decode_state=new_ds)
             self._initial_decode_state = new_ds
 
-        primary_gid: list[int] = []
-        gid_cursor = 0
-        for r in requests:
-            primary_gid.append(gid_cursor)
-            gid_cursor += r.n_generations
-
         time_in = time.time()
-
-        # Enqueue prefills until out of room (free slots) or out of pages
-        pending = 0
-        total = len(requests)
-        while pending < total:
-            # Simulate admission to determine how many we can take this batch
-            sim_slots = int(self.free_slots)
-            sim_pages = self._free_page_count()
-            n_batch = 0
-            idx = pending
-            while idx < total:
-                req = requests[idx]
-                need_slots = int(req.n_generations)
-                need_pages = self._pages_needed_for_prompt(len(req.prompt_tokens))
-                if sim_slots < need_slots or sim_pages < need_pages:
-                    break
-                sim_slots -= need_slots
-                sim_pages -= need_pages
-                n_batch += 1
-                idx += 1
-            if n_batch == 0:
-                break
-            batch = requests[pending : pending + n_batch]
-            batch_gids = primary_gid[pending : pending + n_batch]
-            _ = self._prefill_prompts(batch, primary_global_ids=batch_gids)
-            # self.gen_state = jax.block_until_ready(self.gen_state)
-            # Drain prompt tokens so finished flags reflect prompt-contained stops
-            _ = self._extract_outputs(outputs, finished)
-            # Free completed sequences promptly so slots/pages are reusable
-            self._release_finished_sequences()
-            pending += n_batch
-
-        # If any remain unadmitted, they will be handled by a subsequent call or a higher-level queue
-        # self.gen_state = jax.block_until_ready(self.gen_state)
-        # Drain prompt tokens so finished flags reflect prompt-contained stops
-        _ = self._extract_outputs(outputs, finished)
-        # Free completed sequences promptly so slots/pages are reusable
+        # Try initial admission from queue and extract prompt tokens
+        _ = self._admit_from_queue()
+        _ = self._extract_outputs_for(outputs_for, finished_for)
         self._release_finished_sequences()
 
         # Autoregressive generation loop with periodic extraction
+        def _all_done() -> bool:
+            for rid, kids in finished_for.items():
+                if any(not v for v in kids.values()):
+                    return False
+            return True
+
         stagnant_iters = 0
-        while not all(finished):
+        while not _all_done():
             t0 = time.time()
             self.gen_state = _run_generation_loop(
                 self.gen_state,
@@ -825,14 +826,18 @@ class GenerationService:
             )
             loop_time = time.time() - t0
             self.gen_state = jax.block_until_ready(self.gen_state)
-            new_tokens = self._extract_outputs(outputs, finished)
+            new_tokens = self._extract_outputs_for(outputs_for, finished_for)
             # Release any sequences that finished in this step
+            self._release_finished_sequences()
+            # Admit more if capacity allows
+            _ = self._admit_from_queue()
+            _ = self._extract_outputs_for(outputs_for, finished_for)
             self._release_finished_sequences()
             if loop_time > 0:
                 tps = new_tokens / loop_time
                 logger.info(f"Decode iter: {loop_time:.3f}s, {tps:.2f} tok/s, {new_tokens} new")
             # Safety: if nothing new was produced and queue is empty, avoid infinite loop
-            if new_tokens == 0 and int(jax.device_get(self.gen_state.decode_state.num_queued_tokens)) == 0:
+            if new_tokens == 0 and int(jax.device_get(self.gen_state.decode_state.num_queued_tokens)) == 0 and not self.request_queue:
                 stagnant_iters += 1
             else:
                 stagnant_iters = 0
@@ -840,7 +845,52 @@ class GenerationService:
                 logger.warning("No progress in decoding for 2 consecutive iterations; breaking to avoid hang.")
                 break
 
-        total_prompt_tokens = sum(len(r.prompt_tokens) * r.n_generations for r in requests)
-        total_generated = sum(len(seq_outputs) for seq_outputs in outputs) - total_prompt_tokens
+        # Assemble outputs in the order of the requests for this call
+        outputs_list: list[list[int]] = []
+        total_prompt_tokens = 0
+        for r in requests:
+            rid = int(r.request_id)
+            total_prompt_tokens += len(r.prompt_tokens) * int(r.n_generations)
+            for k in range(int(r.n_generations)):
+                outputs_list.append(outputs_for[rid][k])
+        total_generated = sum(len(seq_outputs) for seq_outputs in outputs_list) - total_prompt_tokens
         logger.info(f"Batch generated in {time.time() - time_in:.2f}s, {total_generated} tokens")
-        return outputs, total_generated
+        return outputs_list, total_generated
+
+    def _extract_outputs_for(
+        self,
+        outputs: dict[int, dict[int, list[int]]],
+        finished: dict[int, dict[int, bool]],
+    ) -> int:
+        """Append newly available tokens into outputs per (request_id, child_id).
+
+        Returns number of new tokens appended.
+        """
+        total_this_time = 0
+        decode_state = self.gen_state.decode_state
+        num_seqs = decode_state.max_seqs
+        tokens = jax.device_get(decode_state.tokens.array)
+        num_tokens = jax.device_get(decode_state.seq_lens.array)
+        this_finished = jax.device_get(decode_state.is_finished(jnp.arange(num_seqs)))
+
+        for local_seq in range(num_seqs):
+            info = self.local_map.get(local_seq)
+            if info is None:
+                continue
+            rid, cid = info
+            if rid not in outputs:
+                continue
+            current_num_tokens = len(outputs[rid][cid])
+            new_num_tokens = int(num_tokens[local_seq])
+            count_to_extract = new_num_tokens - current_num_tokens
+            if count_to_extract <= 0:
+                if bool(this_finished[local_seq]):
+                    finished[rid][cid] = True
+                continue
+            total_this_time += count_to_extract if count_to_extract > 0 else 0
+            if bool(this_finished[local_seq]):
+                finished[rid][cid] = True
+            seq_tokens = tokens[local_seq, current_num_tokens:new_num_tokens]
+            outputs[rid][cid].extend(int(x) for x in seq_tokens)
+
+        return total_this_time
