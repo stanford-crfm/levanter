@@ -646,8 +646,8 @@ class AttentionMask(eqx.Module):
     is_causal: bool = eqx.field(static=True)
     explicit_mask: Optional[NamedArray] = None
     segment_ids: Optional[NamedArray] = None
+    prefix_mask: Optional[NamedArray] = None
     # CF https://github.com/jax-ml/jax/blob/47858c4ac2fd4757a3b6fc5bb2981b71a71f00c2/jax/experimental/pallas/ops/tpu/flash_attention.py#L34
-    # TODO: add prefixlm
     # cf https://github.com/google-research/t5x/blob/51a99bff8696c373cc03918707ada1e98cbca407/t5x/examples/decoder_only/layers.py#L978
 
     def materialize(
@@ -677,6 +677,10 @@ class AttentionMask(eqx.Module):
         if self.segment_ids is not None:
             segment_mask = _materialize_segment_mask(self.segment_ids, QPos, KPos, q_slice, k_slice)
             mask = combine_masks_and(mask, segment_mask)
+
+        if self.prefix_mask is not None:
+            prefix_sliced = self.prefix_mask[QPos, q_slice, KPos, k_slice]
+            mask = combine_masks_or(mask, prefix_sliced)
 
         return mask
 

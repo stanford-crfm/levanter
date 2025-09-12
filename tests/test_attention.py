@@ -19,6 +19,7 @@ from levanter.layers.attention import (
     _tpu_splash_attention,
     dot_product_attention,
 )
+from levanter.data.ul2r import ul2r_block_diagonal_mask
 from test_utils import skip_if_module_missing
 
 
@@ -276,3 +277,63 @@ def test_segment_ids_are_respected(impl):
     assert_trees_all_close(result.array[0:3, 1], 300.0, atol=1e-3, rtol=1e-3)
     # the rest should be 0
     assert_trees_all_close(result.array[3:, 1], 0.0, atol=1e-3, rtol=1e-3)
+
+
+def test_attention_mask_with_prefix():
+    """Test that AttentionMask correctly handles prefix_mask for UL2R-style attention."""
+    L = 8
+    Pos = Axis("Pos", L)
+    KPos = Pos.alias("KPos")
+    
+    # Create a prefix mask pattern for UL2R
+    # input_masks: 1 1 0 0 1 0 0 0 (segments 0 and 1)
+    # segment_ids: 0 0 0 0 1 1 -1 -1
+    input_masks = jnp.array([1, 1, 0, 0, 1, 0, 0, 0])
+    segment_ids = jnp.array([0, 0, 0, 0, 1, 1, -1, -1])
+    
+    # Create the prefix mask using UL2R function
+    prefix_mask_array = ul2r_block_diagonal_mask(input_masks, segment_ids)
+    prefix_mask = hax.named(prefix_mask_array, (Pos, KPos))
+    
+    # Create AttentionMask with causal, segment_ids, and prefix components
+    # The segment_ids ensure no cross-segment attention
+    segment_ids_named = hax.named(segment_ids, Pos)
+    mask = AttentionMask(is_causal=True, segment_ids=segment_ids_named, prefix_mask=prefix_mask)
+    
+    # Materialize the mask
+    materialized = mask.materialize(Pos, KPos)
+    
+    # Check the materialized mask
+    # The mask should allow:
+    # - Causal attention for all positions
+    # - Additional bidirectional attention for input positions within same segment
+    
+    # For position 0 (input in segment 0):
+    # Should see position 0 (causal) + position 1 (prefix - same segment input)
+    assert materialized.array[0, 0] == True  # Can see self (causal)
+    assert materialized.array[0, 1] == True  # Can see position 1 (prefix)
+    assert materialized.array[0, 2] == False  # Cannot see position 2 (future + not input)
+    
+    # For position 1 (input in segment 0):
+    # Should see positions 0-1 (causal + prefix)
+    assert materialized.array[1, 0] == True  # Can see position 0 (causal + prefix)
+    assert materialized.array[1, 1] == True  # Can see self (causal)
+    assert materialized.array[1, 2] == False  # Cannot see position 2 (future)
+    
+    # For position 2 (output in segment 0):
+    # Should only follow causal pattern
+    assert materialized.array[2, 0] == True  # Can see position 0 (causal)
+    assert materialized.array[2, 1] == True  # Can see position 1 (causal)
+    assert materialized.array[2, 2] == True  # Can see self (causal)
+    assert materialized.array[2, 3] == False  # Cannot see position 3 (future)
+    
+    # For position 4 (input in segment 1):
+    # Should only see itself (different segment, no cross-segment attention)
+    assert materialized.array[4, 0] == False  # Cannot see segment 0
+    assert materialized.array[4, 4] == True  # Can see self (causal + prefix)
+    assert materialized.array[4, 5] == False  # Cannot see position 5 (future)
+    
+    # For positions 6-7 (padding):
+    # Should only follow causal pattern (prefix_mask is False for padding)
+    assert materialized.array[6, 6] == True  # Can see self (causal)
+    assert materialized.array[6, 7] == False  # Cannot see future
