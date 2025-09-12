@@ -87,7 +87,7 @@ class GenState(eqx.Module):
         *,
         global_id: int | None = None,
         seq_params: SeqDecodingParams | None = None,
-    ) -> "GenState":
+    ) -> tuple["GenState", int]:
         """Clone a sequence into a new local slot, sharing full pages and using a fresh page for the last partial page.
 
         Args:
@@ -146,7 +146,7 @@ class GenState(eqx.Module):
         cache = jax.lax.cond((src_len % page_size != 0) and (src_len > 0), _copy, _identity, None)
 
         new_state = dataclasses.replace(self, page_table=page_table, decode_state=decode_state, cache=cache)
-        return new_state
+        return new_state, child_local_id
 
 
 def _compute_sample_indices(pos_ids, seq_ids, seq_lens, max_sample_indices):
@@ -414,6 +414,11 @@ class GenerationService:
         self.gen_state: GenState = GenState(cache=cache, page_table=table, decode_state=decode_state)
         self._initial_decode_state = decode_state
         self.config = config
+        # Mapping structures for active sequences
+        # local_map: local seq id -> (request id, child id)
+        # sequences: request id -> {child id -> local seq id}
+        self.local_map: dict[int, tuple[int, int]] = {}
+        self.sequences: dict[int, dict[int, int]] = {}
 
     @classmethod
     def from_model(
@@ -505,6 +510,8 @@ class GenerationService:
             page_table=page_table,
             decode_state=self._initial_decode_state,
         )
+        self.local_map.clear()
+        self.sequences.clear()
 
     def _release_finished_sequences(self) -> None:
         """Release resources for any sequences that have finished.
@@ -535,6 +542,15 @@ class GenerationService:
         # Free pages for finished sequences
         for local_seq in finished_locals:
             pt = pt.free_pages(local_seq)
+            # Maintain request/child mapping
+            info = self.local_map.pop(local_seq, None)
+            if info is not None:
+                rid, cid = info
+                cmap = self.sequences.get(rid)
+                if cmap is not None:
+                    cmap.pop(cid, None)
+                    if len(cmap) == 0:
+                        self.sequences.pop(rid, None)
 
         # Clear DecodeState slot metadata for finished sequences
         # Build a boolean NamedArray mask over the seq axis
@@ -629,17 +645,24 @@ class GenerationService:
                     seq_params=seq_params,
                 ),
             )
+            # Record mapping: primary child id is 0
+            rid = int(request.request_id)
+            self.local_map[seq_id] = (rid, 0)
+            self.sequences.setdefault(rid, {})[0] = seq_id
             primary_local_ids.append(seq_id)
 
             if request.n_generations > 1:
                 for k in range(1, request.n_generations):
-                    self.gen_state = self.gen_state.clone_sequence(
+                    self.gen_state, child_local_id = self.gen_state.clone_sequence(
                         seq_id,
                         global_id=(
                             primary_global_ids[idx] + k if primary_global_ids is not None else request.request_id
                         ),
                         seq_params=dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k)),
                     )
+                    # Record mapping for clone: child id is k
+                    self.local_map[child_local_id] = (rid, k)
+                    self.sequences.setdefault(rid, {})[k] = child_local_id
 
         if offset > 0:
             token_queue = TokenQueue(
