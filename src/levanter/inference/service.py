@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import dataclasses
 import logging
 import time
@@ -109,11 +112,7 @@ class GenState(eqx.Module):
         prefix_len = int(decode_state.seq_lens["seq", parent_local_id].scalar())
         parent_prefix = decode_state.tokens["seq", parent_local_id, "position", 0:prefix_len]
         parent_kv_pages_row = decode_state.kv_pages["seq", parent_local_id]
-        gid = (
-            int(decode_state.seq_id["seq", parent_local_id].scalar())
-            if global_id is None
-            else global_id
-        )
+        gid = int(decode_state.seq_id["seq", parent_local_id].scalar()) if global_id is None else global_id
 
         # Assign child sequence state (copies tokens up to prefix and kv_pages row)
         decode_state = decode_state.assign_seq(
@@ -256,7 +255,7 @@ def _handle_clones(
 
     # Determine which clone targets can be sampled this step:
     # need a valid source index and a valid target id
-    can_sample = (source_indices != INVALID)
+    can_sample = source_indices != INVALID
 
     # Build a compact position index list of clones to process this time
     selected = hax.where(can_sample, fill_value=INVALID, new_axis=CloneSeq)[0]
@@ -296,6 +295,7 @@ def _handle_clones(
         src_len = page_table.seq_lens["seq", src_seq_id].scalar()
         used_pages = (src_len + size - 1) // size
         last_idx = jnp.maximum(used_pages - 1, 0)
+
         def _copy(_):
             src_page = page_table.page_indices["seq", src_seq_id, "page", last_idx].scalar()
             dst_page = page_table.page_indices["seq", dst_seq_id, "page", last_idx].scalar()
@@ -362,7 +362,6 @@ def _run_generation_loop(
         temps = decode_state.temperature["seq", new_seq_ids]
 
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
-
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
@@ -500,7 +499,6 @@ class GenerationService:
             sampler=sampler,
             config=config,
         )
-
 
     def reset(self) -> None:
         """Free all local sequence slots and reset to the initial `DecodeState`.
@@ -684,9 +682,7 @@ class GenerationService:
                 self.gen_state,
                 decode_state=self.gen_state.decode_state.assign_seq(
                     local_seq_id=seq_id,
-                    global_seq_id=(
-                        primary_global_ids[idx] if primary_global_ids is not None else request.request_id
-                    ),
+                    global_seq_id=(primary_global_ids[idx] if primary_global_ids is not None else request.request_id),
                     tokens=hax.named(this_tokens, axis="position"),
                     prefix_len=len(seq_tokens),
                     kv_pages=None,
@@ -723,9 +719,7 @@ class GenerationService:
                 queued_pos_ids=hax.named(pos_ids, axis="position"),
                 num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
             )
-            self.gen_state = _run_prefill(
-                self.gen_state, self.model, self.sampler, token_queue, MAX_SEQS_IN_PREFILL
-            )
+            self.gen_state = _run_prefill(self.gen_state, self.model, self.sampler, token_queue, MAX_SEQS_IN_PREFILL)
 
         return primary_local_ids
 
@@ -777,8 +771,12 @@ class GenerationService:
         # Track outputs and finished flags for only this call's requests
         call_rids = [int(r.request_id) for r in requests]
         expected_children: dict[int, int] = {rid: int(r.n_generations) for rid, r in zip(call_rids, requests)}
-        outputs_for: dict[int, dict[int, list[int]]] = {rid: {k: [] for k in range(expected_children[rid])} for rid in expected_children}
-        finished_for: dict[int, dict[int, bool]] = {rid: {k: False for k in range(expected_children[rid])} for rid in expected_children}
+        outputs_for: dict[int, dict[int, list[int]]] = {
+            rid: {k: [] for k in range(expected_children[rid])} for rid in expected_children
+        }
+        finished_for: dict[int, dict[int, bool]] = {
+            rid: {k: False for k in range(expected_children[rid])} for rid in expected_children
+        }
 
         # Ensure stop-token buffer capacity is sufficient based on the longest stop sequence requested
         desired_stop_len = 0
@@ -837,7 +835,11 @@ class GenerationService:
                 tps = new_tokens / loop_time
                 logger.info(f"Decode iter: {loop_time:.3f}s, {tps:.2f} tok/s, {new_tokens} new")
             # Safety: if nothing new was produced and queue is empty, avoid infinite loop
-            if new_tokens == 0 and int(jax.device_get(self.gen_state.decode_state.num_queued_tokens)) == 0 and not self.request_queue:
+            if (
+                new_tokens == 0
+                and int(jax.device_get(self.gen_state.decode_state.num_queued_tokens)) == 0
+                and not self.request_queue
+            ):
                 stagnant_iters += 1
             else:
                 stagnant_iters = 0

@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import jax
 import jax.numpy as jnp
 import haliax as hax
@@ -102,7 +105,9 @@ def test_release_on_finish_and_reuse_slots(caplog: pytest.LogCaptureFixture):
     # Now reuse service for another prompt without calling reset()
     prompts2 = [[5, 5, 5]]
     # Build a second set of Requests to ensure reuse works without reset()
-    stop_ids2 = hax.named(jnp.asarray(stop_tokens, dtype=jnp.int32), axis=("position",)).broadcast_axis({"stop_seq": 1})
+    stop_ids2 = hax.named(jnp.asarray(stop_tokens, dtype=jnp.int32), axis=("position",)).broadcast_axis(
+        {"stop_seq": 1}
+    )
     reqs2 = []
     for i, toks in enumerate(prompts2):
         seq_params = SeqDecodingParams(
