@@ -4,6 +4,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional
+from contextlib import ExitStack
+from typing import cast
 
 import equinox as eqx
 import haliax as hax
@@ -22,6 +24,7 @@ from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
+from levanter.callbacks import profile_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +48,7 @@ class SampleLmConfig:
         "Four score and seven years ago, our",
         # "On the first day of Christmas, my true love gave to me",
         "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
-    )
+    ) * 5
     stop_sequence: str | None = "."
     "Stop sequences. Currently only does whole token sequences."
     max_new_tokens: int = 192
@@ -53,6 +56,10 @@ class SampleLmConfig:
     seed: int = 2
 
     n_generations: int = 1
+    n_rounds: int = 4
+
+    # Optional JAX profiling
+    profile: bool = False
 
 
 def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
@@ -128,46 +135,62 @@ def main(config: SampleLmConfig):
         else:
             stop_ids = None
 
-        for R in range(10):
-            for i, toks in enumerate(prompt_ids):
-                print(f"Prompt {i}: {toks}")
-
-            time_in = time.time()
-            # Build Requests for this batch
-            base_key = jrandom.PRNGKey(config.service.seed)
-            reqs: list[Request] = []
-            for ridx, toks in enumerate(prompt_ids):
-                seq_params = SeqDecodingParams(
-                    max_num_tokens=jnp.array(len(toks) + config.max_new_tokens, dtype=jnp.int32),
-                    stop_tokens=stop_ids,
-                    temperature=jnp.array(config.temperature, dtype=jnp.float32),
-                    key=jrandom.fold_in(base_key, ridx),
-                )
-                reqs.append(
-                    Request(
-                        prompt_tokens=list(map(int, toks)),
-                        request_id=ridx,  # not used for indexing in this API
-                        decode_params=seq_params,
-                        n_generations=config.n_generations,
+        # Optionally enable JAX profiler; no Perfetto link
+        with ExitStack() as stack:
+            if config.profile:
+                run_id = cast(str, config.trainer.id)
+                profile_path = config.trainer.log_dir / run_id / "profiler"
+                stack.enter_context(
+                    profile_ctx(
+                        str(profile_path),
+                        create_perfetto_link=False,
+                        host_profile=True,
+                        host_profile_topn=40,
                     )
                 )
 
-            outputs, total_generated = service.generate(reqs)
-            print(
-                f"Round {R} took {time.time() - time_in:.2f} seconds, "
-                f"generated {total_generated} tokens in {len(outputs)} sequences."
-            )
+            for r in range(config.n_rounds):
+                for i, toks in enumerate(prompt_ids):
+                    print(f"Prompt {i}: {toks}")
 
-            # Decode and print outputs
-            for seq_id, seq_outputs in enumerate(outputs):
-                seq_outputs = [tok for tok in seq_outputs if tok != tokenizer.pad_token_id and tok != INVALID]
-                text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
-                print(f"Tokens for sequence {seq_id} (len: {len(seq_outputs)}: {seq_outputs}")
-                print(f"Generated text for {seq_id}: {text}")
-                tokens_with_text = [
-                    f"{tok} ({tokenizer.decode([tok], skip_special_tokens=True)})" for tok in seq_outputs
-                ]
-                print(f"Tokens with text for sequence {seq_id}: {tokens_with_text}")
+                time_in = time.time()
+                # Build Requests for this batch
+                base_key = jrandom.PRNGKey(config.service.seed)
+                reqs: list[Request] = []
+                for ridx, toks in enumerate(prompt_ids):
+                    seq_params = SeqDecodingParams(
+                        max_num_tokens=jnp.array(len(toks) + config.max_new_tokens, dtype=jnp.int32),
+                        stop_tokens=stop_ids,
+                        temperature=jnp.array(config.temperature, dtype=jnp.float32),
+                        key=jrandom.fold_in(base_key, ridx),
+                    )
+                    reqs.append(
+                        Request(
+                            prompt_tokens=list(map(int, toks)),
+                            request_id=ridx,  # not used for indexing in this API
+                            decode_params=seq_params,
+                            n_generations=config.n_generations,
+                        )
+                    )
+
+                outputs, total_generated = service.generate(reqs)
+                print(
+                    f"Round {r} took {time.time() - time_in:.2f} seconds, "
+                    f"generated {total_generated} tokens in {len(outputs)} sequences."
+                )
+
+                # Decode and print outputs
+                for seq_id, seq_outputs in enumerate(outputs):
+                    seq_outputs = [tok for tok in seq_outputs if tok != tokenizer.pad_token_id and tok != INVALID]
+                    text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
+                    print(f"Tokens for sequence {seq_id} (len: {len(seq_outputs)}: {seq_outputs}")
+                    print(f"Generated text for {seq_id}: {text}")
+                    tokens_with_text = [
+                        f"{tok} ({tokenizer.decode([tok], skip_special_tokens=True)})" for tok in seq_outputs
+                    ]
+                    print(f"Tokens with text for sequence {seq_id}: {tokens_with_text}")
+
+    levanter.current_tracker().finish()
 
 
 if __name__ == "__main__":
