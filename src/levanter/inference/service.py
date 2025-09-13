@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+import functools
 import logging
 import time
 from dataclasses import dataclass
@@ -328,7 +329,8 @@ def _handle_clones(
     return gen_state, can_sample
 
 
-@hax.named_jit(donate_args=(True, False, False))
+# @hax.named_jit(donate_args=(True, False, False))
+@functools.partial(jax.jit, static_argnums=(3, 4), donate_argnames=("gen_state",))
 def _run_generation_loop(
     gen_state: GenState,
     model: LmHeadModel,
@@ -374,10 +376,10 @@ def _run_generation_loop(
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
-        new_finished = decode_state.is_finished(jnp.arange(decode_state.max_seqs))
+        new_finished = decode_state.finished.array
         has_finished = has_finished | new_finished
 
-        # purge any finished sequencse
+        # purge any finished sequences
         finished_sequences = jnp.nonzero(new_finished, size=gen_state.page_table.max_seqs, fill_value=INVALID)[0]
         finished_sequences = hax.named(finished_sequences, axis="seq")
         decode_state = decode_state.purge_queue_of_seq(finished_sequences)
@@ -391,7 +393,7 @@ def _run_generation_loop(
         )
         return new_gen_state, has_finished, step + 1
 
-    has_finished = gen_state.decode_state.is_finished(jnp.arange(gen_state.decode_state.max_seqs))
+    has_finished = gen_state.decode_state.finished.array
     init_state = (gen_state, has_finished, jnp.array(0, dtype=jnp.int32))
     final_gen_state, _, _ = jax.lax.while_loop(cond, body, init_state)
     return final_gen_state
@@ -555,24 +557,22 @@ class GenerationService:
         pt = self.gen_state.page_table
 
         # Determine which local sequence slots are finished
-        finished_mask = jax.device_get(ds.is_finished(jnp.arange(ds.max_seqs))).astype(bool)
+        finished_mask = jax.device_get(ds.finished.array).astype(bool)
         finished_locals = [i for i, f in enumerate(finished_mask) if bool(f)]
 
         if len(finished_locals) == 0:
             return
 
         # Capture current global ids for logging before we clear them
-        try:
-            seq_ids_host = jax.device_get(ds.seq_id.array)
-            finished_globals = [int(seq_ids_host[i]) for i in finished_locals]
-        except Exception:
-            finished_globals = []
+        seq_ids_host = jax.device_get(ds.seq_id.array)
+        finished_globals = [int(seq_ids_host[i]) for i in finished_locals]
         logger.info(f"Releasing finished sequences: locals={finished_locals}, globals={finished_globals}")
 
-        # Free pages for finished sequences
+        # Free pages for finished sequences (batched in one JAX call)
+        pt = pt.free_pages_for_finished(finished_mask)
+
+        # Maintain request/child mappings and slot counts on host
         for local_seq in finished_locals:
-            pt = pt.free_pages(local_seq)
-            # Maintain request/child mapping
             info = self.local_map.pop(local_seq, None)
             if info is not None:
                 rid, cid = info
@@ -584,34 +584,9 @@ class GenerationService:
             # Freed one local slot
             self.free_slots += 1
 
-        # Clear DecodeState slot metadata for finished sequences
-        # Build a boolean NamedArray mask over the seq axis
-        Seq = ds.seq_id.resolve_axis("seq")
-        mask = hax.named(jnp.asarray(finished_mask, dtype=bool), axis=Seq)
-
-        # Invalidate ids and lengths for finished slots
-        new_seq_id = hax.where(mask, hax.full_like(ds.seq_id, INVALID), ds.seq_id)
-        new_seq_lens = hax.where(mask, hax.full_like(ds.seq_lens, INVALID), ds.seq_lens)
-        new_prefix_len = hax.where(mask, hax.full_like(ds.prefix_len, 0), ds.prefix_len)
-        new_clone_sources = hax.where(mask, hax.full_like(ds.clone_sources, INVALID), ds.clone_sources)
-
-        # Invalidate kv_pages rows for finished slots
-        new_kv_pages = ds.kv_pages
-        for local_seq in finished_locals:
-            new_kv_pages = new_kv_pages.at["seq", local_seq].set(INVALID)
-
-        self.gen_state = dataclasses.replace(
-            self.gen_state,
-            page_table=pt,
-            decode_state=dataclasses.replace(
-                ds,
-                seq_id=new_seq_id,
-                seq_lens=new_seq_lens,
-                prefix_len=new_prefix_len,
-                clone_sources=new_clone_sources,
-                kv_pages=new_kv_pages,
-            ),
-        )
+        # Clear DecodeState slot metadata for finished sequences via jitted method
+        new_ds = ds.invalidate_finished()
+        self.gen_state = dataclasses.replace(self.gen_state, page_table=pt, decode_state=new_ds)
 
     # ------------------------------- Queue helpers -------------------------------
     def enqueue_requests(self, requests: Sequence[Request]) -> None:
@@ -761,7 +736,7 @@ class GenerationService:
         tokens = jax.device_get(decode_state.tokens.array)
         num_tokens = jax.device_get(decode_state.seq_lens.array)
         seq_ids = jax.device_get(decode_state.seq_id.array)
-        this_finished = jax.device_get(decode_state.is_finished(jnp.arange(num_seqs)))
+        this_finished = jax.device_get(decode_state.finished.array)
 
         for local_seq in range(num_seqs):
             global_id = int(seq_ids[local_seq])
@@ -842,31 +817,48 @@ class GenerationService:
         stagnant_iters = 0
         while not _all_done():
             iter_start = time.time()
-            k0 = iter_start
-            self.gen_state = _run_generation_loop(
+
+            submit_start = iter_start
+            future_state = _run_generation_loop(
                 self.gen_state,
                 self.model,
                 self.sampler,
                 self.config.max_tokens_per_round,
                 self.config.max_rounds,
             )
-            # Include device sync in kernel timing
-            self.gen_state = jax.block_until_ready(self.gen_state)
-            kernel_time = time.time() - k0
+            submit_done = time.time()
+            # Time spent with device executing (and the host thread waiting)
+            self.gen_state = jax.block_until_ready(future_state)
+            device_time = time.time() - submit_done
+
+            extract_start = time.time()
             new_tokens = self._extract_outputs_for(outputs_for, finished_for)
+            extract_time = time.time() - extract_start
+
             # Release any sequences that finished in this step
+            release_start = time.time()
             self._release_finished_sequences()
             # Admit more if capacity allows
             _ = self._admit_from_queue()
             _ = self._extract_outputs_for(outputs_for, finished_for)
             self._release_finished_sequences()
-            iter_time = time.time() - iter_start
+            # Ensure any bookkeeping kernels complete before next iteration
+            self.gen_state = jax.block_until_ready(self.gen_state)
+            new_tokens += self._extract_outputs_for(outputs_for, finished_for)
+            release_time = time.time() - release_start
+
+            iter_end = time.time()
+            iter_time = iter_end - iter_start
+            # Host time is everything except the device execution wait
+            host_time = max(iter_time - device_time, 0.0)
+            submit_time = submit_done - submit_start
             if iter_time > 0:
                 tps_total = new_tokens / iter_time
-                host_overhead = max(iter_time - kernel_time, 0.0)
                 logger.info(
-                    f"Decode iter: total {iter_time:.3f}s (kernel {kernel_time:.3f}s, host {host_overhead:.3f}s), "
+                    f"Decode iter: total {iter_time:.3f}s (device {device_time:.3f}s, host {host_time:.3f}s, "
+                    f"submit {submit_time:.3f}s), "
                     f"{tps_total:.2f} tok/s, {new_tokens} new"
+                    f" (extract {extract_time:.3f}s, release {release_time:.3f}s)"
                 )
             # Safety: if nothing new was produced and queue is empty, avoid infinite loop
             if (
@@ -905,11 +897,11 @@ class GenerationService:
         Returns number of new tokens appended.
         """
         total_this_time = 0
-        decode_state = self.gen_state.decode_state
-        num_seqs = decode_state.max_seqs
-        tokens = jax.device_get(decode_state.tokens.array)
-        num_tokens = jax.device_get(decode_state.seq_lens.array)
-        this_finished = jax.device_get(decode_state.is_finished(jnp.arange(num_seqs)))
+        ds = self.gen_state.decode_state
+        num_seqs = ds.max_seqs
+        # Only pull small metadata vectors to host
+        num_tokens_host = jax.device_get(ds.seq_lens.array)
+        finished_host = jax.device_get(ds.finished.array)
 
         for local_seq in range(num_seqs):
             info = self.local_map.get(local_seq)
@@ -919,16 +911,23 @@ class GenerationService:
             if rid not in outputs:
                 continue
             current_num_tokens = len(outputs[rid][cid])
-            new_num_tokens = int(num_tokens[local_seq])
+            new_num_tokens = int(num_tokens_host[local_seq])
             count_to_extract = new_num_tokens - current_num_tokens
             if count_to_extract <= 0:
-                if bool(this_finished[local_seq]):
+                if bool(finished_host[local_seq]):
                     finished[rid][cid] = True
                 continue
-            total_this_time += count_to_extract if count_to_extract > 0 else 0
-            if bool(this_finished[local_seq]):
+            total_this_time += count_to_extract
+            if bool(finished_host[local_seq]):
                 finished[rid][cid] = True
-            seq_tokens = tokens[local_seq, current_num_tokens:new_num_tokens]
+            # Device-get only the new slice for this sequence
+            slice_named = ds.tokens[
+                "seq",
+                local_seq,
+                "position",
+                hax.dslice(current_num_tokens, count_to_extract),
+            ]
+            seq_tokens = jax.device_get(slice_named.array)
             outputs[rid][cid].extend(int(x) for x in seq_tokens)
 
         return total_this_time

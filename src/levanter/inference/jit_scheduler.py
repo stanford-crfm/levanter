@@ -115,6 +115,35 @@ class DecodeState(eqx.Module):
     # Token queue for pending decode work
     tqueue: "TokenQueue"
 
+    # Cached finished flags per sequence (updated when tokens are enqueued)
+    finished: ht.bool_[NamedArray, "seq"]
+
+    @eqx.filter_jit(donate="all")
+    def invalidate_finished(self) -> "DecodeState":
+        """Invalidate metadata for sequences marked finished by ``finished_mask``.
+
+        - Sets ``seq_id`` and ``seq_lens`` to INVALID for finished slots
+        - Resets ``prefix_len`` to 0 and ``clone_sources`` to INVALID
+        - Clears ``kv_pages`` rows for finished slots to INVALID
+        """
+        mask = self.finished
+        new_seq_id = hax.where(mask, INVALID, self.seq_id)
+        new_seq_lens = hax.where(mask, INVALID, self.seq_lens)
+        new_prefix_len = hax.where(mask, 0, self.prefix_len)
+        new_clone_sources = hax.where(mask, INVALID, self.clone_sources)
+        new_kv_pages = hax.where(mask, INVALID, self.kv_pages)
+        finished = hax.zeros_like(self.finished)  # reset finished flags
+
+        return dataclasses.replace(
+            self,
+            seq_id=new_seq_id,
+            seq_lens=new_seq_lens,
+            prefix_len=new_prefix_len,
+            clone_sources=new_clone_sources,
+            kv_pages=new_kv_pages,
+            finished=finished,
+        )
+
     def prng_key_for(self, seq_id: int, pos_id: int) -> jaxtyping.PRNGKeyArray:
         """
         Get the PRNG key for the given sequence ID and position.
@@ -243,6 +272,7 @@ class DecodeState(eqx.Module):
             ),
             seq_lens=self.seq_lens.at["seq", local_seq_id].set(prefix_len),
             prefix_len=self.prefix_len.at["seq", local_seq_id].set(prefix_len),
+            finished=self.finished.at["seq", local_seq_id].set(False),
         )
 
         if seq_params is not None:
@@ -292,6 +322,7 @@ class DecodeState(eqx.Module):
         tokens = self.tokens
         logprobs = self.logprobs
         counts = self.seq_lens
+        fins = self.finished
 
         # We'll also compute per-token absolute position ids to feed into the TokenQueue.
         pos_ids = hax.full_like(new_tokens, INVALID)
@@ -300,27 +331,41 @@ class DecodeState(eqx.Module):
             sid = local_seq_ids["position", i].scalar()
 
             def update(state):
-                tkns, lps, cnts, pids = state
+                tkns, lps, cnts, pids, f = state
                 pos = cnts["seq", sid].scalar()
                 tkns = tkns.at["seq", sid, "position", pos].set(new_tokens["position", i])
                 if lps is not None:
                     lps = lps.at["seq", sid, "position", pos].set(new_log_probs["position", i])
                 cnts = cnts.at["seq", sid].add(1)
+                # completion checks
+                max_allowed = self.max_num_tokens["seq", sid].scalar()
+                len_done = (pos + 1) >= max_allowed
+                stop_done = False
+                if self.stop_tokens is not None:
+                    stop_len = self.stop_tokens.axis_size("position")
+                    row = tkns["seq", sid].array
+                    padded = jnp.concatenate([jnp.full((stop_len,), INVALID, dtype=jnp.int32), row])
+                    tail = jax.lax.dynamic_slice(padded, (pos + 1,), (stop_len,))
+                    stop_done = is_stop_signal(hax.named(tail, axis=("position",)), self.stop_tokens["seq", sid]).array
+                f = f.at["seq", sid].set(len_done | stop_done)
+
                 # record position id for this token in the outgoing queue payload
                 # pos here is the absolute position of this token in the sequence buffer
                 pids = pids.at["position", i].set(pos)
-                return tkns, lps, cnts, pids
+                return tkns, lps, cnts, pids, f
 
             return jax.lax.cond(is_valid(sid), update, lambda s: s, state)
 
-        tokens, logprobs, counts, pos_ids = jax.lax.fori_loop(
-            0, num_new_tokens, body, (tokens, logprobs, counts, pos_ids)
+        tokens, logprobs, counts, pos_ids, fins = jax.lax.fori_loop(
+            0, num_new_tokens, body, (tokens, logprobs, counts, pos_ids, fins)
         )
 
         # Enqueue tokens and their corresponding position ids into the queue
         new_tqueue = self.tqueue.enqueue_tokens(new_tokens, local_seq_ids, pos_ids, num_new_tokens)
 
-        return dataclasses.replace(self, tokens=tokens, logprobs=logprobs, seq_lens=counts, tqueue=new_tqueue)
+        return dataclasses.replace(
+            self, tokens=tokens, logprobs=logprobs, seq_lens=counts, tqueue=new_tqueue, finished=fins
+        )
 
     def is_finished(self, seq_id: jnp.ndarray) -> jnp.ndarray:
         """
@@ -332,38 +377,9 @@ class DecodeState(eqx.Module):
         Returns jnp.ndarray with the same shape as seq_id, where each entry is True if the sequence is finished.
         """
 
-        # if it's a scalar, we need to make it a vector for the vmap to work properly
         if seq_id.ndim == 0:
             seq_id = jnp.expand_dims(seq_id, axis=0)
-
-        def body(i):
-            sid = seq_id[i]
-
-            done = (
-                (self.seq_lens["seq", sid] != INVALID) & (self.seq_lens["seq", sid] >= self.max_num_tokens["seq", sid])
-            ).scalar()
-
-            if self.stop_tokens is not None:
-                stop_len = self.stop_tokens.axis_size("position")
-                num = self.seq_lens["seq", sid].scalar()
-                tokens_row = self.tokens["seq", sid].array
-                padded_tokens = jnp.concatenate(
-                    [
-                        jnp.full((stop_len,), INVALID, dtype=jnp.int32),
-                        tokens_row,
-                    ]
-                )
-                tail = jax.lax.dynamic_slice(padded_tokens, (num,), (stop_len,))
-                stop = is_stop_signal(
-                    hax.named(tail, axis=("position",)),
-                    self.stop_tokens["seq", sid],
-                ).array
-                done |= stop
-
-            # If the sequence ID is INVALID, we consider it not finished.
-            return done & (self.seq_id["seq", sid] != INVALID).scalar()
-
-        return jax.vmap(body)(seq_id)
+        return self.finished.array[seq_id]
 
     def debug_print(self):
         jax.debug.print(
@@ -382,7 +398,7 @@ max_num_tokens: {max_num_tokens}
             seq_id=self.seq_id,
             num_tokens=self.seq_lens,
             prefix_len=self.prefix_len,
-            finished=self.is_finished(jnp.arange(self.max_seqs, dtype=jnp.int32)),
+            finished=self.finished,
             tokens=self.tokens,
             stop_tokens=self.stop_tokens,
             kv_pages=self.kv_pages,
@@ -426,6 +442,7 @@ max_num_tokens: {max_num_tokens}
             temperature=hax.ones({"seq": max_seqs}, dtype=jnp.float32),
             prng_keys=jax.vmap(jax.random.PRNGKey, axis_size=max_seqs, in_axes=None)(0),
             tqueue=TokenQueue.init(max_queued_tokens) if max_queued_tokens > 0 else TokenQueue.init(0),
+            finished=hax.zeros({"seq": max_seqs}, dtype=bool),
         )
 
 

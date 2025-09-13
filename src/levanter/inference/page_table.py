@@ -251,6 +251,49 @@ class PageTable(eqx.Module):
             seq_lens=new_seq_lens,
         )
 
+    @eqx.filter_jit(donate="all")
+    def free_pages_for_finished(self, finished_mask: jnp.ndarray) -> "PageTable":
+        """Free pages and clear metadata for all sequences where ``finished_mask[seq]`` is True.
+
+        Processes all sequences in a single JAX program to avoid per-sequence dispatch overhead.
+        """
+        assert finished_mask.ndim == 1
+
+        def dec_refcounts_for_seq(pages_row, ref_counts):
+            is_valid_page = is_valid(pages_row)
+
+            def body(i, rc):
+                def dec(rc):
+                    page = pages_row["page", i].scalar()
+                    return rc.at["page", page].add(-1)
+
+                return jax.lax.cond(is_valid_page["page", i].scalar(), dec, lambda x: x, rc)
+
+            return jax.lax.fori_loop(0, pages_row.axis_size("page"), body, ref_counts)
+
+        def body(i, state):
+            rc, indices, seq_lens = state
+
+            def do(rc_ind):
+                rc, indices, seq_lens = rc_ind
+                pages_row = indices["seq", i]
+                rc = dec_refcounts_for_seq(pages_row, rc)
+                rc = hax.maximum(rc, hax.zeros_like(rc))
+                indices = indices.at["seq", i].set(INVALID)
+                seq_lens = seq_lens.at["seq", i].set(INVALID)
+                return rc, indices, seq_lens
+
+            return jax.lax.cond(finished_mask[i], do, lambda x: x, (rc, indices, seq_lens))
+
+        rc, indices, seq_lens = jax.lax.fori_loop(
+            0,
+            self.max_seqs,
+            body,
+            (self.page_ref_counts, self.page_indices, self.seq_lens),
+        )
+
+        return dataclasses.replace(self, page_ref_counts=rc, page_indices=indices, seq_lens=seq_lens)
+
     # (pos id computation moved to call sites; no longer part of PageBatchInfo)
 
     # ------------------------------------------------------------------
