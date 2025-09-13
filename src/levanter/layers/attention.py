@@ -17,6 +17,7 @@ import jax
 import jax.random as jrandom
 from jax import numpy as jnp
 
+from ..inference.utils import is_valid
 
 try:
     from jax.experimental.pallas.ops.tpu.ragged_paged_attention import (
@@ -1722,7 +1723,6 @@ def ragged_paged_attention(
     """
 
     def _tpu_rpa_available() -> bool:
-        return False
         if tpu_ragged_paged_attention is None:
             return False
         if jax.default_backend() != "tpu":
@@ -1781,6 +1781,11 @@ def _do_tpu_ragged_paged_attention(
         this_num_seqs = num_seqs.reshape((1,))
     else:
         this_num_seqs = num_seqs
+
+    # see if the INVALIDs make the TPU sad. mask them with 0:
+    this_num_seqs = jnp.where(this_num_seqs < 0, 0, this_num_seqs)
+    page_indices = hax.where(~is_valid(page_indices), 0, page_indices)
+    kv_lens = hax.where(~is_valid(kv_lens), 0, kv_lens)
 
     o = shard_map(
         functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale),
