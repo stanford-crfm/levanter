@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Example inference worker that demonstrates how to embed the InferenceServer
-in a larger application with automatic checkpoint monitoring and model reloading.
+Example inference worker that demonstrates how to embed an InferenceServer
+in the context of a larger application.
 
-This worker runs an inference server and periodically checks for new checkpoints,
-automatically reloading the model when new ones are found.
+This worker simply monitors for new checkpoints in a specified directory
+and reloads the model when a new checkpoint is found.
 
 Usage:
-    python examples/inference_worker.py --checkpoint_path /path/to/checkpoints \
+    uv run src/levanter/main/inference_worker.py --checkpoint_path /path/to/checkpoints \
         --hf_checkpoint timinar/baby-llama-58m --tokenizer timinar/baby-llama-58m
 """
 
@@ -34,11 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 class InferenceWorker:
-    """Example worker class that demonstrates embedding InferenceServer in a larger application.
-
-    This worker runs the inference server and periodically checks for new checkpoints,
-    reloading the model when new ones are found.
-    """
+    """Example worker class that demonstrates embedding InferenceServer in a larger application."""
 
     def __init__(self, config: SampleLmConfig, checkpoint_path: str, check_interval: int = 60):
         """Initialize the inference worker.
@@ -56,17 +52,11 @@ class InferenceWorker:
         self.shutdown_event = threading.Event()
 
     async def run(self):
-        """Run the inference worker with checkpoint monitoring."""
         logger.info("Starting InferenceWorker...")
 
         try:
-            # Start the server in a background task
             server_task = asyncio.create_task(self.server.serve_async(host="0.0.0.0", port=8000))
-
-            # Start checkpoint monitoring if a directory is provided
             monitor_task = asyncio.create_task(self._checkpoint_monitor_loop())
-
-            # Wait for either task to complete
             await asyncio.gather(server_task, monitor_task)
         except asyncio.CancelledError:
             logger.info("InferenceWorker shutting down...")
@@ -100,18 +90,13 @@ class InferenceWorker:
         checkpoint_paths = []
         for path in self.checkpoint_path.iterdir():
             if path.is_dir() and path.name.startswith("checkpoint-"):
-                try:
-                    step = int(path.name.split("-")[1])
-                    checkpoint_paths.append((step, str(path)))
-                except (ValueError, IndexError):
-                    continue
+                step = path.name.split("-")[-1]
+                checkpoint_paths.append((step, str(path)))
 
         if not checkpoint_paths:
             return None
 
-        # Return the checkpoint with the highest step number
-        checkpoint_paths.sort(key=lambda x: x[0])
-        return checkpoint_paths[-1][1]
+        return max(checkpoint_paths, key=lambda x: int(x[0]))[1]
 
     async def _reload_checkpoint(self, checkpoint_path: str):
         """Reload the model from a checkpoint."""

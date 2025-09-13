@@ -1,11 +1,12 @@
 # Copyright 2025 The Levanter Authors
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from levanter.compat.hf_checkpoints import RepoRef
 from levanter.models.llama import LlamaConfig
@@ -15,11 +16,11 @@ from levanter.trainer import TrainerConfig
 try:
     from fastapi.testclient import TestClient
 
+    from levanter.main.inference_worker import InferenceWorker
     from levanter.main.sample_lm import (
         InferenceServer,
         SampleLmConfig,
     )
-    from levanter.main.inference_worker import InferenceWorker
 
 except ImportError:
     pytest.skip("Serving imports not installed, use --extra=serve", allow_module_level=True)
@@ -290,7 +291,7 @@ def test_inference_worker_checkpoint_monitoring():
         print("InferenceWorker checkpoint monitoring test passed!")
 
 
-def test_inference_worker_initialization():
+def test_inference_worker():
     """Test that InferenceWorker initializes correctly with different configurations."""
     config = SampleLmConfig(
         hf_checkpoint=RepoRef("timinar/baby-llama-58m"),
