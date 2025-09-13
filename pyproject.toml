@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "levanter"
-version = "1.2"
+version = "1.2.1"
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -74,6 +74,10 @@ torch_test = [
   "torch>=2.7.0",
   "peft>=0.12.0",
 ]
+serve = [
+  "fastapi>=0.100.0",
+  "uvicorn[standard]>=0.23.0",
+]
 
 [dependency-groups]
 test = [
@@ -84,6 +88,7 @@ test = [
   "librosa",
   "tensorboardX>=2.6",
   "chex>=0.1.86",
+  "httpx>=0.28.1",
 ]
 
 docs = [

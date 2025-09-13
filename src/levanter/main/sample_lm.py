@@ -1,23 +1,31 @@
 # Copyright 2025 The Levanter Authors
 # SPDX-License-Identifier: Apache-2.0
+import asyncio
+import collections
+import collections.abc
 import logging
+import queue
+import threading
 import time
+import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional, Union
 
 import equinox as eqx
 import haliax as hax
 import jax.numpy as jnp
 import jax.random as jrandom
+import uvicorn
+from fastapi import FastAPI, HTTPException
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
+from pydantic import BaseModel
 
 import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
-from levanter.inference.service import GenerationService, GenerationServiceConfig, Request
 from levanter.inference.jit_scheduler import SeqDecodingParams
-from levanter.inference.utils import INVALID
+from levanter.inference.service import GenerationService, GenerationServiceConfig, Request
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
@@ -26,9 +34,71 @@ from levanter.utils.jax_utils import use_cpu_device
 logger = logging.getLogger(__name__)
 
 
+# Pydantic models for OpenAI API service
+class CompletionRequest(BaseModel):
+    model: str
+    prompt: Union[str, List[str]]
+    max_tokens: int = 16
+    temperature: float = 1.0
+    stop: Optional[Union[List[str], str]] = None
+    n: int = 1
+    seed: Optional[int] = None
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessage]
+    max_tokens: int = 16
+    temperature: float = 1.0
+    stop: Optional[Union[List[str], str]] = None
+    n: int = 1
+    seed: Optional[int] = None
+
+
+class CompletionChoice(BaseModel):
+    text: str
+    index: int
+    finish_reason: str = "stop"
+
+
+class ChatChoice(BaseModel):
+    index: int
+    message: ChatMessage
+    finish_reason: str = "stop"
+
+
+class Usage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class CompletionResponse(BaseModel):
+    id: str
+    object: str = "text_completion"
+    created: int
+    model: str
+    choices: List[CompletionChoice]
+    usage: Usage
+
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[ChatChoice]
+    usage: Usage
+
+
 @dataclass
 class SampleLmConfig:
-    """Configuration for simple text sampling."""
+    """Configuration for inference service."""
 
     checkpoint_path: Optional[str] = None
     hf_checkpoint: Optional[RepoRef] = None
@@ -41,18 +111,497 @@ class SampleLmConfig:
     # Inference service/memory layout configuration
     service: GenerationServiceConfig = field(default_factory=GenerationServiceConfig)
 
-    prompts: list[str] | str | tuple[str, ...] = (
-        "Four score and seven years ago, our",
-        # "On the first day of Christmas, my true love gave to me",
-        "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
-    )
-    stop_sequence: str | None = "."
-    "Stop sequences. Currently only does whole token sequences."
-    max_new_tokens: int = 192
+    # Default generation parameters
+    max_new_tokens: int = 16
     temperature: float = 0.7
-    seed: int = 2
+    seed: int = 42
 
-    n_generations: int = 1
+
+class InferenceRequest:
+    """Internal request structure for the inference thread"""
+
+    def __init__(
+        self,
+        request_id: str,
+        prompt_tokens: List[int],
+        max_tokens: int,
+        temperature: float,
+        stop_tokens: Optional[List[int]],
+        seed: int,
+        future: asyncio.Future,
+        n_generations: int = 1,
+        original_prompt: str = "",
+    ):
+        self.request_id = request_id
+        self.prompt_tokens = prompt_tokens
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.stop_tokens = stop_tokens
+        self.seed = seed
+        self.future = future
+        self.n_generations = n_generations
+        self.original_prompt = original_prompt
+
+
+# A callback which replaces the current model.
+WeightSource = collections.abc.Callable[[LmHeadModel], LmHeadModel]
+
+
+class InferenceContext:
+    """Background thread that manages the GenerationService and processes requests"""
+
+    def __init__(self, model: LmHeadModel, tokenizer, service: GenerationService, config):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.service = service
+        self.config = config
+        self.request_queue: queue.Queue[InferenceRequest] = queue.Queue()
+        self.shutdown_event = threading.Event()
+        self.model_lock = threading.Lock()
+        self.thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self._next_request_id = 0
+
+    def start(self):
+        """Start the inference thread"""
+        self.thread.start()
+
+    def shutdown(self):
+        """Signal shutdown and wait for thread to finish"""
+        self.shutdown_event.set()
+        self.thread.join(timeout=10)
+
+    def reload(self, weight_callback: WeightSource):
+        """Reload the inference model using the given weight callback.
+
+        If new weights are found, new requests are paused, existing requests are
+        allowed to complete, and the new weights are loaded.
+        """
+        logger.info("New weights available, waiting for model lock...")
+        lock_start_time = time.time()
+        with self.model_lock:
+            lock_wait_time = time.time() - lock_start_time
+            logger.info(f"Acquired model lock after {lock_wait_time}, reloading weights...")
+
+            start = time.time()
+            self.model = weight_callback(self.model)
+            elapsed = time.time() - start
+            logger.info(f"Model reloaded in {elapsed:.2f}s")
+
+    def submit_request(
+        self,
+        prompt_tokens: List[int],
+        max_tokens: int,
+        temperature: float,
+        stop_tokens: Optional[List[int]],
+        seed: int,
+        future: asyncio.Future,
+        n_generations: int = 1,
+        original_prompt: str = "",
+    ) -> str:
+        """Submit a request to the inference queue"""
+        request_id = f"req_{self._next_request_id}"
+        self._next_request_id += 1
+
+        request = InferenceRequest(
+            request_id=request_id,
+            prompt_tokens=prompt_tokens,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop_tokens=stop_tokens,
+            seed=seed,
+            future=future,
+            n_generations=n_generations,
+            original_prompt=original_prompt,
+        )
+
+        self.request_queue.put(request)
+        return request_id
+
+    def _inference_loop(self):
+        """Main inference loop running in background thread"""
+        logger.info("Inference thread started")
+
+        while not self.shutdown_event.is_set():
+            try:
+                # Enqueue a batch of requests. Wait up to 0.1s to batch requests together.
+                requests = []
+                try:
+                    req = self.request_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+
+                requests.append(req)
+                deadline = time.time() + 0.1
+                while time.time() < deadline and len(requests) < self.config.service.max_seqs:
+                    try:
+                        requests.append(self.request_queue.get(timeout=deadline - time.time()))
+                    except queue.Empty:
+                        break
+
+                with self.model_lock:
+                    self._process_batch(requests)
+            except Exception as e:
+                logger.error(f"Error in inference loop: {e}", exc_info=True)
+
+        logger.info("Inference thread shutting down")
+
+    def _process_batch(self, requests: List[InferenceRequest]):
+        """Process a batch of inference requests"""
+        try:
+            # Convert to GenerationService requests
+            service_requests = []
+
+            for i, req in enumerate(requests):
+                # Create stop tokens if specified
+                stop_ids = None
+                if req.stop_tokens:
+                    stop_ids = hax.named(
+                        jnp.asarray(req.stop_tokens, dtype=jnp.int32), axis="position"
+                    ).broadcast_axis({"stop_seq": 1})
+
+                seq_params = SeqDecodingParams(
+                    max_num_tokens=jnp.array(len(req.prompt_tokens) + req.max_tokens, dtype=jnp.int32),
+                    stop_tokens=stop_ids,
+                    temperature=jnp.array(req.temperature, dtype=jnp.float32),
+                    key=jrandom.PRNGKey(req.seed if req.seed is not None else i),
+                )
+
+                service_req = Request(
+                    prompt_tokens=req.prompt_tokens,
+                    request_id=i,  # Use batch index as service request id
+                    decode_params=seq_params,
+                    n_generations=req.n_generations,
+                )
+                service_requests.append(service_req)
+
+            # Generate responses
+            logger.info(f"Processing batch of {len(requests)} requests")
+            start_time = time.time()
+            outputs, total_generated = self.service.generate(service_requests)
+            duration = time.time() - start_time
+            logger.info(f"Batch completed in {duration:.2f}s, generated {total_generated} tokens")
+
+            # Return results to futures
+            output_idx = 0
+            for req in requests:
+                try:
+                    req_outputs = []
+                    for _ in range(req.n_generations):
+                        if output_idx < len(outputs):
+                            # Decode tokens to text, excluding prompt
+                            prompt_len = len(req.prompt_tokens)
+                            generated_tokens = outputs[output_idx][prompt_len:]
+                            text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                            req_outputs.append(
+                                {
+                                    "text": text,
+                                    "tokens": generated_tokens,
+                                    "prompt_tokens": prompt_len,
+                                    "completion_tokens": len(generated_tokens),
+                                }
+                            )
+                            output_idx += 1
+                        else:
+                            logger.error(f"Missing output for request {req.request_id}")
+                            req_outputs.append(
+                                {
+                                    "text": "",
+                                    "tokens": [],
+                                    "prompt_tokens": 0,
+                                    "completion_tokens": 0,
+                                }
+                            )
+
+                    # Set the future result
+                    req.future.get_loop().call_soon_threadsafe(req.future.set_result, req_outputs)
+                except Exception as e:
+                    logger.error(f"Error processing result for {req.request_id}: {e}")
+                    req.future.get_loop().call_soon_threadsafe(req.future.set_exception, e)
+
+        except Exception as e:
+            logger.error(f"Error processing batch: {e}", exc_info=True)
+            # Set exceptions on all futures
+            for req in requests:
+                try:
+                    req.future.get_loop().call_soon_threadsafe(req.future.set_exception, e)
+                except Exception:
+                    pass
+
+
+def _health_check() -> dict:
+    """Health check endpoint."""
+    return {"status": "healthy", "service": "levanter-inference"}
+
+
+async def _create_completion(ctx: InferenceContext, request: CompletionRequest) -> CompletionResponse:
+    """Create a text completion using OpenAI API format."""
+    try:
+        # Handle both string and list prompts
+        if isinstance(request.prompt, str):
+            prompts = [request.prompt]
+        else:
+            prompts = request.prompt
+
+        # Process stop sequences
+        stop_tokens = None
+        if request.stop:
+            if isinstance(request.stop, str):
+                stop_list = [request.stop]
+            else:
+                stop_list = request.stop
+
+            # Tokenize stop sequences
+            stop_tokens = []
+            for stop in stop_list:
+                stop_ids = ctx.tokenizer(stop, add_special_tokens=False)["input_ids"]
+                if stop_ids:
+                    stop_tokens.extend(stop_ids)
+
+        # Create futures for all prompts
+        futures = []
+        choices = []
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        for i, prompt in enumerate(prompts):
+            # Tokenize prompt
+            prompt_tokens = ctx.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+            total_prompt_tokens += len(prompt_tokens)
+
+            # Create future for this request
+            future: asyncio.Future = asyncio.Future()
+            futures.append(future)
+
+            # Submit to inference thread
+            ctx.submit_request(
+                prompt_tokens=prompt_tokens,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                stop_tokens=stop_tokens,
+                seed=request.seed if request.seed is not None else 42,
+                future=future,
+                n_generations=request.n,
+                original_prompt=prompt,
+            )
+
+        # Wait for all results
+        results = await asyncio.gather(*futures)
+
+        # Format responses
+        choice_idx = 0
+        for prompt_idx, result in enumerate(results):
+            for generation in result:
+                choices.append(CompletionChoice(text=generation["text"], index=choice_idx, finish_reason="stop"))
+                total_completion_tokens += generation["completion_tokens"]
+                choice_idx += 1
+
+        return CompletionResponse(
+            id=f"cmpl-{uuid.uuid4().hex[:8]}",
+            created=int(time.time()),
+            model=request.model,
+            choices=choices,
+            usage=Usage(
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                total_tokens=total_prompt_tokens + total_completion_tokens,
+            ),
+        )
+
+    except Exception as e:
+        logger.error(f"Error in completion: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _create_chat_completion(ctx: InferenceContext, request: ChatCompletionRequest) -> ChatCompletionResponse:
+    """Create a chat completion using OpenAI API format."""
+    try:
+        # Convert messages to prompt using tokenizer's chat template
+        messages = [msg.dict() for msg in request.messages]
+
+        # Apply chat template
+        try:
+            prompt_tokens = ctx.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+        except Exception as e:
+            # Fallback: simple concatenation if template fails
+            logger.warning(f"Chat template failed, using fallback: {e}")
+            prompt_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
+            prompt_tokens = ctx.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+
+        # Process stop sequences
+        stop_tokens = None
+        if request.stop:
+            if isinstance(request.stop, str):
+                stop_list = [request.stop]
+            else:
+                stop_list = request.stop
+
+            stop_tokens = []
+            for stop in stop_list:
+                stop_ids = ctx.tokenizer(stop, add_special_tokens=False)["input_ids"]
+                if stop_ids:
+                    stop_tokens.extend(stop_ids)
+
+        # Create future and submit request
+        future: asyncio.Future = asyncio.Future()
+        ctx.submit_request(
+            prompt_tokens=prompt_tokens,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            stop_tokens=stop_tokens,
+            seed=request.seed if request.seed is not None else 42,
+            future=future,
+            n_generations=request.n,
+        )
+
+        # Wait for result
+        results = await future
+
+        # Format response
+        choices = []
+        total_completion_tokens = 0
+
+        for i, generation in enumerate(results):
+            choices.append(
+                ChatChoice(
+                    index=i,
+                    message=ChatMessage(role="assistant", content=generation["text"]),
+                    finish_reason="stop",
+                )
+            )
+            total_completion_tokens += generation["completion_tokens"]
+
+        return ChatCompletionResponse(
+            id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            created=int(time.time()),
+            model=request.model,
+            choices=choices,
+            usage=Usage(
+                prompt_tokens=len(prompt_tokens),
+                completion_tokens=total_completion_tokens,
+                total_tokens=len(prompt_tokens) + total_completion_tokens,
+            ),
+        )
+
+    except Exception as e:
+        logger.error(f"Error in chat completion: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class InferenceServer:
+    """Wraps a FastAPI server around the inference context.
+
+    Provides OpenAI compatible endpoints for text and chat completions.
+    """
+
+    def __init__(self, config: SampleLmConfig, inference_context: InferenceContext, app: FastAPI):
+        """Initialize the inference server with pre-built components.
+
+        Use InferenceServer.create() to build a new server instance.
+        """
+        self.config = config
+        self.inference_context = inference_context
+        self.app = app
+
+    @staticmethod
+    def create(config: SampleLmConfig) -> "InferenceServer":
+        """Create and initialize a new InferenceServer.
+
+        This factory method loads the model, tokenizer, and creates all necessary
+        components for the inference server.
+        """
+        tokenizer_path: str | None = config.tokenizer
+        if config.tokenizer is None:
+            if config.hf_checkpoint is not None:
+                tokenizer_path = config.hf_checkpoint.model_name_or_path
+
+        if tokenizer_path is None:
+            raise ValueError("Must specify a tokenizer or an HF checkpoint with a tokenizer")
+
+        tokenizer = load_tokenizer(tokenizer_path)
+        key = jrandom.PRNGKey(config.seed)
+        vocab_size = len(tokenizer)
+
+        with (
+            config.trainer.device_mesh,
+            hax.axis_mapping(config.trainer.compute_axis_mapping),
+        ):
+            Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), config.trainer.compute_axis_mapping)
+            model = _load_model(config, Vocab, key=key)
+            assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
+
+            service = GenerationService.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
+
+            # Create and start inference thread
+            inference_context = InferenceContext(model, tokenizer, service, config)
+            inference_context.start()
+
+            logger.info("Inference service initialized and ready")
+
+            # Create FastAPI app with initialized context
+            app = InferenceServer._create_app(inference_context)
+
+            return InferenceServer(config, inference_context, app)
+
+    @staticmethod
+    def _create_app(inference_context: InferenceContext) -> FastAPI:
+        """Create and configure the FastAPI application."""
+        app = FastAPI(title="Levanter Inference Service", version="1.0.0")
+
+        # Register routes with thin wrappers that call helper functions
+        @app.get("/health")
+        async def health_check():
+            return _health_check()
+
+        @app.post("/v1/completions", response_model=CompletionResponse)
+        async def create_completion(request: CompletionRequest) -> CompletionResponse:
+            return await _create_completion(inference_context, request)
+
+        @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+        async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse:
+            return await _create_chat_completion(inference_context, request)
+
+        return app
+
+    def reload(self, weight_callback: WeightSource):
+        """Reload the model weights using the provided callback.
+
+        Args:
+            weight_callback: Function that takes the current model and returns new model
+        """
+        self.inference_context.reload(weight_callback)
+
+    def serve(self, host: str, port: int):
+        """Start the inference server (blocking).
+
+        Args:
+            host: Host to bind to
+            port: Port to bind to
+        """
+
+        try:
+            logger.info(f"Starting Levanter inference server on {host}:{port}")
+            uvicorn.run(self.app, host=host, port=port)
+        finally:
+            self.shutdown()
+
+    async def serve_async(self, host: str, port: int):
+        """Start the inference server asynchronously (non-blocking).
+
+        Args:
+            host: Host to bind to
+            port: Port to bind to
+        """
+        try:
+            logger.info(f"Starting Levanter inference server on {host}:{port}")
+            config = uvicorn.Config(self.app, host=host, port=port)
+            server = uvicorn.Server(config)
+            await server.serve()
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        """Shutdown the inference context."""
+        self.inference_context.shutdown()
 
 
 def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
@@ -84,90 +633,9 @@ def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
 
 
 def main(config: SampleLmConfig):
-    levanter.initialize(config)
-    tok_string: str | None = config.tokenizer
-    if config.tokenizer is None:
-        if config.hf_checkpoint is not None:
-            # If we have an HF checkpoint, we can load the tokenizer from it
-            tok_string = config.hf_checkpoint.model_name_or_path
-
-    if tok_string is None:
-        raise ValueError("Must specify a tokenizer or an HF checkpoint with a tokenizer")
-
-    tokenizer = load_tokenizer(config.tokenizer)
-
-    key = jrandom.PRNGKey(config.seed)
-
-    # NB: we use the compute_axis_mapping b/c we're doing inference
-    with config.trainer.device_mesh, hax.axis_mapping(config.trainer.compute_axis_mapping):
-        vocab_size = len(tokenizer)
-        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), config.trainer.compute_axis_mapping)
-        model = _load_model(config, Vocab, key=key)
-        assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
-
-        prompts = config.prompts
-
-        if isinstance(prompts, str):
-            prompts = [prompts]
-
-        prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
-
-        # Initialize a reusable generation service with capacity from config
-        service = GenerationService.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
-
-        # -------------------------------- Scheduler-based generation --------------------------------
-
-        stop_sequence = config.stop_sequence
-        if stop_sequence is not None:
-            stop_ids_list = tokenizer(stop_sequence, add_special_tokens=False)["input_ids"]
-            if len(stop_ids_list) == 0:
-                raise ValueError("Stop sequence must be non-empty")
-            stop_ids = hax.named(jnp.asarray(stop_ids_list, dtype=jnp.int32), axis="position").broadcast_axis(
-                {"stop_seq": 1}
-            )
-        else:
-            stop_ids = None
-
-        for R in range(10):
-            for i, toks in enumerate(prompt_ids):
-                print(f"Prompt {i}: {toks}")
-
-            time_in = time.time()
-            # Build Requests for this batch
-            base_key = jrandom.PRNGKey(config.service.seed)
-            reqs: list[Request] = []
-            for ridx, toks in enumerate(prompt_ids):
-                seq_params = SeqDecodingParams(
-                    max_num_tokens=jnp.array(len(toks) + config.max_new_tokens, dtype=jnp.int32),
-                    stop_tokens=stop_ids,
-                    temperature=jnp.array(config.temperature, dtype=jnp.float32),
-                    key=jrandom.fold_in(base_key, ridx),
-                )
-                reqs.append(
-                    Request(
-                        prompt_tokens=list(map(int, toks)),
-                        request_id=ridx,  # not used for indexing in this API
-                        decode_params=seq_params,
-                        n_generations=config.n_generations,
-                    )
-                )
-
-            outputs, total_generated = service.generate(reqs)
-            print(
-                f"Round {R} took {time.time() - time_in:.2f} seconds, "
-                f"generated {total_generated} tokens in {len(outputs)} sequences."
-            )
-
-            # Decode and print outputs
-            for seq_id, seq_outputs in enumerate(outputs):
-                seq_outputs = [tok for tok in seq_outputs if tok != tokenizer.pad_token_id and tok != INVALID]
-                text = tokenizer.decode(seq_outputs, skip_special_tokens=True)
-                print(f"Tokens for sequence {seq_id} (len: {len(seq_outputs)}: {seq_outputs}")
-                print(f"Generated text for {seq_id}: {text}")
-                tokens_with_text = [
-                    f"{tok} ({tokenizer.decode([tok], skip_special_tokens=True)})" for tok in seq_outputs
-                ]
-                print(f"Tokens with text for sequence {seq_id}: {tokens_with_text}")
+    """Start the FastAPI inference server"""
+    server = InferenceServer.create(config)
+    server.serve(host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":

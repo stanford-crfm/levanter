@@ -4,24 +4,23 @@
 import dataclasses
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
-from collections import deque
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
-
 import haliax as hax
 import haliax.haxtyping as ht
+import jax
+import jax.numpy as jnp
 from haliax import Axis, NamedArray
 
+from levanter.inference.jit_scheduler import DecodeState, SeqDecodingParams, TokenQueue
 from levanter.inference.page_table import PageTable
 from levanter.inference.utils import INVALID, is_valid
 from levanter.layers.attention import KvPageCache
 from levanter.layers.sampler import Sampler
 from levanter.models.lm_model import LmHeadModel
-from levanter.inference.jit_scheduler import DecodeState, SeqDecodingParams, TokenQueue
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ class GenerationServiceConfig:
 
     max_pages: Optional[int] = None
     """Total number of KV pages available. If None, computed as ``max_seqs * max_pages_per_seq``."""
-    max_seqs: int = 16
+    max_seqs: int = 1
     """Maximum concurrent sequences (local slots)."""
     page_size: int = 128
     """Tokens per KV page."""
@@ -59,7 +58,7 @@ class GenerationServiceConfig:
     """Maximum number of sequences to batch in prefill before flushing."""
 
     # Decode loop knobs
-    max_tokens_per_round: int = 8
+    max_tokens_per_round: int = 1
     """Pack size for each decode loop iteration."""
     max_rounds: int = 8
     """Maximum number of while-loop iterations per decode call."""
@@ -815,6 +814,7 @@ class GenerationService:
         stagnant_iters = 0
         while not _all_done():
             t0 = time.time()
+            logger.debug("Starting decode iteration for %s", self.gen_state.decode_state.num_queued_tokens)
             self.gen_state = _run_generation_loop(
                 self.gen_state,
                 self.model,
@@ -823,6 +823,7 @@ class GenerationService:
                 self.config.max_rounds,
             )
             loop_time = time.time() - t0
+            logger.debug("Completed decode iteration in %.3f sec", loop_time)
             self.gen_state = jax.block_until_ready(self.gen_state)
             new_tokens = self._extract_outputs_for(outputs_for, finished_for)
             # Release any sequences that finished in this step
