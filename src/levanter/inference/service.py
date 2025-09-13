@@ -814,7 +814,7 @@ class GenerationService:
         stagnant_iters = 0
         while not _all_done():
             t0 = time.time()
-            print("Here.", t0, self.gen_state.decode_state.num_queued_tokens)
+            logger.debug("Starting decode iteration for %s", self.gen_state.decode_state.num_queued_tokens)
             self.gen_state = _run_generation_loop(
                 self.gen_state,
                 self.model,
@@ -823,7 +823,7 @@ class GenerationService:
                 self.config.max_rounds,
             )
             loop_time = time.time() - t0
-            print(loop_time)
+            logger.debug("Completed decode iteration in %.3f sec", loop_time)
             self.gen_state = jax.block_until_ready(self.gen_state)
             new_tokens = self._extract_outputs_for(outputs_for, finished_for)
             # Release any sequences that finished in this step

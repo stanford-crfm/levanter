@@ -49,7 +49,7 @@ class InferenceWorker:
             check_interval: Interval in seconds between checkpoint checks
         """
         self.config = config
-        self.checkpoint_path = Path(checkpoint_path) if checkpoint_path else None
+        self.checkpoint_path = Path(checkpoint_path)
         self.check_interval = check_interval
         self.server = InferenceServer.create(config)
         self.latest_checkpoint = None

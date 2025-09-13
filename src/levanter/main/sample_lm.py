@@ -591,8 +591,6 @@ class InferenceServer:
             host: Host to bind to
             port: Port to bind to
         """
-        import uvicorn
-
         try:
             logger.info(f"Starting Levanter inference server on {host}:{port}")
             config = uvicorn.Config(self.app, host=host, port=port)
