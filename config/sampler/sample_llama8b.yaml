@@ -1,6 +1,7 @@
 hf_checkpoint: "meta-llama/Llama-3.1-8B"
 tokenizer: "meta-llama/Llama-3.1-8B"
-#profile: true
+n_rounds: 1
+profile: true
 trainer:
   tracker:
     type: wandb

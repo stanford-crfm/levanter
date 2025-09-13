@@ -7,6 +7,11 @@ trainer:
   tensor_parallel_axes: ["mlp", "heads", "kv_head", "vocab"]
   model_axis_size: 1
 
+prompts:
+  - "Four score and seven years ago, our"
+  # - "On the first day of Christmas, my true love gave to me",
+  - "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole"
+
 service:
   max_pages: 256
   max_seqs: 16
@@ -14,4 +19,6 @@ service:
   max_pages_per_seq: 16
   max_queued_tokens: 16
   max_seqs_in_prefill: 8
-  max_prefill_size: 4096
+  max_prefill_size: 128
+  max_tokens_per_round: 64
+  max_rounds: 64
