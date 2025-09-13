@@ -1678,7 +1678,7 @@ wheels = [
 
 [[package]]
 name = "levanter"
-version = "1.2"
+version = "1.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "async-lru" },

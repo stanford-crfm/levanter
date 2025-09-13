@@ -8,7 +8,6 @@ import queue
 import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
@@ -112,10 +111,6 @@ class SampleLmConfig:
     # Inference service/memory layout configuration
     service: GenerationServiceConfig = field(default_factory=GenerationServiceConfig)
 
-    # Server configuration
-    host: str = "0.0.0.0"
-    port: int = 8000
-
     # Default generation parameters
     max_new_tokens: int = 16
     temperature: float = 0.7
@@ -150,34 +145,6 @@ class InferenceRequest:
 
 # A callback which replaces the current model.
 WeightSource = collections.abc.Callable[[LmHeadModel], LmHeadModel]
-
-
-def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
-    """Load a model either from a checkpoint or HF repo."""
-
-    if config.checkpoint_path is None and config.hf_checkpoint is None:
-        raise ValueError("Must specify either checkpoint_path or hf_checkpoint")
-    if config.checkpoint_path is not None and config.hf_checkpoint is not None:
-        raise ValueError("Specify only one of checkpoint_path or hf_checkpoint")
-
-    mp = config.trainer.mp
-
-    if config.checkpoint_path is not None:
-        with use_cpu_device():
-            model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
-            model = load_checkpoint(model, config.checkpoint_path, subpath="model")
-            model = mp.cast_to_compute(model)
-        return model
-    else:
-        assert hasattr(config.model, "hf_checkpoint_converter"), "model config lacks HF loader"
-        converter: HFCheckpointConverter = config.model.hf_checkpoint_converter()
-        converter = converter.replaced(
-            reference_checkpoint=config.hf_checkpoint, tokenizer=load_tokenizer(config.tokenizer)
-        )
-        model = converter.load_pretrained(
-            config.model.model_type, ref=config.hf_checkpoint, dtype=config.trainer.mp.compute_dtype
-        )
-        return model
 
 
 class InferenceContext:
@@ -361,73 +328,13 @@ class InferenceContext:
                     pass
 
 
-# Global inference thread instance
-inference_context: Optional[InferenceContext] = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifespan"""
-    global inference_context
-
-    # Startup
-    config = getattr(app.state, "config", None)
-    if config is None:
-        raise RuntimeError("Configuration not set. Call initialize_service() first.")
-
-    logger.info("Initializing inference service...")
-
-    tok_string: str | None = config.tokenizer
-    if config.tokenizer is None:
-        if config.hf_checkpoint is not None:
-            tok_string = config.hf_checkpoint.model_name_or_path
-
-    if tok_string is None:
-        raise ValueError("Must specify a tokenizer or an HF checkpoint with a tokenizer")
-
-    tokenizer = load_tokenizer(tok_string)
-    key = jrandom.PRNGKey(config.seed)
-
-    with config.trainer.device_mesh, hax.axis_mapping(config.trainer.compute_axis_mapping):
-        vocab_size = len(tokenizer)
-        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), config.trainer.compute_axis_mapping)
-        model = _load_model(config, Vocab, key=key)
-        assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
-
-        service = GenerationService.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
-
-        # Create and start inference thread
-        inference_context = InferenceContext(model, tokenizer, service, config)
-        inference_context.start()
-
-        logger.info("Inference service initialized and ready")
-
-    yield
-
-    # Shutdown
-    if inference_context:
-        logger.info("Shutting down inference thread...")
-        inference_context.shutdown()
-        logger.info("Inference thread shut down")
-
-
-# FastAPI app
-app = FastAPI(title="Levanter Inference Service", version="1.0.0", lifespan=lifespan)
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
+def _health_check() -> dict:
+    """Health check endpoint."""
     return {"status": "healthy", "service": "levanter-inference"}
 
 
-@app.post("/v1/completions", response_model=CompletionResponse)
-async def create_completion(request: CompletionRequest) -> CompletionResponse:
-    """Create a text completion using OpenAI API format"""
-    global inference_context
-    if not inference_context:
-        raise HTTPException(status_code=503, detail="Inference service not initialized")
-
+async def _create_completion(ctx: InferenceContext, request: CompletionRequest) -> CompletionResponse:
+    """Create a text completion using OpenAI API format."""
     try:
         # Handle both string and list prompts
         if isinstance(request.prompt, str):
@@ -446,7 +353,7 @@ async def create_completion(request: CompletionRequest) -> CompletionResponse:
             # Tokenize stop sequences
             stop_tokens = []
             for stop in stop_list:
-                stop_ids = inference_context.tokenizer(stop, add_special_tokens=False)["input_ids"]
+                stop_ids = ctx.tokenizer(stop, add_special_tokens=False)["input_ids"]
                 if stop_ids:
                     stop_tokens.extend(stop_ids)
 
@@ -458,7 +365,7 @@ async def create_completion(request: CompletionRequest) -> CompletionResponse:
 
         for i, prompt in enumerate(prompts):
             # Tokenize prompt
-            prompt_tokens = inference_context.tokenizer(prompt, add_special_tokens=False)["input_ids"]
+            prompt_tokens = ctx.tokenizer(prompt, add_special_tokens=False)["input_ids"]
             total_prompt_tokens += len(prompt_tokens)
 
             # Create future for this request
@@ -466,7 +373,7 @@ async def create_completion(request: CompletionRequest) -> CompletionResponse:
             futures.append(future)
 
             # Submit to inference thread
-            inference_context.submit_request(
+            ctx.submit_request(
                 prompt_tokens=prompt_tokens,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
@@ -505,27 +412,20 @@ async def create_completion(request: CompletionRequest) -> CompletionResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse:
-    """Create a chat completion using OpenAI API format"""
-    global inference_context
-    if not inference_context:
-        raise HTTPException(status_code=503, detail="Inference service not initialized")
-
+async def _create_chat_completion(ctx: InferenceContext, request: ChatCompletionRequest) -> ChatCompletionResponse:
+    """Create a chat completion using OpenAI API format."""
     try:
         # Convert messages to prompt using tokenizer's chat template
         messages = [msg.dict() for msg in request.messages]
 
         # Apply chat template
         try:
-            prompt_tokens = inference_context.tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True
-            )
+            prompt_tokens = ctx.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
         except Exception as e:
             # Fallback: simple concatenation if template fails
             logger.warning(f"Chat template failed, using fallback: {e}")
             prompt_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
-            prompt_tokens = inference_context.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+            prompt_tokens = ctx.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
 
         # Process stop sequences
         stop_tokens = None
@@ -537,13 +437,13 @@ async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompleti
 
             stop_tokens = []
             for stop in stop_list:
-                stop_ids = inference_context.tokenizer(stop, add_special_tokens=False)["input_ids"]
+                stop_ids = ctx.tokenizer(stop, add_special_tokens=False)["input_ids"]
                 if stop_ids:
                     stop_tokens.extend(stop_ids)
 
         # Create future and submit request
         future: asyncio.Future = asyncio.Future()
-        inference_context.submit_request(
+        ctx.submit_request(
             prompt_tokens=prompt_tokens,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
@@ -587,18 +487,157 @@ async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompleti
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def initialize_service(config: SampleLmConfig):
-    """Initialize the service with configuration"""
-    levanter.initialize(config)
-    app.state.config = config
+class InferenceServer:
+    """Wraps a FastAPI server around the inference context.
+
+    Provides OpenAI compatible endpoints for text and chat completions.
+    """
+
+    def __init__(self, config: SampleLmConfig, inference_context: InferenceContext, app: FastAPI):
+        """Initialize the inference server with pre-built components.
+
+        Use InferenceServer.create() to build a new server instance.
+        """
+        self.config = config
+        self.inference_context = inference_context
+        self.app = app
+
+    @staticmethod
+    def create(config: SampleLmConfig) -> "InferenceServer":
+        """Create and initialize a new InferenceServer.
+
+        This factory method loads the model, tokenizer, and creates all necessary
+        components for the inference server.
+        """
+        tokenizer_path: str | None = config.tokenizer
+        if config.tokenizer is None:
+            if config.hf_checkpoint is not None:
+                tokenizer_path = config.hf_checkpoint.model_name_or_path
+
+        if tokenizer_path is None:
+            raise ValueError("Must specify a tokenizer or an HF checkpoint with a tokenizer")
+
+        tokenizer = load_tokenizer(tokenizer_path)
+        key = jrandom.PRNGKey(config.seed)
+        vocab_size = len(tokenizer)
+
+        with (
+            config.trainer.device_mesh,
+            hax.axis_mapping(config.trainer.compute_axis_mapping),
+        ):
+            Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), config.trainer.compute_axis_mapping)
+            model = _load_model(config, Vocab, key=key)
+            assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
+
+            service = GenerationService.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
+
+            # Create and start inference thread
+            inference_context = InferenceContext(model, tokenizer, service, config)
+            inference_context.start()
+
+            logger.info("Inference service initialized and ready")
+
+            # Create FastAPI app with initialized context
+            app = InferenceServer._create_app(inference_context)
+
+            return InferenceServer(config, inference_context, app)
+
+    @staticmethod
+    def _create_app(inference_context: InferenceContext) -> FastAPI:
+        """Create and configure the FastAPI application."""
+        app = FastAPI(title="Levanter Inference Service", version="1.0.0")
+
+        # Register routes with thin wrappers that call helper functions
+        @app.get("/health")
+        async def health_check():
+            return _health_check()
+
+        @app.post("/v1/completions", response_model=CompletionResponse)
+        async def create_completion(request: CompletionRequest) -> CompletionResponse:
+            return await _create_completion(inference_context, request)
+
+        @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+        async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse:
+            return await _create_chat_completion(inference_context, request)
+
+        return app
+
+    def reload(self, weight_callback: WeightSource):
+        """Reload the model weights using the provided callback.
+
+        Args:
+            weight_callback: Function that takes the current model and returns new model
+        """
+        self.inference_context.reload(weight_callback)
+
+    def serve(self, host: str, port: int):
+        """Start the inference server (blocking).
+
+        Args:
+            host: Host to bind to
+            port: Port to bind to
+        """
+
+        try:
+            logger.info(f"Starting Levanter inference server on {host}:{port}")
+            uvicorn.run(self.app, host=host, port=port)
+        finally:
+            self.shutdown()
+
+    async def serve_async(self, host: str, port: int):
+        """Start the inference server asynchronously (non-blocking).
+
+        Args:
+            host: Host to bind to
+            port: Port to bind to
+        """
+        import uvicorn
+
+        try:
+            logger.info(f"Starting Levanter inference server on {host}:{port}")
+            config = uvicorn.Config(self.app, host=host, port=port)
+            server = uvicorn.Server(config)
+            await server.serve()
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        """Shutdown the inference context."""
+        self.inference_context.shutdown()
+
+
+def _load_model(config: SampleLmConfig, Vocab: Axis, *, key) -> LmHeadModel:
+    """Load a model either from a checkpoint or HF repo."""
+
+    if config.checkpoint_path is None and config.hf_checkpoint is None:
+        raise ValueError("Must specify either checkpoint_path or hf_checkpoint")
+    if config.checkpoint_path is not None and config.hf_checkpoint is not None:
+        raise ValueError("Specify only one of checkpoint_path or hf_checkpoint")
+
+    mp = config.trainer.mp
+
+    if config.checkpoint_path is not None:
+        with use_cpu_device():
+            model = eqx.filter_eval_shape(config.model.build, Vocab, key=key)
+            model = load_checkpoint(model, config.checkpoint_path, subpath="model")
+            model = mp.cast_to_compute(model)
+        return model
+    else:
+        assert hasattr(config.model, "hf_checkpoint_converter"), "model config lacks HF loader"
+        converter: HFCheckpointConverter = config.model.hf_checkpoint_converter()
+        converter = converter.replaced(
+            reference_checkpoint=config.hf_checkpoint, tokenizer=load_tokenizer(config.tokenizer)
+        )
+        model = converter.load_pretrained(
+            config.model.model_type, ref=config.hf_checkpoint, dtype=config.trainer.mp.compute_dtype
+        )
+        return model
 
 
 def main(config: SampleLmConfig):
     """Start the FastAPI inference server"""
-    initialize_service(config)
-
-    logger.info(f"Starting Levanter inference server on {config.host}:{config.port}")
-    uvicorn.run(app, host=config.host, port=config.port)
+    server = InferenceServer.create(config)
+    server.serve(host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":

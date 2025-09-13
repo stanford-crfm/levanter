@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "levanter"
-version = "1.2"
+version = "1.2.1"
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
 requires-python = ">=3.10"
