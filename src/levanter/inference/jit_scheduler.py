@@ -70,8 +70,6 @@ class DecodeState(eqx.Module):
     currently being decoded are stored in this buffer.)
     * `tokens` is a buffer of tokens for each sequence. It includes any prompt/prefix.
     * `seq_lens` is a buffer of sequence lengths for each sequence. This is the number of tokens in the `tokens` buffer that have been generated so far.
-    * `prefix_len` is a buffer of prefix lengths for each sequence. This is the length of tokens in the `tokens` buffer
-      that were provided and not generated in the current cycle.
     * `logprobs` is an optional buffer of log probabilities for the tokens. If not None, it should have the same shape
        as `tokens`, i.e. `logprobs["seq", i, "position", j]` is the log probability of the token at position `j` in
        sequence `i`. It is kept in sync with `tokens`, i.e. if a token is generated, its log probability is also
@@ -85,9 +83,6 @@ class DecodeState(eqx.Module):
     logprobs: ht.Float[NamedArray, "seq position"] | None  # log probabilities of the tokens
     seq_lens: ht.i32[NamedArray, "seq"]
     """Sequence length for each sequence. This is the number of tokens currently in the sequence"""
-    # TODO: pretty sure we don't need prefix_len, delete
-    prefix_len: ht.i32[NamedArray, "seq"]
-    """ Length of the prefix for each sequence."""
     clone_sources: ht.i32[NamedArray, "seq"]
     """
     For each local sequence slot, the local source id it should be cloned from, or INVALID if it's either already
@@ -95,6 +90,8 @@ class DecodeState(eqx.Module):
     decoding or potentially beam search / particle filtering.
     """
 
+    # TODO: these aren't actually used anywhere. (We currently only use them from PageTable)
+    # This is a better place for them, so we should move them here and update the code to use them.
     kv_pages: ht.i32[NamedArray, "seq page"]
     """Key-value pages for each sequence. This is used to store the key-value pairs for the sequences."""
     page_size: int = eqx.field(static=True)
@@ -123,13 +120,12 @@ class DecodeState(eqx.Module):
         """Invalidate metadata for sequences marked finished by ``finished_mask``.
 
         - Sets ``seq_id`` and ``seq_lens`` to INVALID for finished slots
-        - Resets ``prefix_len`` to 0 and ``clone_sources`` to INVALID
+        - Resets ``clone_sources`` to INVALID
         - Clears ``kv_pages`` rows for finished slots to INVALID
         """
         mask = self.finished
         new_seq_id = hax.where(mask, INVALID, self.seq_id)
         new_seq_lens = hax.where(mask, INVALID, self.seq_lens)
-        new_prefix_len = hax.where(mask, 0, self.prefix_len)
         new_clone_sources = hax.where(mask, INVALID, self.clone_sources)
         new_kv_pages = hax.where(mask, INVALID, self.kv_pages)
         finished = hax.zeros_like(self.finished)  # reset finished flags
@@ -138,7 +134,6 @@ class DecodeState(eqx.Module):
             self,
             seq_id=new_seq_id,
             seq_lens=new_seq_lens,
-            prefix_len=new_prefix_len,
             clone_sources=new_clone_sources,
             kv_pages=new_kv_pages,
             finished=finished,
@@ -245,7 +240,6 @@ class DecodeState(eqx.Module):
         local_seq_id: int,
         global_seq_id: int,
         tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
-        prefix_len: int,
         kv_pages: ht.i32[NamedArray, "page"] | None = None,  # type: ignore[name-defined]
         seq_params: SeqDecodingParams | None = None,
     ) -> "DecodeState":
@@ -266,12 +260,11 @@ class DecodeState(eqx.Module):
             tokens=new_tokens,
             # set log probs to nan for the prefix tokens
             logprobs=(
-                self.logprobs.at["seq", local_seq_id, "position", 0:prefix_len].set(jnp.nan)
+                self.logprobs.at["seq", local_seq_id, "position", 0:num].set(jnp.nan)
                 if self.logprobs is not None
                 else None
             ),
-            seq_lens=self.seq_lens.at["seq", local_seq_id].set(prefix_len),
-            prefix_len=self.prefix_len.at["seq", local_seq_id].set(prefix_len),
+            seq_lens=self.seq_lens.at["seq", local_seq_id].set(num),
             finished=self.finished.at["seq", local_seq_id].set(False),
         )
 
@@ -387,7 +380,6 @@ class DecodeState(eqx.Module):
 DecodeState:
 seq_id: {seq_id}
 num_tokens: {num_tokens}
-prefix_len: {prefix_len}
 finished: {finished}
 tokens: {tokens}
 stop_tokens: {stop_tokens}
@@ -397,7 +389,6 @@ max_num_tokens: {max_num_tokens}
 """,
             seq_id=self.seq_id,
             num_tokens=self.seq_lens,
-            prefix_len=self.prefix_len,
             finished=self.finished,
             tokens=self.tokens,
             stop_tokens=self.stop_tokens,
@@ -426,7 +417,6 @@ max_num_tokens: {max_num_tokens}
             seq_id=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
             tokens=hax.full({"seq": max_seqs, "position": max_seq_len}, pad_token_id, dtype=jnp.int32),
             logprobs=None,
-            prefix_len=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             seq_lens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),
             clone_sources=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
             max_num_tokens=hax.full({"seq": max_seqs}, 0, dtype=jnp.int32),

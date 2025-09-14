@@ -143,7 +143,6 @@ class GenState(eqx.Module):
             local_seq_id=child_local_id,
             global_seq_id=gid,
             tokens=parent_prefix,
-            prefix_len=prefix_len,
             kv_pages=parent_kv_pages_row,
             seq_params=seq_params,
         )
@@ -702,7 +701,6 @@ class GenerationService:
                     local_seq_id=seq_id,
                     global_seq_id=(primary_global_ids[idx] if primary_global_ids is not None else request.request_id),
                     tokens=hax.named(this_tokens, axis="position"),
-                    prefix_len=len(seq_tokens),
                     kv_pages=None,
                     seq_params=seq_params,
                 ),
