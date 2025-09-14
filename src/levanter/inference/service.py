@@ -38,6 +38,20 @@ class Request:
     n_generations: int
 
 
+@dataclasses.dataclass
+class DecodeResult:
+    """Holds per-(request, choice) decode outputs and status."""
+
+    id: int
+    choice: int
+    token_list: list[int]
+    # Count of newly appended tokens (includes prompt tokens as extracted)
+    tokens_decoded: int = 0
+    done: bool = False
+    # Optional per-token logprobs (not populated yet)
+    logprobs: list[float] | None = None
+
+
 @dataclass(frozen=True)
 class GenerationServiceConfig:
     """Configuration for GenerationService memory/layout knobs.
@@ -448,6 +462,8 @@ class GenerationService:
         self.sequences: dict[int, dict[int, int]] = {}
         # FIFO request queue for incremental admission
         self.request_queue: deque[Request] = deque()
+        # Results by request id -> choice -> DecodeResult
+        self.results: dict[int, dict[int, DecodeResult]] = {}
 
     @classmethod
     def from_model(
@@ -725,43 +741,6 @@ class GenerationService:
 
         return primary_local_ids
 
-    def _extract_outputs(self, outputs: list[list[int]], finished: list[bool]) -> int:
-        """Drain generated tokens from `DecodeState` and append into `outputs`.
-
-        Returns the number of new tokens extracted this call.
-        """
-        total_this_time = 0
-        decode_state = self.gen_state.decode_state
-        num_seqs = decode_state.max_seqs
-        tokens = jax.device_get(decode_state.tokens.array)
-        num_tokens = jax.device_get(decode_state.seq_lens.array)
-        seq_ids = jax.device_get(decode_state.seq_id.array)
-        this_finished = jax.device_get(decode_state.finished.array)
-
-        for local_seq in range(num_seqs):
-            global_id = int(seq_ids[local_seq])
-            if global_id < 0 or global_id == INVALID:
-                continue
-
-            current_num_tokens = len(outputs[global_id])
-            new_num_tokens = int(num_tokens[local_seq])
-            count_to_extract = new_num_tokens - current_num_tokens
-
-            if finished[global_id]:
-                continue
-
-            total_this_time += max(0, count_to_extract)
-            if bool(this_finished[local_seq]):
-                finished[global_id] = True
-
-            if count_to_extract <= 0:
-                continue
-
-            seq_tokens = tokens[local_seq, current_num_tokens:new_num_tokens]
-            outputs[global_id].extend(int(x) for x in seq_tokens)
-
-        return total_this_time
-
     def generate(self, requests: Sequence[Request]) -> tuple[list[list[int]], int]:
         """Generate tokens for a batch of Requests.
 
@@ -770,15 +749,14 @@ class GenerationService:
         """
         # Enqueue incoming requests to internal queue
         self.enqueue_requests(requests)
-        # Track outputs and finished flags for only this call's requests
+        # Track outputs and finished flags using self.results for only this call's requests
         call_rids = [int(r.request_id) for r in requests]
         expected_children: dict[int, int] = {rid: int(r.n_generations) for rid, r in zip(call_rids, requests)}
-        outputs_for: dict[int, dict[int, list[int]]] = {
-            rid: {k: [] for k in range(expected_children[rid])} for rid in expected_children
-        }
-        finished_for: dict[int, dict[int, bool]] = {
-            rid: {k: False for k in range(expected_children[rid])} for rid in expected_children
-        }
+        # Initialize fresh result buckets for this call
+        for rid in call_rids:
+            self.results[rid] = {
+                k: DecodeResult(id=rid, choice=k, token_list=[]) for k in range(expected_children[rid])
+            }
 
         # Ensure stop-token buffer capacity is sufficient based on the longest stop sequence requested
         desired_stop_len = 0
@@ -804,14 +782,17 @@ class GenerationService:
         time_in = time.time()
         # Try initial admission from queue and extract prompt tokens
         _ = self._admit_from_queue()
-        _ = self._extract_outputs_for(outputs_for, finished_for)
+        _ = self._extract_outputs()
         self._release_finished_sequences()
 
         # Autoregressive generation loop with periodic extraction
         def _all_done() -> bool:
-            for rid, kids in finished_for.items():
-                if any(not v for v in kids.values()):
-                    return False
+            for rid, n_kids in expected_children.items():
+                kid_map = self.results.get(rid, {})
+                for cid in range(n_kids):
+                    dr = kid_map.get(cid)
+                    if dr is None or not dr.done:
+                        return False
             return True
 
         stagnant_iters = 0
@@ -832,7 +813,7 @@ class GenerationService:
             device_time = time.time() - submit_done
 
             extract_start = time.time()
-            new_tokens = self._extract_outputs_for(outputs_for, finished_for)
+            new_tokens = self._extract_outputs()
             extract_time = time.time() - extract_start
 
             # Release any sequences that finished in this step
@@ -840,11 +821,11 @@ class GenerationService:
             self._release_finished_sequences()
             # Admit more if capacity allows
             _ = self._admit_from_queue()
-            _ = self._extract_outputs_for(outputs_for, finished_for)
+            _ = self._extract_outputs()
             self._release_finished_sequences()
             # Ensure any bookkeeping kernels complete before next iteration
             self.gen_state = jax.block_until_ready(self.gen_state)
-            new_tokens += self._extract_outputs_for(outputs_for, finished_for)
+            new_tokens += self._extract_outputs()
             release_time = time.time() - release_start
 
             iter_end = time.time()
@@ -879,19 +860,27 @@ class GenerationService:
         for r in requests:
             rid = int(r.request_id)
             total_prompt_tokens += len(r.prompt_tokens) * int(r.n_generations)
+            # Initialize result buckets for this rid if not present
+            kid_map = self.results.get(rid, {})
             for k in range(int(r.n_generations)):
-                outputs_list.append(outputs_for[rid][k])
+                dr = kid_map.get(k)
+                if dr is None:
+                    # Ensure a placeholder exists to avoid KeyErrors
+                    kid_map[k] = DecodeResult(id=rid, choice=k, token_list=[])
+                    dr = kid_map[k]
+                outputs_list.append(dr.token_list)
+            self.results[rid] = kid_map
         total_generated = sum(len(seq_outputs) for seq_outputs in outputs_list) - total_prompt_tokens
         total_time = time.time() - time_in
         tps_overall = (total_generated / total_time) if total_time > 0 else 0.0
         logger.info(f"Batch generated in {total_time:.2f}s, {total_generated} tokens, {tps_overall:.2f} tok/s")
+        # Clear results for these requests now that we've assembled outputs
+        for rid in call_rids:
+            if rid in self.results:
+                self.results.pop(rid, None)
         return outputs_list, total_generated
 
-    def _extract_outputs_for(
-        self,
-        outputs: dict[int, dict[int, list[int]]],
-        finished: dict[int, dict[int, bool]],
-    ) -> int:
+    def _extract_outputs(self) -> int:
         """Append newly available tokens into outputs per (request_id, child_id).
 
         Returns number of new tokens appended.
@@ -908,18 +897,26 @@ class GenerationService:
             if info is None:
                 continue
             rid, cid = info
-            if rid not in outputs:
-                continue
-            current_num_tokens = len(outputs[rid][cid])
+            # Ensure a DecodeResult exists for this (rid, cid)
+            kid_map = self.results.get(rid)
+            if kid_map is None:
+                kid_map = {}
+                self.results[rid] = kid_map
+            dr = kid_map.get(cid)
+            if dr is None:
+                dr = DecodeResult(id=rid, choice=cid, token_list=[])
+                kid_map[cid] = dr
+
+            current_num_tokens = len(dr.token_list)
             new_num_tokens = int(num_tokens_host[local_seq])
             count_to_extract = new_num_tokens - current_num_tokens
             if count_to_extract <= 0:
                 if bool(finished_host[local_seq]):
-                    finished[rid][cid] = True
+                    dr.done = True
                 continue
             total_this_time += count_to_extract
             if bool(finished_host[local_seq]):
-                finished[rid][cid] = True
+                dr.done = True
             # Device-get only the new slice for this sequence
             slice_named = ds.tokens[
                 "seq",
@@ -928,6 +925,7 @@ class GenerationService:
                 hax.dslice(current_num_tokens, count_to_extract),
             ]
             seq_tokens = jax.device_get(slice_named.array)
-            outputs[rid][cid].extend(int(x) for x in seq_tokens)
+            dr.token_list.extend(int(x) for x in seq_tokens)
+            dr.tokens_decoded += int(count_to_extract)
 
         return total_this_time
