@@ -449,8 +449,6 @@ class TokenQueue(eqx.Module):
     queued_pos_ids: ht.i32[NamedArray, "position"]  # absolute position id for each queued token
     num_queued_tokens: jax.Array
 
-    # TODO: per-seq sampling params
-
     @property
     def empty_queue_space(self) -> jnp.ndarray:
         """How many tokens can be enqueued in the queue."""

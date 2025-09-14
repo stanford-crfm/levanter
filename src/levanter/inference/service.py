@@ -353,12 +353,16 @@ def _run_generation_loop(
 ) -> GenState:
     """Run autoregressive generation until all sequences finish or `max_rounds` reached."""
 
-    def cond(state: tuple[GenState, jax.Array, jax.Array]):
-        _gen_state, finished, step = state
-        return (step < max_rounds) & (_gen_state.decode_state.num_queued_tokens > 0) & (~jnp.all(finished))
+    def cond(state: tuple[GenState, jax.Array]):
+        _gen_state, step = state
+        return (
+            (step < max_rounds)
+            & (_gen_state.decode_state.num_queued_tokens > 0)
+            & (~hax.all(_gen_state.decode_state.finished)).scalar()
+        )
 
-    def body(state: tuple[GenState, jax.Array, jax.Array]) -> tuple[GenState, jax.Array, jax.Array]:
-        gen_state, has_finished, step = state
+    def body(state: tuple[GenState, jax.Array]) -> tuple[GenState, jax.Array]:
+        gen_state, step = state
 
         # Pack the next chunk from the queue via DecodeState
         decode_state, packed_seq = gen_state.decode_state.pack_next_sequence(max_tokens_per_round)
@@ -389,12 +393,11 @@ def _run_generation_loop(
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
-        new_finished = decode_state.finished.array
-        has_finished = has_finished | new_finished
+        new_finished = decode_state.finished
 
         # purge any finished sequences
-        finished_sequences = jnp.nonzero(new_finished, size=gen_state.page_table.max_seqs, fill_value=INVALID)[0]
-        finished_sequences = hax.named(finished_sequences, axis="seq")
+        # TODO: just don't enqueue?
+        finished_sequences = hax.where(new_finished, new_axis=gen_state.page_table.max_Seq, fill_value=INVALID)[0]
         decode_state = decode_state.purge_queue_of_seq(finished_sequences)
 
         # Update the gen_state with all the new components
@@ -404,11 +407,10 @@ def _run_generation_loop(
             cache=cache,
             decode_state=decode_state,
         )
-        return new_gen_state, has_finished, step + 1
+        return new_gen_state, step + 1
 
-    has_finished = gen_state.decode_state.finished.array
-    init_state = (gen_state, has_finished, jnp.array(0, dtype=jnp.int32))
-    final_gen_state, _, _ = jax.lax.while_loop(cond, body, init_state)
+    init_state = (gen_state, jnp.array(0, dtype=jnp.int32))
+    final_gen_state, _ = jax.lax.while_loop(cond, body, init_state)
     return final_gen_state
 
 
