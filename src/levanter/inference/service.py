@@ -88,6 +88,12 @@ class EngineConfig:
     max_rounds: int = 8
     """Maximum number of while-loop iterations per decode call."""
 
+    # Stop-token capacity (used for validation and buffer sizing at init)
+    max_stop_seqs: int = 4
+    """Maximum number of stop sequences per active sequence. 0 disables stop tokens."""
+    max_stop_tokens: int = 16
+    """Maximum tokens per stop sequence (position axis length)."""
+
     # Default PRNG seed for building per-request keys (optional convenience)
     seed: int = 0
 
@@ -514,12 +520,16 @@ class Engine:
         """Build an engine with fresh PageTable/KV cache/DecodeState and a `Sampler` for `vocab_axis`."""
         table = PageTable.init(max_pages, max_seqs, page_size, max_pages_per_seq)
         cache = hax.named_jit(model.initial_cache)(table, dtype=compute_dtype)
+        # Default stop-token capacity for convenience constructor
+        _def_stop_seqs = 1
+        _def_stop_tokens = 16
         decode_state = DecodeState.init(
             table.max_seqs,
             table.pages_per_seq,
             table.page_size,
             table.max_len_per_seq,
-            max_stop_seqs=1,
+            max_stop_seqs=_def_stop_seqs,
+            max_stop_tokens=_def_stop_tokens,
             max_queued_tokens=max_queued_tokens,
         )
         sampler = Sampler(vocab_axis)
@@ -532,6 +542,8 @@ class Engine:
             max_queued_tokens=max_queued_tokens,
             max_seqs_in_prefill=max_seqs_in_prefill,
             max_prefill_size=max_prefill_size,
+            max_stop_seqs=_def_stop_seqs,
+            max_stop_tokens=_def_stop_tokens,
         )
         return cls(
             model=model,
@@ -559,7 +571,8 @@ class Engine:
             table.pages_per_seq,
             table.page_size,
             table.max_len_per_seq,
-            max_stop_seqs=1,
+            max_stop_seqs=config.max_stop_seqs,
+            max_stop_tokens=config.max_stop_tokens,
             max_queued_tokens=config.max_queued_tokens,
         )
         sampler = Sampler(model.Vocab)
@@ -804,26 +817,31 @@ class Engine:
                 k: DecodeResult(id=rid, choice=k, token_list=[]) for k in range(expected_children[rid])
             }
 
-        # Ensure stop-token buffer capacity is sufficient based on the longest stop sequence requested
-        desired_stop_len = 0
-        for req in requests:
-            if req.decode_params.stop_tokens is not None:
-                desired_stop_len = max(desired_stop_len, int(req.decode_params.stop_tokens.axis_size("position")))
+        # Validate requested stop-token shapes against configured capacity; do not resize dynamically
         ds = self.gen_state.decode_state
-        current_stop_len = 0 if ds.stop_tokens is None else ds.stop_tokens.axis_size("position")
-        if desired_stop_len > current_stop_len:
-            # Reinitialize an empty DecodeState with larger stop-token capacity
-            new_ds = DecodeState.init(
-                ds.max_seqs,
-                ds.kv_pages.axis_size("page"),
-                ds.page_size,
-                ds.tokens.axis_size("position"),
-                max_stop_seqs=1 if desired_stop_len > 0 else 0,
-                max_stop_tokens=desired_stop_len,
-                max_queued_tokens=int(ds.tqueue.max_queued_tokens),
-            )
-            self.gen_state = dataclasses.replace(self.gen_state, decode_state=new_ds)
-            self._initial_decode_state = new_ds
+        cur_stop_seqs = 0 if ds.stop_tokens is None else ds.stop_tokens.axis_size("stop_seq")
+        cur_stop_len = 0 if ds.stop_tokens is None else ds.stop_tokens.axis_size("position")
+        req_stop_seqs = 0
+        req_stop_len = 0
+        for req in requests:
+            st = req.decode_params.stop_tokens
+            if st is None:
+                continue
+            req_stop_seqs = max(req_stop_seqs, int(st.axis_size("stop_seq")))
+            req_stop_len = max(req_stop_len, int(st.axis_size("position")))
+        if req_stop_seqs > 0 or req_stop_len > 0:
+            if ds.stop_tokens is None:
+                raise ValueError(
+                    f"Requested stop tokens (seqs={req_stop_seqs}, len={req_stop_len}) but service was initialized "
+                    f"without stop-token capacity. Recreate service with nonzero max_stop_seqs/max_stop_tokens."
+                )
+            if req_stop_seqs > cur_stop_seqs or req_stop_len > cur_stop_len:
+                raise ValueError(
+                    "Requested stop-token configuration exceeds service capacity: "
+                    f"required (seqs={req_stop_seqs}, len={req_stop_len}) > "
+                    f"configured (seqs={cur_stop_seqs}, len={cur_stop_len}). "
+                    "Increase max_stop_seqs/max_stop_tokens when constructing the service."
+                )
 
         time_in = time.time()
         # Try initial admission from queue and extract prompt tokens
@@ -952,24 +970,11 @@ class Engine:
             return 0
 
         # Pull the entire buffer in one host op
-        n = int(jax.device_get(pending_outputs.num_tokens))
-        fins = jax.device_get(pending_outputs.finished.array)
-
-        if n <= 0:
-            # Even if no tokens, propagate done flags
-            for local_seq, is_done in enumerate(fins):
-                if not bool(is_done):
-                    continue
-                info = self.local_map.get(local_seq)
-                if info is None:
-                    continue
-                rid, cid = info
-                dr = self.results.setdefault(rid, {}).setdefault(cid, DecodeResult(id=rid, choice=cid, token_list=[]))
-                dr.done = True
-            return 0
-
-        toks_arr = jax.device_get(pending_outputs.tokens.array)
-        sids_arr = jax.device_get(pending_outputs.seq_ids.array)
+        pending_outputs = jax.device_get(pending_outputs)
+        n = int(pending_outputs.num_tokens)
+        fins = pending_outputs.finished.array
+        toks_arr = pending_outputs.tokens.array
+        sids_arr = pending_outputs.seq_ids.array
 
         appended = 0
         unmapped = 0
