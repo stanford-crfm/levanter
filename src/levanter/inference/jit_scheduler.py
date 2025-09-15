@@ -612,3 +612,115 @@ class TokenQueue(eqx.Module):
             print(f"{prefix}Num Queued Tokens: {self.num_queued_tokens}")
 
         jax.experimental.io_callback(callback, None, ordered=True, self=self)
+
+
+class _DecodeOutputs(eqx.Module):
+    """
+    A simple queue-like buffer for outputs emitted by the decode generation loop.
+
+    Stores the flat stream of sampled token IDs and their corresponding local sequence IDs, with an
+    optional logprob stream. Also carries a copy of the latest `finished` flags from `DecodeState`.
+
+    This mirrors the behavior of `TokenQueue` but is for host-side consumption of outputs rather than
+    feeding work to the device.
+    """
+
+    tokens: ht.i32[NamedArray, "position"]
+    seq_ids: ht.i32[NamedArray, "position"]
+    logprobs: ht.Float[NamedArray, "position"] | None
+    num_tokens: jax.Array
+    finished: ht.bool_[NamedArray, "seq"]
+
+    @property
+    def max_queued_tokens(self) -> int:
+        return self.tokens.axis_size("position")
+
+    @property
+    def empty_queue_space(self) -> jnp.ndarray:
+        return self.tokens.axis_size("position") - self.num_tokens
+
+    @staticmethod
+    def init(max_tokens: int, max_seqs: int, with_logprobs: bool = True) -> "_DecodeOutputs":
+        return _DecodeOutputs(
+            tokens=hax.full({"position": max_tokens}, INVALID, dtype=jnp.int32),
+            seq_ids=hax.full({"position": max_tokens}, INVALID, dtype=jnp.int32),
+            logprobs=(hax.full({"position": max_tokens}, jnp.nan, dtype=jnp.float32) if with_logprobs else None),
+            num_tokens=jnp.array(0, dtype=jnp.int32),
+            finished=hax.zeros({"seq": max_seqs}, dtype=bool),
+        )
+
+    def append(
+        self,
+        new_tokens: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
+        new_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
+        new_logprobs: ht.Float[NamedArray, " position"],  # type: ignore[name-defined]
+        num_new_tokens: int,
+        finished_snapshot: ht.bool_[NamedArray, "seq"],  # type: ignore[name-defined]
+    ) -> "_DecodeOutputs":
+        """Append a batch of outputs and update the finished flags snapshot."""
+
+        new_tok_buf = masked_set(self.tokens, "position", self.num_tokens, new_tokens, num_new_tokens)
+        new_sid_buf = masked_set(self.seq_ids, "position", self.num_tokens, new_seq_ids, num_new_tokens)
+        if self.logprobs is not None:
+            new_lp_buf = masked_set(self.logprobs, "position", self.num_tokens, new_logprobs, num_new_tokens)
+        else:
+            new_lp_buf = None
+        # Keep finished flags monotonic (once finished, always finished)
+        new_finished = self.finished | finished_snapshot
+        return dataclasses.replace(
+            self,
+            tokens=new_tok_buf,
+            seq_ids=new_sid_buf,
+            logprobs=new_lp_buf,
+            num_tokens=self.num_tokens + num_new_tokens,
+            finished=new_finished,
+        )
+
+    def pack_next(self, max_tokens: int):  # type: ignore[no-untyped-def]
+        """Dequeue up to `max_tokens` entries and return them along with an updated buffer.
+
+        Returns (new_outputs, tokens, seq_ids, logprobs, num_packed, finished_snapshot)
+        """
+        num = jnp.minimum(self.num_tokens, max_tokens)
+
+        tokens = self.tokens["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+        seq_ids = self.seq_ids["position", hax.ds(0, max_tokens)]  # type: ignore[name-defined]
+        logprobs = None if self.logprobs is None else self.logprobs["position", hax.ds(0, max_tokens)]
+
+        # roll left by num and refill back with INVALID sentinel
+        rolled_tokens = hax.roll(self.tokens, -num, "position")
+        rolled_seq_ids = hax.roll(self.seq_ids, -num, "position")
+        rolled_logprobs = None if self.logprobs is None else hax.roll(self.logprobs, -num, "position")
+
+        pos_axis = self.tokens.resolve_axis("position")
+        idx = hax.arange(pos_axis)
+        mask = idx >= (pos_axis.size - num)
+        new_tokens = hax.where(mask, hax.full_like(idx, INVALID), rolled_tokens)
+        new_seq_ids = hax.where(mask, hax.full_like(idx, INVALID), rolled_seq_ids)
+        new_logprobs = None
+        if rolled_logprobs is not None:
+            new_logprobs = hax.where(mask, hax.full_like(idx, jnp.nan, dtype=jnp.float32), rolled_logprobs)
+
+        new_self = dataclasses.replace(
+            self,
+            tokens=new_tokens,
+            seq_ids=new_seq_ids,
+            logprobs=new_logprobs,
+            num_tokens=self.num_tokens - num,
+        )
+
+        return new_self, tokens, seq_ids, logprobs, num, self.finished
+
+    def extend_from(self, other: "_DecodeOutputs") -> "_DecodeOutputs":
+        """Append all queued entries from `other` into this buffer and combine finished flags.
+
+        Consumes `other` in the process (by packing it), but does not mutate it in place; returns a new buffer.
+        """
+        if int(jax.device_get(other.num_tokens)) <= 0:
+            # Just combine finished snapshots
+            return dataclasses.replace(self, finished=(self.finished | other.finished))
+
+        _, tokens, seq_ids, logprobs, num, fins = other.pack_next(other.max_queued_tokens)
+        # Combine finished with OR so we never regress a done flag
+        combined_finished = self.finished | fins
+        return self.append(tokens, seq_ids, logprobs, num, combined_finished)

@@ -12,6 +12,8 @@ prompts:
   # - "On the first day of Christmas, my true love gave to me",
   - "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole"
 
+max_new_tokens: 32
+
 service:
   max_pages: 256
   max_seqs: 8
