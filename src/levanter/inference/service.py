@@ -370,7 +370,7 @@ def _run_generation_loop(
         tokens = packed_seq.tokens
         pos_ids = packed_seq.pos_ids
         seq_ids = packed_seq.seq_ids
-        # NB: use decode_state.num_tokens to determine the number of tokens in each sequence, not what's in page table
+        # NB: use decode_state.seq_lens to determine the number of tokens in each sequence, not what's in page table
         seq_lens = decode_state.seq_lens
 
         page_table, binfo = gen_state.page_table.allocate_for_seq(token_seq_ids=seq_ids)
@@ -393,12 +393,6 @@ def _run_generation_loop(
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
-        new_finished = decode_state.finished
-
-        # purge any finished sequences
-        # TODO: just don't enqueue?
-        finished_sequences = hax.where(new_finished, new_axis=gen_state.page_table.max_Seq, fill_value=INVALID)[0]
-        decode_state = decode_state.purge_queue_of_seq(finished_sequences)
 
         # Update the gen_state with all the new components
         new_gen_state = dataclasses.replace(

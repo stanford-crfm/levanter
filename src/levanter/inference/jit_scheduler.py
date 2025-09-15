@@ -319,12 +319,13 @@ class DecodeState(eqx.Module):
 
         # We'll also compute per-token absolute position ids to feed into the TokenQueue.
         pos_ids = hax.full_like(new_tokens, INVALID)
+        should_purge = hax.full_like(new_tokens, True, dtype=bool)
 
         def body(i, state):
             sid = local_seq_ids["position", i].scalar()
 
             def update(state):
-                tkns, lps, cnts, pids, f = state
+                tkns, lps, cnts, pids, f, should_purge = state
                 pos = cnts["seq", sid].scalar()
                 tkns = tkns.at["seq", sid, "position", pos].set(new_tokens["position", i])
                 if lps is not None:
@@ -341,20 +342,31 @@ class DecodeState(eqx.Module):
                     tail = jax.lax.dynamic_slice(padded, (pos + 1,), (stop_len,))
                     stop_done = is_stop_signal(hax.named(tail, axis=("position",)), self.stop_tokens["seq", sid]).array
                 f = f.at["seq", sid].set(len_done | stop_done)
+                should_purge = should_purge.at["position", i].set(len_done | stop_done)
 
                 # record position id for this token in the outgoing queue payload
                 # pos here is the absolute position of this token in the sequence buffer
                 pids = pids.at["position", i].set(pos)
-                return tkns, lps, cnts, pids, f
+                return tkns, lps, cnts, pids, f, should_purge
 
             return jax.lax.cond(is_valid(sid), update, lambda s: s, state)
 
-        tokens, logprobs, counts, pos_ids, fins = jax.lax.fori_loop(
-            0, num_new_tokens, body, (tokens, logprobs, counts, pos_ids, fins)
+        tokens, logprobs, counts, pos_ids, fins, should_purge = jax.lax.fori_loop(
+            0, num_new_tokens, body, (tokens, logprobs, counts, pos_ids, fins, should_purge)
         )
 
+        # TODO: we want to purge new_tokens of any sequences that have finished, to avoid re-processing them
+        # easiest is to set the purge mask inside the loop above (based on fins)
+        # jax.debug.print("should_purge: {}", should_purge)
+        # jax.debug.print("before {} {} {} {}", local_seq_ids, new_tokens, pos_ids, num_new_tokens)
+        local_seq_ids = purge(local_seq_ids, should_purge)
+        new_tokens = purge(new_tokens, should_purge)
+        pos_ids = purge(pos_ids, should_purge)
+        num_new_tokens_to_queue = hax.sum((~should_purge).astype(jnp.int32)).scalar()
+        # jax.debug.print("after {} {} {} {}", local_seq_ids, new_tokens, pos_ids, num_new_tokens_to_queue)
+
         # Enqueue tokens and their corresponding position ids into the queue
-        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, local_seq_ids, pos_ids, num_new_tokens)
+        new_tqueue = self.tqueue.enqueue_tokens(new_tokens, local_seq_ids, pos_ids, num_new_tokens_to_queue)
 
         return dataclasses.replace(
             self, tokens=tokens, logprobs=logprobs, seq_lens=counts, tqueue=new_tqueue, finished=fins
