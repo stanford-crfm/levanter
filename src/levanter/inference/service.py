@@ -638,7 +638,7 @@ class Engine:
         """
         if not self.request_queue:
             return 0, None
-        sim_slots = int(self.free_slots)
+        sim_slots = self.free_slots
         sim_pages = self._free_page_count()
         batch: list[Request] = []
         while self.request_queue:
@@ -653,7 +653,6 @@ class Engine:
         if not batch:
             return 0, None
         _, outputs = self._prefill_prompts(batch, primary_global_ids=list(range(len(batch))))
-        self.gen_state = jax.block_until_ready(self.gen_state)
         return len(batch), outputs
 
     def _free_page_count(self) -> int:
