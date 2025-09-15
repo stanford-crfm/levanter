@@ -572,7 +572,8 @@ class Engine:
             max_stop_tokens=config.max_stop_tokens,
             max_queued_tokens=config.max_queued_tokens,
         )
-        sampler = Sampler(model.Vocab)
+        vocab_axis = model.Vocab
+        sampler = Sampler(vocab_axis)
         return cls(
             model=model,
             tokenizer=tokenizer,
@@ -611,6 +612,7 @@ class Engine:
         finished_locals = [i for i, f in enumerate(finished_mask) if bool(f)]
         if not finished_locals:
             return
+        logger.info(f"Releasing finished sequences: locals={finished_locals}")
         # Maintain request/child mappings and slot counts on host
         for local_seq in finished_locals:
             info = self.local_map.pop(local_seq, None)
@@ -922,7 +924,7 @@ class Engine:
                     dr = kid_map[k]
                 outputs_list.append(dr.token_list)
             self.results[rid] = kid_map
-        total_generated = sum(len(seq_outputs) for seq_outputs in outputs_list) - total_prompt_tokens
+        total_generated = sum(len(seq_outputs) for seq_outputs in outputs_list)
         total_time = time.time() - time_in
         tps_overall = (total_generated / total_time) if total_time > 0 else 0.0
         logger.info(f"Batch generated in {total_time:.2f}s, {total_generated} tokens, {tps_overall:.2f} tok/s")
