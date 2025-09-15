@@ -83,7 +83,7 @@ class GenerationServiceConfig:
     """
 
     # Decode loop knobs
-    max_tokens_per_round: int = 8
+    max_tokens_per_round: int | None = None
     """Pack size for each decode loop iteration."""
     max_rounds: int = 8
     """Maximum number of while-loop iterations per decode call."""
@@ -859,7 +859,8 @@ class GenerationService:
                 self.gen_state,
                 self.model,
                 self.sampler,
-                self.config.max_tokens_per_round,
+                # TODO: tune max_tokens_per_round
+                self.config.max_tokens_per_round or self.config.max_seqs,
                 self.config.max_rounds,
             )
             submit_done = time.time()
@@ -961,8 +962,6 @@ class GenerationService:
 
         toks_arr = jax.device_get(pending_outputs.tokens.array)
         sids_arr = jax.device_get(pending_outputs.seq_ids.array)
-
-        print(n, toks_arr, sids_arr)
 
         appended = 0
         unmapped = 0
