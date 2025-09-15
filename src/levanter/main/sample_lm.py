@@ -137,19 +137,22 @@ def main(config: SampleLmConfig):
 
         # Optionally enable JAX profiler; no Perfetto link
         with ExitStack() as stack:
-            if config.profile:
-                run_id = cast(str, config.trainer.id)
-                profile_path = config.trainer.log_dir / run_id / "profiler"
-                stack.enter_context(
-                    profile_ctx(
-                        str(profile_path),
-                        create_perfetto_link=False,
-                        host_profile=True,
-                        host_profile_topn=40,
-                    )
-                )
 
             for r in range(config.n_rounds):
+                if config.profile:
+                    # skip round 0 b/c of compilation unless we're only doing one round
+                    if config.n_rounds == 1 or r == 1:
+                        run_id = cast(str, config.trainer.id)
+                        profile_path = config.trainer.log_dir / run_id / "profiler"
+                        stack.enter_context(
+                            profile_ctx(
+                                str(profile_path),
+                                create_perfetto_link=False,
+                                host_profile=True,
+                                host_profile_topn=40,
+                            )
+                        )
+
                 for i, toks in enumerate(prompt_ids):
                     print(f"Prompt {i}: {toks}")
 
