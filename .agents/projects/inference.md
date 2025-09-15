@@ -170,6 +170,11 @@
 #### Mixed Prefill + Decode
 - [ ] possibly add decode tokens to prefill (should be pretty easy with prefill in decode loop)
 
+### Quality of Life
+
+- [ ] automatically calculate cache size based on model config and what the core inference loop needs
+- [ ]
+
 ### Sample LM Integration
 - [ ] expose a free list of pages in `PageTable`
 - [ ] allocate pages from the free list inside the generation loop
