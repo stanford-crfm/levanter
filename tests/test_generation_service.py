@@ -46,9 +46,8 @@ class DummyModel:
 def _build_service(vocab_size=10):
     model = DummyModel(vocab_size=vocab_size, eos_id=3)
     service = Engine.from_model(
-        model=model,  # type: ignore
+        model=model,
         tokenizer=None,
-        vocab_axis=model.vocab,
         max_pages=64,
         max_seqs=8,
         page_size=8,

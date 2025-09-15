@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import haliax as hax
 import haliax.haxtyping as ht
 import numpy as np
-from haliax import Axis, NamedArray
+from haliax import NamedArray
 
 from levanter.inference.page_table import PageTable
 from levanter.inference.utils import INVALID, is_valid
@@ -504,10 +504,9 @@ class Engine:
     @classmethod
     def from_model(
         cls,
-        *,
         model: LmHeadModel,
         tokenizer,
-        vocab_axis: Axis,
+        *,
         max_pages: int,
         max_seqs: int,
         page_size: int,
@@ -533,7 +532,6 @@ class Engine:
     @classmethod
     def from_model_with_config(
         cls,
-        *,
         model: LmHeadModel,
         tokenizer,
         config: EngineConfig,
