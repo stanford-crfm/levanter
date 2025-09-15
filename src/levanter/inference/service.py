@@ -194,6 +194,22 @@ def _compute_sample_indices(pos_ids, seq_ids, seq_lens, max_sample_indices):
     return sample_indices
 
 
+@hax.named_jit(donate_args=(True,))
+def _release_finished_device(gen_state: GenState, finished_mask: ht.bool_[NamedArray, "seq"] | None = None):  # type: ignore
+    """JIT-safe release of finished sequences on device.
+
+    Frees pages in the PageTable for finished slots and invalidates those slots in DecodeState.
+    If ``finished_mask`` is None, uses ``gen_state.decode_state.finished``.
+    """
+    ds = gen_state.decode_state
+    pt = gen_state.page_table
+
+    mask = finished_mask if finished_mask is not None else ds.finished
+    new_pt = pt.free_pages_for_finished(mask.array)
+    new_ds = ds.invalidate_finished()
+    return dataclasses.replace(gen_state, page_table=new_pt, decode_state=new_ds)
+
+
 @hax.named_jit(donate_args=(True, False, False, False, False))
 def _run_prefill(
     gen_state: GenState,
@@ -253,6 +269,9 @@ def _run_prefill(
             sampler,
             outputs,
         )
+
+    # Device-side release of finished sequences (jit-safe)
+    gen_state = _release_finished_device(gen_state)
 
     # jax.debug.print(
     #     "[prefill] outputs_size={size} queued_after={queued}",
@@ -369,6 +388,9 @@ def _handle_clones(
     # Append clone outputs
     outputs = outputs.append(new_tokens, tgt_ids, log_probs, num_new, gen_state.decode_state.finished)
 
+    # Device-side release of finished sequences (jit-safe)
+    gen_state = _release_finished_device(gen_state)
+
     return gen_state, outputs
 
 
@@ -440,6 +462,8 @@ def _run_generation_loop(
         )
         # Append non-stateful outputs for host-side extraction
         outputs = outputs.append(new_tokens, new_seq_ids, log_probs, num_new_tokens, decode_state.finished)
+        # Device-side release of finished sequences (jit-safe)
+        new_gen_state = _release_finished_device(new_gen_state)
         # jax.debug.print(
         #     "[gen] step={step} outputs_size={size} queued_after={queued}",
         #     step=step,
@@ -577,35 +601,16 @@ class Engine:
         self.local_map.clear()
         self.sequences.clear()
 
-    def _release_finished_sequences(self, outputs: _DecodeOutputs | None = None) -> None:
-        """Release resources for any sequences that have finished.
+    def _release_finished_sequences(self, outputs: _DecodeOutputs) -> None:
+        """Host-side bookkeeping for finished sequences.
 
-        - Frees pages in the PageTable for finished local sequence ids.
-        - Clears DecodeState bookkeeping so the local slots can be reused.
-
-        This makes explicit `reset()` calls generally unnecessary between batches.
+        Device-side page freeing and decode-state invalidation occur inside the JIT loops.
+        Here we update host maps and free-slot counters using the finished mask from outputs when provided.
         """
-        ds = self.gen_state.decode_state
-        pt = self.gen_state.page_table
-
-        # Determine which local sequence slots are finished
-        if outputs is not None:
-            finished_mask = jax.device_get(outputs.finished.array).astype(bool)
-        else:
-            finished_mask = jax.device_get(ds.finished.array).astype(bool)
+        finished_mask = jax.device_get(outputs.finished.array).astype(bool)
         finished_locals = [i for i, f in enumerate(finished_mask) if bool(f)]
-
-        if len(finished_locals) == 0:
+        if not finished_locals:
             return
-
-        # Capture current global ids for logging before we clear them
-        seq_ids_host = jax.device_get(ds.seq_id.array)
-        finished_globals = [int(seq_ids_host[i]) for i in finished_locals]
-        logger.info(f"Releasing finished sequences: locals={finished_locals}, globals={finished_globals}")
-
-        # Free pages for finished sequences (batched in one JAX call)
-        pt = pt.free_pages_for_finished(finished_mask)
-
         # Maintain request/child mappings and slot counts on host
         for local_seq in finished_locals:
             info = self.local_map.pop(local_seq, None)
@@ -616,12 +621,8 @@ class Engine:
                     cmap.pop(cid, None)
                     if len(cmap) == 0:
                         self.sequences.pop(rid, None)
-            # Freed one local slot
+            # Freed one local slot (host view)
             self.free_slots += 1
-
-        # Clear DecodeState slot metadata for finished sequences via jitted method
-        new_ds = ds.invalidate_finished()
-        self.gen_state = dataclasses.replace(self.gen_state, page_table=pt, decode_state=new_ds)
 
     # ------------------------------- Queue helpers -------------------------------
     def enqueue_requests(self, requests: Sequence[Request]) -> None:
@@ -820,8 +821,7 @@ class Engine:
         # Try initial admission from queue and extract prompt tokens
         _, decode_outputs = self._admit_from_queue()
         if decode_outputs:
-            _ = self._extract_outputs(decode_outputs)
-        self._release_finished_sequences(decode_outputs)
+            _ = self._ingest_outputs(decode_outputs)
 
         # Autoregressive generation loop with periodic extraction
         def _all_done() -> bool:
@@ -866,16 +866,14 @@ class Engine:
             device_time = time.time() - submit_done
 
             extract_start = time.time()
-            new_tokens = self._extract_outputs(decode_outputs)
+            new_tokens = self._ingest_outputs(decode_outputs)
             extract_time = time.time() - extract_start
 
             # Release any sequences that finished in this step
             release_start = time.time()
-            self._release_finished_sequences(decode_outputs)
             # Admit more if capacity allows
             _, admit_outputs = self._admit_from_queue()
-            mid_tokens = self._extract_outputs(admit_outputs)
-            self._release_finished_sequences(admit_outputs)
+            mid_tokens = self._ingest_outputs(admit_outputs)
             # Ensure any bookkeeping kernels complete before next iteration
             self.gen_state = jax.block_until_ready(self.gen_state)
             new_tokens += mid_tokens
@@ -978,4 +976,15 @@ class Engine:
         num_finished = int(fins.sum()) if hasattr(fins, "sum") else 0
         logger.info(f"extract: appended={appended} (drained={n}) unmapped={unmapped} finished_count={num_finished}")
 
+        return appended
+
+    def _ingest_outputs(self, outputs: _DecodeOutputs | None) -> int:
+        """Drain device outputs into host results and apply host-side release.
+
+        Returns the number of tokens appended to results. No-op if outputs is None.
+        """
+        if outputs is None:
+            return 0
+        appended = self._extract_outputs(outputs)
+        self._release_finished_sequences(outputs)
         return appended
