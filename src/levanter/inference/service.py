@@ -640,19 +640,40 @@ class Engine:
             return 0, None
         sim_slots = self.free_slots
         sim_pages = self._free_page_count()
+        max_prefill_size = int(self.config.max_prefill_size or self.gen_state.page_table.max_len_per_seq)
+        max_seqs_in_prefill = int(self.config.max_seqs_in_prefill)
+        sim_tokens = 0
+        primaries_in_batch = 0
         batch: list[Request] = []
         while self.request_queue:
             nxt = self.request_queue[0]
             need_slots = int(nxt.n_generations)
             need_pages = self._pages_needed_for_prompt(len(nxt.prompt_tokens))
-            if sim_slots < need_slots or sim_pages < need_pages:
+            # Check capacity constraints: slots (including clones), pages, token buffer, prefill batch size
+            if (
+                sim_slots < need_slots
+                or sim_pages < need_pages
+                or sim_tokens + len(nxt.prompt_tokens) > max_prefill_size
+                or primaries_in_batch >= max_seqs_in_prefill
+            ):
                 break
             batch.append(self.request_queue.popleft())
             sim_slots -= need_slots
             sim_pages -= need_pages
+            sim_tokens += len(nxt.prompt_tokens)
+            primaries_in_batch += 1
         if not batch:
             return 0, None
-        _, outputs = self._prefill_prompts(batch, primary_global_ids=list(range(len(batch))))
+        # Build a single TokenQueue for prefill and run prefill exactly once
+        token_queue = self._prefill_prompts(batch, primary_global_ids=[r.request_id for r in batch])
+        if token_queue is None or int(jax.device_get(token_queue.num_queued_tokens)) == 0:
+            return 0, None
+        new_state = _run_prefill(
+            self.gen_state, self.model, self.sampler, token_queue, int(self.config.max_seqs_in_prefill)
+        )
+        # _run_prefill returns (GenState, _DecodeOutputs)
+        self.gen_state, outputs = new_state
+        self.gen_state = jax.block_until_ready(self.gen_state)
         return len(batch), outputs
 
     def _free_page_count(self) -> int:
@@ -667,10 +688,12 @@ class Engine:
     def _prefill_prompts(
         self,
         requests: Sequence[Request],
-        *,
-        primary_global_ids: Optional[Sequence[int]] = None,
-    ) -> tuple[list[int], _DecodeOutputs | None]:
-        """Assign sequence ids, set per-seq params, and run prefill using a local queue."""
+        primary_global_ids: Optional[Sequence[int]],
+    ) -> TokenQueue | None:
+        """Assign sequence ids, set per-seq params, and build a single TokenQueue for prefill.
+
+        Does not run device prefill; caller should invoke _run_prefill once with the returned queue.
+        """
         max_seqs_in_prefill = int(self.config.max_seqs_in_prefill)
         max_prefill_size = self.config.max_prefill_size or self.model.Pos.size
         tokens = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
@@ -679,9 +702,7 @@ class Engine:
         offset = 0
         num_seqs_in_prefill = 0
 
-        primary_local_ids: list[int] = []
-
-        prefill_outputs: _DecodeOutputs | None = None
+        prefill_queue: TokenQueue | None = None
 
         for idx, request in enumerate(requests):
             seq_tokens = request.prompt_tokens
@@ -696,26 +717,9 @@ class Engine:
             self.gen_state = dataclasses.replace(self.gen_state, page_table=page_table)
 
             this_tokens = jnp.asarray(seq_tokens, dtype=jnp.int32)
+            # Stop adding more if we would exceed the single prefill buffer or sequence batch
             if len(seq_tokens) + offset > tokens.shape[0] or num_seqs_in_prefill >= max_seqs_in_prefill:
-                token_queue = TokenQueue(
-                    queued_tokens=hax.named(tokens, axis="position"),
-                    queued_seq_ids=hax.named(seq_ids, axis="position"),
-                    queued_pos_ids=hax.named(pos_ids, axis="position"),
-                    num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
-                )
-                self.gen_state, new_prefill_outputs = _run_prefill(
-                    self.gen_state, self.model, self.sampler, token_queue, max_seqs_in_prefill
-                )
-                # TODO: this is terrible
-                if prefill_outputs is None:
-                    prefill_outputs = new_prefill_outputs
-                else:
-                    prefill_outputs = prefill_outputs.extend_from(new_prefill_outputs)
-                tokens[:] = INVALID
-                seq_ids[:] = INVALID
-                pos_ids[:] = INVALID
-                offset = 0
-                num_seqs_in_prefill = 0
+                break
 
             tokens[offset : offset + len(seq_tokens)] = np.asarray(this_tokens)
             seq_ids[offset : offset + len(seq_tokens)] = seq_id
@@ -728,7 +732,7 @@ class Engine:
                 self.gen_state,
                 decode_state=self.gen_state.decode_state.assign_seq(
                     local_seq_id=seq_id,
-                    global_seq_id=(primary_global_ids[idx] if primary_global_ids is not None else request.request_id),
+                    global_seq_id=request.request_id,
                     tokens=hax.named(this_tokens, axis="position"),
                     kv_pages=None,
                     seq_params=seq_params,
@@ -740,7 +744,6 @@ class Engine:
             rid = int(request.request_id)
             self.local_map[seq_id] = (rid, 0)
             self.sequences.setdefault(rid, {})[0] = seq_id
-            primary_local_ids.append(seq_id)
 
             if request.n_generations > 1:
                 for k in range(1, request.n_generations):
@@ -758,22 +761,14 @@ class Engine:
                     self.sequences.setdefault(rid, {})[k] = child_local_id
 
         if offset > 0:
-            token_queue = TokenQueue(
+            prefill_queue = TokenQueue(
                 queued_tokens=hax.named(tokens, axis="position"),
                 queued_seq_ids=hax.named(seq_ids, axis="position"),
                 queued_pos_ids=hax.named(pos_ids, axis="position"),
                 num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
             )
-            self.gen_state, new_prefill_outputs = _run_prefill(
-                self.gen_state, self.model, self.sampler, token_queue, max_seqs_in_prefill
-            )
 
-            if prefill_outputs is None:
-                prefill_outputs = new_prefill_outputs
-            else:
-                prefill_outputs = prefill_outputs.extend_from(new_prefill_outputs)
-
-        return primary_local_ids, prefill_outputs
+        return prefill_queue
 
     def generate(self, requests: Sequence[Request]) -> tuple[list[list[int]], int]:
         """Generate tokens for a batch of Requests.
