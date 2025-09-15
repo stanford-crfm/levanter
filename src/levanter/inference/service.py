@@ -517,22 +517,7 @@ class Engine:
         max_seqs_in_prefill: int = 16,
         max_prefill_size: Optional[int] = None,
     ) -> "Engine":
-        """Build an engine with fresh PageTable/KV cache/DecodeState and a `Sampler` for `vocab_axis`."""
-        table = PageTable.init(max_pages, max_seqs, page_size, max_pages_per_seq)
-        cache = hax.named_jit(model.initial_cache)(table, dtype=compute_dtype)
-        # Default stop-token capacity for convenience constructor
-        _def_stop_seqs = 1
-        _def_stop_tokens = 16
-        decode_state = DecodeState.init(
-            table.max_seqs,
-            table.pages_per_seq,
-            table.page_size,
-            table.max_len_per_seq,
-            max_stop_seqs=_def_stop_seqs,
-            max_stop_tokens=_def_stop_tokens,
-            max_queued_tokens=max_queued_tokens,
-        )
-        sampler = Sampler(vocab_axis)
+        """Build an engine using basic sizing knobs. Uses defaults for stop-token capacity."""
         cfg = EngineConfig(
             max_pages=max_pages,
             max_seqs=max_seqs,
@@ -542,18 +527,8 @@ class Engine:
             max_queued_tokens=max_queued_tokens,
             max_seqs_in_prefill=max_seqs_in_prefill,
             max_prefill_size=max_prefill_size,
-            max_stop_seqs=_def_stop_seqs,
-            max_stop_tokens=_def_stop_tokens,
         )
-        return cls(
-            model=model,
-            tokenizer=tokenizer,
-            table=table,
-            cache=cache,
-            decode_state=decode_state,
-            sampler=sampler,
-            config=cfg,
-        )
+        return cls.from_model_with_config(model=model, tokenizer=tokenizer, config=cfg)
 
     @classmethod
     def from_model_with_config(
