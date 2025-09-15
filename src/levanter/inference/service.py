@@ -53,8 +53,8 @@ class DecodeResult:
 
 
 @dataclass(frozen=True)
-class GenerationServiceConfig:
-    """Configuration for GenerationService memory/layout knobs.
+class EngineConfig:
+    """Configuration for Engine memory/layout knobs.
 
     Exposes key buffer sizes and limits controlling prefill, decode queueing, and page table capacity.
     """
@@ -454,12 +454,12 @@ def _run_generation_loop(
     return final_gen_state, final_outputs
 
 
-class GenerationService:
+class Engine:
     """Encapsulates batch inference: prefill + decode + output extraction.
 
     Typical usage:
 
-        svc = GenerationService.from_model(model, tokenizer, Vocab, max_seqs, max_pages, page_size, max_pages_per_seq, compute_dtype)
+        svc = Engine.from_model(model, tokenizer, Vocab, max_seqs, max_pages, page_size, max_pages_per_seq, compute_dtype)
         texts = svc.generate(requests)
     """
 
@@ -472,7 +472,7 @@ class GenerationService:
         cache: KvPageCache,
         decode_state: DecodeState,
         sampler: Sampler,
-        config: GenerationServiceConfig,
+        config: EngineConfig,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -521,8 +521,8 @@ class GenerationService:
         max_queued_tokens: int = 32,
         max_seqs_in_prefill: int = 16,
         max_prefill_size: Optional[int] = None,
-    ) -> "GenerationService":
-        """Build a service with fresh PageTable/KV cache/DecodeState and a `Sampler` for `vocab_axis`."""
+    ) -> "Engine":
+        """Build an engine with fresh PageTable/KV cache/DecodeState and a `Sampler` for `vocab_axis`."""
         table = PageTable.init(max_pages, max_seqs, page_size, max_pages_per_seq)
         cache = hax.named_jit(model.initial_cache)(table, dtype=compute_dtype)
         decode_state = DecodeState.init(
@@ -534,7 +534,7 @@ class GenerationService:
             max_queued_tokens=max_queued_tokens,
         )
         sampler = Sampler(vocab_axis)
-        cfg = GenerationServiceConfig(
+        cfg = EngineConfig(
             max_pages=max_pages,
             max_seqs=max_seqs,
             page_size=page_size,
@@ -560,9 +560,9 @@ class GenerationService:
         *,
         model: LmHeadModel,
         tokenizer,
-        config: GenerationServiceConfig,
-    ) -> "GenerationService":
-        """Build a service using a GenerationServiceConfig for sizing knobs."""
+        config: EngineConfig,
+    ) -> "Engine":
+        """Build an engine using a EngineConfig for sizing knobs."""
         table = PageTable.init(config.imputed_max_pages, config.max_seqs, config.page_size, config.max_pages_per_seq)
         cache = hax.named_jit(model.initial_cache)(table, dtype=config.compute_dtype)
         decode_state = DecodeState.init(
