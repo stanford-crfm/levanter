@@ -481,18 +481,7 @@ class Engine:
         self._initial_decode_state = decode_state
         # Impute max_prefill_size if not set
         if config.max_prefill_size is None:
-            inferred: Optional[int] = None
-            try:
-                inferred = int(getattr(tokenizer, "model_max_length")) if tokenizer is not None else None
-            except Exception:
-                inferred = None
-            if inferred is None or inferred <= 0:
-                # Fallback to per-sequence max length from the PageTable if available
-                try:
-                    inferred = int(table.max_len_per_seq)
-                except Exception:
-                    inferred = 4096
-            config = dataclasses.replace(config, max_prefill_size=inferred)
+            config = dataclasses.replace(config, max_prefill_size=table.max_len_per_seq)
         self.config = config
         # Track free local sequence slots
         self.free_slots: int = int(table.max_seqs)
