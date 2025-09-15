@@ -211,11 +211,11 @@ def _run_prefill(
     logits_at_samples = logits["position", sample_indices]
 
     num_new_tokens = hax.sum(sample_indices != INVALID).scalar().astype(jnp.int32)
-    jax.debug.print(
-        "[prefill] sample_count={num} queued_before={queued}",
-        num=num_new_tokens,
-        queued=gen_state.decode_state.num_queued_tokens,
-    )
+    # jax.debug.print(
+    #     "[prefill] sample_count={num} queued_before={queued}",
+    #     num=num_new_tokens,
+    #     queued=gen_state.decode_state.num_queued_tokens,
+    # )
     new_seq_ids = seq_ids["position", sample_indices]
     new_pos_ids = pos_ids["position", sample_indices]
     prng_keys = gen_state.decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
@@ -248,11 +248,11 @@ def _run_prefill(
             outputs,
         )
 
-    jax.debug.print(
-        "[prefill] outputs_size={size} queued_after={queued}",
-        size=outputs.num_tokens,
-        queued=gen_state.decode_state.num_queued_tokens,
-    )
+    # jax.debug.print(
+    #     "[prefill] outputs_size={size} queued_after={queued}",
+    #     size=outputs.num_tokens,
+    #     queued=gen_state.decode_state.num_queued_tokens,
+    # )
     return gen_state, outputs
 
 
@@ -306,7 +306,7 @@ def _handle_clones(
     selected = selected.rename({"seq": "position"})
 
     num_new = hax.sum(selected != INVALID).scalar().astype(jnp.int32)
-    jax.debug.print("[prefill clones] clone_count={num}", num=num_new)
+    # jax.debug.print("[prefill clones] clone_count={num}", num=num_new)
 
     # Gather per-clone data
     # Use a masked/guarded gather to keep shapes static. First entries are valid clones.
@@ -414,13 +414,13 @@ def _run_generation_loop(
         temps = decode_state.temperature["seq", new_seq_ids]
 
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
-        jax.debug.print(
-            "[gen] step={step} packed={packed} sample_count={num} queued_before={queued}",
-            step=step,
-            packed=packed_seq.num_tokens,
-            num=num_new_tokens,
-            queued=gen_state.decode_state.num_queued_tokens,
-        )
+        # jax.debug.print(
+        #     "[gen] step={step} packed={packed} sample_count={num} queued_before={queued}",
+        #     step=step,
+        #     packed=packed_seq.num_tokens,
+        #     num=num_new_tokens,
+        #     queued=gen_state.decode_state.num_queued_tokens,
+        # )
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
@@ -434,23 +434,23 @@ def _run_generation_loop(
         )
         # Append non-stateful outputs for host-side extraction
         outputs = outputs.append(new_tokens, new_seq_ids, log_probs, num_new_tokens, decode_state.finished)
-        jax.debug.print(
-            "[gen] step={step} outputs_size={size} queued_after={queued}",
-            step=step,
-            size=outputs.num_tokens,
-            queued=new_gen_state.decode_state.num_queued_tokens,
-        )
+        # jax.debug.print(
+        #     "[gen] step={step} outputs_size={size} queued_after={queued}",
+        #     step=step,
+        #     size=outputs.num_tokens,
+        #     queued=new_gen_state.decode_state.num_queued_tokens,
+        # )
         return new_gen_state, outputs, step + 1
 
     # Allocate an outputs buffer sized for this run
     outputs_buf = _DecodeOutputs.init(
-        max_tokens=max_tokens_per_round * max_rounds,
+        max_tokens=max(max_tokens_per_round * max_rounds, 1),
         max_seqs=gen_state.decode_state.max_seqs,
         with_logprobs=True,
     )
     init_state = (gen_state, outputs_buf, jnp.array(0, dtype=jnp.int32))
     final_gen_state, final_outputs, _ = jax.lax.while_loop(cond, body, init_state)
-    jax.debug.print("[gen] final outputs_size={size}", size=final_outputs.num_tokens)
+    # jax.debug.print("[gen] final outputs_size={size}", size=final_outputs.num_tokens)
     return final_gen_state, final_outputs
 
 
@@ -602,7 +602,7 @@ class GenerationService:
         self.local_map.clear()
         self.sequences.clear()
 
-    def _release_finished_sequences(self) -> None:
+    def _release_finished_sequences(self, outputs: _DecodeOutputs | None = None) -> None:
         """Release resources for any sequences that have finished.
 
         - Frees pages in the PageTable for finished local sequence ids.
@@ -614,7 +614,10 @@ class GenerationService:
         pt = self.gen_state.page_table
 
         # Determine which local sequence slots are finished
-        finished_mask = jax.device_get(ds.finished.array).astype(bool)
+        if outputs is not None:
+            finished_mask = jax.device_get(outputs.finished.array).astype(bool)
+        else:
+            finished_mask = jax.device_get(ds.finished.array).astype(bool)
         finished_locals = [i for i, f in enumerate(finished_mask) if bool(f)]
 
         if len(finished_locals) == 0:
@@ -838,7 +841,7 @@ class GenerationService:
         _, decode_outputs = self._admit_from_queue()
         if decode_outputs:
             _ = self._extract_outputs(decode_outputs)
-        self._release_finished_sequences()
+        self._release_finished_sequences(decode_outputs)
 
         # Autoregressive generation loop with periodic extraction
         def _all_done() -> bool:
@@ -853,6 +856,20 @@ class GenerationService:
         stagnant_iters = 0
         while not _all_done():
             iter_start = time.time()
+
+            fake_submit_start = time.time()
+            # future_state, decode_outputs = _run_generation_loop(
+            jax.tree.flatten(
+                (
+                    self.gen_state,
+                    self.model,
+                    self.sampler,
+                    1,
+                    0,
+                )
+            )
+            jax.block_until_ready(self.gen_state)
+            fake_submit_done = time.time()
 
             submit_start = iter_start
             future_state, decode_outputs = _run_generation_loop(
@@ -874,10 +891,11 @@ class GenerationService:
 
             # Release any sequences that finished in this step
             release_start = time.time()
-            self._release_finished_sequences()
+            self._release_finished_sequences(decode_outputs)
             # Admit more if capacity allows
-            _, decode_outputs = self._admit_from_queue()
-            mid_tokens = self._extract_outputs(decode_outputs)
+            _, admit_outputs = self._admit_from_queue()
+            mid_tokens = self._extract_outputs(admit_outputs)
+            self._release_finished_sequences(admit_outputs)
             # Ensure any bookkeeping kernels complete before next iteration
             self.gen_state = jax.block_until_ready(self.gen_state)
             new_tokens += mid_tokens
@@ -893,6 +911,7 @@ class GenerationService:
                 logger.info(
                     f"Decode iter: total {iter_time:.3f}s (device {device_time:.3f}s, host {host_time:.3f}s, "
                     f"submit {submit_time:.3f}s), "
+                    f"fake_submit {fake_submit_done - fake_submit_start:.3f}s, "
                     f"{tps_total:.2f} tok/s, {new_tokens} new"
                     f" (extract {extract_time:.3f}s, release {release_time:.3f}s)"
                 )
