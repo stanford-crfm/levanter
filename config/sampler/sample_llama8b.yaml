@@ -20,3 +20,4 @@ service:
   max_queued_tokens: 256
   max_seqs_in_prefill: 16
   max_prefill_size: 4096
+  max_rounds: 16
