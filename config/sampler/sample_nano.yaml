@@ -14,7 +14,7 @@ prompts:
 
 max_new_tokens: 32
 
-service:
+engine:
   max_pages: 256
   max_seqs: 8
   page_size: 8

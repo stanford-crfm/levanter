@@ -42,7 +42,7 @@ class SampleLmConfig:
     tokenizer: str | None = None
 
     # Inference service/memory layout configuration
-    service: InferenceEngineConfig = field(default_factory=InferenceEngineConfig)
+    engine: InferenceEngineConfig = field(default_factory=InferenceEngineConfig)
 
     prompts: list[str] | str | tuple[str, ...] = (
         "Four score and seven years ago, our",
@@ -120,7 +120,7 @@ def main(config: SampleLmConfig):
         prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
 
         # Initialize a reusable generation service with capacity from config
-        service = InferenceEngine.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
+        service = InferenceEngine.from_model_with_config(model=model, tokenizer=tokenizer, config=config.engine)
 
         # -------------------------------- Scheduler-based generation --------------------------------
 
@@ -158,7 +158,7 @@ def main(config: SampleLmConfig):
 
                 time_in = time.time()
                 # Build Requests for this batch
-                base_key = jrandom.PRNGKey(config.service.seed)
+                base_key = jrandom.PRNGKey(config.engine.seed)
                 reqs: list[Request] = []
                 for ridx, toks in enumerate(prompt_ids):
                     seq_params = SeqDecodingParams(

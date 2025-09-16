@@ -12,7 +12,7 @@ trainer:
   tensor_parallel_axes: ["mlp", "heads", "kv_head", "vocab"]
   model_axis_size: 4
 
-service:
+engine:
   max_pages: 16384
   max_seqs: 256
   page_size: 8
