@@ -12,6 +12,7 @@ from jax import numpy as jnp
 import jax
 
 from levanter.inference.utils import INVALID, masked_set, is_valid, is_stop_signal, purge
+from levanter.inference.page_table import PageTable
 
 
 class PackedSequence(eqx.Module):
@@ -95,6 +96,9 @@ class DecodeState(eqx.Module):
     kv_pages: ht.i32[NamedArray, "seq page"]
     """Key-value pages for each sequence. This is used to store the key-value pairs for the sequences."""
     page_size: int = eqx.field(static=True)
+
+    # Page table for KV page allocation and per-sequence lengths/usage
+    page_table: PageTable
 
     # Per sequence sampling parameters
     max_num_tokens: ht.i32[NamedArray, "seq"]
@@ -411,10 +415,7 @@ max_num_tokens: {max_num_tokens}
 
     @staticmethod
     def init(
-        max_seqs: int,
-        max_pages: int,
-        page_size: int,
-        max_seq_len: int,
+        page_table: PageTable,
         pad_token_id: int = INVALID,
         max_stop_seqs: int = 0,
         max_stop_tokens: int = 16,
@@ -423,9 +424,15 @@ max_num_tokens: {max_num_tokens}
         """
         Initialize a DecodeState with empty buffers.
         """
+        max_seqs = page_table.max_seqs
+        pages_per_seq = page_table.pages_per_seq
+        page_size = page_table.page_size
+        max_seq_len = page_table.max_len_per_seq
+
         return DecodeState(
-            kv_pages=hax.full({"seq": max_seqs, "page": max_pages}, INVALID, dtype=jnp.int32),
+            kv_pages=hax.full({"seq": max_seqs, "page": pages_per_seq}, INVALID, dtype=jnp.int32),
             page_size=page_size,
+            page_table=page_table,
             seq_id=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
             tokens=hax.full({"seq": max_seqs, "position": max_seq_len}, pad_token_id, dtype=jnp.int32),
             logprobs=None,

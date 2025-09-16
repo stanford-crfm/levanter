@@ -11,7 +11,6 @@ from levanter.inference.service import Engine, Request
 from levanter.inference.jit_scheduler import SeqDecodingParams
 from levanter.layers.attention import KvPageCache
 from levanter.inference.page_table import PageTable
-from levanter.inference.utils import INVALID
 import pytest
 import logging
 
@@ -89,11 +88,13 @@ def test_release_on_finish_and_reuse_slots(caplog: pytest.LogCaptureFixture):
     assert total_generated == 2  # one new token per prompt
 
     # Finished sequences are auto-released; PageTable should have no active seqs
-    pt = svc.gen_state.page_table
+    pt = svc.gen_state.decode_state.page_table
     ds = svc.gen_state.decode_state
-    # All seq_lens entries should be invalid now
+    # All slots should be marked unused and lengths zeroed
     seq_lens = jax.device_get(pt.seq_lens.array)
-    assert ((seq_lens < 0) | (seq_lens == INVALID)).all()
+    used_mask = jax.device_get(pt.used_mask.array)
+    assert (used_mask == 0).all()
+    assert (seq_lens == 0).all()
     # All local seq ids should be INVALID
     seq_ids = jax.device_get(ds.seq_id.array)
     assert (seq_ids < 0).all() or ((seq_ids == 2_000_000) | (seq_ids < 0)).all()
