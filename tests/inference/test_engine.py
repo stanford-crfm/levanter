@@ -7,7 +7,7 @@ import haliax as hax
 
 from haliax import Axis
 
-from levanter.inference.service import Engine, Request
+from levanter.inference.engine import InferenceEngine, Request
 from levanter.inference.jit_scheduler import SeqDecodingParams
 from levanter.layers.attention import KvPageCache
 from levanter.inference.page_table import PageTable
@@ -44,7 +44,7 @@ class DummyModel:
 
 def _build_service(vocab_size=10):
     model = DummyModel(vocab_size=vocab_size, eos_id=3)
-    service = Engine.from_model(
+    service = InferenceEngine.from_model(
         model=model,
         tokenizer=None,
         max_pages=64,

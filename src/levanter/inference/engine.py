@@ -53,7 +53,7 @@ class DecodeResult:
 
 
 @dataclass(frozen=True)
-class EngineConfig:
+class InferenceEngineConfig:
     """Configuration for Engine memory/layout knobs.
 
     Exposes key buffer sizes and limits controlling prefill, decode queueing, and page table capacity.
@@ -485,7 +485,7 @@ def _run_generation_loop(
     return final_gen_state, final_outputs
 
 
-class Engine:
+class InferenceEngine:
     """Encapsulates batch inference: prefill + decode + output extraction.
 
     Typical usage:
@@ -502,7 +502,7 @@ class Engine:
         cache: KvPageCache,
         decode_state: DecodeState,
         sampler: Sampler,
-        config: EngineConfig,
+        config: InferenceEngineConfig,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -539,9 +539,9 @@ class Engine:
         max_queued_tokens: int = 32,
         max_seqs_in_prefill: int = 16,
         max_prefill_size: Optional[int] = None,
-    ) -> "Engine":
+    ) -> "InferenceEngine":
         """Build an engine using basic sizing knobs. Uses defaults for stop-token capacity."""
-        cfg = EngineConfig(
+        cfg = InferenceEngineConfig(
             max_pages=max_pages,
             max_seqs=max_seqs,
             page_size=page_size,
@@ -558,8 +558,8 @@ class Engine:
         cls,
         model: LmHeadModel,
         tokenizer,
-        config: EngineConfig,
-    ) -> "Engine":
+        config: InferenceEngineConfig,
+    ) -> "InferenceEngine":
         """Build an engine using a EngineConfig for sizing knobs."""
         table = PageTable.init(config.imputed_max_pages, config.max_seqs, config.page_size, config.max_pages_per_seq)
         cache = hax.named_jit(model.initial_cache)(table, dtype=config.compute_dtype)

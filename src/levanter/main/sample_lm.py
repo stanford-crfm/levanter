@@ -17,7 +17,7 @@ from haliax.partitioning import round_axis_for_partitioning
 import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
-from levanter.inference.service import Engine, EngineConfig, Request
+from levanter.inference.engine import InferenceEngine, InferenceEngineConfig, Request
 from levanter.inference.jit_scheduler import SeqDecodingParams
 from levanter.inference.utils import INVALID
 from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
@@ -42,7 +42,7 @@ class SampleLmConfig:
     tokenizer: str | None = None
 
     # Inference service/memory layout configuration
-    service: EngineConfig = field(default_factory=EngineConfig)
+    service: InferenceEngineConfig = field(default_factory=InferenceEngineConfig)
 
     prompts: list[str] | str | tuple[str, ...] = (
         "Four score and seven years ago, our",
@@ -120,7 +120,7 @@ def main(config: SampleLmConfig):
         prompt_ids = tokenizer(prompts, add_special_tokens=False)["input_ids"]
 
         # Initialize a reusable generation service with capacity from config
-        service = Engine.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
+        service = InferenceEngine.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
 
         # -------------------------------- Scheduler-based generation --------------------------------
 
