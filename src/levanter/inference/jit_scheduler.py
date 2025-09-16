@@ -66,9 +66,6 @@ class DecodeState(eqx.Module):
     """
     State of sequences during decoding. This manages a "hot set" of sequences that are currently being decoded.
 
-    * `seq_id` is a buffer of sequence IDs, which is used to identify sequences in the `tokens` buffer. It is
-    the "global" sequence ID. (That is, there might be more sequences than `seq_id.size`, but only the ones that are
-    currently being decoded are stored in this buffer.)
     * `tokens` is a buffer of tokens for each sequence. It includes any prompt/prefix.
     * `seq_lens` is a buffer of sequence lengths for each sequence. This is the number of tokens in the `tokens` buffer that have been generated so far.
     * `logprobs` is an optional buffer of log probabilities for the tokens. If not None, it should have the same shape
@@ -78,7 +75,6 @@ class DecodeState(eqx.Module):
        those positions.
     """
 
-    seq_id: ht.i32[NamedArray, "seq"]  # sequence ID. This is the "global" sequence ID
     tokens: ht.i32[NamedArray, "seq position"]
     """ most recent tokens generated for each sequence. Should always start at a page boundary. """
     logprobs: ht.Float[NamedArray, "seq position"] | None  # log probabilities of the tokens
@@ -123,12 +119,11 @@ class DecodeState(eqx.Module):
     def invalidate_finished(self) -> "DecodeState":
         """Invalidate metadata for sequences marked finished by ``finished_mask``.
 
-        - Sets ``seq_id`` and ``seq_lens`` to INVALID for finished slots
+        - Sets ``seq_lens`` to INVALID for finished slots
         - Resets ``clone_sources`` to INVALID
         - Clears ``kv_pages`` rows for finished slots to INVALID
         """
         mask = self.finished
-        new_seq_id = hax.where(mask, INVALID, self.seq_id)
         new_seq_lens = hax.where(mask, INVALID, self.seq_lens)
         new_clone_sources = hax.where(mask, INVALID, self.clone_sources)
         new_kv_pages = hax.where(mask, INVALID, self.kv_pages)
@@ -136,7 +131,6 @@ class DecodeState(eqx.Module):
 
         return dataclasses.replace(
             self,
-            seq_id=new_seq_id,
             seq_lens=new_seq_lens,
             clone_sources=new_clone_sources,
             kv_pages=new_kv_pages,
@@ -224,7 +218,7 @@ class DecodeState(eqx.Module):
     @property
     def max_seqs(self) -> int:
         """Number of sequences in the buffer."""
-        return self.seq_id.axis_size("seq")
+        return self.tokens.axis_size("seq")
 
     @property
     def max_tokens(self) -> int:
@@ -242,7 +236,6 @@ class DecodeState(eqx.Module):
     def assign_seq(
         self,
         local_seq_id: int,
-        global_seq_id: int,
         tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
         kv_pages: ht.i32[NamedArray, "page"] | None = None,  # type: ignore[name-defined]
         seq_params: SeqDecodingParams | None = None,
@@ -260,7 +253,6 @@ class DecodeState(eqx.Module):
         new_state = dataclasses.replace(
             self,
             kv_pages=self.kv_pages.at["seq", local_seq_id].set(kv_pages),
-            seq_id=self.seq_id.at["seq", local_seq_id].set(global_seq_id),
             tokens=new_tokens,
             # set log probs to nan for the prefix tokens
             logprobs=(
@@ -394,7 +386,6 @@ class DecodeState(eqx.Module):
         jax.debug.print(
             """
 DecodeState:
-seq_id: {seq_id}
 num_tokens: {num_tokens}
 finished: {finished}
 tokens: {tokens}
@@ -403,7 +394,6 @@ kv_pages: {kv_pages}
 logprobs: {logprobs}
 max_num_tokens: {max_num_tokens}
 """,
-            seq_id=self.seq_id,
             num_tokens=self.seq_lens,
             finished=self.finished,
             tokens=self.tokens,
@@ -433,7 +423,7 @@ max_num_tokens: {max_num_tokens}
             kv_pages=hax.full({"seq": max_seqs, "page": pages_per_seq}, INVALID, dtype=jnp.int32),
             page_size=page_size,
             page_table=page_table,
-            seq_id=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
+            # seq_id=hax.full({"seq": max_seqs}, INVALID, dtype=jnp.int32),
             tokens=hax.full({"seq": max_seqs, "position": max_seq_len}, pad_token_id, dtype=jnp.int32),
             logprobs=None,
             seq_lens=hax.zeros({"seq": max_seqs}, dtype=jnp.int32),

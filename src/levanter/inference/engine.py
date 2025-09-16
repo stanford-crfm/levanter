@@ -119,7 +119,6 @@ class GenState(eqx.Module):
         parent_local_id: int,
         child_local_id: int | None = None,
         *,
-        global_id: int | None = None,
         seq_params: SeqDecodingParams | None = None,
     ) -> tuple["GenState", int]:
         """Clone a sequence into a new local slot, sharing full pages and using a fresh page for the last partial page.
@@ -127,7 +126,6 @@ class GenState(eqx.Module):
         Args:
             parent_local_id: Local sequence id to clone from.
             child_local_id: Optional local id to clone into; allocated if None.
-            global_id: Global id to assign to the clone in `DecodeState`.
             seq_params: Per-sequence decoding parameters for the clone.
 
         Returns:
@@ -142,12 +140,10 @@ class GenState(eqx.Module):
         prefix_len = int(decode_state.seq_lens["seq", parent_local_id].scalar())
         parent_prefix = decode_state.tokens["seq", parent_local_id, "position", 0:prefix_len]
         parent_kv_pages_row = decode_state.kv_pages["seq", parent_local_id]
-        gid = int(decode_state.seq_id["seq", parent_local_id].scalar()) if global_id is None else global_id
 
         # Assign child sequence state (copies tokens up to prefix and kv_pages row)
         decode_state = decode_state.assign_seq(
             local_seq_id=child_local_id,
-            global_seq_id=gid,
             tokens=parent_prefix,
             kv_pages=parent_kv_pages_row,
             seq_params=seq_params,
@@ -659,7 +655,7 @@ class InferenceEngine:
         if not batch:
             return 0, None
         # Build a single TokenQueue for prefill and run prefill exactly once
-        token_queue = self._prefill_prompts(batch, primary_global_ids=[r.request_id for r in batch])
+        token_queue = self._prefill_prompts(batch)
         if token_queue is None or int(jax.device_get(token_queue.num_queued_tokens)) == 0:
             return 0, None
         new_state = _run_prefill(
@@ -682,7 +678,6 @@ class InferenceEngine:
     def _prefill_prompts(
         self,
         requests: Sequence[Request],
-        primary_global_ids: Optional[Sequence[int]],
     ) -> TokenQueue | None:
         """Assign sequence ids, set per-seq params, and build a single TokenQueue for prefill.
 
@@ -729,7 +724,6 @@ class InferenceEngine:
                 self.gen_state,
                 decode_state=self.gen_state.decode_state.assign_seq(
                     local_seq_id=seq_id,
-                    global_seq_id=request.request_id,
                     tokens=hax.named(this_tokens, axis="position"),
                     kv_pages=None,
                     seq_params=seq_params,
@@ -746,9 +740,6 @@ class InferenceEngine:
                 for k in range(1, request.n_generations):
                     self.gen_state, child_local_id = self.gen_state.clone_sequence(
                         seq_id,
-                        global_id=(
-                            primary_global_ids[idx] + k if primary_global_ids is not None else request.request_id
-                        ),
                         seq_params=dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k)),
                     )
                     # Consume one free slot for the clone
