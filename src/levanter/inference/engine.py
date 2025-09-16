@@ -124,8 +124,8 @@ class GenState(eqx.Module):
         """Clone a sequence into a new local slot, sharing full pages and using a fresh page for the last partial page.
 
         Args:
-            parent_local_id: Local sequence id to clone from.
-            child_local_id: Optional local id to clone into; allocated if None.
+            parent_local_id: Local slot id to clone from.
+            child_local_id: Optional local slot id to clone into; allocated if None.
             seq_params: Per-sequence decoding parameters for the clone.
 
         Returns:
@@ -143,7 +143,7 @@ class GenState(eqx.Module):
 
         # Assign child sequence state (copies tokens up to prefix and kv_pages row)
         decode_state = decode_state.assign_seq(
-            local_seq_id=child_local_id,
+            local_slot_id=child_local_id,
             tokens=parent_prefix,
             kv_pages=parent_kv_pages_row,
             seq_params=seq_params,
@@ -176,13 +176,13 @@ class GenState(eqx.Module):
         return new_state, child_local_id
 
 
-def _compute_sample_indices(pos_ids, seq_ids, seq_lens, max_sample_indices):
+def _compute_sample_indices(pos_ids, slot_ids, seq_lens, max_sample_indices):
     """
     Compute positions of last tokens per sequence inside a packed slice.
 
     Boundary when absolute pos_id equals the post-allocation seq_len - 1 for that sequence.
     """
-    seq_lens_per_seq = seq_lens["seq", seq_ids]
+    seq_lens_per_seq = seq_lens["seq", slot_ids]
     boundary_mask = pos_ids == (seq_lens_per_seq - 1)
     sample_indices = hax.where(
         boundary_mask,
@@ -221,11 +221,11 @@ def _run_prefill(
 
     tokens = queue.queued_tokens
     pos_ids = queue.queued_pos_ids
-    seq_ids = queue.queued_seq_ids
+    slot_ids = queue.queued_slot_ids
     seq_lens = gen_state.decode_state.seq_lens
-    page_table, binfo = gen_state.decode_state.page_table.allocate_for_seq(token_seq_ids=seq_ids)
+    page_table, binfo = gen_state.decode_state.page_table.allocate_for_seq(token_slot_ids=slot_ids)
 
-    sample_indices = _compute_sample_indices(pos_ids, seq_ids, seq_lens, max_seqs_in_prefill)
+    sample_indices = _compute_sample_indices(pos_ids, slot_ids, seq_lens, max_seqs_in_prefill)
 
     logits, cache = model.decode(tokens, gen_state.cache, binfo, pos_ids)
     logits_at_samples = logits["position", sample_indices]
@@ -236,16 +236,16 @@ def _run_prefill(
     #     num=num_new_tokens,
     #     queued=gen_state.decode_state.num_queued_tokens,
     # )
-    new_seq_ids = seq_ids["position", sample_indices]
+    new_slot_ids = slot_ids["position", sample_indices]
     new_pos_ids = pos_ids["position", sample_indices]
-    prng_keys = gen_state.decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
+    prng_keys = gen_state.decode_state.prng_keys_for(new_slot_ids, new_pos_ids)
 
-    temps = gen_state.decode_state.temperature["seq", new_seq_ids]
+    temps = gen_state.decode_state.temperature["seq", new_slot_ids]
 
     new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
 
     # Update decode_state (also enqueues into the main decode queue)
-    decode_state = gen_state.decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
+    decode_state = gen_state.decode_state.update_tokens(new_tokens, new_slot_ids, log_probs, num_new_tokens)
 
     # Initialize outputs buffer and append prefill-sampled tokens
     outputs = _DecodeOutputs.init(
@@ -253,7 +253,7 @@ def _run_prefill(
         max_seqs=gen_state.decode_state.max_seqs,
         with_logprobs=True,
     )
-    outputs = outputs.append(new_tokens, new_seq_ids, log_probs, num_new_tokens, decode_state.finished)
+    outputs = outputs.append(new_tokens, new_slot_ids, log_probs, num_new_tokens, decode_state.finished)
 
     decode_state = dataclasses.replace(decode_state, page_table=page_table)
     gen_state = dataclasses.replace(gen_state, cache=cache, decode_state=decode_state)
@@ -263,7 +263,7 @@ def _run_prefill(
         gen_state, outputs = _handle_clones(
             gen_state,
             logits_at_samples,
-            new_seq_ids,
+            new_slot_ids,
             new_pos_ids,
             sampler,
             outputs,
@@ -283,41 +283,41 @@ def _run_prefill(
 def _handle_clones(
     gen_state: GenState,
     logits: ht.Float[NamedArray, " position vocab"],  # type: ignore
-    seq_ids: ht.Int[NamedArray, " position"],  # type: ignore
+    slot_ids: ht.Int[NamedArray, " position"],  # type: ignore
     pos_ids: ht.Int[NamedArray, " position"],  # type: ignore
     sampler: Sampler,
     outputs: _DecodeOutputs,
 ) -> tuple[GenState, _DecodeOutputs]:  # type: ignore
     """
-    Sample alternative tokens for the given logits, seq_ids, pos_ids, and clone_targets.
+    Sample alternative tokens for the given logits, slot_ids, pos_ids, and clone_targets.
     This is used for the `n>1` case of `n_generations` in the `Request` class.
 
     Uses ``gen_state.decode_state.clone_sources`` as a mapping from target local ids to source local ids.
 
     It's assumed that:
       1. gen_state already has the appropriate page table and decode state.
-      2. logits/seq_ids/pos_ids are already sliced
+      2. logits/slot_ids/pos_ids are already sliced
 
     Returns the updated gen_state and a boolean array indicating which ids from `clone_targets` were sampled.
     """
     # Resolve axes
     CloneSeq = gen_state.decode_state.clone_sources.resolve_axis("seq")
 
-    # For each clone source, find its index in the provided seq_ids (within this packed/sliced batch).
+    # For each clone source, find its index in the provided slot_ids (within this packed/sliced batch).
     # If not present, mark as INVALID.
     def find_src(i):
         src = gen_state.decode_state.clone_sources["seq", i].scalar()
 
         def do(src):
-            # match positions where seq_ids == src; take first
-            eq = (seq_ids == src).array
+            # match positions where slot_ids == src; take first
+            eq = (slot_ids == src).array
             idx = jnp.nonzero(eq, size=1, fill_value=INVALID)[0][0]
             return idx
 
         return jax.lax.cond(is_valid(src), do, lambda x: x, src)
 
     # source_indices tells us, for each sequence that is a clone target, the index in the
-    # logits/seq_ids/pos_ids arrays of its source sequence.
+    # logits/slot_ids/pos_ids arrays of its source sequence.
     # INVALID if either no source or source not in this batch.
     source_indices = hax.named(hax.vmap(find_src, "seq")(jnp.arange(CloneSeq.size)), axis="seq")
 
@@ -337,7 +337,7 @@ def _handle_clones(
     selected_safe = hax.where(selected != INVALID, selected, 0)
     tgt_ids = selected_safe
     src_pos = source_indices["seq", selected_safe]
-    src_ids = seq_ids["position", src_pos]
+    src_ids = slot_ids["position", src_pos]
     logits_this_time = logits["position", src_pos]
     pos_ids_this_time = pos_ids["position", src_pos]
 
@@ -357,17 +357,17 @@ def _handle_clones(
         state: tuple[PageTable, KvPageCache],
     ) -> tuple[PageTable, KvPageCache]:
         page_table, cache = state
-        src_seq_id = src_ids["position", i].scalar()
-        dst_seq_id = tgt_ids["position", i].scalar()
-        page_table = page_table.clone_pages_from(src_seq_id, dst_seq_id)
+        src_slot_id = src_ids["position", i].scalar()
+        dst_slot_id = tgt_ids["position", i].scalar()
+        page_table = page_table.clone_pages_from(src_slot_id, dst_slot_id)
 
-        src_len = page_table.seq_lens["seq", src_seq_id].scalar()
+        src_len = page_table.seq_lens["seq", src_slot_id].scalar()
         used_pages = (src_len + size - 1) // size
         last_idx = jnp.maximum(used_pages - 1, 0)
 
         def _copy(_):
-            src_page = page_table.page_indices["seq", src_seq_id, "page", last_idx].scalar()
-            dst_page = page_table.page_indices["seq", dst_seq_id, "page", last_idx].scalar()
+            src_page = page_table.page_indices["seq", src_slot_id, "page", last_idx].scalar()
+            dst_page = page_table.page_indices["seq", dst_slot_id, "page", last_idx].scalar()
             return cache.copy_page(src_page, dst_page)
 
         def _identity(_):
@@ -422,25 +422,25 @@ def _run_generation_loop(
 
         tokens = packed_seq.tokens
         pos_ids = packed_seq.pos_ids
-        seq_ids = packed_seq.seq_ids
+        slot_ids = packed_seq.slot_ids
         # NB: use decode_state.seq_lens to determine the number of tokens in each sequence, not what's in page table
         seq_lens = decode_state.seq_lens
 
-        page_table, binfo = gen_state.decode_state.page_table.allocate_for_seq(token_seq_ids=seq_ids)
+        page_table, binfo = gen_state.decode_state.page_table.allocate_for_seq(token_slot_ids=slot_ids)
 
         max_sample_indices = min(page_table.max_seqs, max_tokens_per_round)
-        sample_indices = _compute_sample_indices(pos_ids, seq_ids, seq_lens, max_sample_indices)
+        sample_indices = _compute_sample_indices(pos_ids, slot_ids, seq_lens, max_sample_indices)
 
         # Decode logits and sample new tokens
         logits, cache = model.decode(tokens, gen_state.cache, binfo, pos_ids)
         logits_at_samples = logits["position", sample_indices]
 
         num_new_tokens = hax.sum(sample_indices != INVALID).scalar().astype(jnp.int32)
-        new_seq_ids = seq_ids["position", sample_indices]
+        new_slot_ids = slot_ids["position", sample_indices]
         new_pos_ids = pos_ids["position", sample_indices]
-        prng_keys = decode_state.prng_keys_for(new_seq_ids, new_pos_ids)
+        prng_keys = decode_state.prng_keys_for(new_slot_ids, new_pos_ids)
 
-        temps = decode_state.temperature["seq", new_seq_ids]
+        temps = decode_state.temperature["seq", new_slot_ids]
 
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
         # jax.debug.print(
@@ -452,13 +452,13 @@ def _run_generation_loop(
         # )
 
         # Update decode state with the freshly sampled tokens (also enqueues them)
-        decode_state = decode_state.update_tokens(new_tokens, new_seq_ids, log_probs, num_new_tokens)
+        decode_state = decode_state.update_tokens(new_tokens, new_slot_ids, log_probs, num_new_tokens)
 
         # Update the gen_state with all the new components
         decode_state = dataclasses.replace(decode_state, page_table=page_table)
         new_gen_state = dataclasses.replace(gen_state, cache=cache, decode_state=decode_state)
         # Append non-stateful outputs for host-side extraction
-        outputs = outputs.append(new_tokens, new_seq_ids, log_probs, num_new_tokens, decode_state.finished)
+        outputs = outputs.append(new_tokens, new_slot_ids, log_probs, num_new_tokens, decode_state.finished)
         # Device-side release of finished sequences (jit-safe)
         new_gen_state = _release_finished_device(new_gen_state)
         # jax.debug.print(
@@ -512,8 +512,8 @@ class InferenceEngine:
         # Track free local sequence slots
         self.free_slots: int = int(decode_state.page_table.max_seqs)
         # Mapping structures for active sequences
-        # local_map: local seq id -> (request id, child id)
-        # sequences: request id -> {child id -> local seq id}
+        # local_map: local slot id -> (request id, child id)
+        # sequences: request id -> {child id -> local slot id}
         self.local_map: dict[int, tuple[int, int]] = {}
         self.sequences: dict[int, dict[int, int]] = {}
         # FIFO request queue for incremental admission
@@ -582,8 +582,8 @@ class InferenceEngine:
         Keeps the KV cache memory allocated. Reuses current `PageTable` object with pages freed.
         """
         page_table = self.gen_state.decode_state.page_table
-        for seq_id in range(page_table.max_seqs):
-            page_table = page_table.free_pages(seq_id)
+        for slot_id in range(page_table.max_seqs):
+            page_table = page_table.free_pages(slot_id)
         # persist into decode state
         new_decode_state = dataclasses.replace(self._initial_decode_state, page_table=page_table)
         self.gen_state = dataclasses.replace(self.gen_state, decode_state=new_decode_state)
@@ -604,8 +604,8 @@ class InferenceEngine:
             return
         logger.info(f"Releasing finished sequences: locals={finished_locals}")
         # Maintain request/child mappings and slot counts on host
-        for local_seq in finished_locals:
-            info = self.local_map.pop(local_seq, None)
+        for local_slot in finished_locals:
+            info = self.local_map.pop(local_slot, None)
             if info is not None:
                 rid, cid = info
                 cmap = self.sequences.get(rid)
@@ -679,14 +679,14 @@ class InferenceEngine:
         self,
         requests: Sequence[Request],
     ) -> TokenQueue | None:
-        """Assign sequence ids, set per-seq params, and build a single TokenQueue for prefill.
+        """Assign slot ids, set per-seq params, and build a single TokenQueue for prefill.
 
         Does not run device prefill; caller should invoke _run_prefill once with the returned queue.
         """
         max_seqs_in_prefill = int(self.config.max_seqs_in_prefill)
         max_prefill_size = self.config.max_prefill_size or self.model.Pos.size
         tokens = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
-        seq_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
+        slot_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
         pos_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
         offset = 0
         num_seqs_in_prefill = 0
@@ -697,11 +697,11 @@ class InferenceEngine:
             seq_tokens = request.prompt_tokens
             seq_params = request.decode_params
 
-            page_table, seq_id = self.gen_state.decode_state.page_table.assign_seq_id_to_seq()
-            seq_id = int(seq_id)
+            page_table, slot_id = self.gen_state.decode_state.page_table.assign_seq_id_to_seq()
+            slot_id = int(slot_id)
 
-            if not is_valid(seq_id):
-                raise RuntimeError("Ran out of sequence IDs in the page table during prefill.")
+            if not is_valid(slot_id):
+                raise RuntimeError("Ran out of slot IDs in the page table during prefill.")
 
             self.gen_state = dataclasses.replace(
                 self.gen_state,
@@ -714,7 +714,7 @@ class InferenceEngine:
                 break
 
             tokens[offset : offset + len(seq_tokens)] = np.asarray(this_tokens)
-            seq_ids[offset : offset + len(seq_tokens)] = seq_id
+            slot_ids[offset : offset + len(seq_tokens)] = slot_id
             pos_ids[offset : offset + len(seq_tokens)] = np.arange(len(seq_tokens), dtype=np.int32)
 
             offset += len(seq_tokens)
@@ -723,7 +723,7 @@ class InferenceEngine:
             self.gen_state = dataclasses.replace(
                 self.gen_state,
                 decode_state=self.gen_state.decode_state.assign_seq(
-                    local_seq_id=seq_id,
+                    local_slot_id=slot_id,
                     tokens=hax.named(this_tokens, axis="position"),
                     kv_pages=None,
                     seq_params=seq_params,
@@ -733,13 +733,13 @@ class InferenceEngine:
             self.free_slots -= 1
             # Record mapping: primary child id is 0
             rid = int(request.request_id)
-            self.local_map[seq_id] = (rid, 0)
-            self.sequences.setdefault(rid, {})[0] = seq_id
+            self.local_map[slot_id] = (rid, 0)
+            self.sequences.setdefault(rid, {})[0] = slot_id
 
             if request.n_generations > 1:
                 for k in range(1, request.n_generations):
                     self.gen_state, child_local_id = self.gen_state.clone_sequence(
-                        seq_id,
+                        slot_id,
                         seq_params=dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k)),
                     )
                     # Consume one free slot for the clone
@@ -751,7 +751,7 @@ class InferenceEngine:
         if offset > 0:
             prefill_queue = TokenQueue(
                 queued_tokens=hax.named(tokens, axis="position"),
-                queued_seq_ids=hax.named(seq_ids, axis="position"),
+                queued_slot_ids=hax.named(slot_ids, axis="position"),
                 queued_pos_ids=hax.named(pos_ids, axis="position"),
                 num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
             )
@@ -929,14 +929,14 @@ class InferenceEngine:
         n = int(pending_outputs.num_tokens)
         fins = pending_outputs.finished.array
         toks_arr = pending_outputs.tokens.array
-        sids_arr = pending_outputs.seq_ids.array
+        sids_arr = pending_outputs.slot_ids.array
 
         appended = 0
         unmapped = 0
         for i in range(n):
-            local_seq = int(sids_arr[i])
+            local_slot = int(sids_arr[i])
             tok = int(toks_arr[i])
-            info = self.local_map.get(local_seq)
+            info = self.local_map.get(local_slot)
             if info is None:
                 unmapped += 1
                 continue
@@ -947,10 +947,10 @@ class InferenceEngine:
             appended += 1
 
         # Update done flags based on snapshot
-        for local_seq, is_done in enumerate(fins):
+        for local_slot, is_done in enumerate(fins):
             if not bool(is_done):
                 continue
-            info = self.local_map.get(local_seq)
+            info = self.local_map.get(local_slot)
             if info is None:
                 continue
             rid, cid = info

@@ -105,12 +105,12 @@ class PageTable(eqx.Module):
     # @named_call
     def allocate_for_seq(
         self,
-        token_seq_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
+        token_slot_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
     ) -> tuple["PageTable", "PageBatchInfo"]:
         """Allocate pages for new sequences and update ``seq_lens``."""
 
-        token_seq_ids = hax.where(token_seq_ids < 0, self.max_seqs, token_seq_ids)
-        updated_seqs, new_counts = hax.unique_counts(token_seq_ids, self.max_Seq, fill_value=INVALID)
+        token_slot_ids = hax.where(token_slot_ids < 0, self.max_seqs, token_slot_ids)
+        updated_seqs, new_counts = hax.unique_counts(token_slot_ids, self.max_Seq, fill_value=INVALID)
 
         new_counts = hax.where(updated_seqs >= self.max_seqs, 0, new_counts)
 
@@ -182,11 +182,11 @@ class PageTable(eqx.Module):
             seq_lens=new_lens,
         )
 
-        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts, token_seq_ids)
+        batch_info = self._slice_batch_info(updated_seqs, self.seq_lens, new_table, new_counts, token_slot_ids)
 
         return new_table, batch_info
 
-    def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts, tokens):
+    def _slice_batch_info(self, updated_seqs, old_seq_lens, new_table, new_token_counts, slot_ids):
         mask = is_valid(updated_seqs)
         safe_updated = hax.where(mask, updated_seqs, 0)
 
@@ -198,13 +198,13 @@ class PageTable(eqx.Module):
 
         num_seqs = hax.sum(mask).scalar()
 
-        token_dests = hax.full(tokens.shape, INVALID, dtype=jnp.int32)
+        token_dests = hax.full(slot_ids.shape, INVALID, dtype=jnp.int32)
         # Initialize per-sequence cursors from old lengths for active sequences, else 0
         seq_cursors = jnp.where(self.used_mask.array, old_seq_lens.array, 0)
 
         def token_body(i, carry):
             token_dests, seq_cursors = carry
-            seq_id = tokens["position", i].scalar()
+            seq_id = slot_ids["position", i].scalar()
 
             def assign(carry):
                 token_dests, seq_cursors = carry
@@ -219,7 +219,7 @@ class PageTable(eqx.Module):
             token_dests, seq_cursors = jax.lax.cond(is_valid(seq_id), assign, lambda c: c, (token_dests, seq_cursors))
             return token_dests, seq_cursors
 
-        token_dests, _ = jax.lax.fori_loop(0, tokens.axis_size("position"), token_body, (token_dests, seq_cursors))
+        token_dests, _ = jax.lax.fori_loop(0, slot_ids.axis_size("position"), token_body, (token_dests, seq_cursors))
 
         cu_q_lens = hax.concatenate(
             "seq",

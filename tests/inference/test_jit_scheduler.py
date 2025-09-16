@@ -14,11 +14,11 @@ def test_pack_next_sequence_single_seq_boundary_at_last_token():
     tq = TokenQueue.init(capacity)
 
     tokens = hax.named(jnp.arange(capacity, dtype=jnp.int32), axis=("position",))
-    seq_ids = hax.named(jnp.full((capacity,), 0, dtype=jnp.int32), axis=("position",))
+    slot_ids = hax.named(jnp.full((capacity,), 0, dtype=jnp.int32), axis=("position",))
 
     # Absolute pos_ids for a single sequence: 0..capacity-1
     pos_ids = hax.named(jnp.arange(capacity, dtype=jnp.int32), axis=("position",))
-    tq = tq.enqueue_tokens(tokens, seq_ids, pos_ids, capacity)
+    tq = tq.enqueue_tokens(tokens, slot_ids, pos_ids, capacity)
 
     tq2, packed = tq.pack_next_sequence(capacity)
 
@@ -30,8 +30,8 @@ def test_pack_next_sequence_single_seq_boundary_at_last_token():
     pt = PageTable.init(max_pages=16, max_seqs=4, page_size=8, max_pages_per_seq=4)
     # activate seq 0
     pt, _ = pt.assign_seq_id_to_seq()
-    pt, binfo = pt.allocate_for_seq(packed.seq_ids)
-    seq_lens_after = binfo.seq_lens["seq", packed.seq_ids]
+    pt, binfo = pt.allocate_for_seq(packed.slot_ids)
+    seq_lens_after = binfo.seq_lens["seq", packed.slot_ids]
     boundary_mask = packed.pos_ids == (seq_lens_after - 1)
     # Expect exactly one boundary at the last token
     bm = boundary_mask.array
@@ -46,11 +46,11 @@ def test_pack_next_sequence_boundaries_between_sequences():
     tq = TokenQueue.init(capacity)
 
     tokens = hax.named(jnp.array([10, 11, 12, 20, 21, 22], dtype=jnp.int32), axis=("position",))
-    seq_ids = hax.named(jnp.array([0, 0, 0, 1, 1, 1], dtype=jnp.int32), axis=("position",))
+    slot_ids = hax.named(jnp.array([0, 0, 0, 1, 1, 1], dtype=jnp.int32), axis=("position",))
 
     # Absolute pos_ids are per-sequence; start fresh at 0 for each sequence in this test
     pos_ids = hax.named(jnp.array([0, 1, 2, 0, 1, 2], dtype=jnp.int32), axis=("position",))
-    tq = tq.enqueue_tokens(tokens, seq_ids, pos_ids, capacity)
+    tq = tq.enqueue_tokens(tokens, slot_ids, pos_ids, capacity)
 
     tq2, packed = tq.pack_next_sequence(capacity)
 
@@ -59,8 +59,8 @@ def test_pack_next_sequence_boundaries_between_sequences():
     # activate seq 0 and 1
     pt, _ = pt.assign_seq_id_to_seq()
     pt, _ = pt.assign_seq_id_to_seq()
-    pt, binfo = pt.allocate_for_seq(packed.seq_ids)
-    seq_lens_after = binfo.seq_lens["seq", packed.seq_ids]
+    pt, binfo = pt.allocate_for_seq(packed.slot_ids)
+    seq_lens_after = binfo.seq_lens["seq", packed.slot_ids]
     boundary_mask = packed.pos_ids == (seq_lens_after - 1)
     bm = boundary_mask.array
     # Boundaries at positions 2 and 5
