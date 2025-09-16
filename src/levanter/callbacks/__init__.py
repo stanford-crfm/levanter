@@ -220,8 +220,8 @@ def profile_ctx(
                     with open(txt_summary_path, "w") as f:
                         s.stream = f  # type: ignore
                         s.print_stats(host_profile_topn)
-            except Exception as e:  # pragma: no cover - optional/diagnostic path
-                logger.warning(f"Failed to write host profiling stats: {e}")
+            except Exception:  # pragma: no cover - optional/diagnostic path
+                logger.warn("Failed to log host profile stats", exc_info=True)
 
         # Start periodic flushing before stop_trace since it may block when perfetto is enabled
         if create_perfetto_link and jax.process_index() == 0:
@@ -244,12 +244,12 @@ def profile_ctx(
             try:
                 levanter.tracker.current_tracker().log_artifact(stats_path, type="host_profile")
             except Exception:
-                pass
+                logger.warn("Failed to log host profile stats", exc_info=True)
         if txt_summary_path is not None and os.path.exists(txt_summary_path):
             try:
                 levanter.tracker.current_tracker().log_artifact(txt_summary_path, type="host_profile")
             except Exception:
-                pass
+                logger.warn("Failed to log host profile summary", exc_info=True)
         barrier_sync()
 
 
