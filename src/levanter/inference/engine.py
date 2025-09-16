@@ -788,10 +788,10 @@ class InferenceEngine:
         Each Request provides prompt_tokens, decode_params, and n_generations (clones).
         """
         # validate we don't have any sequences with n_generations exceeding max_seqs
-        total_needed = sum(int(r.n_generations) for r in requests)
-        if total_needed > int(self.gen_state.decode_state.page_table.max_seqs):
+        max_needed = max(int(r.n_generations) for r in requests)
+        if max_needed > int(self.gen_state.decode_state.page_table.max_seqs):
             raise ValueError(
-                f"Total sequences needed ({total_needed}) exceeds max_seqs ({self.gen_state.decode_state.page_table.max_seqs})."
+                f"Total sequences needed ({max_needed}) exceeds max_seqs ({self.gen_state.decode_state.page_table.max_seqs})."
                 "Decompose your request into smaller batches or increase max_seqs when building the service."
             )
 
