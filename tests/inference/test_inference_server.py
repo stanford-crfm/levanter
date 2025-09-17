@@ -20,6 +20,7 @@ try:
     from openai.types import Completion
     from openai.types.chat import ChatCompletion
 
+    from levanter.inference.engine import InferenceEngineConfig
     from levanter.inference.openai import InferenceServer, InferenceServerConfig
     from levanter.main.inference_worker import InferenceWorker
 
@@ -34,6 +35,7 @@ def baby_llama_config():
     return InferenceServerConfig(
         hf_checkpoint=RepoRef("timinar/baby-llama-58m"),
         tokenizer="timinar/baby-llama-58m",
+        service=InferenceEngineConfig(max_seqs=2, page_size=4, max_pages_per_seq=4, max_queued_tokens=8),
         model=LlamaConfig(),
         trainer=TrainerConfig(wandb=WandbConfig(mode="disabled"), ray=RayConfig(auto_start_cluster=False)),
         max_new_tokens=32,
@@ -267,7 +269,7 @@ def test_completion_with_logprobs(test_client):
             "prompt": "The quick brown",
             "max_tokens": 5,
             "temperature": 0.0,  # Use deterministic sampling
-            "logprobs": 1,  # OpenAI uses int, not bool
+            "logprobs": True,
             "seed": 42,
         },
     )
@@ -306,7 +308,7 @@ def test_chat_completion_with_logprobs(test_client):
     )
 
     assert response.status_code == 200
-    chat_completion = ChatCompletion(**response.json())
+    chat_completion = ChatCompletion.model_validate(response.json())
 
     logger.info("Chat response: %s", chat_completion)
 
@@ -330,10 +332,10 @@ def test_logprobs_with_multiple_generations(test_client):
         json={
             "model": "timinar/baby-llama-58m",
             "prompt": "The weather is",
-            "max_tokens": 3,
+            "max_tokens": 10,
             "temperature": 0.7,
-            "logprobs": 1,  # OpenAI uses int, not bool
-            "n": 2,  # Generate 2 completions
+            "logprobs": True,
+            "n": 2,
             "seed": 42,
         },
     )
@@ -346,7 +348,7 @@ def test_logprobs_with_multiple_generations(test_client):
     for i, choice in enumerate(completion.choices):
         assert choice.index == i
         assert choice.logprobs is not None
-        assert len(choice.logprobs.tokens) > 0
+        assert len(choice.logprobs.tokens) > 0, choice
 
         print(f"Choice {i} generated {len(choice.logprobs.tokens)} tokens with logprobs")
 
@@ -361,7 +363,7 @@ def test_logprobs_deterministic_behavior(test_client):
         "prompt": "Once upon a time",
         "max_tokens": 4,
         "temperature": 0.0,  # Deterministic
-        "logprobs": 1,  # OpenAI uses int, not bool
+        "logprobs": True,
         "seed": 12345,
     }
 

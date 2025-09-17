@@ -72,6 +72,8 @@ class InferenceServerConfig:
     temperature: float = 0.7
     seed: int = 42
 
+    batch_timeout: float = 0.1  # seconds to wait for more requests before processing batch
+
     host: str = "localhost"
     port: int = 10243
 
@@ -104,6 +106,12 @@ class InferenceResponse:
     logprobs: Optional[List[float]] = None
 
 
+class InferenceBatch(list):
+    @property
+    def num_seqs(self) -> int:
+        return sum(req.n_generations for req in self)
+
+
 # A callback which replaces the current model.
 WeightSource = collections.abc.Callable[[LmHeadModel], LmHeadModel]
 
@@ -120,6 +128,18 @@ class ObjDict(dict):
         return res
 
 
+def _fetch_all_from_queue(q: queue.Queue, timeout: float) -> List:
+    deadline = time.time() + timeout
+    items = []
+    while time.time() < deadline:
+        try:
+            item = q.get(timeout=max(0, deadline - time.time()))
+            items.append(item)
+        except queue.Empty:
+            break
+    return items
+
+
 class InferenceContext:
     """Background thread that manages the GenerationService and processes requests"""
 
@@ -129,21 +149,25 @@ class InferenceContext:
         self.service = service
         self.config = config
         self.request_queue: queue.Queue[InferenceRequest] = queue.Queue()
+        self.batch_queue: queue.Queue[InferenceBatch] = queue.Queue()
         self.shutdown_event = threading.Event()
         self.model_lock = threading.Lock()
-        self.thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self.inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self.batch_thread = threading.Thread(target=self._batch_processing_loop, daemon=True)
         self._next_request_id = 0
 
     def start(self):
-        """Start the inference thread"""
+        """Start the inference and batch processing threads"""
         logger.info("Starting inference context...")
-        self.thread.start()
+        self.inference_thread.start()
+        self.batch_thread.start()
 
     def shutdown(self):
-        """Signal shutdown and wait for thread to finish"""
+        """Signal shutdown and wait for threads to finish"""
         logger.info("Shutting down inference context...")
         self.shutdown_event.set()
-        self.thread.join(timeout=1)
+        self.inference_thread.join(timeout=1)
+        self.batch_thread.join(timeout=1)
 
     def reload(self, weight_callback: WeightSource):
         """Reload the inference model using the given weight callback.
@@ -193,133 +217,142 @@ class InferenceContext:
         )
 
         logger.info("Enqueuing request %s", request)
-
         self.request_queue.put(request)
         return request_id
 
     def _inference_loop(self):
-        """Main inference loop running in background thread"""
+        """Main inference loop running in background thread - collects requests into batches"""
         logger.info("Inference thread started")
 
-        batch: List[InferenceRequest] = []
-        num_seqs = 0
         while not self.shutdown_event.is_set():
-            try:
-                deadline = time.time() + 0.1
-                try:
-                    req = self.request_queue.get(timeout=deadline - time.time())
-                    if num_seqs + req.n_generations < self.service.config.max_seqs:
-                        batch.append(req)
-                    else:
-                        with self.model_lock:
-                            logger.info("Enqueued batch of %d requests", len(batch))
-                            self._process_batch(batch)
-                        batch = [req]
-                        num_seqs = req.n_generations
-                except queue.Empty:
-                    if not batch:
-                        continue
-                    with self.model_lock:
-                        self._process_batch(batch)
-                    batch = []
-                    num_seqs = 0
+            requests = _fetch_all_from_queue(self.request_queue, self.config.batch_timeout)
+            if not requests:
+                continue
 
-            except Exception as e:
-                logger.error(f"Error in inference loop: {e}", exc_info=True)
+            batch = InferenceBatch()
+            for r in requests:
+                if r.n_generations > self.service.config.max_seqs:
+                    # fail requests that are too large
+                    error_msg = (
+                        f"Request {r.request_id} has n={r.n_generations} which exceeds "
+                        f"the maximum allowed {self.service.config.max_seqs}"
+                    )
+                    logger.error(error_msg)
+                    r.future.get_loop().call_soon_threadsafe(r.future.set_exception, ValueError(error_msg))
+                elif batch.num_seqs + r.n_generations <= self.service.config.max_seqs:
+                    batch.append(r)
+                else:
+                    self.batch_queue.put(batch)
+                    batch = InferenceBatch([r])
+
+            if batch:
+                self.batch_queue.put(batch)
 
         logger.info("Inference thread shutting down")
 
-    def _process_batch(self, requests: List[InferenceRequest]):
-        """Process a batch of inference requests"""
-        try:
-            service_requests = []
+    def _batch_processing_loop(self):
+        """Batch processing loop running in background thread - waits for batches and executes them"""
+        logger.info("Batch processing thread started")
 
-            for i, req in enumerate(requests):
-                # Create stop tokens if specified
-                stop_ids = None
-                if req.stop_tokens:
-                    stop_ids = hax.named(
-                        jnp.asarray(req.stop_tokens, dtype=jnp.int32), axis="position"
-                    ).broadcast_axis({"stop_seq": 1})
+        while not self.shutdown_event.is_set():
+            try:
+                batch = self.batch_queue.get(timeout=1)
+                with self.model_lock:
+                    self._execute_batch(batch)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error executing batch: {e}", exc_info=True)
+                # Set exceptions on all futures in the batch
+                for req in batch:
+                    try:
+                        req.future.get_loop().call_soon_threadsafe(req.future.set_exception, e)
+                    except Exception:
+                        pass
 
-                seq_params = SeqDecodingParams(
-                    max_num_tokens=jnp.array(len(req.prompt_tokens) + req.max_tokens, dtype=jnp.int32),
-                    stop_tokens=stop_ids,
-                    temperature=jnp.array(req.temperature, dtype=jnp.float32),
-                    key=jrandom.PRNGKey(req.seed if req.seed is not None else i),
+        logger.info("Batch processing thread shutting down")
+
+    def _execute_batch(self, requests: InferenceBatch):
+        """Execute a batch of inference requests"""
+        service_requests = []
+
+        for i, req in enumerate(requests):
+            # Create stop tokens if specified
+            stop_ids = None
+            if req.stop_tokens:
+                stop_ids = hax.named(jnp.asarray(req.stop_tokens, dtype=jnp.int32), axis="position").broadcast_axis(
+                    {"stop_seq": 1}
                 )
 
-                service_req = Request(
-                    prompt_tokens=req.prompt_tokens,
-                    request_id=i,  # Use batch index as service request id
-                    decode_params=seq_params,
-                    n_generations=req.n_generations,
-                    enable_logprobs=req.enable_logprobs,
-                )
-                service_requests.append(service_req)
+            seq_params = SeqDecodingParams(
+                max_num_tokens=jnp.array(len(req.prompt_tokens) + req.max_tokens, dtype=jnp.int32),
+                stop_tokens=stop_ids,
+                temperature=jnp.array(req.temperature, dtype=jnp.float32),
+                key=jrandom.PRNGKey(req.seed if req.seed is not None else i),
+            )
 
-            # Generate responses
-            start_time = time.time()
-            result = self.service.generate(service_requests)
-            duration = time.time() - start_time
-            logger.info(f"Batch completed in {duration:.2f}s, generated {result.total_generated} tokens")
+            service_req = Request(
+                prompt_tokens=req.prompt_tokens,
+                request_id=i,  # Use batch index as service request id
+                decode_params=seq_params,
+                n_generations=req.n_generations,
+                enable_logprobs=req.enable_logprobs,
+            )
+            service_requests.append(service_req)
 
-            # Return results to futures
-            output_idx = 0
-            for req in requests:
-                try:
-                    req_outputs = []
-                    for _ in range(req.n_generations):
-                        if output_idx < len(result.tokens):
-                            # Decode tokens to text, excluding prompt
-                            prompt_len = len(req.prompt_tokens)
-                            generated_tokens = result.tokens[output_idx][prompt_len:]
-                            text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Generate responses
+        start_time = time.time()
+        result = self.service.generate(service_requests)
+        duration = time.time() - start_time
+        logger.info(f"Batch completed in {duration:.2f}s, generated {result.total_generated} tokens")
 
-                            # Extract logprobs if requested, logprobs are already only for generated tokens
-                            result_logprobs = None
-                            if req.enable_logprobs:
-                                assert result.logprobs is not None
-                                result_logprobs = result.logprobs[output_idx]
+        # Return results to futures
+        output_idx = 0
+        for req in requests:
+            try:
+                req_outputs = []
+                for _ in range(req.n_generations):
+                    if output_idx < len(result.tokens):
+                        # Decode tokens to text, excluding prompt
+                        prompt_len = len(req.prompt_tokens)
+                        generated_tokens = result.tokens[output_idx][prompt_len:]
+                        text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-                            req_outputs.append(
-                                InferenceResponse(
-                                    text=text,
-                                    tokens=result.tokens[output_idx],
-                                    logprobs=result_logprobs,
-                                    prompt_tokens=prompt_len,
-                                    completion_tokens=len(generated_tokens),
-                                    request_id=req.request_id,
-                                )
+                        # Extract logprobs if requested, logprobs are already only for generated tokens
+                        result_logprobs = None
+                        if req.enable_logprobs:
+                            assert result.logprobs is not None
+                            result_logprobs = result.logprobs[output_idx]
+
+                        req_outputs.append(
+                            InferenceResponse(
+                                text=text,
+                                tokens=result.tokens[output_idx],
+                                logprobs=result_logprobs,
+                                prompt_tokens=prompt_len,
+                                completion_tokens=len(generated_tokens),
+                                request_id=req.request_id,
                             )
-                            output_idx += 1
-                        else:
-                            logger.error(f"Missing output for request {req.request_id}")
-                            req_outputs.append(
-                                InferenceResponse(
-                                    text="<error while generating>",
-                                    tokens=[],
-                                    logprobs=None,
-                                    prompt_tokens=0,
-                                    completion_tokens=0,
-                                    request_id=req.request_id,
-                                )
+                        )
+                        output_idx += 1
+                    else:
+                        logger.error(f"Missing output for request {req.request_id}")
+                        req_outputs.append(
+                            InferenceResponse(
+                                text="<error while generating>",
+                                tokens=[],
+                                logprobs=None,
+                                prompt_tokens=0,
+                                completion_tokens=0,
+                                request_id=req.request_id,
                             )
+                        )
 
-                    # Set the future result
-                    req.future.get_loop().call_soon_threadsafe(req.future.set_result, req_outputs)
-                except Exception as e:
-                    logger.error(f"Error processing result for {req.request_id}: {e}")
-                    req.future.get_loop().call_soon_threadsafe(req.future.set_exception, e)
-
-        except Exception as e:
-            logger.error(f"Error processing batch: {e}", exc_info=True)
-            # Set exceptions on all futures
-            for req in requests:
-                try:
-                    req.future.get_loop().call_soon_threadsafe(req.future.set_exception, e)
-                except Exception:
-                    pass
+                # Set the future result
+                req.future.get_loop().call_soon_threadsafe(req.future.set_result, req_outputs)
+            except Exception as e:
+                logger.error(f"Error processing result for {req.request_id}: {e}")
+                req.future.get_loop().call_soon_threadsafe(req.future.set_exception, e)
 
 
 def _health_check() -> dict:
