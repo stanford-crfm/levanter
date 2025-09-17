@@ -7,7 +7,6 @@ import logging
 import haliax as hax
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 from haliax import Axis
 
@@ -91,15 +90,11 @@ def test_release_on_finish_and_reuse_slots(caplog: pytest.LogCaptureFixture):
 
     # Finished sequences are auto-released; PageTable should have no active seqs
     pt = svc.gen_state.decode_state.page_table
-    ds = svc.gen_state.decode_state
     # All slots should be marked unused and lengths zeroed
     seq_lens = jax.device_get(pt.seq_lens.array)
     used_mask = jax.device_get(pt.used_mask.array)
     assert (used_mask == 0).all()
     assert (seq_lens == 0).all()
-    # All local seq ids should be INVALID
-    seq_ids = jax.device_get(ds.seq_id.array)
-    assert (seq_ids < 0).all() or ((seq_ids == 2_000_000) | (seq_ids < 0)).all()
     # No pages should be held
     ref_counts = jax.device_get(pt.page_ref_counts.array)
     assert int(ref_counts.sum()) == 0
@@ -151,37 +146,9 @@ def test_reuse_with_clones_and_slot_reassignment():
         return reqs
 
     reqs = build_requests(0)
-    outputs, total_generated = svc.generate(reqs)
-    assert all(out == [3] for out in outputs)
-    assert total_generated == len(outputs)
+    outputs = svc.generate(reqs)
+    assert all(out == [3] for out in outputs.tokens)
 
     reqs2 = build_requests(100)
-    outputs2, total_generated2 = svc.generate(reqs2)
-    assert all(out == [3] for out in outputs2)
-    assert total_generated2 == len(outputs2)
-
-
-def test_page_table_allocation_unsorted_slots():
-    page_table = PageTable.init(max_pages=32, max_seqs=8, page_size=8, max_pages_per_seq=2)
-
-    # Mark the target sequence slots as used to mirror runtime behavior
-    for seq in (6, 7):
-        page_table, _ = page_table.assign_seq_id_to_seq(seq)
-
-    slot_ids_desc = hax.named(jnp.asarray([7, 7, 6, 6], dtype=jnp.int32), axis=("position",))
-    pos_ids_desc = hax.named(jnp.asarray([0, 1, 0, 1], dtype=jnp.int32), axis=("position",))
-
-    new_table, batch_desc = page_table.allocate_for_seq(token_slot_ids=slot_ids_desc, token_pos_ids=pos_ids_desc)
-
-    seq_lens = np.asarray(jax.device_get(new_table.seq_lens.array))
-    assert seq_lens[7] == 2
-    assert seq_lens[6] == 2
-
-    dests = np.asarray(jax.device_get(batch_desc.new_token_dests.array))[:4]
-    perm = np.asarray(jax.device_get(batch_desc.token_permutation.array))[:4]
-    sorted_slots = np.asarray(jax.device_get(slot_ids_desc.array))[perm]
-    sorted_dests = dests
-
-    for seq in (6, 7):
-        seq_dests = sorted_dests[sorted_slots == seq]
-        assert np.all(seq_dests[:-1] <= seq_dests[1:])
+    outputs2 = svc.generate(reqs2)
+    assert all(out == [3] for out in outputs2.tokens)

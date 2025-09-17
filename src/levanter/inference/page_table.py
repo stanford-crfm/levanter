@@ -139,8 +139,7 @@ class PageTable(eqx.Module):
         new_self = jax.lax.cond(is_valid(seq_id), do_assign, no_op, self)
         return new_self, seq_id
 
-    # @eqx.filter_jit
-    # @named_call
+    @eqx.filter_jit
     def allocate_for_seq(
         self,
         token_slot_ids: ht.i32[NamedArray, " position"],  # type: ignore[name-defined]
