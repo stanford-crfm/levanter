@@ -170,8 +170,9 @@ def test_page_table_allocation_unsorted_slots():
         page_table, _ = page_table.assign_seq_id_to_seq(seq)
 
     slot_ids_desc = hax.named(jnp.asarray([7, 7, 6, 6], dtype=jnp.int32), axis=("position",))
+    pos_ids_desc = hax.named(jnp.asarray([0, 1, 0, 1], dtype=jnp.int32), axis=("position",))
 
-    new_table, batch_desc = page_table.allocate_for_seq(token_slot_ids=slot_ids_desc)
+    new_table, batch_desc = page_table.allocate_for_seq(token_slot_ids=slot_ids_desc, token_pos_ids=pos_ids_desc)
 
     seq_lens = np.asarray(jax.device_get(new_table.seq_lens.array))
     assert seq_lens[7] == 2

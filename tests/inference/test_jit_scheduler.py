@@ -3,6 +3,7 @@
 
 import jax.numpy as jnp
 import haliax as hax
+import pytest
 
 from levanter.inference.jit_scheduler import TokenQueue
 from levanter.inference.page_table import PageTable
@@ -30,7 +31,7 @@ def test_pack_next_sequence_single_seq_boundary_at_last_token():
     pt = PageTable.init(max_pages=16, max_seqs=4, page_size=8, max_pages_per_seq=4)
     # activate seq 0
     pt, _ = pt.assign_seq_id_to_seq()
-    pt, binfo = pt.allocate_for_seq(packed.slot_ids)
+    pt, binfo = pt.allocate_for_seq(packed.slot_ids, packed.pos_ids)
     seq_lens_after = binfo.seq_lens["seq", packed.slot_ids]
     boundary_mask = packed.pos_ids == (seq_lens_after - 1)
     # Expect exactly one boundary at the last token
@@ -40,16 +41,18 @@ def test_pack_next_sequence_single_seq_boundary_at_last_token():
     assert int(bm.sum()) == 1
 
 
-def test_pack_next_sequence_boundaries_between_sequences():
+@pytest.mark.parametrize("seq_ids", [[0, 1], [1, 0]])
+def test_pack_next_sequence_boundaries_between_sequences(seq_ids):
     # Two sequences back-to-back; boundaries at the last token of each sequence in the packed slice.
     capacity = 6
     tq = TokenQueue.init(capacity)
+    seq1, seq2 = seq_ids
 
-    tokens = hax.named(jnp.array([10, 11, 12, 20, 21, 22], dtype=jnp.int32), axis=("position",))
-    slot_ids = hax.named(jnp.array([0, 0, 0, 1, 1, 1], dtype=jnp.int32), axis=("position",))
+    tokens = hax.named(jnp.array([10, 11, 12, 20, 21, 22, 23], dtype=jnp.int32), axis=("position",))
+    slot_ids = hax.named(jnp.array([seq1, seq1, seq1, seq2, seq2, seq2, seq2], dtype=jnp.int32), axis=("position",))
 
     # Absolute pos_ids are per-sequence; start fresh at 0 for each sequence in this test
-    pos_ids = hax.named(jnp.array([0, 1, 2, 0, 1, 2], dtype=jnp.int32), axis=("position",))
+    pos_ids = hax.named(jnp.array([0, 1, 2, 0, 1, 2, 3], dtype=jnp.int32), axis=("position",))
     tq = tq.enqueue_tokens(tokens, slot_ids, pos_ids, capacity)
 
     tq2, packed = tq.pack_next_sequence(capacity)
@@ -57,10 +60,13 @@ def test_pack_next_sequence_boundaries_between_sequences():
     assert int(packed.num_tokens) == capacity
     pt = PageTable.init(max_pages=16, max_seqs=4, page_size=8, max_pages_per_seq=4)
     # activate seq 0 and 1
-    pt, _ = pt.assign_seq_id_to_seq()
-    pt, _ = pt.assign_seq_id_to_seq()
-    pt, binfo = pt.allocate_for_seq(packed.slot_ids)
+    pt, _seq1 = pt.assign_seq_id_to_seq(seq1)
+    assert _seq1 == seq1
+    pt, _seq2 = pt.assign_seq_id_to_seq(seq2)
+    assert _seq2 == seq2
+    pt, binfo = pt.allocate_for_seq(packed.slot_ids, packed.pos_ids)
     seq_lens_after = binfo.seq_lens["seq", packed.slot_ids]
+
     boundary_mask = packed.pos_ids == (seq_lens_after - 1)
     bm = boundary_mask.array
     # Boundaries at positions 2 and 5
