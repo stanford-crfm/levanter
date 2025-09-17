@@ -234,6 +234,11 @@ def _run_prefill(
     seq_lens = gen_state.decode_state.seq_lens
     page_table, binfo = gen_state.decode_state.page_table.allocate_for_seq(token_slot_ids=slot_ids)
 
+    perm = binfo.token_permutation
+    tokens = tokens["position", perm]
+    pos_ids = pos_ids["position", perm]
+    slot_ids = slot_ids["position", perm]
+
     sample_indices = _compute_sample_indices(pos_ids, slot_ids, seq_lens, max_seqs_in_prefill)
 
     jax.debug.print(
@@ -822,10 +827,6 @@ class InferenceEngine:
                     self.sequences.setdefault(rid, {})[k] = child_local_id
 
         if offset > 0:
-            order = np.argsort(slot_ids[:offset], kind="stable")
-            tokens[:offset] = tokens[:offset][order]
-            slot_ids[:offset] = slot_ids[:offset][order]
-            pos_ids[:offset] = pos_ids[:offset][order]
             prefill_queue = TokenQueue(
                 queued_tokens=hax.named(tokens, axis="position"),
                 queued_slot_ids=hax.named(slot_ids, axis="position"),

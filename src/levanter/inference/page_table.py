@@ -240,9 +240,13 @@ class PageTable(eqx.Module):
         # Initialize per-sequence cursors from old lengths for active sequences, else 0
         seq_cursors = jnp.where(self.used_mask.array, old_seq_lens.array, 0)
 
+        order = hax.argsort(slot_ids, axis="position")
+        # order = hax.arange(slot_ids.resolve_axis("position"), dtype=jnp.int32)
+        sorted_slot_ids = slot_ids["position", order]
+
         def token_body(i, carry):
             token_dests, seq_cursors = carry
-            seq_id = slot_ids["position", i].scalar()
+            seq_id = sorted_slot_ids["position", i].scalar()
 
             def assign(carry):
                 token_dests, seq_cursors = carry
@@ -272,6 +276,7 @@ class PageTable(eqx.Module):
             cu_q_lens=cu_q_lens,
             num_seqs=num_seqs,
             new_token_dests=token_dests,
+            token_permutation=order,
             page_size=self.page_size,
         )
         return batch_info
@@ -475,6 +480,7 @@ class PageBatchInfo(eqx.Module):
     cu_q_lens: ht.i32[NamedArray, " seq"]  # type: ignore[name-defined]
     num_seqs: ht.i32[jnp.ndarray, ""]
     new_token_dests: ht.i32[NamedArray, "position"]  # type: ignore[name-defined]
+    token_permutation: ht.i32[NamedArray, "position"]  # type: ignore[name-defined]
     page_size: int = eqx.field(static=True)
 
     def __post_init__(self):

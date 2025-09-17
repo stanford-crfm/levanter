@@ -7,6 +7,8 @@ import haliax as hax
 
 from haliax import Axis
 
+import numpy as np
+
 from levanter.inference.engine import InferenceEngine, Request
 from levanter.inference.jit_scheduler import SeqDecodingParams
 from levanter.layers.attention import KvPageCache
@@ -158,3 +160,28 @@ def test_reuse_with_clones_and_slot_reassignment():
     outputs2, total_generated2 = svc.generate(reqs2)
     assert all(out == [3] for out in outputs2)
     assert total_generated2 == len(outputs2)
+
+
+def test_page_table_allocation_unsorted_slots():
+    page_table = PageTable.init(max_pages=32, max_seqs=8, page_size=8, max_pages_per_seq=2)
+
+    # Mark the target sequence slots as used to mirror runtime behavior
+    for seq in (6, 7):
+        page_table, _ = page_table.assign_seq_id_to_seq(seq)
+
+    slot_ids_desc = hax.named(jnp.asarray([7, 7, 6, 6], dtype=jnp.int32), axis=("position",))
+
+    new_table, batch_desc = page_table.allocate_for_seq(token_slot_ids=slot_ids_desc)
+
+    seq_lens = np.asarray(jax.device_get(new_table.seq_lens.array))
+    assert seq_lens[7] == 2
+    assert seq_lens[6] == 2
+
+    dests = np.asarray(jax.device_get(batch_desc.new_token_dests.array))[:4]
+    perm = np.asarray(jax.device_get(batch_desc.token_permutation.array))[:4]
+    sorted_slots = np.asarray(jax.device_get(slot_ids_desc.array))[perm]
+    sorted_dests = dests
+
+    for seq in (6, 7):
+        seq_dests = sorted_dests[sorted_slots == seq]
+        assert np.all(seq_dests[:-1] <= seq_dests[1:])
