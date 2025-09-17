@@ -5,9 +5,9 @@ import dataclasses
 import functools
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
-from collections import deque
 
 import equinox as eqx
 import jax
@@ -135,6 +135,14 @@ class GenState(eqx.Module):
         if child_local_id is None:
             page_table, new_child = page_table.assign_seq_id_to_seq()
             child_local_id = int(jax.device_get(new_child))
+        else:
+            page_table, new_child = page_table.assign_seq_id_to_seq(child_local_id)
+            assigned_id = int(jax.device_get(new_child))
+            if assigned_id != int(child_local_id):
+                raise RuntimeError(
+                    f"Requested clone slot {child_local_id} but PageTable returned {assigned_id if assigned_id != INVALID else 'INVALID'}."
+                )
+            child_local_id = assigned_id
         # Important: assign_seq_id_to_seq donates its input; update decode_state.page_table immediately
         decode_state = dataclasses.replace(self.decode_state, page_table=page_table)
         prefix_len = int(decode_state.seq_lens["seq", parent_local_id].scalar())
@@ -509,8 +517,13 @@ class InferenceEngine:
         if config.max_prefill_size is None:
             config = dataclasses.replace(config, max_prefill_size=decode_state.page_table.max_len_per_seq)
         self.config = config
-        # Track free local sequence slots
-        self.free_slots: int = int(decode_state.page_table.max_seqs)
+        # Track free local sequence slots as explicit ids (LIFO so we re-use lower ids first).
+        # Respect any pre-populated allocations in the provided PageTable.
+        page_table = decode_state.page_table
+        used_mask = np.asarray(jax.device_get(page_table.used_mask.array))
+        free_slot_ids = [idx for idx, used in enumerate(used_mask) if not bool(used)]
+        # Use a simple LIFO stack so slot reuse order matches prior behavior.
+        self.free_slots: list[int] = list(reversed(free_slot_ids))
         # Mapping structures for active sequences
         # local_map: local slot id -> (request id, child id)
         # sequences: request id -> {child id -> local slot id}
@@ -588,7 +601,7 @@ class InferenceEngine:
         new_decode_state = dataclasses.replace(self._initial_decode_state, page_table=page_table)
         self.gen_state = dataclasses.replace(self.gen_state, decode_state=new_decode_state)
         # All local slots are free after reset
-        self.free_slots = int(page_table.max_seqs)
+        self.free_slots = list(reversed(range(int(page_table.max_seqs))))
         self.local_map.clear()
         self.sequences.clear()
 
@@ -614,7 +627,15 @@ class InferenceEngine:
                     if len(cmap) == 0:
                         self.sequences.pop(rid, None)
             # Freed one local slot (host view)
-            self.free_slots += 1
+            self.free_slots.append(local_slot)
+
+    def _take_slot_from_free_list(self, slot_id: int) -> None:
+        """Remove ``slot_id`` from the local free list; raise if it was not tracked."""
+
+        try:
+            self.free_slots.remove(slot_id)
+        except ValueError as exc:
+            raise RuntimeError(f"PageTable assigned slot {slot_id}, but it was not present in free list") from exc
 
     # ------------------------------- Queue helpers -------------------------------
     def enqueue_requests(self, requests: Sequence[Request]) -> None:
@@ -628,7 +649,7 @@ class InferenceEngine:
         """
         if not self.request_queue:
             return 0, None
-        sim_slots = self.free_slots
+        sim_slots = len(self.free_slots)
         sim_pages = self._free_page_count()
         max_prefill_size = int(self.config.max_prefill_size or self.gen_state.decode_state.page_table.max_len_per_seq)
         max_seqs_in_prefill = int(self.config.max_seqs_in_prefill)
@@ -697,11 +718,15 @@ class InferenceEngine:
             seq_tokens = request.prompt_tokens
             seq_params = request.decode_params
 
-            page_table, slot_id = self.gen_state.decode_state.page_table.assign_seq_id_to_seq()
-            slot_id = int(slot_id)
+            if not self.free_slots:
+                raise RuntimeError("Prefill attempted to claim a slot when none were available.")
 
+            page_table, assigned_slot = self.gen_state.decode_state.page_table.assign_seq_id_to_seq()
+            slot_id = int(jax.device_get(assigned_slot))
             if not is_valid(slot_id):
                 raise RuntimeError("Ran out of slot IDs in the page table during prefill.")
+
+            self._take_slot_from_free_list(slot_id)
 
             self.gen_state = dataclasses.replace(
                 self.gen_state,
@@ -729,8 +754,6 @@ class InferenceEngine:
                     seq_params=seq_params,
                 ),
             )
-            # Consume one free slot for this primary
-            self.free_slots -= 1
             # Record mapping: primary child id is 0
             rid = int(request.request_id)
             self.local_map[slot_id] = (rid, 0)
@@ -742,8 +765,10 @@ class InferenceEngine:
                         slot_id,
                         seq_params=dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k)),
                     )
-                    # Consume one free slot for the clone
-                    self.free_slots -= 1
+                    child_local_id = int(jax.device_get(child_local_id))
+                    if not is_valid(child_local_id):
+                        raise RuntimeError("Ran out of slot IDs in the page table during cloning.")
+                    self._take_slot_from_free_list(child_local_id)
                     # Record mapping for clone: child id is k
                     self.local_map[child_local_id] = (rid, k)
                     self.sequences.setdefault(rid, {})[k] = child_local_id
