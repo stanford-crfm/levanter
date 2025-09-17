@@ -10,10 +10,21 @@ def random_segmentation_jax(
     num_items: int, num_segments: int, key: PRNGKey, padded_length: int
 ) -> jnp.ndarray:
     """
-    Precondition: 1 <= num_segments < num_items
+    Generates a random partition of `num_items` items into `num_segments`
+    segments described by their lengths. The length of the returned tensor is
+    `padded_length`.
+
+    Based on `_random_segmentation` in `random_spans_noise_mask` in T5:
+    https://github.com/google-research/text-to-text-transfer-transformer/blob/e081111ccd51df425aa7124e8e311ed6d403d767/t5/data/preprocessors.py#L2992-L3010
+
+
+    Precondition:
+        1 <= num_segments < num_items
+
     Returns:
-        Array of segment lengths with shape (padded_length,) where first
-        num_segments values sum to num_items
+        A tensor of segment lengths with shape `(padded_length,)` where the
+        first `num_segments` values sum to `num_items` and all other values are
+        zero.
     """
 
     indices = jnp.arange(padded_length)
@@ -44,9 +55,23 @@ def random_segmentation_jax(
     return segment_length
 
 
-@functools.partial(
-    jax.jit, static_argnames=["mean_noise_span_length", "random_roll", "padded_length"]
-)
+@jax.jit
+def num_noise_spans_tokens_and_spans(
+    length: int, noise_density: float, mean_noise_span_length: float
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    adjusted_length = jnp.maximum(length, 2)
+
+    num_noise_tokens = jnp.round(adjusted_length * noise_density).astype(jnp.int32)
+    num_noise_tokens = jnp.clip(num_noise_tokens, 1, adjusted_length - 1)
+    num_noise_spans = jnp.maximum(
+        jnp.round(num_noise_tokens / mean_noise_span_length).astype(jnp.int32), 1
+    )
+    num_nonnoise_tokens = adjusted_length - num_noise_tokens
+
+    return num_noise_tokens, num_noise_spans, num_nonnoise_tokens
+
+
+@functools.partial(jax.jit, static_argnames=["padded_length"])
 def random_spans_noise_mask_jax(
     length: int,
     noise_density: float,
@@ -56,17 +81,24 @@ def random_spans_noise_mask_jax(
     padded_length: int,
 ) -> jnp.ndarray:
     """
-    Returns:
-        Boolean mask of shape (padded_length,) indicating noise positions
-    """
-    adjusted_length = jnp.maximum(length, 2)
+    Generates a random 1D Boolean mask tensor where `noise_density` gives the
+    fraction of tokens that are 1s, occurring in runs of length
+    `mean_noise_span_length`. You must use `random_roll` to make each mask
+    equally likely; otherwise the distribution is not uniform and the mask will
+    have a prefix of 0s.
 
-    num_noise_tokens = jnp.round(adjusted_length * noise_density).astype(jnp.int32)
-    num_noise_tokens = jnp.clip(num_noise_tokens, 1, adjusted_length - 1)
-    num_noise_spans = jnp.maximum(
-        jnp.round(num_noise_tokens / mean_noise_span_length).astype(jnp.int32), 1
+    Only the first `length` tokens describe the mask; the contents of the
+    remaining `padded_length - length` tokens are 0s.
+
+    Based on `random_spans_noise_mask` in T5:
+    https://github.com/google-research/text-to-text-transfer-transformer/blob/e081111ccd51df425aa7124e8e311ed6d403d767/t5/data/preprocessors.py#L2930-L3039
+
+    Returns:
+        Boolean mask tensor of shape (padded_length,).
+    """
+    num_noise_tokens, num_noise_spans, num_nonnoise_tokens = (
+        num_noise_spans_tokens_and_spans(length, noise_density, mean_noise_span_length)
     )
-    num_nonnoise_tokens = adjusted_length - num_noise_tokens
 
     key1, key2, key3 = jax.random.split(key, 3)
 
@@ -117,7 +149,7 @@ def random_spans_noise_mask_jax(
     return mask
 
 
-@functools.partial(jax.jit, static_argnames=["pad_token_id"])
+@jax.jit
 def noise_span_to_unique_sentinel_jax(
     tokens: jnp.ndarray,
     noise_mask: jnp.ndarray,
@@ -127,9 +159,20 @@ def noise_span_to_unique_sentinel_jax(
 ) -> jnp.ndarray:
     """
     Replace each run of consecutive noise tokens with a different sentinel.
+    `length` must be the true length of `tokens`, excluding padding.
+
+    For example:
+
+        tokens = "The longest river in the world is the Amazon"
+        noise_mask = [0, 1, 0, ...]
+        noise_span_to_unique_sentinel_jax(...) =
+            "The <sentinel_0> river in the world is the Amazon <sentinel_0> Amazon"
+
+    Based on `noise_span_to_unique_sentinel` in T5:
+    https://github.com/google-research/text-to-text-transfer-transformer/blob/e081111ccd51df425aa7124e8e311ed6d403d767/t5/data/preprocessors.py#L3141
 
     Returns:
-        an array with the same shape and dtype as tokens
+        A tensor with the same shape and dtype as `tokens`.
     """
     padded_length = tokens.shape[0]
 
@@ -143,8 +186,7 @@ def noise_span_to_unique_sentinel_jax(
     segments = jnp.cumsum(first_noise_tokens.astype(jnp.int32)) - 1
     max_segments = jnp.max(segments) + 1  # Number of unique noise spans
 
-    # Check if we have too many noise spans
-    err, num_sentinels = checkify.checkify(
+    checkify.checkify(
         lambda: checkify.check(
             max_segments <= len(sentinel_tokens),
             f"Too many noise spans: {max_segments} > {len(sentinel_tokens)}",
@@ -179,15 +221,7 @@ def noise_span_to_unique_sentinel_jax(
     return result
 
 
-@functools.partial(
-    jax.jit,
-    static_argnames=[
-        "max_length",
-        "pad_token_id",
-        "mean_noise_span_length",
-        "random_roll",
-    ],
-)
+@jax.jit
 def to_ul2r_rx_tokens(
     key: PRNGKey,
     tokens: jnp.ndarray,
@@ -200,14 +234,19 @@ def to_ul2r_rx_tokens(
     max_length: int,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Apply UL2R R/X-denoising.
+    Apply UL2R R/X-denoising to the first `length` elements of `tokens`.
+
+    Based on `span_corruption` in T5:
+    https://github.com/google-research/text-to-text-transfer-transformer/blob/e081111ccd51df425aa7124e8e311ed6d403d767/t5/data/preprocessors.py#L1931
+
+    Does not set task tokens.
 
     Returns:
-        - tensor with the same shape as tokens containing
-          [inputs, targets, padding] where inputs+targets are truncated to fit
-          max_length
-        - scalar tensor containing the length of the input (before targets) for
-          PrefixLM attention mask
+        - A tensor with the same shape as `tokens` containing
+          `[inputs, targets, padding]` where `inputs+targets` are truncated to.
+          fit `max_length`.
+        - Scalar tensor containing the length of `inputs` (before `targets`).
+          For use when generating the loss mask / PrefixLM attention mask.
     """
 
     padded_length = tokens.shape[0]
@@ -228,14 +267,14 @@ def to_ul2r_rx_tokens(
     )
 
     indices = jnp.arange(padded_length)
-    input_len = jnp.argmax(inputs == pad_token_id)
-    target_len = jnp.argmax(targets == pad_token_id)
+    input_len = jnp.where(inputs == pad_token_id, indices, padded_length).min()
+    target_len = jnp.where(targets == pad_token_id, indices, padded_length).min()
 
-    # If inputs + targets exceed available max_length, truncate both proportionally
+    # If `inputs + targets` exceed available `max_length`, truncate both proportionally
     combined_len = input_len + target_len
     overflow = jnp.maximum(combined_len - max_length, 0)
 
-    # Distribute overflow proportionally between inputs and targets
+    # Distribute overflow proportionally between `inputs` and `targets`
     drop_inputs = jnp.where(
         combined_len > 0,
         (overflow * input_len) // jnp.maximum(combined_len, 1),
@@ -246,14 +285,63 @@ def to_ul2r_rx_tokens(
     new_input_len = jnp.maximum(input_len - drop_inputs, 0)
     new_target_len = jnp.maximum(target_len - drop_targets, 0)
 
-    # Truncate targets to the new length; inputs are gated by new_input_len below
+    # Truncate `targets` to the new length; `inputs` are gated by `new_input_len` below
     targets_trunc = jnp.where(indices < new_target_len, targets, pad_token_id)
 
-    # Roll targets to start at position new_input_len
+    # Roll `targets` to start at position `new_input_len`
     targets_rolled = jnp.roll(targets_trunc, new_input_len)
 
     result = jnp.where(indices < new_input_len, inputs, targets_rolled)
     return result, new_input_len
+
+
+@jax.jit
+def to_ul2r_s_tokens(
+    key: PRNGKey,
+    tokens: jnp.ndarray,
+    length: int,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Apply UL2R S-denoising to the first `length` elements of `tokens`.
+
+    Unlike the T5 version, all start positions for the continuation are equally
+    likely given that at least one token is included in the prefix.
+
+    In Tay et al 2008 they mention reusing random_spans_noise_mask and setting
+    noise_density to 0.25 and `mean_noise_span_length` to `length / 4`.
+    for S-denoising. https://arxiv.org/abs/2210.11399
+    But given their code I think this will deterministically just make the
+    last quarter of the input noise?!
+    https://github.com/google-research/text-to-text-transfer-transformer/blob/e081111ccd51df425aa7124e8e311ed6d403d767/t5/data/preprocessors.py#L2929-L3039
+    Here we instead choose a random pivot, including at least one token from
+    the beginning of the input.
+
+    Does not set task tokens.
+    """
+
+
+    # TODO support parameters?
+
+    # I'm not sure whether S-denoising examples look like
+    #   [S] <prefix> <sentinel_0> <continuation>
+    # or
+    #   [S] <prefix> <continuation>
+    # The latter would be identical to what we had as CausalLmConfig.
+    # The code in UL2 mentions noise_span_to_unique_sentinel for R/X-denoising
+    # but not S-denoising (see Section 9.2) and a figure in UL2R says
+    # "For PaLM and U-PaLM default, we pass the input as-is to the model.
+    # For the rest, we prepend one of [S2S], [NLU], or [NLG] to the
+    # beginning of # the input, and in the case of [NLU] and [NLG], we add
+    # the infill token at the end of the input, as typical for these modes."
+    # (implying there is no infill token for S-denoising) but I'm not sure.
+    # https://github.com/google-research/text-to-text-transfer-transformer/blob/e081111ccd51df425aa7124e8e311ed6d403d767/t5/data/preprocessors.py#L2033
+
+    pivot = jax.random.randint(key, (), 1, length - 1)
+    targets = jnp.roll(tokens, 1)
+    indices = jnp.arange(tokens.shape[0])
+    result = jnp.where(indices < pivot, tokens, targets)
+    result = result.at[pivot].set(SENTINEL_TOKEN_IDS[0])
+    return result, pivot
 
 
 @jax.jit
@@ -264,16 +352,17 @@ def ul2r_loss_mask(
     pad_token_id: int,
 ) -> jnp.ndarray:
     """
-    Create loss mask for UL2R training.
+    Creates a loss mask for UL2R training.
 
     Loss is computed only on output tokens (where input_mask is 0),
     excluding the last token in each segment and padding tokens.
 
     Args:
-        input_masks: Binary mask indicating input positions (1) vs output positions (0)
-        segment_ids: Segment IDs for packed sequences (-1 for padding)
-        tokens: Token IDs
-        pad_token_id: Padding token ID
+        - input_masks: Binary mask indicating input positions (1) vs output
+          positions (0)
+        - segment_ids: Segment IDs for packed sequences (-1 for padding)
+        - tokens: Token IDs
+        - pad_token_id: Padding token ID
 
     Returns:
         Loss mask array of same shape as inputs

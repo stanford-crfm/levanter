@@ -371,6 +371,9 @@ def _te_flash_attention(
     from transformer_engine.jax.attention import fused_attn  # noqa: F401
     from transformer_engine.jax.attention import AttnBiasType, AttnMaskType, QKVLayout  # noqa: F401
 
+    if isinstance(mask, AttentionMask) and mask.prefix_mask is not None:
+        raise NotImplementedError("prefix_mask not supported for NVTE fused attention")
+
     if logits_soft_cap is not None:
         raise NotImplementedError(
             "logits_soft_cap is not supported for NVTE fused attention. "
@@ -869,6 +872,9 @@ def _tpu_splash_attention(
     logits_soft_cap: float | None = None,
 ) -> Optional[NamedArray]:
     from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
+
+    if isinstance(mask, AttentionMask) and mask.prefix_mask is not None:
+        raise NotImplementedError("Splash attention does not support prefix_mask")
 
     # Splash attention requires BHSD format
     # We need to reshape the input to match this format
