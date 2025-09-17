@@ -7,6 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 import haliax as hax
+import numpy
 
 from levanter.inference.utils import INVALID
 from levanter.inference.page_table import PageBatchInfo, PageTable
@@ -80,6 +81,35 @@ def test_allocate_for_seqs_updates_only_valid_ids():
     assert jnp.all(new_pt.seq_lens.array[:6] == jnp.array([0, 0, 1, 2, 0, 3]))
     assert jnp.all(new_pt.seq_lens.array[6:] == 0)
     assert batch_info.num_seqs == 3
+
+
+def test_assign_seq_id_to_seq_explicit_free_slot():
+    pt = _make_table(seqs=4)
+    pt, auto_seq = pt.assign_seq_id_to_seq()
+
+    assert int(auto_seq) == 0
+
+    pt, chosen_seq = pt.assign_seq_id_to_seq(2)
+
+    assert int(chosen_seq) == 2
+    assert bool(pt.used_mask.array[2])
+    assert jnp.array_equal(pt.seq_lens.array, jnp.zeros_like(pt.seq_lens.array))
+
+
+def test_assign_seq_id_to_seq_rejects_used_slot():
+    pt = _make_table(seqs=3)
+
+    pt, seq_id = pt.assign_seq_id_to_seq(1)
+    assert int(seq_id) == 1
+
+    before = pt
+    before_used = numpy.array(before.used_mask.array)
+    before_seq_lens = numpy.array(before.seq_lens.array)
+    new_pt, reuse = pt.assign_seq_id_to_seq(1)
+
+    assert int(reuse) == INVALID
+    assert jnp.array_equal(new_pt.used_mask.array, before_used)
+    assert jnp.array_equal(new_pt.seq_lens.array, before_seq_lens)
 
 
 def test_free_pages_invalid_seq_id_noop():

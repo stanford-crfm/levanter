@@ -82,13 +82,51 @@ class PageTable(eqx.Module):
     # ------------------------------------------------------------------
     # Sequence management
     # ------------------------------------------------------------------
+
+    def assign_seq_id_to_seq(self, seq_id: int | jnp.ndarray | None = None) -> tuple["PageTable", int]:
+        """Assign a free sequence slot and return its ID.
+
+        DONATES self
+
+        If ``seq_id`` is provided and valid (0 <= seq_id < max_seqs), it is used directly and no search is done.
+        If ``seq_id`` is None or invalid (<0 or >= max_seqs), a free slot is searched for and assigned.
+
+        If no free slots are available, returns INVALID (-1) as the seq_id and does not modify the table.
+
+        Args:
+            seq_id: Optional specific sequence ID to assign. If None or invalid, a free slot is searched for.
+
+        Returns:
+            A tuple of (new PageTable with updated metadata, assigned sequence ID or INVALID if none available).
+        """
+        # JIT compile the inner function to avoid recompiling the whole function on different seq_id inputs
+        if isinstance(seq_id, int):
+            seq_id = jnp.array(seq_id, dtype=jnp.int32)
+        return self._assign_seq_id_to_seq_jit(seq_id)
+
     @eqx.filter_jit(donate="all")
-    def assign_seq_id_to_seq(self) -> tuple["PageTable", int]:
+    def _assign_seq_id_to_seq_jit(self, seq_id: jnp.ndarray | None = None) -> tuple["PageTable", int]:
         # Find a free slot using the used_mask
-        free_flags = ~self.used_mask
-        seq_id = hax.argmax(free_flags, "seq").scalar()
-        available = (~self.used_mask["seq", seq_id]).scalar()
-        seq_id = hax.where(available, seq_id, INVALID)
+        if seq_id is None:
+            seq_id = INVALID
+
+        def validate(seq_id):
+            return hax.where(self.used_mask["seq", seq_id], INVALID, seq_id)
+
+        def _find_free(seq_id):
+            free_flags = ~self.used_mask
+            maybe_seq_id = hax.argmax(free_flags, "seq").scalar()
+            available = (~self.used_mask["seq", maybe_seq_id]).scalar()
+            maybe_seq_id = hax.where(available, maybe_seq_id, INVALID)
+
+            return maybe_seq_id
+
+        seq_id = jax.lax.cond(
+            is_valid(seq_id),
+            validate,
+            _find_free,
+            seq_id,
+        )
 
         def do_assign(self_):
             new_seq_lens = self_.seq_lens.at["seq", seq_id].set(0)
