@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 @pytest.fixture(scope="module")
 def baby_llama_config():
-    """Create a configuration for baby llama model."""
+    """Create a configuration for tiny GPT-2 model."""
     return InferenceServerConfig(
         hf_checkpoint=RepoRef("timinar/baby-llama-58m"),
         tokenizer="timinar/baby-llama-58m",
@@ -292,7 +292,7 @@ def test_completion_with_logprobs(test_client):
             "prompt": "The quick brown",
             "max_tokens": 5,
             "temperature": 0.0,  # Use deterministic sampling
-            "logprobs": True,
+            "logprobs": 1,  # OpenAI uses int, not bool
             "seed": 42,
         },
     )
@@ -310,32 +310,27 @@ def test_completion_with_logprobs(test_client):
     assert choice["logprobs"] is not None, choice
     logprobs = choice["logprobs"]
 
-    # Verify logprobs structure
-    assert isinstance(logprobs, list)
-    assert len(logprobs) > 0
+    # Verify logprobs structure (OpenAI Logprobs object)
+    assert isinstance(logprobs, dict)
+    assert "tokens" in logprobs
+    assert "token_logprobs" in logprobs
+    assert isinstance(logprobs["tokens"], list)
+    assert isinstance(logprobs["token_logprobs"], list)
+    assert len(logprobs["tokens"]) > 0
+    assert len(logprobs["tokens"]) == len(logprobs["token_logprobs"])
 
-    # Check each logprob entry
-    for logprob in logprobs:
-        assert "token" in logprob
-        assert "logprob" in logprob
-        assert "bytes" in logprob
-
+    # Check each token and logprob
+    for i, (token, logprob) in enumerate(zip(logprobs["tokens"], logprobs["token_logprobs"])):
         # Verify data types
-        assert isinstance(logprob["token"], str)
-        assert isinstance(logprob["logprob"], (int, float))
-        assert isinstance(logprob["bytes"], (list, type(None)))
+        assert isinstance(token, str)
+        assert isinstance(logprob, (int, float))
 
         # Verify logprob is negative or zero (log probability constraint)
-        assert logprob["logprob"] <= 0.0
+        assert logprob <= 0.0
 
-        # If bytes are present, verify they're valid UTF-8 encoding
-        if logprob["bytes"] is not None:
-            token_bytes = bytes(logprob["bytes"])
-            decoded = token_bytes.decode("utf-8")
-            assert decoded == logprob["token"]
-
-    print(f"Generated {len(logprobs)} tokens with logprobs")
-    print(f"First few logprobs: {logprobs[:3]}")
+    print(f"Generated {len(logprobs['tokens'])} tokens with logprobs")
+    print(f"First few tokens: {logprobs['tokens'][:3]}")
+    print(f"First few logprobs: {logprobs['token_logprobs'][:3]}")
 
 
 @pytest.mark.slow
@@ -370,19 +365,21 @@ def test_chat_completion_with_logprobs(test_client):
     assert choice["logprobs"] is not None
     logprobs = choice["logprobs"]
 
-    # Verify logprobs structure (same as completion)
-    assert isinstance(logprobs, list)
-    assert len(logprobs) > 0
+    # Verify logprobs structure (OpenAI ChoiceLogprobs object)
+    assert isinstance(logprobs, dict)
+    assert "content" in logprobs
+    assert isinstance(logprobs["content"], list)
+    assert len(logprobs["content"]) > 0
 
-    for logprob in logprobs:
-        assert "token" in logprob
-        assert "logprob" in logprob
-        assert "bytes" in logprob
-        assert isinstance(logprob["token"], str)
-        assert isinstance(logprob["logprob"], (int, float))
-        assert logprob["logprob"] <= 0.0
+    for token_logprob in logprobs["content"]:
+        assert "token" in token_logprob
+        assert "logprob" in token_logprob
+        assert "bytes" in token_logprob
+        assert isinstance(token_logprob["token"], str)
+        assert isinstance(token_logprob["logprob"], (int, float))
+        assert token_logprob["logprob"] <= 0.0
 
-    print(f"Chat generated {len(logprobs)} tokens with logprobs")
+    print(f"Chat generated {len(logprobs['content'])} tokens with logprobs")
 
 
 @pytest.mark.slow
@@ -397,7 +394,7 @@ def test_logprobs_with_multiple_generations(test_client):
             "prompt": "The weather is",
             "max_tokens": 3,
             "temperature": 0.7,
-            "logprobs": True,
+            "logprobs": 1,  # OpenAI uses int, not bool
             "n": 2,  # Generate 2 completions
             "seed": 42,
         },
@@ -414,10 +411,11 @@ def test_logprobs_with_multiple_generations(test_client):
         assert choice["index"] == i
         assert "logprobs" in choice
         assert choice["logprobs"] is not None
-        assert isinstance(choice["logprobs"], list)
-        assert len(choice["logprobs"]) > 0
+        assert isinstance(choice["logprobs"], dict)
+        assert "tokens" in choice["logprobs"]
+        assert len(choice["logprobs"]["tokens"]) > 0
 
-        print(f"Choice {i} generated {len(choice['logprobs'])} tokens with logprobs")
+        print(f"Choice {i} generated {len(choice['logprobs']['tokens'])} tokens with logprobs")
 
 
 def test_logprobs_deterministic_behavior(test_client):
@@ -430,7 +428,7 @@ def test_logprobs_deterministic_behavior(test_client):
         "prompt": "Once upon a time",
         "max_tokens": 4,
         "temperature": 0.0,  # Deterministic
-        "logprobs": True,
+        "logprobs": 1,  # OpenAI uses int, not bool
         "seed": 12345,
     }
 
@@ -447,11 +445,13 @@ def test_logprobs_deterministic_behavior(test_client):
     logprobs2 = data2["choices"][0]["logprobs"]
 
     # With temperature=0.0 and same seed, results should be identical
-    assert len(logprobs1) == len(logprobs2)
+    assert len(logprobs1["tokens"]) == len(logprobs2["tokens"])
+    assert len(logprobs1["token_logprobs"]) == len(logprobs2["token_logprobs"])
 
-    for lp1, lp2 in zip(logprobs1, logprobs2):
-        assert lp1["token"] == lp2["token"]
-        assert abs(lp1["logprob"] - lp2["logprob"]) < 1e-6  # Allow small floating point differences
-        assert lp1["bytes"] == lp2["bytes"]
+    for t1, t2 in zip(logprobs1["tokens"], logprobs2["tokens"]):
+        assert t1 == t2
+
+    for lp1, lp2 in zip(logprobs1["token_logprobs"], logprobs2["token_logprobs"]):
+        assert abs(lp1 - lp2) < 1e-6  # Allow small floating point differences
 
     print("Deterministic logprobs test passed!")

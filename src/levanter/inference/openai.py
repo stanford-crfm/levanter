@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Optional
 
 import equinox as eqx
 import haliax as hax
@@ -28,7 +28,17 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
-from pydantic import BaseModel
+from openai.types import Completion, CompletionUsage
+from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice as ChatCompletionChoice
+from openai.types.chat.chat_completion import ChoiceLogprobs
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion_token_logprob import ChatCompletionTokenLogprob
+from openai.types.chat.completion_create_params import (
+    CompletionCreateParams as ChatCompletionRequest,
+)
+from openai.types.completion_choice import CompletionChoice, Logprobs
+from openai.types.completion_create_params import CompletionCreateParams as CompletionRequest
 
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
@@ -62,82 +72,8 @@ class InferenceServerConfig:
     temperature: float = 0.7
     seed: int = 42
 
-
-# Pydantic models for OpenAI API compatibility
-
-
-class CompletionRequest(BaseModel):
-    model: str
-    prompt: Union[str, List[str]]
-    max_tokens: int = 16
-    temperature: float = 1.0
-    stop: Optional[Union[List[str], str]] = None
-    n: int = 1
-    seed: Optional[int] = None
-    logprobs: bool = False
-
-
-class LogProb(BaseModel):
-    token: str
-    logprob: float
-    bytes: Optional[List[int]] = None
-
-
-class CompletionChoice(BaseModel):
-    text: str
-    index: int
-    finish_reason: str = "stop"
-    logprobs: Optional[List[LogProb]] = None
-
-
-class Usage(BaseModel):
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-
-
-class CompletionResponse(BaseModel):
-    id: str
-    object: str = "text_completion"
-    created: int
-    model: str
-    choices: List[CompletionChoice]
-    usage: Usage
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-    max_tokens: int = 16
-    temperature: float = 1.0
-    stop: Optional[Union[List[str], str]] = None
-    n: int = 1
-    seed: Optional[int] = None
-    logprobs: bool = False
-
-
-class ChatChoice(BaseModel):
-    index: int
-    message: ChatMessage
-    finish_reason: str = "stop"
-    logprobs: Optional[List[LogProb]] = None
-
-
-class ChatCompletionResponse(BaseModel):
-    id: str
-    object: str = "chat.completion"
-    created: int
-    model: str
-    choices: List[ChatChoice]
-    usage: Usage
-
-
-# Internal data structures
+    host: str = "localhost"
+    port: int = 10243
 
 
 @dataclass
@@ -170,6 +106,18 @@ class InferenceResponse:
 
 # A callback which replaces the current model.
 WeightSource = collections.abc.Callable[[LmHeadModel], LmHeadModel]
+
+
+# the openai types are TypedDict and not BaseModel, so make a wrapper for easy "." access
+class ObjDict(dict):
+    def __init__(self, d):
+        super().__init__(**d)
+
+    def __getattr__(self, k):
+        res = self.get(k)
+        if isinstance(res, dict):
+            return ObjDict(res)
+        return res
 
 
 class InferenceContext:
@@ -253,25 +201,29 @@ class InferenceContext:
         """Main inference loop running in background thread"""
         logger.info("Inference thread started")
 
+        batch: List[InferenceRequest] = []
+        num_seqs = 0
         while not self.shutdown_event.is_set():
             try:
-                # Enqueue a batch of requests. Wait up to 0.1s to batch requests together.
-                requests = []
-                try:
-                    req = self.request_queue.get(timeout=1.0)
-                except queue.Empty:
-                    continue
-
-                requests.append(req)
                 deadline = time.time() + 0.1
-                while time.time() < deadline and len(requests) < self.config.service.max_seqs:
-                    try:
-                        requests.append(self.request_queue.get(timeout=deadline - time.time()))
-                    except queue.Empty:
-                        break
+                try:
+                    req = self.request_queue.get(timeout=deadline - time.time())
+                    if num_seqs + req.n_generations < self.service.config.max_seqs:
+                        batch.append(req)
+                    else:
+                        with self.model_lock:
+                            logger.info("Enqueued batch of %d requests", len(batch))
+                            self._process_batch(batch)
+                        batch = [req]
+                        num_seqs = req.n_generations
+                except queue.Empty:
+                    if not batch:
+                        continue
+                    with self.model_lock:
+                        self._process_batch(batch)
+                    batch = []
+                    num_seqs = 0
 
-                with self.model_lock:
-                    self._process_batch(requests)
             except Exception as e:
                 logger.error(f"Error in inference loop: {e}", exc_info=True)
 
@@ -375,10 +327,10 @@ def _health_check() -> dict:
     return {"status": "healthy", "service": "levanter-inference"}
 
 
-async def _create_completion(ctx: InferenceContext, request: CompletionRequest) -> CompletionResponse:
+async def _create_completion(ctx: InferenceContext, request: CompletionRequest) -> Completion:
     """Create a text completion using OpenAI API format."""
     try:
-        # Handle both string and list prompts
+        request = ObjDict(request)
         if isinstance(request.prompt, str):
             prompts = [request.prompt]
         else:
@@ -424,9 +376,9 @@ async def _create_completion(ctx: InferenceContext, request: CompletionRequest) 
                 stop_tokens=stop_tokens,
                 seed=request.seed if request.seed is not None else 42,
                 future=future,
-                n_generations=request.n,
+                n_generations=request.n or 1,
                 original_prompt=prompt,
-                enable_logprobs=request.logprobs,
+                enable_logprobs=bool(request.logprobs),
             )
 
         # Wait for all results
@@ -442,14 +394,22 @@ async def _create_completion(ctx: InferenceContext, request: CompletionRequest) 
                     # Convert logprobs to API format
                     prompt_len = generation.prompt_tokens
                     generated_tokens = generation.tokens[prompt_len:]
-                    logprobs = [
-                        LogProb(
-                            token=ctx.tokenizer.decode([token_id], skip_special_tokens=False),
-                            logprob=float(lp),
-                            bytes=list(ctx.tokenizer.decode([token_id], skip_special_tokens=False).encode("utf-8")),
-                        )
-                        for token_id, lp in zip(generated_tokens, generation.logprobs or [])
-                    ]
+
+                    # Create token logprobs in OpenAI format
+                    tokens = []
+                    token_logprobs = []
+                    if generation.logprobs:
+                        for token_id, lp in zip(generated_tokens, generation.logprobs):
+                            token_str = ctx.tokenizer.decode([token_id], skip_special_tokens=False)
+                            tokens.append(token_str)
+                            token_logprobs.append(float(lp))
+
+                    logprobs = Logprobs(
+                        tokens=tokens,
+                        token_logprobs=token_logprobs,
+                        text_offset=None,
+                        top_logprobs=None,
+                    )
 
                 choices.append(
                     CompletionChoice(
@@ -462,12 +422,13 @@ async def _create_completion(ctx: InferenceContext, request: CompletionRequest) 
                 total_completion_tokens += generation.completion_tokens
                 choice_idx += 1
 
-        return CompletionResponse(
+        return Completion(
             id=f"cmpl-{uuid.uuid4().hex[:8]}",
+            object="text_completion",
             created=int(time.time()),
             model=request.model,
             choices=choices,
-            usage=Usage(
+            usage=CompletionUsage(
                 prompt_tokens=total_prompt_tokens,
                 completion_tokens=total_completion_tokens,
                 total_tokens=total_prompt_tokens + total_completion_tokens,
@@ -479,11 +440,11 @@ async def _create_completion(ctx: InferenceContext, request: CompletionRequest) 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _create_chat_completion(ctx: InferenceContext, request: ChatCompletionRequest) -> ChatCompletionResponse:
+async def _create_chat_completion(ctx: InferenceContext, request: ChatCompletionRequest) -> ChatCompletion:
     """Create a chat completion using OpenAI API format."""
     try:
-        # Convert messages to prompt using tokenizer's chat template
-        messages = [msg.model_dump() for msg in request.messages]
+        request = ObjDict(request)
+        messages = request.messages
 
         # Apply chat template
         try:
@@ -517,7 +478,7 @@ async def _create_chat_completion(ctx: InferenceContext, request: ChatCompletion
             stop_tokens=stop_tokens,
             seed=request.seed if request.seed is not None else 42,
             future=future,
-            n_generations=request.n,
+            n_generations=request.n or 1,
             enable_logprobs=request.logprobs,
         )
 
@@ -535,31 +496,40 @@ async def _create_chat_completion(ctx: InferenceContext, request: ChatCompletion
                 # Convert logprobs to API format
                 prompt_len = generation.prompt_tokens
                 generated_tokens = generation.tokens[prompt_len:]
-                logprobs = [
-                    LogProb(
-                        token=ctx.tokenizer.decode([token_id], skip_special_tokens=False),
-                        logprob=float(lp),
-                        bytes=list(ctx.tokenizer.decode([token_id], skip_special_tokens=False).encode("utf-8")),
-                    )
-                    for token_id, lp in zip(generated_tokens, generation.logprobs or [])
-                ]
+
+                # Create content logprobs in OpenAI format
+                content_logprobs = []
+                if generation.logprobs:
+                    for token_id, lp in zip(generated_tokens, generation.logprobs):
+                        token_str = ctx.tokenizer.decode([token_id], skip_special_tokens=False)
+                        content_logprobs.append(
+                            ChatCompletionTokenLogprob(
+                                token=token_str,
+                                logprob=float(lp),
+                                bytes=list(token_str.encode("utf-8")),
+                                top_logprobs=[],
+                            )
+                        )
+
+                logprobs = ChoiceLogprobs(content=content_logprobs)
 
             choices.append(
-                ChatChoice(
+                ChatCompletionChoice(
                     index=i,
-                    message=ChatMessage(role="assistant", content=generation.text),
+                    message=ChatCompletionMessage(role="assistant", content=generation.text),
                     finish_reason="stop",
                     logprobs=logprobs,
                 )
             )
             total_completion_tokens += generation.completion_tokens
 
-        return ChatCompletionResponse(
+        return ChatCompletion(
             id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            object="chat.completion",
             created=int(time.time()),
             model=request.model,
             choices=choices,
-            usage=Usage(
+            usage=CompletionUsage(
                 prompt_tokens=len(prompt_tokens),
                 completion_tokens=total_completion_tokens,
                 total_tokens=len(prompt_tokens) + total_completion_tokens,
@@ -636,12 +606,12 @@ class InferenceServer:
         async def health_check():
             return _health_check()
 
-        @app.post("/v1/completions", response_model=CompletionResponse)
-        async def create_completion(request: CompletionRequest) -> CompletionResponse:
+        @app.post("/v1/completions", response_model=Completion)
+        async def create_completion(request: CompletionRequest) -> Completion:
             return await _create_completion(inference_context, request)
 
-        @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-        async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse:
+        @app.post("/v1/chat/completions", response_model=ChatCompletion)
+        async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletion:
             return await _create_chat_completion(inference_context, request)
 
         return app
@@ -654,17 +624,17 @@ class InferenceServer:
         """
         self.inference_context.reload(weight_callback)
 
-    def serve(self, host: str, port: int):
+    def serve(self):
         try:
-            logger.info(f"Starting Levanter inference server on {host}:{port}")
-            uvicorn.run(self.app, host=host, port=port)
+            logger.info(f"Starting Levanter inference server on {self.config.host}:{self.config.port}")
+            uvicorn.run(self.app, host=self.config.host, port=self.config.port)
         finally:
             self.shutdown()
 
-    async def serve_async(self, host: str, port: int):
+    async def serve_async(self):
         try:
-            logger.info(f"Starting Levanter inference server on {host}:{port}")
-            config = uvicorn.Config(self.app, host=host, port=port)
+            logger.info(f"Starting Levanter inference server on {self.config.host}:{self.config.port}")
+            config = uvicorn.Config(self.app, host=self.config.host, port=self.config.port)
             server = uvicorn.Server(config)
             await server.serve()
         finally:
