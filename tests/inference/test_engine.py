@@ -127,3 +127,34 @@ def test_release_on_finish_and_reuse_slots(caplog: pytest.LogCaptureFixture):
     # assert outputs2[0] == prompts2[0] + [3]
     assert outputs2[0] == [3]
     assert total_generated2 == 1
+
+
+def test_reuse_with_clones_and_slot_reassignment():
+    svc = _build_service()
+
+    prompts = [[7, 7], [1, 2]]
+    stop_tokens = [3]
+
+    stop_ids = hax.named(jnp.asarray(stop_tokens, dtype=jnp.int32), axis=("position",)).broadcast_axis({"stop_seq": 1})
+
+    def build_requests(seed_offset: int) -> list[Request]:
+        reqs: list[Request] = []
+        for i, toks in enumerate(prompts):
+            seq_params = SeqDecodingParams(
+                max_num_tokens=jnp.array(len(toks) + 5, dtype=jnp.int32),
+                stop_tokens=stop_ids,
+                temperature=jnp.array(0.0, dtype=jnp.float32),
+                key=jax.random.PRNGKey(seed_offset + i),
+            )
+            reqs.append(Request(prompt_tokens=toks, request_id=i, decode_params=seq_params, n_generations=3))
+        return reqs
+
+    reqs = build_requests(0)
+    outputs, total_generated = svc.generate(reqs)
+    assert all(out == [3] for out in outputs)
+    assert total_generated == len(outputs)
+
+    reqs2 = build_requests(100)
+    outputs2, total_generated2 = svc.generate(reqs2)
+    assert all(out == [3] for out in outputs2)
+    assert total_generated2 == len(outputs2)

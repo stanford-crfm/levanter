@@ -486,6 +486,7 @@ class TokenQueue(eqx.Module):
         num_new_tokens: int,
     ) -> "TokenQueue":
         """Append ``new_tokens`` and ``new_slot_ids`` to the queue."""
+        jax.debug.print("Enqueueing tokens {} {} {} {}", new_tokens, new_slot_ids, new_pos_ids, num_new_tokens)
 
         new_q_tokens = masked_set(
             self.queued_tokens,
@@ -554,7 +555,11 @@ class TokenQueue(eqx.Module):
 
         # now ensure slot ids are sorted
 
-        slot_ids_sort_order = hax.argsort(slot_ids, axis="position")
+        position_axis = slot_ids.axis_indices("position")
+        assert position_axis is not None
+
+        # TODO: add stable arg to argsort in haliax
+        slot_ids_sort_order = jnp.argsort(slot_ids.array, axis=position_axis, stable=True)
         tokens = tokens["position", slot_ids_sort_order]
         slot_ids = slot_ids["position", slot_ids_sort_order]
         pos_ids = pos_ids["position", slot_ids_sort_order]

@@ -211,6 +211,7 @@ def test_ragged_paged_attention_incremental_multi_seq():
 # -----------------------------------------------------------------------------
 
 
+@jax.jit
 def _jit_paged_decode(attn, x, pos_ids, cache: KvPageCache, binfo: PageBatchInfo) -> tuple[NamedArray, KvPageCache]:
     return attn.paged_decode(x, cache, binfo, pos_ids=pos_ids, key=jrandom.PRNGKey(2))
 
@@ -290,8 +291,9 @@ def test_attention_paged_decode_matches_full_prefill():
 
 
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
-@pytest.mark.parametrize("chunk_size", [1, 2, 3])
-def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 8])
+@pytest.mark.parametrize("seq_ids", [[0, 1], [1, 0], [2, 0], [0, 2], [2, 1]])
+def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size, seq_ids):
     Pos = Axis("position", prefix_size + 4 * chunk_size)
     Embed = Axis("embed", 16)
 
@@ -299,9 +301,15 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size):
     attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
     attn = Attention.init(cfg, key=attn_key)
 
-    pt = PageTable.init(max_pages=8, max_seqs=2, page_size=4, max_pages_per_seq=4)
-    pt, seq1 = pt.assign_seq_id_to_seq()
-    pt, seq2 = pt.assign_seq_id_to_seq()
+    max_pages_per_seq = math.ceil((prefix_size + 4 * chunk_size) / NUM_SLOTS)
+
+    pt = PageTable.init(max_pages=max_pages_per_seq * 3, max_seqs=3, page_size=4, max_pages_per_seq=max_pages_per_seq)
+    seq1 = seq_ids[0]
+    seq2 = seq_ids[1]
+    pt, _seq1 = pt.assign_seq_id_to_seq(seq1)
+    pt, _seq2 = pt.assign_seq_id_to_seq(seq2)
+    assert _seq1 == seq1
+    assert _seq2 == seq2
     kv_cache = attn.empty_page_cache(pt, dtype=jnp.float32)
 
     x = hax.random.normal(x_key, (Pos, Embed)) * 0.2
