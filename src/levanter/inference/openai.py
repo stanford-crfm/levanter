@@ -357,8 +357,6 @@ async def _create_completion(ctx: InferenceContext, request: CompletionRequest) 
         total_prompt_tokens = 0
         total_completion_tokens = 0
 
-        logger.info("Here?")
-
         for i, prompt in enumerate(prompts):
             # Tokenize prompt
             prompt_tokens = ctx.tokenizer(prompt, add_special_tokens=False)["input_ids"]

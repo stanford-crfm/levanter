@@ -17,6 +17,8 @@ from levanter.trainer import TrainerConfig
 
 try:
     from fastapi.testclient import TestClient
+    from openai.types import Completion
+    from openai.types.chat import ChatCompletion
 
     from levanter.inference.openai import InferenceServer, InferenceServerConfig
     from levanter.main.inference_worker import InferenceWorker
@@ -29,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 @pytest.fixture(scope="module")
 def baby_llama_config():
-    """Create a configuration for tiny GPT-2 model."""
     return InferenceServerConfig(
         hf_checkpoint=RepoRef("timinar/baby-llama-58m"),
         tokenizer="timinar/baby-llama-58m",
@@ -68,7 +69,6 @@ def test_endpoints_exist(test_client):
 def test_short_request(test_client):
     client, server = test_client
 
-    # Test completion request with short prompt, max_tokens=32, and stop="."
     response = client.post(
         "/v1/completions",
         json={
@@ -81,44 +81,19 @@ def test_short_request(test_client):
         },
     )
 
-    # Verify successful response
     assert response.status_code == 200
-    data = response.json()
+    completion = Completion.model_validate(response.json())
 
-    # Verify OpenAI API structure
-    assert "id" in data
-    assert data["object"] == "text_completion"
-    assert "created" in data
-    assert data["model"] == "timinar/baby-llama-58m"
-    assert "choices" in data
-    assert "usage" in data
+    choice = completion.choices[0]
+    assert choice.text
+    assert choice.finish_reason == "stop"
+    assert completion.usage.prompt_tokens > 0
+    assert completion.usage.completion_tokens > 0
+    assert completion.usage.total_tokens == completion.usage.prompt_tokens + completion.usage.completion_tokens
+    assert completion.usage.completion_tokens <= 10
 
-    # Verify choices structure
-    assert len(data["choices"]) == 1
-    choice = data["choices"][0]
-    assert "text" in choice
-    assert choice["index"] == 0
-    assert choice["finish_reason"] == "stop"
-
-    # Verify usage tracking
-    usage = data["usage"]
-    assert "prompt_tokens" in usage
-    assert "completion_tokens" in usage
-    assert "total_tokens" in usage
-    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
-
-    # Verify the generated text exists and is reasonable
-    generated_text = choice["text"]
-    assert isinstance(generated_text, str)
-    assert len(generated_text) > 0
-
-    # Test that completion tokens doesn't exceed max_tokens
-    assert usage["completion_tokens"] <= 32
-
-    # If response finished with stop token, check that it doesn't contain "." at the end
-    # (unless the generation naturally ended with ".")
-    print(f"Generated text: '{generated_text}'")
-    print(f"Usage: {usage}")
+    print(f"Generated text: '{choice.text}'")
+    print(f"Usage: {completion.usage}")
 
 
 @pytest.mark.slow
@@ -298,39 +273,19 @@ def test_completion_with_logprobs(test_client):
     )
 
     assert response.status_code == 200
-    data = response.json()
+    completion = Completion.model_validate(response.json())
 
-    # Verify basic structure
-    assert "choices" in data
-    assert len(data["choices"]) == 1
-    choice = data["choices"][0]
+    choice = completion.choices[0]
+    assert choice.logprobs is not None
+    assert len(choice.logprobs.tokens) > 0
+    assert len(choice.logprobs.tokens) == len(choice.logprobs.token_logprobs)
 
-    # Verify logprobs are present
-    assert "logprobs" in choice
-    assert choice["logprobs"] is not None, choice
-    logprobs = choice["logprobs"]
-
-    # Verify logprobs structure (OpenAI Logprobs object)
-    assert isinstance(logprobs, dict)
-    assert "tokens" in logprobs
-    assert "token_logprobs" in logprobs
-    assert isinstance(logprobs["tokens"], list)
-    assert isinstance(logprobs["token_logprobs"], list)
-    assert len(logprobs["tokens"]) > 0
-    assert len(logprobs["tokens"]) == len(logprobs["token_logprobs"])
-
-    # Check each token and logprob
-    for i, (token, logprob) in enumerate(zip(logprobs["tokens"], logprobs["token_logprobs"])):
-        # Verify data types
-        assert isinstance(token, str)
-        assert isinstance(logprob, (int, float))
-
-        # Verify logprob is negative or zero (log probability constraint)
+    for token, logprob in zip(choice.logprobs.tokens, choice.logprobs.token_logprobs):
         assert logprob <= 0.0
 
-    print(f"Generated {len(logprobs['tokens'])} tokens with logprobs")
-    print(f"First few tokens: {logprobs['tokens'][:3]}")
-    print(f"First few logprobs: {logprobs['token_logprobs'][:3]}")
+    print(f"Generated {len(choice.logprobs.tokens)} tokens with logprobs")
+    print(f"First few tokens: {choice.logprobs.tokens[:3]}")
+    print(f"First few logprobs: {choice.logprobs.token_logprobs[:3]}")
 
 
 @pytest.mark.slow
@@ -351,35 +306,18 @@ def test_chat_completion_with_logprobs(test_client):
     )
 
     assert response.status_code == 200
-    data = response.json()
+    chat_completion = ChatCompletion(**response.json())
 
-    logger.info("Chat response: %s", data)
+    logger.info("Chat response: %s", chat_completion)
 
-    # Verify basic structure
-    assert "choices" in data
-    assert len(data["choices"]) == 1
-    choice = data["choices"][0]
+    choice = chat_completion.choices[0]
+    assert choice.logprobs is not None
+    assert len(choice.logprobs.content) > 0
 
-    # Verify logprobs are present
-    assert "logprobs" in choice
-    assert choice["logprobs"] is not None
-    logprobs = choice["logprobs"]
+    for token_logprob in choice.logprobs.content:
+        assert token_logprob.logprob <= 0.0
 
-    # Verify logprobs structure (OpenAI ChoiceLogprobs object)
-    assert isinstance(logprobs, dict)
-    assert "content" in logprobs
-    assert isinstance(logprobs["content"], list)
-    assert len(logprobs["content"]) > 0
-
-    for token_logprob in logprobs["content"]:
-        assert "token" in token_logprob
-        assert "logprob" in token_logprob
-        assert "bytes" in token_logprob
-        assert isinstance(token_logprob["token"], str)
-        assert isinstance(token_logprob["logprob"], (int, float))
-        assert token_logprob["logprob"] <= 0.0
-
-    print(f"Chat generated {len(logprobs['content'])} tokens with logprobs")
+    print(f"Chat generated {len(choice.logprobs.content)} tokens with logprobs")
 
 
 @pytest.mark.slow
@@ -401,21 +339,16 @@ def test_logprobs_with_multiple_generations(test_client):
     )
 
     assert response.status_code == 200
-    data = response.json()
+    completion = Completion.model_validate(response.json())
 
-    # Verify we got 2 choices
-    assert len(data["choices"]) == 2
+    assert len(completion.choices) == 2
 
-    # Verify both choices have logprobs
-    for i, choice in enumerate(data["choices"]):
-        assert choice["index"] == i
-        assert "logprobs" in choice
-        assert choice["logprobs"] is not None
-        assert isinstance(choice["logprobs"], dict)
-        assert "tokens" in choice["logprobs"]
-        assert len(choice["logprobs"]["tokens"]) > 0
+    for i, choice in enumerate(completion.choices):
+        assert choice.index == i
+        assert choice.logprobs is not None
+        assert len(choice.logprobs.tokens) > 0
 
-        print(f"Choice {i} generated {len(choice['logprobs']['tokens'])} tokens with logprobs")
+        print(f"Choice {i} generated {len(choice.logprobs.tokens)} tokens with logprobs")
 
 
 def test_logprobs_deterministic_behavior(test_client):
@@ -438,20 +371,18 @@ def test_logprobs_deterministic_behavior(test_client):
     assert response1.status_code == 200
     assert response2.status_code == 200
 
-    data1 = response1.json()
-    data2 = response2.json()
+    completion1 = Completion.model_validate(response1.json())
+    completion2 = Completion.model_validate(response2.json())
 
-    logprobs1 = data1["choices"][0]["logprobs"]
-    logprobs2 = data2["choices"][0]["logprobs"]
+    logprobs1 = completion1.choices[0].logprobs
+    logprobs2 = completion2.choices[0].logprobs
 
-    # With temperature=0.0 and same seed, results should be identical
-    assert len(logprobs1["tokens"]) == len(logprobs2["tokens"])
-    assert len(logprobs1["token_logprobs"]) == len(logprobs2["token_logprobs"])
+    assert len(logprobs1.tokens) == len(logprobs2.tokens)
 
-    for t1, t2 in zip(logprobs1["tokens"], logprobs2["tokens"]):
+    for t1, t2 in zip(logprobs1.tokens, logprobs2.tokens):
         assert t1 == t2
 
-    for lp1, lp2 in zip(logprobs1["token_logprobs"], logprobs2["token_logprobs"]):
-        assert abs(lp1 - lp2) < 1e-6  # Allow small floating point differences
+    for lp1, lp2 in zip(logprobs1.token_logprobs, logprobs2.token_logprobs):
+        assert abs(lp1 - lp2) < 1e-6
 
     print("Deterministic logprobs test passed!")
