@@ -201,7 +201,7 @@ class LlamaConfig(HFCompatConfig):
     def total_trainable_params(self, vocab_size):
         token_embedding = vocab_size * self.hidden_dim
 
-        head_size = self.hidden_dim // self.num_heads
+        head_size = self.actual_head_size
         q_proj = self.hidden_dim * head_size * self.num_heads
         kv_proj = 2 * self.hidden_dim * head_size * self.num_kv_heads
         o_proj = head_size * self.num_heads * self.hidden_dim
@@ -217,7 +217,8 @@ class LlamaConfig(HFCompatConfig):
         if self.input_embedding_norm:
             transformer += self.hidden_dim
 
-        return transformer + token_embedding * 2  # plus embedding and lm head
+        lm_head = 0 if self.tie_word_embeddings else token_embedding
+        return transformer + token_embedding + lm_head
 
     def attention_config(self) -> AttentionConfig:
         """Convert this LlamaConfig to an AttentionConfig for use with Attention."""
