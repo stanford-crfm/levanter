@@ -6,24 +6,29 @@ import functools
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
 
 import haliax as hax
 import haliax.haxtyping as ht
+import jax
+import jax.numpy as jnp
 import numpy as np
 from haliax import NamedArray
 
+from levanter.inference.jit_scheduler import (
+    DecodeState,
+    SeqDecodingParams,
+    TokenQueue,
+    _DecodeOutputs,
+)
 from levanter.inference.page_table import PageTable
 from levanter.inference.utils import INVALID, is_valid
 from levanter.layers.attention import KvPageCache
 from levanter.layers.sampler import Sampler
 from levanter.models.lm_model import LmHeadModel
-from levanter.inference.jit_scheduler import DecodeState, SeqDecodingParams, TokenQueue, _DecodeOutputs
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,7 @@ class Request:
     request_id: int
     decode_params: SeqDecodingParams
     n_generations: int
+    enable_logprobs: bool = False
 
 
 @dataclasses.dataclass
@@ -48,8 +54,7 @@ class DecodeResult:
     # Count of newly appended tokens (includes prompt tokens as extracted)
     tokens_decoded: int = 0
     done: bool = False
-    # Optional per-token logprobs (not populated yet)
-    logprobs: list[float] | None = None
+    logprobs: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,9 @@ class InferenceEngineConfig:
 
     # Default PRNG seed for building per-request keys (optional convenience)
     seed: int = 0
+
+    enable_logprobs: bool = False
+    """Enable computing logprobs for generated tokens."""
 
     @property
     def imputed_max_pages(self) -> int:
@@ -480,6 +488,14 @@ def _run_generation_loop(
         temps = decode_state.temperature["seq", new_slot_ids]
 
         new_tokens, log_probs = hax.vmap(sampler, "position")(logits_at_samples, temps, key=prng_keys)
+        # jax.debug.print(
+        #     "[gen] step={step} packed={packed} sample_count={num} queued_before={queued}",
+        #     step=step,
+        #     packed=packed_seq.num_tokens,
+        #     num=num_new_tokens,
+        #     queued=gen_state.decode_state.num_queued_tokens,
+        # )
+
         # Update decode state with the freshly sampled tokens (also enqueues them)
         decode_state = decode_state.update_tokens(new_tokens, new_slot_ids, log_probs, num_new_tokens)
 
@@ -488,7 +504,7 @@ def _run_generation_loop(
         new_gen_state = dataclasses.replace(gen_state, cache=cache, decode_state=decode_state)
         # Append non-stateful outputs for host-side extraction
         outputs = outputs.append(new_tokens, new_slot_ids, log_probs, num_new_tokens, decode_state.finished)
-        # Device-side release of finished sequences (jit-safe)
+
         new_gen_state = _release_finished_device(new_gen_state)
         # jax.debug.print(
         #     "[gen] step={step} outputs_size={size} queued_after={queued}",
@@ -508,6 +524,13 @@ def _run_generation_loop(
     final_gen_state, final_outputs, _ = jax.lax.while_loop(cond, body, init_state)
     # jax.debug.print("[gen] final outputs_size={size}", size=final_outputs.num_tokens)
     return final_gen_state, final_outputs
+
+
+@dataclass
+class GenerationResult:
+    tokens: list[list[int]]
+    logprobs: list[list[float]] | None
+    total_generated: int
 
 
 class InferenceEngine:
@@ -615,6 +638,7 @@ class InferenceEngine:
             max_stop_seqs=config.max_stop_seqs,
             max_stop_tokens=config.max_stop_tokens,
             max_queued_tokens=config.max_queued_tokens,
+            enable_logprobs=config.enable_logprobs,
         )
         vocab_axis = model.Vocab
         sampler = Sampler(vocab_axis)
@@ -666,6 +690,7 @@ class InferenceEngine:
                     if len(cmap) == 0:
                         self.sequences.pop(rid, None)
             # Ensure any residual tokens/logprobs for this slot are dropped from the pending queue
+            # TODO: this shouldn't be necessary.
             self.gen_state = dataclasses.replace(
                 self.gen_state, decode_state=self.gen_state.decode_state.purge_queue_of_slot(local_slot)
             )
@@ -833,12 +858,32 @@ class InferenceEngine:
         self._verify_free_slot_view(context="prefill_prompts")
         return prefill_queue
 
-    def generate(self, requests: Sequence[Request]) -> tuple[list[list[int]], int]:
+    def generate(self, requests: Sequence[Request]) -> GenerationResult:
         """Generate tokens for a batch of Requests.
 
         Each Request provides prompt_tokens, decode_params, and n_generations (clones).
         Returns (outputs_per_sequence, total_generated_tokens).
         """
+        # validate we don't have any sequences with n_generations exceeding max_seqs
+        max_needed = max(int(r.n_generations) for r in requests)
+        if max_needed > int(self.gen_state.decode_state.page_table.max_seqs):
+            raise ValueError(
+                f"Total sequences needed ({max_needed}) exceeds max_seqs ({self.gen_state.decode_state.page_table.max_seqs})."
+                "Decompose your request into smaller batches or increase max_seqs when building the service."
+            )
+
+        needs_logprobs = any(r.enable_logprobs for r in requests)
+        # if we need logprobs but decode state doesn't have logprobs enabled, re-init
+        if needs_logprobs and self.gen_state.decode_state.logprobs is None:
+            logger.info("Re-initializing decode state with logprobs enabled.")
+            max_seqs = int(self.gen_state.decode_state.max_seqs)
+            max_seq_len = int(self.gen_state.decode_state.page_table.max_len_per_seq)
+            new_decode_state = dataclasses.replace(
+                self.gen_state.decode_state,
+                logprobs=hax.full({"seq": max_seqs, "position": max_seq_len}, jnp.nan, dtype=jnp.float32),
+            )
+            self.gen_state = dataclasses.replace(self.gen_state, decode_state=new_decode_state)
+
         # Enqueue incoming requests to internal queue
         self.enqueue_requests(requests)
         # Track outputs and finished flags using self.results for only this call's requests
@@ -967,6 +1012,7 @@ class InferenceEngine:
 
         # Assemble outputs in the order of the requests for this call
         outputs_list: list[list[int]] = []
+        logprobs_list: list[list[float]] = []
         total_prompt_tokens = 0
         for r in requests:
             rid = int(r.request_id)
@@ -980,6 +1026,7 @@ class InferenceEngine:
                     kid_map[k] = DecodeResult(id=rid, choice=k, token_list=[])
                     dr = kid_map[k]
                 outputs_list.append(dr.token_list)
+                logprobs_list.append(dr.logprobs if dr.logprobs is not None else [])
             self.results[rid] = kid_map
         total_generated = sum(len(seq_outputs) for seq_outputs in outputs_list)
         total_time = time.time() - time_in
@@ -989,7 +1036,7 @@ class InferenceEngine:
         for rid in call_rids:
             if rid in self.results:
                 self.results.pop(rid, None)
-        return outputs_list, total_generated
+        return GenerationResult(tokens=outputs_list, logprobs=logprobs_list, total_generated=total_generated)
 
     def _extract_outputs(self, pending_outputs) -> int:
         """Append newly available tokens into outputs per (request_id, child_id).
@@ -1018,6 +1065,8 @@ class InferenceEngine:
             rid, cid = info
             dr = self.results.setdefault(rid, {}).setdefault(cid, DecodeResult(id=rid, choice=cid, token_list=[]))
             dr.token_list.append(tok)
+            if pending_outputs.logprobs is not None:
+                dr.logprobs.append(float(pending_outputs.logprobs.array[i]))
             dr.tokens_decoded += 1
             appended += 1
 
