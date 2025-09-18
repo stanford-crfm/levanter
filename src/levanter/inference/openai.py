@@ -117,7 +117,8 @@ class InferenceBatch(list):
 WeightSource = collections.abc.Callable[[LmHeadModel], LmHeadModel]
 
 
-# the openai types are TypedDict and not BaseModel, so make a wrapper for easy "." access
+# The OpenAI request types are TypedDicts instead of BaseModel
+# For consistency we convert them to objects with attribute access
 class ObjDict(dict):
     def __init__(self, d):
         super().__init__(**d)
@@ -130,6 +131,7 @@ class ObjDict(dict):
 
 
 def _fetch_all_from_queue(q: queue.Queue, timeout: float) -> List:
+    """Fetch all items from `q` which arrive within `timeout` seconds."""
     deadline = time.time() + timeout
     items = []
     while time.time() < deadline:
