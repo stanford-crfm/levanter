@@ -238,15 +238,13 @@ class DecodeState(eqx.Module):
         self,
         local_slot_id: int,
         tokens: ht.i32[NamedArray, "position"],  # type: ignore[name-defined]
+        seq_len: jnp.ndarray,
         kv_pages: ht.i32[NamedArray, "page"] | None = None,  # type: ignore[name-defined]
         seq_params: SeqDecodingParams | None = None,
     ) -> "DecodeState":
         """Assign a new sequence to the given local slot."""
-        num = tokens.axis_size("position")
 
-        row_tokens = self.tokens["seq", local_slot_id]
-        row_tokens = masked_set(row_tokens, "position", 0, tokens, num)
-        new_tokens = self.tokens.at["seq", local_slot_id].set(row_tokens)
+        new_tokens = self.tokens.at["seq", local_slot_id, "position", 0 : tokens.axis_size("position")].set(tokens)
 
         if kv_pages is None:
             kv_pages = hax.full_like(self.kv_pages["seq", local_slot_id], INVALID)
@@ -257,11 +255,11 @@ class DecodeState(eqx.Module):
             tokens=new_tokens,
             # set log probs to nan for the prefix tokens
             logprobs=(
-                self.logprobs.at["seq", local_slot_id, "position", 0:num].set(jnp.nan)
+                self.logprobs.at["seq", local_slot_id, "position", :].set(jnp.nan)
                 if self.logprobs is not None
                 else None
             ),
-            seq_lens=self.seq_lens.at["seq", local_slot_id].set(num),
+            seq_lens=self.seq_lens.at["seq", local_slot_id].set(seq_len),
             finished=self.finished.at["seq", local_slot_id].set(False),
         )
 

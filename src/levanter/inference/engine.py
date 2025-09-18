@@ -123,13 +123,11 @@ class GenState(eqx.Module):
     decode_state: DecodeState
 
     def clone_sequence(
-        self,
-        parent_local_id: int,
-        child_local_id: int | None = None,
-        *,
-        seq_params: SeqDecodingParams | None = None,
+        self, parent_local_id: int, child_local_id: int | None = None, seq_params: SeqDecodingParams | None = None
     ) -> tuple["GenState", int]:
         """Clone a sequence into a new local slot, sharing full pages and using a fresh page for the last partial page.
+
+        DONATES self.
 
         Args:
             parent_local_id: Local slot id to clone from.
@@ -137,59 +135,80 @@ class GenState(eqx.Module):
             seq_params: Per-sequence decoding parameters for the clone.
 
         Returns:
-            updated GenState
+            updated GenState, child_local_id (which will be INVALID if allocation failed).
         """
-        page_table = self.decode_state.page_table
-        if child_local_id is None:
-            page_table, new_child = page_table.assign_seq_id_to_seq()
-            child_local_id = int(jax.device_get(new_child))
-        else:
-            page_table, new_child = page_table.assign_seq_id_to_seq(child_local_id)
-            assigned_id = int(jax.device_get(new_child))
-            if assigned_id != int(child_local_id):
-                raise RuntimeError(
-                    f"Requested clone slot {child_local_id} but PageTable returned {assigned_id if assigned_id != INVALID else 'INVALID'}."
-                )
-            child_local_id = assigned_id
-        # Important: assign_seq_id_to_seq donates its input; update decode_state.page_table immediately
-        decode_state = dataclasses.replace(self.decode_state, page_table=page_table)
-        prefix_len = int(decode_state.seq_lens["seq", parent_local_id].scalar())
-        parent_prefix = decode_state.tokens["seq", parent_local_id, "position", 0:prefix_len]
-        parent_kv_pages_row = decode_state.kv_pages["seq", parent_local_id]
+        if isinstance(parent_local_id, int):
+            parent_local_id = jnp.asarray(parent_local_id, dtype=jnp.int32)
+        if child_local_id is not None and isinstance(child_local_id, int):
+            child_local_id = jnp.asarray(child_local_id, dtype=jnp.int32)
 
-        # Assign child sequence state (copies tokens up to prefix and kv_pages row)
-        decode_state = decode_state.assign_seq(
-            local_slot_id=child_local_id,
-            tokens=parent_prefix,
-            kv_pages=parent_kv_pages_row,
+        new_state, child_local_id = _clone_sequence(
+            self,
+            parent_local_id,
+            child_local_id,
             seq_params=seq_params,
         )
-        # Record clone mapping on the child slot
-        decode_state = dataclasses.replace(
-            decode_state,
-            clone_sources=decode_state.clone_sources.at["seq", child_local_id].set(parent_local_id),
+
+        return new_state, child_local_id  # type: ignore
+
+
+@functools.partial(jax.jit, donate_argnums=0)
+def _clone_sequence(
+    state,
+    parent_local_id: jnp.ndarray,
+    child_local_id: jnp.ndarray | None = None,
+    *,
+    seq_params: SeqDecodingParams | None = None,
+) -> tuple["GenState", int]:
+
+    page_table = state.decode_state.page_table
+    if child_local_id is None:
+        page_table, new_child = page_table.assign_seq_id_to_seq()
+        child_local_id = eqx.error_if(
+            new_child, ~is_valid(new_child), "No free local slots available to clone sequence."
         )
+    else:
+        page_table, assigned_id = page_table.assign_seq_id_to_seq(child_local_id)
+        child_local_id = eqx.error_if(
+            child_local_id, assigned_id != child_local_id, "Requested clone slot already in use."
+        )
+    # Important: assign_seq_id_to_seq donates its input; update decode_state.page_table immediately
+    decode_state = dataclasses.replace(state.decode_state, page_table=page_table)
 
-        page_table = page_table.clone_pages_from(parent_local_id, child_local_id)
+    # Assign child sequence state (copies tokens up to prefix and kv_pages row)
+    decode_state = decode_state.assign_seq(
+        local_slot_id=child_local_id,
+        tokens=decode_state.tokens["seq", parent_local_id],
+        seq_len=decode_state.seq_lens["seq", parent_local_id],
+        kv_pages=decode_state.kv_pages["seq", parent_local_id],
+        seq_params=seq_params,
+    )
+    # Record clone mapping on the child slot
+    decode_state = dataclasses.replace(
+        decode_state,
+        clone_sources=decode_state.clone_sources.at["seq", child_local_id].set(parent_local_id),
+    )
 
-        page_size = page_table.page_size
-        src_len = int(page_table.seq_lens["seq", parent_local_id].scalar())
+    page_table = page_table.clone_pages_from(parent_local_id, child_local_id)
 
-        def _copy(_):
-            last_idx = (src_len + page_size - 1) // page_size - 1
-            src_page = page_table.page_indices["seq", parent_local_id, "page", last_idx].scalar()
-            dst_page = page_table.page_indices["seq", child_local_id, "page", last_idx].scalar()
-            return self.cache.copy_page(src_page, dst_page)
+    page_size = page_table.page_size
+    src_len = page_table.seq_lens["seq", parent_local_id].scalar()
 
-        def _identity(_):
-            return self.cache
+    def _copy(_):
+        last_idx = (src_len + page_size - 1) // page_size - 1
+        src_page = page_table.page_indices["seq", parent_local_id, "page", last_idx].scalar()
+        dst_page = page_table.page_indices["seq", child_local_id, "page", last_idx].scalar()
+        return state.cache.copy_page(src_page, dst_page)
 
-        cache = jax.lax.cond((src_len % page_size != 0) and (src_len > 0), _copy, _identity, None)
+    def _identity(_):
+        return state.cache
 
-        # persist the updated page table inside the decode state
-        decode_state = dataclasses.replace(decode_state, page_table=page_table)
-        new_state = dataclasses.replace(self, decode_state=decode_state, cache=cache)
-        return new_state, child_local_id
+    cache = jax.lax.cond((src_len % page_size != 0) & (src_len > 0), _copy, _identity, None)
+
+    # persist the updated page table inside the decode state
+    decode_state = dataclasses.replace(decode_state, page_table=page_table)
+    new_state = dataclasses.replace(state, decode_state=decode_state, cache=cache)
+    return new_state, child_local_id
 
 
 def _compute_sample_indices(pos_ids, slot_ids, seq_lens, max_sample_indices):
@@ -818,6 +837,7 @@ class InferenceEngine:
                 decode_state=self.gen_state.decode_state.assign_seq(
                     local_slot_id=slot_id,
                     tokens=hax.named(this_tokens, axis="position"),
+                    seq_len=jnp.asarray(len(seq_tokens)),
                     kv_pages=None,
                     seq_params=seq_params,
                 ),
