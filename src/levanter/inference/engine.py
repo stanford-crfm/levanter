@@ -7,6 +7,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Optional, Sequence
 
 import equinox as eqx
@@ -259,7 +260,6 @@ def _release_finished_device(gen_state: GenState, finished_mask: ht.bool_[NamedA
     return dataclasses.replace(gen_state, decode_state=new_ds)
 
 
-@hax.named_jit(donate_args=(True, False, False, False, False))
 def _prefill_kernel(
     gen_state: GenState,
     model: LmHeadModel,
@@ -350,14 +350,13 @@ def _prefill_kernel(
 def _stop_tokens_from_work(work: PrefillWork, idx: int) -> ht.i32[NamedArray, "stop_seq position"] | None:  # type: ignore[name-defined]
     if work.stop_tokens is None:
         return None
-    row = work.stop_tokens["seq", idx]
-    return hax.named(jnp.asarray(row.array, dtype=jnp.int32), axis=("stop_seq", "position"))
+    return work.stop_tokens["seq", idx]
 
 
 def _seq_params_from_work(work: PrefillWork, idx: int) -> SeqDecodingParams:
-    max_tokens = jnp.asarray(jax.device_get(work.max_num_tokens["seq", idx].scalar()), dtype=jnp.int32)
-    temperature = jnp.asarray(jax.device_get(work.temperature["seq", idx].scalar()), dtype=jnp.float32)
-    key = jnp.asarray(jax.device_get(work.prng_keys[idx]), dtype=jnp.uint32)
+    max_tokens = jnp.asarray(work.max_num_tokens["seq", idx].scalar(), dtype=jnp.int32)
+    temperature = jnp.asarray(work.temperature["seq", idx].scalar(), dtype=jnp.float32)
+    key = jnp.asarray(work.prng_keys[idx], dtype=jnp.uint32)
     stop_tokens = _stop_tokens_from_work(work, idx)
     return SeqDecodingParams(
         max_num_tokens=max_tokens,
@@ -368,57 +367,52 @@ def _seq_params_from_work(work: PrefillWork, idx: int) -> SeqDecodingParams:
 
 
 def _apply_prefill_work(gen_state: GenState, work: PrefillWork) -> GenState:
-    num_new = int(jax.device_get(work.new_num_seqs))
-    for idx in range(num_new):
-        slot_val = int(jax.device_get(work.new_slot_ids["seq", idx].scalar()))
-        if not is_valid(slot_val):
-            continue
+    num_new = work.new_num_seqs.astype(jnp.int32)
+    max_slots = work.new_slot_ids.array.shape[0]
 
-        parent_val = int(jax.device_get(work.clone_targets["seq", idx].scalar()))
+    def body(i: int, state: GenState) -> GenState:
+        slot_val = work.new_slot_ids.array[i]
 
-        if is_valid(parent_val):
-            seq_params = _seq_params_from_work(work, idx)
-            gen_state, child_local_id = gen_state.clone_sequence(
-                parent_val,
-                child_local_id=slot_val,
-                seq_params=seq_params,
-            )
-            child_local_id = int(jax.device_get(child_local_id))
-            if child_local_id != slot_val:
-                raise RuntimeError(
-                    f"Requested clone slot {slot_val} but received {child_local_id} during prefill clone."
+        def process(gs: GenState) -> GenState:
+            parent_val = work.clone_targets.array[i]
+            seq_params = _seq_params_from_work(work, i)
+
+            def do_clone(gs_clone: GenState) -> GenState:
+                new_state, _ = gs_clone.clone_sequence(
+                    parent_val,
+                    child_local_id=slot_val,
+                    seq_params=seq_params,
                 )
-            continue
+                return new_state
 
-        decode_state = gen_state.decode_state
-        page_table, assigned = decode_state.page_table.assign_seq_id_to_seq(slot_val)
-        assigned = int(jax.device_get(assigned))
-        if assigned != slot_val:
-            raise RuntimeError(f"Requested local slot {slot_val} but PageTable assigned {assigned} during prefill.")
+            def do_primary(gs_primary: GenState) -> GenState:
+                decode_state = gs_primary.decode_state
+                page_table, assigned = decode_state.page_table.assign_seq_id_to_seq(slot_val)
+                assigned = eqx.error_if(
+                    assigned,
+                    assigned != slot_val,
+                    "Requested local slot mismatch during prefill.",
+                )
+                decode_state = dataclasses.replace(decode_state, page_table=page_table)
+                prompt_len = work.prompt_lengths.array[i].astype(jnp.int32)
+                decode_state = decode_state.assign_seq(
+                    local_slot_id=slot_val,
+                    tokens=work.prompt_tokens["seq", i],
+                    seq_len=prompt_len,
+                    kv_pages=None,
+                    seq_params=seq_params,
+                )
+                return dataclasses.replace(gs_primary, decode_state=decode_state)
 
-        decode_state = dataclasses.replace(decode_state, page_table=page_table)
+            return jax.lax.cond(is_valid(parent_val), do_clone, do_primary, gs)
 
-        prompt_len = int(jax.device_get(work.prompt_lengths["seq", idx].scalar()))
-        prompt_row = jax.device_get(work.prompt_tokens["seq", idx].array)
-        prompt_tokens = hax.named(
-            jnp.asarray(prompt_row[:prompt_len], dtype=jnp.int32),
-            axis="position",
-        )
-        seq_params = _seq_params_from_work(work, idx)
+        should_process = (i < num_new) & is_valid(slot_val)
+        return jax.lax.cond(should_process, process, lambda gs: gs, state)
 
-        decode_state = decode_state.assign_seq(
-            local_slot_id=slot_val,
-            tokens=prompt_tokens,
-            seq_len=jnp.asarray(prompt_len, dtype=jnp.int32),
-            kv_pages=None,
-            seq_params=seq_params,
-        )
-
-        gen_state = dataclasses.replace(gen_state, decode_state=decode_state)
-
-    return gen_state
+    return jax.lax.fori_loop(0, max_slots, body, gen_state)
 
 
+@partial(jax.jit, donate_argnums=0, static_argnames=("max_seqs_in_prefill",))
 def _run_prefill(
     gen_state: GenState,
     model: LmHeadModel,
@@ -856,7 +850,7 @@ class InferenceEngine:
         if prefill_work is None or int(jax.device_get(prefill_work.queue.num_queued_tokens)) == 0:
             return 0, None
         new_state = _run_prefill(
-            self.gen_state, self.model, self.sampler, prefill_work, int(self.config.max_seqs_in_prefill)
+            self.gen_state, self.model, self.sampler, prefill_work, self.config.max_seqs_in_prefill
         )
         # _run_prefill returns (GenState, _DecodeOutputs)
         self.gen_state, outputs = new_state
@@ -879,10 +873,10 @@ class InferenceEngine:
         """Pack prompt work into a single PrefillWork structure for downstream device execution."""
 
         decode_state = self.gen_state.decode_state
-        max_seqs_in_prefill = int(self.config.max_seqs_in_prefill)
+        max_seqs_in_prefill = self.config.max_seqs_in_prefill
         max_prefill_size = self.config.max_prefill_size or self.model.Pos.size
         max_seq_len = decode_state.tokens.axis_size("position")
-        max_slots = int(decode_state.max_seqs)
+        max_slots = decode_state.max_seqs
 
         queue_tokens = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
         queue_slot_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
@@ -1092,6 +1086,8 @@ class InferenceEngine:
         _, decode_outputs = self._admit_from_queue()
         if decode_outputs:
             _ = self._ingest_outputs(decode_outputs)
+        initial_prefill_out = time.time()
+        logger.info(f"Initial prefill and extraction took {initial_prefill_out - time_in:.3f}s")
 
         # Autoregressive generation loop with periodic extraction
         def _all_done() -> bool:
