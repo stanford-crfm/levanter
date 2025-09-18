@@ -1,13 +1,139 @@
+from dataclasses import dataclass
+from haliax import Axis
+from jax.experimental import checkify
+from jaxtyping import PRNGKeyArray
+from typing import Literal, Optional, Dict
+import dataclasses
+import draccus
+import equinox as eqx
 import functools
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
-from jax.experimental import checkify
+import numpy as np
+import typing
+import haliax as hax
+
+from levanter.data.dataset import MappedAsyncDataset
+from levanter.data.packing import GreedyPrepackedDataset
+from levanter.data.text import ProcessedChatDict
+from levanter.models.lm_model import LmExample
+from levanter.store.cache import TreeCache
+
+
+# From https://huggingface.co/stanford-crfm/marin-tokenizer/blob/main/tokenizer.json
+R_TASK_TOKEN_ID = 128011
+R_TASK_TOKEN = "<|reserved_special_token_3|>"
+X_TASK_TOKEN_ID = 128012
+X_TASK_TOKEN = "<|reserved_special_token_4|>"
+S_TASK_TOKEN_ID = 128013
+S_TASK_TOKEN = "<|reserved_special_token_5|>"
+
+
+# Use the last 100 reserved token IDs as sentinel tokens (equivalent to T5's
+# extra_ids); <|reserved_special_token_156|> to 255
+# https://github.com/google-research/text-to-text-transfer-transformer/blob/e081111ccd51df425aa7124e8e311ed6d403d767/t5/models/gin/objectives/span.gin#L46-L47
+num_token_ids = 128256
+num_sentinels = 100
+SENTINEL_TOKEN_IDS = list(range(num_token_ids - num_sentinels, num_token_ids))
+
+
+@dataclass(frozen=True)
+class DenoisingConfig(draccus.ChoiceRegistry):
+    task_token: Optional[str] = None
+
+    def with_task_token(self, task_token: Optional[str]) -> "DenoisingConfig":
+        return dataclasses.replace(self, task_token=task_token)
+
+    @staticmethod
+    def ul2_configs(
+        r_task_token: str = R_TASK_TOKEN,
+        x_task_token: str = X_TASK_TOKEN,
+        s_task_token: str = S_TASK_TOKEN,
+    ) -> typing.Dict[str, "DenoisingConfig"]:
+        # Table 1 https://arxiv.org/pdf/2205.05131
+        return {
+            "r1": RDenoisingConfig(r_task_token, 0.15, 3.0),
+            "r2": RDenoisingConfig(r_task_token, 0.15, 8.0),
+            "x1": XDenoisingConfig(x_task_token, 0.5, 3.0),
+            "x2": XDenoisingConfig(x_task_token, 0.5, 8.0),
+            "x3": XDenoisingConfig(x_task_token, 0.15, 64.0),
+            "x4": XDenoisingConfig(x_task_token, 0.5, 64.0),
+            "s": SDenoisingConfig(s_task_token),
+        }
+
+    @staticmethod
+    def ul2r_configs(
+        r_task_token: Optional[str] = R_TASK_TOKEN,
+        x_task_token: Optional[str] = X_TASK_TOKEN,
+        s_task_token: str = S_TASK_TOKEN,
+    ) -> Dict[str, "DenoisingConfig"]:
+        # Section 3.3 Loss Objectives https://arxiv.org/pdf/2210.11399v2
+        return {
+            "r": RDenoisingConfig(r_task_token, 0.15, 3.0, True),
+            "x1": XDenoisingConfig(x_task_token, 0.15, 32.0, True),
+            "x2": XDenoisingConfig(x_task_token, 0.5, 3.0, True),
+            "s": SDenoisingConfig(s_task_token),
+        }
+
+    def to_parameter_tensor(self) -> jnp.ndarray:
+        raise NotImplementedError("Not implemented")
+
+    def task_token_id(self) -> int:
+        raise NotImplementedError("Not implemented")
+
+
+@dataclass(frozen=True)
+class MaskDenoisingConfig(DenoisingConfig):
+    task_kind = 0
+    mask_prob: float = 0.15  # r in the paper
+    mean_span_length: float = 3.0  # mu in the paper
+    random_roll: bool = False
+
+    def to_parameter_tensor(self) -> jnp.ndarray:
+        args = [self.task_kind, self.mask_prob, self.mean_span_length]
+        return jnp.array(args)
+
+
+@DenoisingConfig.register_subclass("x")
+@dataclass(frozen=True)
+class XDenoisingConfig(MaskDenoisingConfig):
+    task_token: Optional[str] = X_TASK_TOKEN
+    mask_prob: float = 0.5
+    mean_span_length: float = 3.0
+
+    # TODO This needs to integrate with the actual tokenizer.
+    def task_token_id(self) -> int:
+        return X_TASK_TOKEN_ID
+
+
+@DenoisingConfig.register_subclass("r")
+@dataclass(frozen=True)
+class RDenoisingConfig(MaskDenoisingConfig):
+    task_token: Optional[str] = R_TASK_TOKEN
+    mask_prob: float = 0.15
+    mean_span_length: float = 3.0
+
+    def task_token_id(self) -> int:
+        return R_TASK_TOKEN_ID
+
+
+@DenoisingConfig.register_subclass("s")
+@dataclass(frozen=True)
+class SDenoisingConfig(DenoisingConfig):
+    task_kind = 1
+    task_token: Optional[str] = S_TASK_TOKEN
+
+    def to_parameter_tensor(self) -> jnp.ndarray:
+        # should match size of RDenoisingConfig / XDenoisingConfig
+        return jnp.array([self.task_kind, 0, 0])
+
+    def task_token_id(self) -> int:
+        return S_TASK_TOKEN_ID
 
 
 @functools.partial(jax.jit, static_argnames=["padded_length"])
 def random_segmentation_jax(
-    num_items: int, num_segments: int, key: PRNGKey, padded_length: int
+    num_items: int, num_segments: int, key: PRNGKeyArray, padded_length: int
 ) -> jnp.ndarray:
     """
     Generates a random partition of `num_items` items into `num_segments`
@@ -75,7 +201,7 @@ def num_noise_spans_tokens_and_spans(
 def random_spans_noise_mask_jax(
     length: int,
     noise_density: float,
-    key: PRNGKey,
+    key: PRNGKeyArray,
     mean_noise_span_length: float,
     random_roll: bool,
     padded_length: int,
@@ -127,9 +253,10 @@ def random_spans_noise_mask_jax(
     # Zero everything at length and after
     indices = jnp.arange(padded_length)
     is_noise = jnp.where(indices < length, is_noise, False)
+    is_noise = typing.cast(jnp.ndarray, is_noise)
 
     def apply_roll(m):
-        offset = jax.random.randint(key3, (), 0, adjusted_length, dtype=jnp.int32)
+        offset = jax.random.randint(key3, (), 0, length, dtype=jnp.int32)
         # Roll the mask
         rolled = jnp.roll(m, offset, axis=0)
         # Mask out values that wrapped around from beyond length
@@ -141,6 +268,7 @@ def random_spans_noise_mask_jax(
             m[jnp.minimum(length + indices, padded_length - 1)],
             rolled,
         )
+        rolled = typing.cast(jnp.ndarray, rolled)
         rolled = jnp.where(indices < length, rolled, False)
         return rolled
 
@@ -223,7 +351,7 @@ def noise_span_to_unique_sentinel_jax(
 
 @jax.jit
 def to_ul2r_rx_tokens(
-    key: PRNGKey,
+    key: PRNGKeyArray,
     tokens: jnp.ndarray,
     length: int,
     mask_prob: float,
@@ -287,17 +415,19 @@ def to_ul2r_rx_tokens(
 
     # Truncate `targets` to the new length; `inputs` are gated by `new_input_len` below
     targets_trunc = jnp.where(indices < new_target_len, targets, pad_token_id)
+    targets_trunc = typing.cast(jnp.ndarray, targets_trunc)
 
     # Roll `targets` to start at position `new_input_len`
     targets_rolled = jnp.roll(targets_trunc, new_input_len)
 
     result = jnp.where(indices < new_input_len, inputs, targets_rolled)
+    result = typing.cast(jnp.ndarray, result)
     return result, new_input_len
 
 
 @jax.jit
 def to_ul2r_s_tokens(
-    key: PRNGKey,
+    key: PRNGKeyArray,
     tokens: jnp.ndarray,
     length: int,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -318,7 +448,6 @@ def to_ul2r_s_tokens(
 
     Does not set task tokens.
     """
-
 
     # TODO support parameters?
 
@@ -344,9 +473,52 @@ def to_ul2r_s_tokens(
     return result, pivot
 
 
+# Returns (inputs_len, denoising_tokens)
+# denoising_tokens = [task_token] [inputs] [targets]
+@jax.jit
+def to_ul2r_tokens(
+    key: PRNGKeyArray,
+    task_tokens: jnp.ndarray,
+    all_task_params: jnp.ndarray,
+    tokens: jnp.ndarray,
+    length: int,
+    pad_token_id: int,
+    # TODO maybe we don't actually need the truncation logic in
+    # to_ul2r_rx_tokens given that we truncate while packing
+    max_length: int,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    task_idx = tokens[0]
+    task_params = all_task_params[task_idx]
+    task_kind = task_params[0]
+    task_token = task_tokens[task_idx]
+
+    def rx_tokens():
+        noise_density = task_params[1]
+        mean_noise_span_length = task_params[2]
+        # TODO allow configuring random_roll
+        inputs_len, out = to_ul2r_rx_tokens(
+            key,
+            tokens[1:],
+            length,
+            noise_density,
+            mean_noise_span_length,
+            random_roll=True,
+            sentinel_token_ids=SENTINEL_TOKEN_IDS,
+            pad_token_id=pad_token_id,
+            max_length=max_length,
+        )
+        return inputs_len, jnp.concatenate([jnp.array([task_token]), out])
+
+    def s_tokens():
+        inputs_len, out = to_ul2r_s_tokens(key, tokens[1:], length)
+        return inputs_len, jnp.concatenate([jnp.array([task_token]), out])
+
+    return jax.lax.cond(task_kind, rx_tokens, s_tokens)
+
+
 @jax.jit
 def ul2r_loss_mask(
-    input_masks: jnp.ndarray,
+    input_mask: jnp.ndarray,
     segment_ids: jnp.ndarray,
     tokens: jnp.ndarray,
     pad_token_id: int,
@@ -358,7 +530,7 @@ def ul2r_loss_mask(
     excluding the last token in each segment and padding tokens.
 
     Args:
-        - input_masks: Binary mask indicating input positions (1) vs output
+        - input_mask: Binary mask indicating input positions (1) vs output
           positions (0)
         - segment_ids: Segment IDs for packed sequences (-1 for padding)
         - tokens: Token IDs
@@ -368,13 +540,13 @@ def ul2r_loss_mask(
         Loss mask array of same shape as inputs
     """
     #   aaaabbb  segment_ids
-    #   1100110  input_masks
+    #   1100110  input_mask
     # → 0110010
     #   || ^ no loss on last output
     #   |^ loss on last input / first output
     #   ^ no loss on inputs / task token
 
-    loss_mask = jnp.logical_not(input_masks)
+    loss_mask = jnp.logical_not(input_mask)
     loss_mask = jnp.roll(loss_mask, -1)
 
     # Don't compute loss across segment boundaries
@@ -395,37 +567,172 @@ def ul2r_block_diagonal_mask(
     input_masks: jnp.ndarray, segment_ids: jnp.ndarray
 ) -> jnp.ndarray:
     """
+    Creates the prefix portion of an attention mask for UL2R training.
+
     - Input tokens can attend to all other input tokens bidirectionally within
-      the same segment
+      the same segment (corresponds to a block diagonal matrix)
     - Causal attention for output tokens isn't handle by this function; combine
       this mask with a causal mask
     - Attention is blocked across segment boundaries
 
     Args:
-        input_masks: Binary mask of shape (seq_len,) indicating input positions
-        (1) vs output positions (0)
-        segment_ids: Segment IDs of shape (seq_len,) for packed sequences (-1 for padding)
+        - input_masks: Boolean tensor of shape `(seq_len,)` indicating input
+          positions (1) vs output positions (0).
+        - segment_ids: Segment IDs of shape `(seq_len,)` for packed sequences
+          (-1 for padding).
 
     Returns:
-        Attention mask of shape (seq_len, seq_len) where True allows attention
+        An attention mask with shape `(seq_len, seq_len)`.
     """
-    # Block diagonal: can only attend within same segment
     segment_mask = segment_ids[:, None] == segment_ids[None, :]
-
-    # Prefix pattern: inputs can attend to all other inputs bidirectionally
-    # 1101 -> 1101
-    #         1100
-    #         1001
     prefix_pattern = input_masks[:, None] & input_masks[None, :]
-
     is_not_padding = segment_ids != -1
-
-    # Must be in same segment AND outputs attending to inputs
-    # Example for input_masks = 1100:
-    # 1100  (row 0: input can see all inputs)
-    # 1100  (row 1: input can see all inputs)
-    # 0000  (row 2: output follows causal, handled separately)
-    # 0001  (row 3: output follows causal, handled separately)
     prefix_mask = segment_mask & prefix_pattern & is_not_padding
-
     return prefix_mask
+
+
+TokenizedDict = typing.TypedDict("TokenizedDict", {"input_ids": np.ndarray})
+
+
+# [example, seg_ids]: tuple[TokenizedDict, TokenizedDict]
+class Ul2rDataset(MappedAsyncDataset[tuple[TokenizedDict, TokenizedDict], LmExample]):
+    def __init__(
+        self,
+        cache: TreeCache[TokenizedDict],
+        Pos: Axis,
+        task_configs: typing.Dict[str, DenoisingConfig],
+        task_probs: Dict[str, float],
+        key: PRNGKeyArray,
+        max_segments_per_example: int = 64,
+        slice_strategy: Literal["left", "right", "raise"] = "left",
+    ):
+        cache.await_finished()
+
+        # Copied from GreedyPrepackedDataset.__init__
+        # TODO factor out?
+        offsets = jax.tree.map(
+            lambda store: store.offsets[0 : store.num_rows + 1].read(), cache.store.tree
+        )
+        offsets = jax.tree.map(lambda fut: fut.result(), offsets)
+
+        def diff_offsets(offsets: np.ndarray):
+            # fine to mutate since we have a copy
+            # the array store has the number of rows in the 0th offset
+            offsets[0] = 0
+            return offsets[1:] - offsets[:-1]
+
+        lengths = jnp.array(jax.tree.map(diff_offsets, offsets))
+
+        task_items = [
+            (config, task_probs[name]) for name, config in task_configs.items()
+        ]
+        task_probs_arr = jnp.array([prob for _, prob in task_items])
+        task_indices_key, key = jax.random.split(key)
+        task_indices = jax.random.choice(
+            task_indices_key,
+            len(task_items),
+            shape=(lengths.shape[0],),
+            p=task_probs_arr,
+        )
+
+        # shape (len(task_items), A)
+        # where A = max(num_args(to_ul2r_rx_tokens), num_args(to_ul2r_s_tokens))
+        task_params = jnp.array(
+            [task.to_parameter_tensor() for task, _prob in task_items]
+        )
+
+        # We compute the length of the tokens after denoising because we want
+        # the packed/batched size to respect `max_length`. Otherwise, because
+        # after denoising examples become larger, the batches that we actually
+        # send to the LLM would be too big.
+        def compute_denoising_length(
+            length: jnp.ndarray, task_index: jnp.ndarray
+        ) -> jnp.ndarray:
+            def rx_length(length: jnp.ndarray, task_index: jnp.ndarray) -> jnp.ndarray:
+                noise_density = task_params[task_index, 1]
+                mean_noise_span_length = task_params[task_index, 2]
+                _num_noise_tokens, num_noise_spans, _num_nonnoise_tokens = (
+                    num_noise_spans_tokens_and_spans(
+                        length, noise_density, mean_noise_span_length
+                    )
+                )
+                # [task_token] one <sentinel_0> three <sentinel_0> two
+                return 1 + 2 * num_noise_spans
+
+            def s_length(length: jnp.ndarray, _task_index: jnp.ndarray) -> jnp.ndarray:
+                # [task_token] one <sentinel_0> two three
+                return 2 + length
+
+            task_kind = task_params[task_index, 0]
+            return jax.lax.cond(task_kind, rx_length, s_length, length, task_index)
+
+        denoising_lengths = jax.vmap(compute_denoising_length)(lengths, task_indices)
+
+        # NB the GreedyPackedDataset returns a tuple, where the first has the packed leaves
+        # and the second has the segment ids
+        self.packed: GreedyPrepackedDataset[TokenizedDict] = GreedyPrepackedDataset(
+            cache.store.tree,
+            Pos.size,
+            max_segments_per_example=max_segments_per_example,
+            slice_strategy=slice_strategy,
+            # TODO avoid converting back to numpy
+            lengths=denoising_lengths.__array__(),
+        )
+        self.Pos = Pos
+
+        sharding = jax.sharding.SingleDeviceSharding(
+            jax.local_devices(backend="cpu")[0]
+        )
+        # self.mask_user_turns = mask_user_turns
+
+        task_tokens = jnp.array(
+            [task.task_token_id() for task in task_configs.values()]
+        )
+
+        # TODO is the type wrong here
+        @functools.partial(
+            eqx.filter_jit, out_shardings=sharding
+        )  # pyright: ignore[reportCallIssue]
+        def _create_lm_example(e: tuple[TokenizedDict, TokenizedDict]) -> LmExample:
+            example, seg_ids = e
+            input_seg_ids = seg_ids["input_ids"]
+            unique_seg_ids = jnp.unique(
+                input_seg_ids, size=max_segments_per_example, fill_value=-1
+            )
+
+            tokens = hax.named(example["input_ids"], self.Pos)
+
+            def process_segment(seg_id: int) -> jnp.ndarray:
+                segment_indices = jnp.where(
+                    input_seg_ids == seg_id,
+                    jnp.arange(len(input_seg_ids), len(input_seg_ids)),
+                )
+                segment_indices = typing.cast(jnp.ndarray, segment_indices)
+                segment_start = jnp.min(segment_indices, len(input_seg_ids))
+                # TODO roll segment_start to 0, process it using to_ul2r_tokens, roll back
+                # TODO how do we get the index that this segment corresponded to?
+                # GreedyPrepackedDataset currently uses global_doc_idx
+                # task_idx = task_indices[index]
+                pass
+
+            segments = jax.vmap(process_segment)(unique_seg_ids)
+
+            # construct the output example["input_ids"] by ORing together the different segments
+            # construct input mask too for loss mask? or do inside process_segment?
+
+            # max_length = tokens.shape[self.Pos.name]
+            # inputs_len, denoising_tokens = to_ul2r_tokens(
+            #     key, task_tokens, task_params, tokens, length, pad_token_id, max_length
+            # )
+
+            # task_and_inputs_len = 1 + inputs_len
+            # input_mask = jnp.arange(max_length) < task_and_inputs_len
+
+            # loss_mask = ul2r_loss_mask(input_mask, seg_ids, tokens, pad_token_id)
+
+            segment_ids = hax.named(seg_ids["input_ids"], self.Pos)
+            return LmExample.causal(
+                tokens=tokens, loss_mask=loss_mask, segment_ids=segment_ids
+            )
+
+        super().__init__(self.packed, _create_lm_example)

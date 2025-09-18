@@ -10,6 +10,8 @@ from levanter.data.ul2r import (
     random_segmentation_jax,
     random_spans_noise_mask_jax,
     to_ul2r_rx_tokens,
+    to_ul2r_s_tokens,
+    SENTINEL_TOKEN_IDS,
 )
 
 
@@ -107,7 +109,12 @@ def test_random_spans_noise_mask_jax():
         if noise_density > 0:
             key2 = jax.random.PRNGKey(43)
             mask3 = random_spans_noise_mask_jax(
-                length, noise_density, key2, mean_span_length, random_roll, padded_length
+                length,
+                noise_density,
+                key2,
+                mean_span_length,
+                random_roll,
+                padded_length,
             )
             assert not jnp.array_equal(
                 mask, mask3
@@ -408,6 +415,42 @@ def test_to_ul2r_rx_tokens_truncates_both_sections_and_contains_sentinels():
     # Sentinel presence in both sections
     inputs_slice = result_small[:input_len_small]
     has_sentinel_inputs = jnp.any(jnp.isin(inputs_slice, sentinel_tokens))
-    has_sentinel_outputs = jnp.any(jnp.isin(outputs_slice[:outputs_nonpad], sentinel_tokens))
-    assert bool(has_sentinel_inputs), "Inputs should contain at least one sentinel token"
-    assert bool(has_sentinel_outputs), "Outputs should contain at least one sentinel token"
+    has_sentinel_outputs = jnp.any(
+        jnp.isin(outputs_slice[:outputs_nonpad], sentinel_tokens)
+    )
+    assert has_sentinel_inputs
+    assert has_sentinel_outputs
+
+
+def test_to_ul2r_s_tokens():
+    # Test case 1: Basic functionality with simple sequence
+    tokens = jnp.arange(10, 20)  # [10, 11, 12, ..., 19]
+    padded_tokens = jnp.pad(tokens, (0, 256 - 10), constant_values=0)
+    length = 10
+    key = jax.random.PRNGKey(42)
+
+    result, pivot = to_ul2r_s_tokens(key, padded_tokens, length)
+
+    assert result.shape == padded_tokens.shape
+    assert pivot.shape == ()
+    assert 1 <= pivot < length - 1, f"Pivot {pivot} should be between 1 and {length-2}"
+    assert result[pivot] == SENTINEL_TOKEN_IDS[0]
+
+    # Check prefix is unchanged (before pivot)
+    np.testing.assert_array_equal(result[:pivot], padded_tokens[:pivot])
+
+    # Check continuation (after pivot) is shifted from original
+    # The continuation should be tokens[pivot:] starting at position pivot+1
+    expected_continuation = padded_tokens[pivot:]
+    # Shift by 1 to account for sentinel at pivot
+    np.testing.assert_array_equal(result[pivot + 1 :], expected_continuation[:-1])
+
+    # Test case 2: Determinism - same key should give same result
+    result2, pivot2 = to_ul2r_s_tokens(key, padded_tokens, length)
+    np.testing.assert_array_equal(result, result2)
+    assert pivot == pivot2
+
+    # Test case 3: Different keys should give different pivots (usually)
+    key2 = jax.random.PRNGKey(43)
+    result3, pivot3 = to_ul2r_s_tokens(key2, padded_tokens, length)
+    assert pivot != pivot3, "Different keys should produce different pivots"

@@ -12,6 +12,7 @@ from levanter.data.packing import (
     PromptCompletion,
     SequencePacker,
     greedy_pack_prompt_completions,
+    pack_documents,
     pack_prompt_completions,
     per_segment_correct,
     per_segment_loss,

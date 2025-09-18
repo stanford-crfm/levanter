@@ -468,14 +468,19 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         _offsets = jax.tree.map(lambda store: store.offsets[0 : store.num_rows + 1].read(), self.dataset)
         self._offsets = jax.tree.map(lambda fut: fut.result(), _offsets)
 
-        def diff_offsets(offsets: np.ndarray):
-            # fine to mutate since we have a copy
-            # the array store has the number of rows in the 0th offset
-            offsets[0] = 0
-            return offsets[1:] - offsets[:-1]
 
-        # Convert offsets to lengths
-        self._lengths = jax.tree.map(diff_offsets, self._offsets)
+        if lengths is not None:
+            self._lengths = lengths
+        else:
+            def diff_offsets(offsets: np.ndarray):
+                # fine to mutate since we have a copy
+                # the array store has the number of rows in the 0th offset
+                offsets[0] = 0
+                return offsets[1:] - offsets[:-1]
+
+            # Convert offsets to lengths
+            self._lengths = jax.tree.map(diff_offsets, self._offsets)
+
 
         # Build pack indices
         self._pack_indices: list[range] = pack_documents(
@@ -533,6 +538,17 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
                                 f"{list(dr)}. Consider using a different slice_strategy or increasing max_length."
                             )
                     # Read the slice from the underlying data.
+                    # TODO need to pad end up to length here the size of each
+                    # example will differ, but the that way the output size of
+                    # denoing will be correct
+                    #
+                    # or... maybe we identify the starts of segments using
+                    # seg_ids then we roll & call on each of the rolled parts
+                    # Then this tensor is actually smaller than max_length?
+                    #
+                    # hm no more convenient if all tensors size of max_length.
+                    # eventually would be nice if get_batch wrapper gets maximum
+                    # segment length and uses that
                     out_data.append(store.data[token_start:token_end].read())
 
                     # Create segment IDs for this pack
