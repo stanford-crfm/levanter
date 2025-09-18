@@ -24,6 +24,7 @@ import equinox as eqx
 import haliax as hax
 import jax.numpy as jnp
 import jax.random as jrandom
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from haliax import Axis
@@ -86,8 +87,8 @@ class InferenceRequest:
     prompt_tokens: List[int]
     max_tokens: int
     temperature: float
-    stop_tokens: Optional[List[int]]
-    seed: int
+    stop_tokens: List[int] | None
+    seed: int | None
     future: asyncio.Future
     n_generations: int = 1
     original_prompt: str = ""
@@ -164,7 +165,7 @@ class InferenceContext:
 
     def shutdown(self):
         """Signal shutdown and wait for threads to finish"""
-        logger.info("Shutting down inference context...", stack_info=True)
+        logger.info("Shutting down inference context.")
         self.shutdown_event.set()
         self.inference_thread.join(timeout=1)
         self.batch_thread.join(timeout=1)
@@ -295,6 +296,10 @@ class InferenceContext:
                     {"stop_seq": 1}
                 )
 
+            # dumb fallback seed if none provided
+            if req.seed is None:
+                req.seed = np.random.default_rng().integers(0, 2**32 - 1)
+
             seq_params = SeqDecodingParams(
                 max_num_tokens=jnp.array(len(req.prompt_tokens) + req.max_tokens, dtype=jnp.int32),
                 stop_tokens=stop_ids,
@@ -415,7 +420,7 @@ async def _create_completion(ctx: InferenceContext, request: ObjDict) -> Complet
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 stop_tokens=stop_tokens,
-                seed=request.seed if request.seed is not None else 42,
+                seed=request.seed,
                 future=future,
                 n_generations=request.n or 1,
                 original_prompt=prompt,
@@ -516,7 +521,7 @@ async def _create_chat_completion(ctx: InferenceContext, request: ObjDict) -> Ch
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             stop_tokens=stop_tokens,
-            seed=request.seed if request.seed is not None else 42,
+            seed=request.seed,
             future=future,
             n_generations=request.n or 1,
             enable_logprobs=request.logprobs,
@@ -614,6 +619,7 @@ class InferenceServer:
         tokenizer = load_tokenizer(tokenizer_path)
         key = jrandom.PRNGKey(config.seed)
         vocab_size = len(tokenizer)
+        logger.info(f"Loaded tokenizer with vocab size {vocab_size} from {tokenizer_path}")
 
         with (
             config.trainer.device_mesh,
