@@ -360,7 +360,7 @@ def test_logprobs_with_multiple_generations(test_client):
     # Ensure the two generations are different
     assert np.all(
         np.array(logprob_arrays[0]) != np.array(logprob_arrays[1])
-    ), "Expected different generations, got {logprob_arrays}"
+    ), f"Expected different generations, got {logprob_arrays}"
 
 
 def test_logprobs_deterministic_behavior(test_client):
