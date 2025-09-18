@@ -155,9 +155,8 @@ class PageTable(eqx.Module):
         token_slot_ids = hax.where(token_slot_ids < 0, self.max_seqs, token_slot_ids)
         # CAREFUL: we don't assume slot_ids are sorted, just contiguous. segment_sum is our friend
         # NB: segment_sum assumes that segment ids are in the range [0, num_segments)
-        # and returns an array of such length
-        # essentially this means segment_sum et al require sorted, dense segment ids,
-        # so we have to denseify the slot ids first
+        # and returns an array of that length
+        # essentially this means segment_sum et al require dense segment ids so we have to denseify the slot ids first
         unique_ids, dense_ids = get_unique_in_order(
             token_slot_ids.array,
             size=self.max_seqs + 1,  # +1 for INVALID
@@ -514,8 +513,7 @@ class PageBatchInfo(eqx.Module):
     page_indices[0] does not in general correspond to the first sequence in DecodeState, but rather the first sequence
     that has tokens **in this batch**.
 
-    To recover the mapping, using slot_ids
-
+    To recover the mapping, use slot_ids to map from batch sequence index to DecodeState sequence index.
     """
 
     slot_ids: ht.i32[NamedArray, " seq"]  # type: ignore[name-defined]
