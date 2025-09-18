@@ -812,13 +812,13 @@ class InferenceEngine:
         for r in requests:
             self.request_queue.append(r)
 
-    def _admit_from_queue(self) -> tuple[int, _DecodeOutputs | None]:
+    def _admit_from_queue(self) -> _DecodeOutputs | None:
         """Admit a batch from the head of the queue that fits in free slots/pages.
 
         Returns the number of admitted requests.
         """
         if not self.request_queue:
-            return 0, None
+            return None
         sim_slots = len(self.free_slots)
         sim_pages = self._free_page_count()
         max_prefill_size = int(self.config.max_prefill_size or self.gen_state.decode_state.page_table.max_len_per_seq)
@@ -844,18 +844,17 @@ class InferenceEngine:
             sim_tokens += len(nxt.prompt_tokens)
             primaries_in_batch += 1
         if not batch:
-            return 0, None
+            return None
         # Build a single PrefillWork description and run prefill exactly once
         prefill_work = self._prefill_prompts(batch)
         if prefill_work is None or int(jax.device_get(prefill_work.queue.num_queued_tokens)) == 0:
-            return 0, None
+            return None
         new_state = _run_prefill(
             self.gen_state, self.model, self.sampler, prefill_work, self.config.max_seqs_in_prefill
         )
         # _run_prefill returns (GenState, _DecodeOutputs)
         self.gen_state, outputs = new_state
-        self.gen_state = jax.block_until_ready(self.gen_state)
-        return len(batch), outputs
+        return outputs
 
     def _free_page_count(self) -> int:
         """Return number of free KV pages in the PageTable."""
@@ -1083,7 +1082,7 @@ class InferenceEngine:
 
         time_in = time.time()
         # Try initial admission from queue and extract prompt tokens
-        _, decode_outputs = self._admit_from_queue()
+        decode_outputs = self._admit_from_queue()
         if decode_outputs:
             _ = self._ingest_outputs(decode_outputs)
         initial_prefill_out = time.time()
@@ -1114,7 +1113,7 @@ class InferenceEngine:
                     0,
                 )
             )
-            jax.block_until_ready(self.gen_state)
+            # jax.block_until_ready(self.gen_state)
             fake_submit_done = time.time()
 
             submit_start = iter_start
@@ -1128,7 +1127,7 @@ class InferenceEngine:
             )
             submit_done = time.time()
             # Time spent with device executing (and the host thread waiting)
-            self.gen_state = jax.block_until_ready(future_state)
+            self.gen_state = future_state
             device_time = time.time() - submit_done
 
             extract_start = time.time()
@@ -1138,10 +1137,11 @@ class InferenceEngine:
             # Release any sequences that finished in this step
             release_start = time.time()
             # Admit more if capacity allows
-            _, admit_outputs = self._admit_from_queue()
-            mid_tokens = self._ingest_outputs(admit_outputs)
-            # Ensure any bookkeeping kernels complete before next iteration
-            self.gen_state = jax.block_until_ready(self.gen_state)
+            admit_outputs = self._admit_from_queue()
+            if admit_outputs is not None:
+                mid_tokens = self._ingest_outputs(admit_outputs)
+            else:
+                mid_tokens = 0
             new_tokens += mid_tokens
             release_time = time.time() - release_start
 
