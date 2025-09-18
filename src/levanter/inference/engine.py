@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from haliax import NamedArray
+from haliax.jax_utils import is_jax_array_like
 
 from levanter.inference.jit_scheduler import (
     DecodeState,
@@ -351,16 +352,25 @@ def _stop_tokens_from_work(work: PrefillWork, idx: int) -> ht.i32[NamedArray, "s
 
 
 def _seq_params_from_work(work: PrefillWork, idx: int) -> SeqDecodingParams:
-    max_tokens = jnp.asarray(work.seq_params.max_num_tokens[idx], dtype=jnp.int32)
-    temperature = jnp.asarray(work.seq_params.temperature[idx], dtype=jnp.float32)
-    key = jnp.asarray(work.seq_params.key[idx], dtype=jnp.uint32)
-    stop_tokens = _stop_tokens_from_work(work, idx)
-    return SeqDecodingParams(
-        max_num_tokens=max_tokens,
-        stop_tokens=stop_tokens,
-        temperature=temperature,
-        key=key,
-    )
+    def select(x):
+        if isinstance(x, NamedArray):
+            return x["seq", idx]
+        elif is_jax_array_like(x):
+            return x[idx]
+        else:
+            raise TypeError(f"Unexpected type in seq_params: {type(x)}")
+
+    return hax.tree_util.tree_map(select, work.seq_params)
+    # max_tokens = jnp.asarray(work.seq_params.max_num_tokens[idx], dtype=jnp.int32)
+    # temperature = jnp.asarray(work.seq_params.temperature[idx], dtype=jnp.float32)
+    # key = jnp.asarray(work.seq_params.key[idx], dtype=jnp.uint32)
+    # stop_tokens = _stop_tokens_from_work(work, idx)
+    # return SeqDecodingParams(
+    #     max_num_tokens=max_tokens,
+    #     stop_tokens=stop_tokens,
+    #     temperature=temperature,
+    #     key=key,
+    # )
 
 
 def _set_seq_params_row(
@@ -368,6 +378,16 @@ def _set_seq_params_row(
     idx: int,
     params: SeqDecodingParams,
 ) -> SeqDecodingParams:
+    # can't use this b/c we sometimes have to pad stop_tokens
+    # def set(x, v):
+    #     if isinstance(x, NamedArray):
+    #         return x.at["seq", idx].set(v)
+    #     elif is_jax_array_like(x):
+    #         arr = x.at[idx].set(v)
+    #         return arr
+    #     else:
+    #         raise TypeError(f"Unexpected type in seq_params: {type(x)}")
+    # return hax.tree_util.tree_map(set, batch, params)
     max_num_tokens = batch.max_num_tokens.at[idx].set(jnp.asarray(params.max_num_tokens, dtype=jnp.int32))
     temperature = batch.temperature.at[idx].set(jnp.asarray(params.temperature, dtype=jnp.float32))
     key = batch.key.at[idx].set(jnp.asarray(params.key, dtype=jnp.uint32))
@@ -393,6 +413,7 @@ def _set_seq_params_row(
     )
 
 
+# TODO: I'm sure i could vectorize a lot of this.
 def _apply_prefill_work(gen_state: GenState, work: PrefillWork) -> GenState:
     num_new = work.new_num_seqs.astype(jnp.int32)
     max_slots = work.new_slot_ids.array.shape[0]
