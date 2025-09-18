@@ -13,7 +13,6 @@ from levanter.tracker.histogram import Histogram
 from levanter.tracker.tracker import TrackerConfig
 from levanter.utils.jax_utils import jnp_to_python
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -65,7 +64,11 @@ class JsonLoggerTracker(Tracker):
             "event": "hparams",
             "hparams": _to_jsonable(hparams),
         }
-        self.logger.info(json.dumps(record))
+        try:
+            self.logger.info(json.dumps(record))
+        except Exception as e:
+            print("Failed to log hyperparameters:", e)
+            print("Record:", record)
 
     def log(self, metrics: Mapping[str, Any], *, step: Optional[int], commit: Optional[bool] = None):
         del commit
@@ -96,7 +99,11 @@ class JsonLoggerTracker(Tracker):
             "name": name,
             "artifact_type": type,
         }
-        self.logger.info(json.dumps(record))
+
+        try:
+            self.logger.info(json.dumps(record))
+        except Exception:
+            self.logger.info(record)
 
     def finish(self):
         summary = {**self._summary_metrics, **self._last_metrics}

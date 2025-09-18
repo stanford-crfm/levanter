@@ -7,6 +7,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import jax
+import numpy as np
 import pytest
 
 from levanter.compat.hf_checkpoints import RepoRef
@@ -331,7 +333,7 @@ def test_logprobs_with_multiple_generations(test_client):
         "/v1/completions",
         json={
             "model": "timinar/baby-llama-58m",
-            "prompt": "The weather is",
+            "prompt": "One plus one is",
             "max_tokens": 10,
             "temperature": 0.7,
             "logprobs": True,
@@ -345,12 +347,20 @@ def test_logprobs_with_multiple_generations(test_client):
 
     assert len(completion.choices) == 2
 
+    logprob_arrays = []
+
     for i, choice in enumerate(completion.choices):
         assert choice.index == i
         assert choice.logprobs is not None
         assert len(choice.logprobs.tokens) > 0, choice
+        assert len(choice.logprobs.token_logprobs) == len(choice.logprobs.tokens), choice
+        logprob_arrays.append(choice.logprobs.token_logprobs)
+        print(f"Choice {i} - {choice.text} {choice.logprobs.tokens} {choice.logprobs.token_logprobs}")
 
-        print(f"Choice {i} generated {len(choice.logprobs.tokens)} tokens with logprobs")
+    # Ensure the two generations are different
+    assert np.all(
+        np.array(logprob_arrays[0]) != np.array(logprob_arrays[1])
+    ), "Expected different generations, got {logprob_arrays}"
 
 
 def test_logprobs_deterministic_behavior(test_client):
@@ -388,3 +398,75 @@ def test_logprobs_deterministic_behavior(test_client):
         assert abs(lp1 - lp2) < 1e-6
 
     print("Deterministic logprobs test passed!")
+
+
+def test_reload_with_zeros_clears_outputs(test_client):
+    """Test that reloading with a zeroed-out model properly clears outputs."""
+    client, server = test_client
+
+    # Make a request before reload to establish baseline
+    response1 = client.post(
+        "/v1/completions",
+        json={
+            "model": "timinar/baby-llama-58m",
+            "prompt": "The quick brown fox",
+            "max_tokens": 16,
+            "temperature": 0.0,
+            "seed": 42,
+        },
+    )
+
+    assert response1.status_code == 200
+    completion1 = Completion.model_validate(response1.json())
+    original_text = completion1.choices[0].text
+    assert len(original_text.strip()) > 0
+
+    original_model = server.inference_context.model
+
+    # Force a reload with a zeroed-out model callback
+    def _new_model(old_model):
+        return jax.tree_util.tree_map(lambda x: x * 0, old_model)
+
+    server.reload(_new_model)
+
+    # Make a request after reload - should get all zero tokens in theory
+    response2 = client.post(
+        "/v1/completions",
+        json={
+            "model": "timinar/baby-llama-58m",
+            "prompt": "The quick brown fox",
+            "max_tokens": 16,
+            "temperature": 0.0,
+            "seed": 42,
+        },
+    )
+
+    assert response2.status_code == 200
+    completion2 = Completion.model_validate(response2.json())
+    zeroed_text = completion2.choices[0].text
+
+    # With zeroed weights, the output should be different from the original
+    # probably empty but depends on the tokenizer & stop tokens
+    assert completion2.usage.completion_tokens > 0
+    print(f"Original text: '{original_text}'")
+    print(f"Zeroed model text: '{zeroed_text}'")
+
+    # now reload the original weights back
+    def _original_model(old_model):
+        return original_model
+
+    server.reload(_original_model)
+    response3 = client.post(
+        "/v1/completions",
+        json={
+            "model": "timinar/baby-llama-58m",
+            "prompt": "The quick brown fox",
+            "max_tokens": 16,
+            "temperature": 0.0,
+            "seed": 42,
+        },
+    )
+    assert response3.status_code == 200
+    completion3 = Completion.model_validate(response3.json())
+    restored_text = completion3.choices[0].text
+    assert restored_text == original_text

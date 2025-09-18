@@ -141,12 +141,12 @@ def _fetch_all_from_queue(q: queue.Queue, timeout: float) -> List:
 
 
 class InferenceContext:
-    """Background thread that manages the GenerationService and processes requests"""
+    """Background thread that manages the InferenceEngine and processes requests"""
 
-    def __init__(self, model: LmHeadModel, tokenizer, service: InferenceEngine, config):
+    def __init__(self, model: LmHeadModel, tokenizer, engine: InferenceEngine, config: InferenceServerConfig):
         self.model = model
         self.tokenizer = tokenizer
-        self.service = service
+        self.engine = engine
         self.config = config
         self.request_queue: queue.Queue[InferenceRequest] = queue.Queue()
         self.batch_queue: queue.Queue[InferenceBatch] = queue.Queue()
@@ -164,7 +164,7 @@ class InferenceContext:
 
     def shutdown(self):
         """Signal shutdown and wait for threads to finish"""
-        logger.info("Shutting down inference context...")
+        logger.info("Shutting down inference context...", stack_info=True)
         self.shutdown_event.set()
         self.inference_thread.join(timeout=1)
         self.batch_thread.join(timeout=1)
@@ -182,8 +182,15 @@ class InferenceContext:
             logger.info(f"Acquired model lock after {lock_wait_time}, reloading weights...")
 
             start = time.time()
-            self.model = weight_callback(self.model)
-            elapsed = time.time() - start
+            with (
+                self.config.trainer.device_mesh,
+                hax.axis_mapping(self.config.trainer.compute_axis_mapping),
+            ):
+                self.model = weight_callback(self.model)
+                self.engine = InferenceEngine.from_model_with_config(
+                    model=self.model, tokenizer=self.tokenizer, config=self.config.service
+                )
+                elapsed = time.time() - start
             logger.info(f"Model reloaded in {elapsed:.2f}s")
 
     def submit_request(
@@ -231,15 +238,15 @@ class InferenceContext:
 
             batch = InferenceBatch()
             for r in requests:
-                if r.n_generations > self.service.config.max_seqs:
+                if r.n_generations > self.engine.config.max_seqs:
                     # fail requests that are too large
                     error_msg = (
                         f"Request {r.request_id} has n={r.n_generations} which exceeds "
-                        f"the maximum allowed {self.service.config.max_seqs}"
+                        f"the maximum allowed {self.engine.config.max_seqs}"
                     )
                     logger.error(error_msg)
                     r.future.get_loop().call_soon_threadsafe(r.future.set_exception, ValueError(error_msg))
-                elif batch.num_seqs + r.n_generations <= self.service.config.max_seqs:
+                elif batch.num_seqs + r.n_generations <= self.engine.config.max_seqs:
                     batch.append(r)
                 else:
                     self.batch_queue.put(batch)
@@ -257,7 +264,11 @@ class InferenceContext:
         while not self.shutdown_event.is_set():
             try:
                 batch = self.batch_queue.get(timeout=1)
-                with self.model_lock:
+                with (
+                    self.model_lock,
+                    self.config.trainer.device_mesh,
+                    hax.axis_mapping(self.config.trainer.compute_axis_mapping),
+                ):
                     self._execute_batch(batch)
             except queue.Empty:
                 continue
@@ -302,7 +313,7 @@ class InferenceContext:
 
         # Generate responses
         start_time = time.time()
-        result = self.service.generate(service_requests)
+        result = self.engine.generate(service_requests)
         duration = time.time() - start_time
         logger.info(f"Batch completed in {duration:.2f}s, generated {result.total_generated} tokens")
 
@@ -360,10 +371,9 @@ def _health_check() -> dict:
     return {"status": "healthy", "service": "levanter-inference"}
 
 
-async def _create_completion(ctx: InferenceContext, request: CompletionRequest) -> Completion:
+async def _create_completion(ctx: InferenceContext, request: ObjDict) -> Completion:
     """Create a text completion using OpenAI API format."""
     try:
-        request = ObjDict(request)
         if isinstance(request.prompt, str):
             prompts = [request.prompt]
         else:
@@ -471,10 +481,9 @@ async def _create_completion(ctx: InferenceContext, request: CompletionRequest) 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _create_chat_completion(ctx: InferenceContext, request: ChatCompletionRequest) -> ChatCompletion:
+async def _create_chat_completion(ctx: InferenceContext, request: ObjDict) -> ChatCompletion:
     """Create a chat completion using OpenAI API format."""
     try:
-        request = ObjDict(request)
         messages = request.messages
 
         # Apply chat template
@@ -639,11 +648,11 @@ class InferenceServer:
 
         @app.post("/v1/completions", response_model=Completion)
         async def create_completion(request: CompletionRequest) -> Completion:
-            return await _create_completion(inference_context, request)
+            return await _create_completion(inference_context, ObjDict(request))
 
         @app.post("/v1/chat/completions", response_model=ChatCompletion)
         async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletion:
-            return await _create_chat_completion(inference_context, request)
+            return await _create_chat_completion(inference_context, ObjDict(request))
 
         return app
 
