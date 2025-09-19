@@ -846,7 +846,6 @@ class InferenceEngine:
         prefill_work = self._prefill_prompts(batch)
         if prefill_work is None:
             return None
-
         new_state = _run_prefill(
             self.gen_state, self.model, self.sampler, prefill_work, self.config.max_seqs_in_prefill
         )
@@ -1000,6 +999,7 @@ class InferenceEngine:
             num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
         )
 
+        self._verify_free_slot_view(context="prefill_prompts")
         return PrefillWork(
             queue=prefill_queue,
             new_num_seqs=jnp.array(total_new, dtype=jnp.int32),

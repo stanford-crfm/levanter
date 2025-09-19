@@ -3,7 +3,6 @@
 
 import logging
 
-
 import equinox as eqx
 import haliax as hax
 import jax
