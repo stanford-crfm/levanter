@@ -191,6 +191,9 @@ def main() -> None:
 
     try:
         subprocess.run(command, check=True)
+    except KeyboardInterrupt:
+        print("TensorBoard interrupted by user; exiting.")
+        return
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
