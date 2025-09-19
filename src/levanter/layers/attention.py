@@ -1635,7 +1635,7 @@ class Attention(eqx.Module):
 
 
 def combine_kv_pages(k_pages: NamedArray, v_pages: NamedArray) -> NamedArray:
-    """Combine separate K and V pages into interleaved format for new TPU kernel.
+    """Combine separate K and V pages into concatenated format for new TPU kernel.
 
     Args:
         k_pages: Key pages with shape [Page, Slot, KVHeads, HeadDim]
@@ -1643,16 +1643,13 @@ def combine_kv_pages(k_pages: NamedArray, v_pages: NamedArray) -> NamedArray:
 
     Returns:
         Combined KV pages with shape [Page, Slot, 2*KVHeads, HeadDim] where
-        K and V heads are interleaved: [k_head_0, v_head_0, k_head_1, v_head_1, ...]
+        K heads are concatenated with V heads: [k_head_0, k_head_1, ..., v_head_0, v_head_1, ...]
     """
     assert k_pages.axes == v_pages.axes, "K and V pages must have same axes"
 
-    # Stack along a new axis to create [Page, Slot, KVHeads, 2, HeadDim]
-    kv_stacked = hax.stack("kv_type", [k_pages, v_pages])
-
-    # Rearrange to [Page, Slot, KVHeads, 2, HeadDim] then flatten KVHeads and 2
-    kv_combined = kv_stacked.rearrange(("page", "slot", "kv_head", "kv_type", "head_size"))
-    kv_combined = kv_combined.flatten_axes(("kv_head", "kv_type"), "kv_head")
+    # Concatenate K and V pages along the kv_head axis
+    # This produces [k_head_0, k_head_1, ..., v_head_0, v_head_1, ...]
+    kv_combined = hax.concatenate("kv_head", [k_pages, v_pages])
 
     return kv_combined
 
