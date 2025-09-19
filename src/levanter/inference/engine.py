@@ -852,7 +852,6 @@ class InferenceEngine:
 
         # _run_prefill returns (GenState, _DecodeOutputs)
         self.gen_state, outputs = new_state
-        # self.gen_state = jax.block_until_ready(self.gen_state)
         return outputs
 
     def _free_page_count(self) -> int:
@@ -1114,7 +1113,6 @@ class InferenceEngine:
                     0,
                 )
             )
-            # jax.block_until_ready(self.gen_state)
             fake_submit_done = time.time()
 
             submit_start = iter_start
