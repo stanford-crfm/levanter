@@ -45,6 +45,7 @@ from levanter.data.packing import (
     PromptCompletion,
     greedy_pack_prompt_completions,
     per_segment_correct,
+    per_segment_generate,
     per_segment_loss,
 )
 from levanter.models.gpt2 import Gpt2Config
@@ -169,6 +170,45 @@ class _LmEvalHarnessWorker:
             _eval_loglikelihood, axis_resources=axis_resources, out_axis_resources={}
         )
 
+        def _eval_generate(
+            model: LmHeadModel, packed_example: LmExample
+        ) -> tuple[NamedArray, NamedArray]:
+            """
+            Returns:
+                - segments: The segment IDs of the completions. (shape: (Segments,))
+                - generated_tokens: The generated token IDs. (shape: (Segments,))
+            """
+
+            if self.mp is not None:
+                model = self.mp.cast_to_compute(model)
+
+            logits = model(packed_example.tokens, attn_mask=packed_example.attn_mask)
+            logits = logits.astype(jnp.float32)
+            Pos = logits.resolve_axis(self.EvalPos.name)
+
+            # Get the last token's logits for each sequence
+            last_token_logits = hax.take(logits, -1, axis=Pos)
+            
+            # Use argmax to get the most likely next token
+            generated_tokens = hax.argmax(last_token_logits, axis=model.Vocab)
+
+            # we need + 1 because we use -1 as a padding value for segments
+            max_Segments = hax.Axis("Segments", size=self.max_packed_segments + 1)
+
+            batched_segment_ids, batched_generated_tokens = hax.vmap(per_segment_generate, self.EvalBatch)(
+                packed_example, generated_tokens, max_Segments
+            )
+
+            segments = hax.flatten(batched_segment_ids, "segment")
+            generated = hax.flatten(batched_generated_tokens, "segment")
+
+            return segments, generated
+
+        # no sharded outputs
+        self._jit_generate = hax.named_jit(
+            _eval_generate, axis_resources=axis_resources, out_axis_resources={}
+        )
+
     def make_harness_lm(self, apply_chat_template: bool = False):
         if jax.process_index() == 0:
             return LevanterHarnessLM(self)
@@ -184,6 +224,9 @@ class _LmEvalHarnessWorker:
             elif message == _Message.LOGLIKELIHOOD:
                 payload = self._receive_payload()
                 self.process_loglikelihood(payload)
+            elif message == _Message.GENERATE:
+                payload = self._receive_payload()
+                self.process_generate(payload)
             else:
                 raise ValueError(f"Unknown message type: {message}")
 
@@ -220,6 +263,15 @@ class _LmEvalHarnessWorker:
         self._send_payload(packed_request)
         return self.process_loglikelihood(packed_request)
 
+    def dispatch_generate(self, packed_request):
+        self._send_message(_Message.GENERATE)
+        self._send_payload(packed_request)
+        return self.process_generate(packed_request)
+
+    def process_generate(self, packed_request):
+        out = self._jit_generate(self.model, packed_request)
+        return out
+
     def stop(self):
         self._send_message(_Message.STOP)
 
@@ -227,6 +279,7 @@ class _LmEvalHarnessWorker:
 class _Message:
     STOP = 0
     LOGLIKELIHOOD = 1
+    GENERATE = 2
 
 
 def _get_segments_this_batch(batch, max_segments_per_ex):
@@ -328,7 +381,74 @@ class LevanterHarnessLM(LM):
         raise NotImplementedError()
 
     def generate_until(self, requests) -> List[str]:
-        raise NotImplementedError()
+        """
+        Generate text until stop conditions are met.
+        For now, this is a simple implementation that generates one token per request.
+        """
+        if self.tokenizer.pad_token_id is None:
+            logger.warning("No pad token set. Setting to eos token.")
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+        packed = _pack_requests(
+            requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments, self.leader.apply_chat_template
+        )
+        packed_iterator = stack_batches(iter(packed), self.EvalPos, self.EvalBatch)
+        packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
+
+        result_tokens = np.zeros(len(requests), dtype=np.int32)
+        covered_points = np.zeros(len(requests), dtype=bool)
+
+        total_tokens_expected = len(packed) * self.EvalPos.size
+
+        total_padding = 0
+        total_tokens_seen = 0
+        pbar = tqdm(total=total_tokens_expected, desc="generate_until", unit="tok")
+        for q, batch in enumerate(packed_iterator):
+            segments_this_batch = _get_segments_this_batch(
+                batch, self.leader.max_packed_segments * self.EvalBatch.size
+            )
+
+            padding_count, batch_tokens = _get_padding_count(batch, self.tokenizer.pad_token_id)
+
+            out_ids, out_tokens = self.leader.dispatch_generate(batch)
+
+            out_ids = np.array(out_ids.array)
+            out_tokens = np.array(out_tokens.array)
+            # -1's are going to be where we had too few sequences to fill a batch
+            valid_indices = out_ids != -1
+
+            out_ids_this_batch = out_ids[valid_indices].tolist()
+
+            missing_ids = set(segments_this_batch) - set(out_ids_this_batch)
+            extra_ids = set(out_ids_this_batch) - set(segments_this_batch)
+            assert len(missing_ids) == 0, f"Missing segments: {missing_ids}"
+            assert len(extra_ids) == 0, f"Extra segments: {extra_ids}"
+
+            result_tokens[out_ids[valid_indices]] = out_tokens[valid_indices]
+            covered_points[out_ids[valid_indices]] = True
+
+            total_padding += padding_count
+            total_tokens_seen += batch_tokens
+
+            pbar.set_postfix(
+                padding=f"{total_padding}/{total_tokens_seen} = {(total_padding) / (total_tokens_seen):.2f}",
+                this_padding=f"{padding_count}/{batch_tokens}= {padding_count / batch_tokens:.2f}",
+            )
+            pbar.update(batch_tokens)
+
+        missing_points = np.where(~covered_points)[0]
+        assert len(missing_points) == 0, f"Missing points: {missing_points}"
+
+        # Convert token IDs to strings
+        result_strings = []
+        for token_id in result_tokens:
+            if token_id == self.tokenizer.pad_token_id:
+                result_strings.append("")
+            else:
+                result_strings.append(self.tokenizer.decode([token_id]))
+
+        logger.info(f"Finished running {len(requests)} generations.")
+        return result_strings
 
 
 @dataclass(frozen=True)

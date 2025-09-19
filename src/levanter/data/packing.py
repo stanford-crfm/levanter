@@ -254,6 +254,58 @@ def per_segment_correct(
     return unique_segment_ids, segment_correct
 
 
+def per_segment_generate(
+    packed_example: LmExample, generated_tokens: hax.NamedArray, max_Segments: hax.Axis
+) -> tuple[hax.NamedArray, hax.NamedArray]:
+    """
+    Returns a pair of arrays of shape (max_segments,), where:
+
+    * the first array is segment ids
+    * the second is the generated token for each segment.
+
+    This code is designed to run in a jit-compiled function, meaning we have to careful of shapes
+
+    generated_tokens is a token array of the same shape as the losses array indicating the generated token
+    """
+    assert packed_example.attn_mask.segment_ids is not None, "segment_ids must be set in the AttentionMask"
+
+    segment_ids = packed_example.attn_mask.segment_ids
+    if isinstance(segment_ids, tuple):
+        segment_ids = segment_ids[0]
+
+    assert (
+        segment_ids.ndim == 1
+    ), f"Expected segment_ids to be 1D, got {segment_ids.ndim}. Use vmap if you have multiple examples"
+
+    Pos = packed_example.tokens.axes[0]
+
+    # Extract unique segment IDs with padding
+    unique_segment_ids = _unique_segment_ids(max_Segments, segment_ids)
+
+    # Create a mask matrix where each row corresponds to a unique segment
+    segment_mask = unique_segment_ids == segment_ids.broadcast_axis(max_Segments)
+
+    # For generation, we want the last token of each segment
+    # We'll use the last position where the segment mask is True
+    segment_mask = segment_mask.astype(generated_tokens.dtype)
+
+    # Get the last token for each segment by finding the last position where the mask is True
+    # We'll use a more complex approach to get the last token of each segment
+    segment_generated = hax.zeros(max_Segments, dtype=generated_tokens.dtype)
+    
+    # For each segment, find the last position where the mask is True and get the generated token
+    for i in range(max_Segments.size):
+        segment_id = unique_segment_ids[i]
+        if segment_id != -1:  # Skip padding
+            # Find the last position where this segment appears
+            segment_positions = hax.where(segment_ids == segment_id, hax.arange(Pos), -1)
+            last_pos = hax.max(segment_positions, axis=Pos)
+            if last_pos != -1:
+                segment_generated = segment_generated.at[i].set(generated_tokens[last_pos])
+
+    return unique_segment_ids, segment_generated
+
+
 def greedy_pack_prompt_completions(
     Pos: hax.Axis,
     sequences: Iterable[PromptCompletion],
