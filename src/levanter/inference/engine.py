@@ -361,59 +361,8 @@ def _seq_params_from_work(work: PrefillWork, idx: int) -> SeqDecodingParams:
             raise TypeError(f"Unexpected type in seq_params: {type(x)}")
 
     return hax.tree_util.tree_map(select, work.seq_params)
-    # max_tokens = jnp.asarray(work.seq_params.max_num_tokens[idx], dtype=jnp.int32)
-    # temperature = jnp.asarray(work.seq_params.temperature[idx], dtype=jnp.float32)
-    # key = jnp.asarray(work.seq_params.key[idx], dtype=jnp.uint32)
-    # stop_tokens = _stop_tokens_from_work(work, idx)
-    # return SeqDecodingParams(
-    #     max_num_tokens=max_tokens,
-    #     stop_tokens=stop_tokens,
-    #     temperature=temperature,
-    #     key=key,
-    # )
 
 
-def _set_seq_params_row(
-    batch: SeqDecodingParams,
-    idx: int,
-    params: SeqDecodingParams,
-) -> SeqDecodingParams:
-    # can't use this b/c we sometimes have to pad stop_tokens
-    # def set(x, v):
-    #     if isinstance(x, NamedArray):
-    #         return x.at["seq", idx].set(v)
-    #     elif is_jax_array_like(x):
-    #         arr = x.at[idx].set(v)
-    #         return arr
-    #     else:
-    #         raise TypeError(f"Unexpected type in seq_params: {type(x)}")
-    # return hax.tree_util.tree_map(set, batch, params)
-    max_num_tokens = batch.max_num_tokens.at[idx].set(jnp.asarray(params.max_num_tokens, dtype=jnp.int32))
-    temperature = batch.temperature.at[idx].set(jnp.asarray(params.temperature, dtype=jnp.float32))
-    key = batch.key.at[idx].set(jnp.asarray(params.key, dtype=jnp.uint32))
-
-    stop_tokens = batch.stop_tokens
-    if stop_tokens is not None:
-        row = stop_tokens["seq", idx]
-        if params.stop_tokens is None:
-            row = hax.full_like(row, INVALID)
-        else:
-            seq_stop = params.stop_tokens
-            seq_num_stops = seq_stop.axis_size("stop_seq")
-            seq_stop_len = seq_stop.axis_size("position")
-            row = row.at["stop_seq", 0:seq_num_stops, "position", -seq_stop_len:].set(seq_stop)
-        stop_tokens = stop_tokens.at["seq", idx].set(row)
-
-    return dataclasses.replace(
-        batch,
-        max_num_tokens=max_num_tokens,
-        temperature=temperature,
-        key=key,
-        stop_tokens=stop_tokens,
-    )
-
-
-# TODO: I'm sure i could vectorize a lot of this.
 def _apply_prefill_work(gen_state: GenState, work: PrefillWork) -> GenState:
     num_new = work.new_num_seqs.astype(jnp.int32)
     max_slots = work.new_slot_ids.array.shape[0]
@@ -849,10 +798,6 @@ class InferenceEngine:
                     if len(cmap) == 0:
                         self.sequences.pop(rid, None)
             # Ensure any residual tokens/logprobs for this slot are dropped from the pending queue
-            # TODO: this shouldn't be necessary.
-            self.gen_state = dataclasses.replace(
-                self.gen_state, decode_state=self.gen_state.decode_state.purge_queue_of_slot(local_slot)
-            )
             self.free_slots.append(local_slot)
 
     # ------------------------------- Queue helpers -------------------------------
@@ -867,12 +812,14 @@ class InferenceEngine:
         """
         if not self.request_queue:
             return None
+
         sim_slots = len(self.free_slots)
         sim_pages = self._free_page_count()
         max_prefill_size = int(self.config.max_prefill_size or self.gen_state.decode_state.page_table.max_len_per_seq)
         max_seqs_in_prefill = int(self.config.max_seqs_in_prefill)
         sim_tokens = 0
         primaries_in_batch = 0
+
         batch: list[Request] = []
         while self.request_queue:
             nxt = self.request_queue[0]
@@ -891,18 +838,22 @@ class InferenceEngine:
             sim_pages -= need_pages
             sim_tokens += len(nxt.prompt_tokens)
             primaries_in_batch += 1
+
         if not batch:
             return None
+
         # Build a single PrefillWork description and run prefill exactly once
         prefill_work = self._prefill_prompts(batch)
-        if prefill_work is None or int(jax.device_get(prefill_work.queue.num_queued_tokens)) == 0:
+        if prefill_work is None:
             return None
+
         new_state = _run_prefill(
             self.gen_state, self.model, self.sampler, prefill_work, self.config.max_seqs_in_prefill
         )
+
         # _run_prefill returns (GenState, _DecodeOutputs)
         self.gen_state, outputs = new_state
-        self.gen_state = jax.block_until_ready(self.gen_state)
+        # self.gen_state = jax.block_until_ready(self.gen_state)
         return outputs
 
     def _free_page_count(self) -> int:
@@ -930,32 +881,27 @@ class InferenceEngine:
         queue_slot_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
         queue_pos_ids = np.full((max_prefill_size,), INVALID, dtype=jnp.int32)
 
-        work_slot_ids = hax.full({"seq": max_slots}, INVALID, dtype=jnp.int32)
-        clone_targets = hax.full({"seq": max_slots}, INVALID, dtype=jnp.int32)
-        prompt_tokens = hax.full({"seq": max_slots, "position": max_seq_len}, INVALID, dtype=jnp.int32)
-        prompt_lengths = hax.zeros({"seq": max_slots}, dtype=jnp.int32)
+        work_slot_ids = np.full((max_slots,), INVALID, dtype=np.int32)
+        clone_targets = np.full((max_slots,), INVALID, dtype=np.int32)
+        prompt_tokens = np.full((max_slots, max_seq_len), INVALID, dtype=np.int32)
+        prompt_lengths = np.zeros((max_slots,), dtype=np.int32)
 
         stop_tokens_template = decode_state.stop_tokens
-        seq_params_batch = hax.vmap(SeqDecodingParams.default, {"seq": max_slots})()
-        seq_params_batch = dataclasses.replace(
-            seq_params_batch,
-            max_num_tokens=jnp.zeros_like(seq_params_batch.max_num_tokens, dtype=jnp.int32),
-            temperature=jnp.zeros_like(seq_params_batch.temperature, dtype=jnp.float32),
-            key=jnp.zeros_like(seq_params_batch.key, dtype=jnp.uint32),
-        )
+        max_num_tokens = np.zeros((max_slots,), dtype=np.int32)
+        temperatures = np.zeros((max_slots,), dtype=np.float32)
+        prng_keys = np.zeros((max_slots, 2), dtype=np.uint32)
         if stop_tokens_template is not None:
-            seq_params_batch = dataclasses.replace(
-                seq_params_batch,
-                stop_tokens=hax.full(
-                    {
-                        "seq": max_slots,
-                        "stop_seq": stop_tokens_template.axis_size("stop_seq"),
-                        "position": stop_tokens_template.axis_size("position"),
-                    },
-                    INVALID,
-                    dtype=jnp.int32,
+            stop_tokens = np.full(
+                (
+                    max_slots,
+                    stop_tokens_template.axis_size("stop_seq"),
+                    stop_tokens_template.axis_size("position"),
                 ),
+                INVALID,
+                dtype=np.int32,
             )
+        else:
+            stop_tokens = None
 
         offset = 0
         num_primary = 0
@@ -989,13 +935,23 @@ class InferenceEngine:
             if prefill_idx >= max_slots:
                 raise RuntimeError("Exceeded maximum slot instructions while building prefill work.")
 
-            work_slot_ids = work_slot_ids.at["seq", prefill_idx].set(slot_id)
-            clone_targets = clone_targets.at["seq", prefill_idx].set(INVALID)
-            prompt_lengths = prompt_lengths.at["seq", prefill_idx].set(len(seq_tokens))
-            prompt_tokens = prompt_tokens.at["seq", prefill_idx, "position", : len(seq_tokens)].set(
-                hax.named(this_tokens, axis="position")
-            )
-            seq_params_batch = _set_seq_params_row(seq_params_batch, prefill_idx, seq_params)
+            work_slot_ids[prefill_idx] = slot_id
+            clone_targets[prefill_idx] = INVALID
+            prompt_lengths[prefill_idx] = len(seq_tokens)
+            prompt_tokens[prefill_idx, : len(seq_tokens)] = this_tokens
+
+            max_num_tokens[prefill_idx] = np.asarray(seq_params.max_num_tokens, dtype=np.int32).item()
+            temperatures[prefill_idx] = np.asarray(seq_params.temperature, dtype=np.float32).item()
+            prng_keys[prefill_idx] = np.asarray(seq_params.key, dtype=np.uint32)
+            if stop_tokens is not None:
+                if seq_params.stop_tokens is None:
+                    stop_tokens[prefill_idx].fill(INVALID)
+                else:
+                    row = stop_tokens[prefill_idx]
+                    row.fill(INVALID)
+                    seq_stop = np.asarray(seq_params.stop_tokens.array)
+                    seq_num_stops, seq_stop_len = seq_stop.shape
+                    row[:seq_num_stops, -seq_stop_len:] = seq_stop
 
             rid = int(request.request_id)
             self.local_map[slot_id] = (rid, 0)
@@ -1019,11 +975,15 @@ class InferenceEngine:
 
                     child_params = dataclasses.replace(seq_params, key=jax.random.fold_in(seq_params.key, k))
 
-                    work_slot_ids = work_slot_ids.at["seq", clone_idx].set(child_slot_id)
-                    clone_targets = clone_targets.at["seq", clone_idx].set(slot_id)
-                    prompt_lengths = prompt_lengths.at["seq", clone_idx].set(parent_length)
+                    work_slot_ids[clone_idx] = child_slot_id
+                    clone_targets[clone_idx] = slot_id
+                    prompt_lengths[clone_idx] = parent_length
                     # Clones reuse prompt tokens from their parent; no need to copy here.
-                    seq_params_batch = _set_seq_params_row(seq_params_batch, clone_idx, child_params)
+                    max_num_tokens[clone_idx] = np.asarray(child_params.max_num_tokens, dtype=np.int32).item()
+                    temperatures[clone_idx] = np.asarray(child_params.temperature, dtype=np.float32).item()
+                    prng_keys[clone_idx] = np.asarray(child_params.key, dtype=np.uint32)
+                    if stop_tokens is not None:
+                        stop_tokens[clone_idx] = stop_tokens[prefill_idx]
 
                     self.local_map[child_slot_id] = (rid, k)
                     self.sequences.setdefault(rid, {})[k] = child_slot_id
@@ -1034,20 +994,29 @@ class InferenceEngine:
             return None
 
         prefill_queue = TokenQueue(
-            queued_tokens=hax.named(queue_tokens, axis="position"),
-            queued_slot_ids=hax.named(queue_slot_ids, axis="position"),
-            queued_pos_ids=hax.named(queue_pos_ids, axis="position"),
+            queued_tokens=hax.named(jnp.asarray(queue_tokens, dtype=jnp.int32), axis="position"),
+            queued_slot_ids=hax.named(jnp.asarray(queue_slot_ids, dtype=jnp.int32), axis="position"),
+            queued_pos_ids=hax.named(jnp.asarray(queue_pos_ids, dtype=jnp.int32), axis="position"),
             num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
         )
 
         return PrefillWork(
             queue=prefill_queue,
             new_num_seqs=jnp.array(total_new, dtype=jnp.int32),
-            new_slot_ids=work_slot_ids,
-            clone_targets=clone_targets,
-            prompt_tokens=prompt_tokens,
-            prompt_lengths=prompt_lengths,
-            seq_params=seq_params_batch,
+            new_slot_ids=hax.named(jnp.asarray(work_slot_ids, dtype=jnp.int32), axis="seq"),
+            clone_targets=hax.named(jnp.asarray(clone_targets, dtype=jnp.int32), axis="seq"),
+            prompt_tokens=hax.named(jnp.asarray(prompt_tokens, dtype=jnp.int32), axis=("seq", "position")),
+            prompt_lengths=hax.named(jnp.asarray(prompt_lengths, dtype=jnp.int32), axis="seq"),
+            seq_params=SeqDecodingParams(
+                max_num_tokens=jnp.asarray(max_num_tokens, dtype=jnp.int32),
+                stop_tokens=(
+                    None
+                    if stop_tokens is None
+                    else hax.named(jnp.asarray(stop_tokens, dtype=jnp.int32), axis=("seq", "stop_seq", "position"))
+                ),
+                temperature=jnp.asarray(temperatures, dtype=jnp.float32),
+                key=jnp.asarray(prng_keys, dtype=jnp.uint32),
+            ),
         )
 
     def generate(self, requests: Sequence[Request]) -> GenerationResult:
