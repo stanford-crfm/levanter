@@ -4,12 +4,11 @@
 import dataclasses
 import functools
 import logging
-
 import math
 import warnings
 from dataclasses import dataclass
-from numbers import Integral
 from enum import Enum
+from numbers import Integral
 from typing import Optional, Union, overload
 
 import equinox as eqx
@@ -26,24 +25,22 @@ try:
 except Exception:  # pragma: no cover - optional dep
     tpu_ragged_paged_attention = None
 
-from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
-from jax.experimental.shard_map import shard_map
-from jax.sharding import PartitionSpec
-from jaxtyping import PRNGKeyArray
-
 import haliax
 import haliax as hax
-import haliax.nn as hnn
 import haliax.haxtyping as ht
+import haliax.nn as hnn
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.nn.normalization import LayerNormBase
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
+from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
+from jax.experimental.shard_map import shard_map
+from jax.sharding import PartitionSpec
+from jaxtyping import PRNGKeyArray
 
 from ..inference.page_table import PageBatchInfo, PageTable
-
 from .normalization import LayerNormConfigBase
 from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
 
@@ -475,8 +472,12 @@ def _te_flash_attention(
     scaling_factor: float,
     logits_soft_cap: Optional[float] = None,
 ):
-    from transformer_engine.jax.attention import fused_attn  # noqa: F401
-    from transformer_engine.jax.attention import AttnBiasType, AttnMaskType, QKVLayout  # noqa: F401
+    from transformer_engine.jax.attention import (  # noqa: F401
+        AttnBiasType,
+        AttnMaskType,
+        QKVLayout,
+        fused_attn,  # noqa: F401
+    )
 
     if logits_soft_cap is not None:
         raise NotImplementedError(
@@ -1140,7 +1141,10 @@ def _tpu_splash_attention(
     scaling_factor: float,
     logits_soft_cap: float | None = None,
 ) -> Optional[NamedArray]:
-    from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
+    from jax.experimental.pallas.ops.tpu.splash_attention import (
+        splash_attention_kernel,
+        splash_attention_mask,
+    )
 
     # Splash attention requires BHSD format
     # We need to reshape the input to match this format
@@ -1630,6 +1634,29 @@ class Attention(eqx.Module):
         return q, k, v
 
 
+def combine_kv_pages(k_pages: NamedArray, v_pages: NamedArray) -> NamedArray:
+    """Combine separate K and V pages into interleaved format for new TPU kernel.
+
+    Args:
+        k_pages: Key pages with shape [Page, Slot, KVHeads, HeadDim]
+        v_pages: Value pages with shape [Page, Slot, KVHeads, HeadDim]
+
+    Returns:
+        Combined KV pages with shape [Page, Slot, 2*KVHeads, HeadDim] where
+        K and V heads are interleaved: [k_head_0, v_head_0, k_head_1, v_head_1, ...]
+    """
+    assert k_pages.axes == v_pages.axes, "K and V pages must have same axes"
+
+    # Stack along a new axis to create [Page, Slot, KVHeads, 2, HeadDim]
+    kv_stacked = hax.stack("kv_type", [k_pages, v_pages])
+
+    # Rearrange to [Page, Slot, KVHeads, 2, HeadDim] then flatten KVHeads and 2
+    kv_combined = kv_stacked.rearrange(("page", "slot", "kv_head", "kv_type", "head_size"))
+    kv_combined = kv_combined.flatten_axes(("kv_head", "kv_type"), "kv_head")
+
+    return kv_combined
+
+
 class KvPageCache(eqx.Module):
     """
     KvPageCache for paged attention. It contains keys and values for all pages, including
@@ -1734,8 +1761,6 @@ def ragged_paged_attention(
 
     if _tpu_rpa_available():
         try:
-            if soft_cap is not None:
-                raise NotImplementedError("soft_cap is not supported in TPU ragged paged attention")
             out = _do_tpu_ragged_paged_attention(
                 q,
                 k_pages,
@@ -1745,6 +1770,7 @@ def ragged_paged_attention(
                 cu_q_lens,
                 num_seqs,
                 sm_scale=sm_scale,
+                soft_cap=soft_cap,
             )
             return out
         except Exception:  # pragma: no cover - fall back if kernel fails
@@ -1773,6 +1799,7 @@ def _do_tpu_ragged_paged_attention(
     cu_q_lens: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
     num_seqs: jnp.ndarray,  # scalar int32
     sm_scale: float = 1.0,
+    soft_cap: float | None = None,
 ) -> NamedArray:
     # Usual shardmap dance
     # The TPU kernel expects the second dimension of the query tensor to be the total number of query heads.
@@ -1787,13 +1814,15 @@ def _do_tpu_ragged_paged_attention(
     page_indices = hax.where(~is_valid(page_indices), 0, page_indices)
     kv_lens = hax.where(~is_valid(kv_lens), 0, kv_lens)
 
+    # Combine K and V pages into interleaved format for new TPU kernel
+    kv_pages = combine_kv_pages(k_pages, v_pages)
+
     o = shard_map(
-        functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale),
+        functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale, soft_cap=soft_cap),
         haliax.partitioning._get_mesh(),
         in_specs=(
             haliax.partitioning.pspec_for_axis(q_flat.axes),
-            haliax.partitioning.pspec_for_axis(k_pages.axes),
-            haliax.partitioning.pspec_for_axis(v_pages.axes),
+            haliax.partitioning.pspec_for_axis(kv_pages.axes),
             haliax.partitioning.pspec_for_axis(kv_lens.axes),
             haliax.partitioning.pspec_for_axis(page_indices.axes),
             haliax.partitioning.pspec_for_axis(cu_q_lens.axes),
@@ -1810,8 +1839,7 @@ def _do_tpu_ragged_paged_attention(
         check_rep=False,
     )(
         q_flat.array,
-        k_pages.array,
-        v_pages.array,
+        kv_pages.array,
         kv_lens.array,
         page_indices.array,
         cu_q_lens.array,

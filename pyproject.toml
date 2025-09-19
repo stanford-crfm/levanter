@@ -7,7 +7,7 @@ name = "levanter"
 version = "1.2"
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
@@ -68,8 +68,8 @@ Homepage = "https://github.com/stanford-crfm/levanter"
 "Bug Tracker" = "https://github.com/stanford-crfm/levanter/issues"
 
 [project.optional-dependencies]
-gpu = ["jax[cuda12]>=0.5"]
-tpu = ["jax[tpu]>=0.5"]
+gpu = ["jax[cuda12]>=0.7.2"]
+tpu = ["jax[tpu]>=0.7.2"]
 torch_test = [
   "torch>=2.7.0",
   "peft>=0.12.0",
