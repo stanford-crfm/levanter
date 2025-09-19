@@ -999,7 +999,6 @@ class InferenceEngine:
             num_queued_tokens=jnp.array(offset, dtype=jnp.int32),
         )
 
-        self._verify_free_slot_view(context="prefill_prompts")
         return PrefillWork(
             queue=prefill_queue,
             new_num_seqs=jnp.array(total_new, dtype=jnp.int32),
