@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
@@ -89,9 +92,7 @@ class LlamaConfig(HFCompatConfig):
             self.num_heads % self.num_kv_heads == 0
         ), f"num_heads={self.num_heads} not divisible by num_kv_heads={self.num_kv_heads}."
 
-    def hf_checkpoint_converter(
-        self, ref_checkpoint: Optional[str] = None
-    ) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
+    def hf_checkpoint_converter(self, ref_checkpoint: Optional[str] = None) -> HFCheckpointConverter["LlamaConfig"]:  # type: ignore
         return HFCheckpointConverter(
             self.__class__,
             reference_checkpoint=self.reference_checkpoint if ref_checkpoint is None else ref_checkpoint,
@@ -198,7 +199,7 @@ class LlamaConfig(HFCompatConfig):
     def total_trainable_params(self, vocab_size):
         token_embedding = vocab_size * self.hidden_dim
 
-        head_size = self.hidden_dim // self.num_heads
+        head_size = self.actual_head_size
         q_proj = self.hidden_dim * head_size * self.num_heads
         kv_proj = 2 * self.hidden_dim * head_size * self.num_kv_heads
         o_proj = head_size * self.num_heads * self.hidden_dim
@@ -214,7 +215,8 @@ class LlamaConfig(HFCompatConfig):
         if self.input_embedding_norm:
             transformer += self.hidden_dim
 
-        return transformer + token_embedding * 2  # plus embedding and lm head
+        lm_head = 0 if self.tie_word_embeddings else token_embedding
+        return transformer + token_embedding + lm_head
 
     def attention_config(self) -> AttentionConfig:
         """Convert this LlamaConfig to an AttentionConfig for use with Attention."""
@@ -345,9 +347,7 @@ class LlamaDecoderLayer(eqx.Module):
         # self attention and skip connection
         residual = x
         x = self.input_layernorm(x)
-        attn_output, kv_cache = self.self_attn.paged_decode(
-            x, kv_cache, batch_info, pos_ids=pos_ids, key=k_attn
-        )
+        attn_output, kv_cache = self.self_attn.paged_decode(x, kv_cache, batch_info, pos_ids=pos_ids, key=k_attn)
 
         if self.post_attn_layernorm is not None:
             attn_output = self.post_attn_layernorm(attn_output)

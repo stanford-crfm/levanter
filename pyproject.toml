@@ -58,7 +58,7 @@ dependencies = [
     "deepdiff",
     "lenses",
   "jinja2",  # needed for apply_chat_template
-  "protobuf<7",  # causes issues with ray if newer
+  "protobuf>=6,<7",  # ensure TB/XProf compatibility; avoid 7+ due to ray
   # "lm-eval==0.4.2",
   # "lm-eval @ git+https://github.com/dlwh/lm-evaluation-harness.git@no_torch"
 ]
@@ -74,6 +74,18 @@ torch_test = [
   "torch>=2.7.0",
   "peft>=0.12.0",
 ]
+profiling = [
+    "xprof",
+  # TensorBoard UI for viewing traces and profiles
+  "tensorboard>=2.16",
+  # Writer used by the TensorBoard tracker implementation
+  "tensorboardX>=2.6",
+]
+serve = [
+  "fastapi>=0.100.0",
+  "uvicorn[standard]>=0.23.0",
+  "openai>=1.0.0",
+]
 
 [dependency-groups]
 test = [
@@ -84,6 +96,8 @@ test = [
   "librosa",
   "tensorboardX>=2.6",
   "chex>=0.1.86",
+  "httpx>=0.28.1",
+  "pytest-profiling>=1.8.1",
 ]
 
 docs = [
@@ -121,6 +135,10 @@ extend-exclude = ["scripts/"]
 ignore = [
   "E203", "E501", "W605", "F821", "E266", "F722", "E731", "E741"
 ]
+
+[tool.black]
+line-length = 119
+target-version = ["py310"]
 
 [tool.mypy]
 python_version = "3.10"
