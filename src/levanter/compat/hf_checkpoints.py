@@ -746,26 +746,65 @@ class HFCheckpointConverter(Generic[LevConfig]):
             json.dump(dict_config, f, cls=ConfigJSONEncoder)
 
         # Model
-        state_dict = to_torch_compatible_state_dict(model)
+        index = None
+        start_idx = 0
+        arr_leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
+        leaf_sizes = [int(x.size * x.dtype.itemsize) for x in arr_leaves]
 
-        if dtype is not None:
-            logger.info(f"Converting floating-point arrays in state_dict to {dtype}")
-            for k, v in state_dict.items():
-                if jnp.issubdtype(v.dtype, jnp.floating):
-                    state_dict[k] = v.astype(dtype)
-                else:
-                    logger.debug(f"Skipping dtype conversion for non-floating point array {k} with dtype {v.dtype}")
+        groups, cur, cur_b = [], [], 0
+        for i, b in enumerate(leaf_sizes):
+            if cur and cur_b + b > int(max_shard_size):
+                groups.append(tuple(cur))
+                cur, cur_b = [i], b
+            else:
+                cur.append(i)
+                cur_b += b
+        if cur:
+            groups.append(tuple(cur))
 
-        shards, index = _shard_hf_checkpoint(state_dict, max_shard_size, SAFE_TENSORS_MODEL)
+        def _mask_for(indices):
+            idx_set = set(indices)
+            counter = {"i": -1}
+
+            def mark(x):
+                if eqx.is_array(x):
+                    counter["i"] += 1
+                    return counter["i"] in idx_set
+                return False
+
+            return jax.tree_util.tree_map(mark, model)
+
+        prefixes = [_mask_for(ids) for ids in groups]
+
+        for prefix in prefixes:
+            sub_model, _ = eqx.partition(model, prefix)
+            state_dict = to_torch_compatible_state_dict(sub_model)
+
+            if dtype is not None:
+                logger.info(f"Converting floating-point arrays in state_dict to {dtype}")
+                for k, v in state_dict.items():
+                    if jnp.issubdtype(v.dtype, jnp.floating):
+                        state_dict[k] = v.astype(dtype)
+                    else:
+                        logger.debug(
+                            f"Skipping dtype conversion for non-floating point array {k} with dtype {v.dtype}"
+                        )
+
+            shards, index = _shard_hf_checkpoint(
+                state_dict, max_shard_size, SAFE_TENSORS_MODEL, index=index, start_idx=start_idx
+            )
+            start_idx += len(shards)
+            if not len(prefixes) == 1:
+                for k, v in shards.items():
+                    save_state_dict(v, os.path.join(path, k))
+
+                logger.info(f"Saved a sharded checkpoint with {len(shards)} shards, max size {max_shard_size} bytes")
+
         if index is None:
             save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
         else:
-            for k, v in shards.items():
-                save_state_dict(v, os.path.join(path, k))
             with open(os.path.join(path, SAFE_TENSORS_INDEX_NAME), "w") as f:
                 json.dump(index, f)
-
-            logger.info(f"Saved a sharded checkpoint with {len(shards)} shards, max size {max_shard_size} bytes")
 
         logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
@@ -1029,6 +1068,8 @@ def _shard_hf_checkpoint(
     state_dict: dict[str, Array],
     max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
     weights_name: str = SAFE_TENSORS_MODEL,
+    index=None,
+    start_idx=0,
 ):
     """
     Splits a model state dictionary in sub-checkpoints so that the final size of each sub-checkpoint does not exceed a
@@ -1085,6 +1126,7 @@ def _shard_hf_checkpoint(
     weight_map = {}
     shards = {}
     for idx, shard in enumerate(sharded_state_dicts):
+        idx += start_idx
         # NOTE(dlwh): this is how it is in the HF code. it hurts me
         shard_file = weights_name.replace(".bin", f"-{idx + 1:05d}-of-{len(sharded_state_dicts):05d}.bin")
         shard_file = shard_file.replace(
@@ -1095,8 +1137,13 @@ def _shard_hf_checkpoint(
             weight_map[key] = shard_file
 
     # Add the metadata
-    metadata = {"total_size": total_size}
-    index = {"metadata": metadata, "weight_map": weight_map}
+    if index:
+        metadata = {"total_size": total_size + index["metadata"]["total_size"]}
+        index = {"metadata": metadata, "weight_map": {**weight_map, **index["weight_map"]}}
+    else:
+        metadata = {"total_size": total_size}
+        index = {"metadata": metadata, "weight_map": weight_map}
+
     return shards, index
 
 
