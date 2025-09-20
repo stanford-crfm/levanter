@@ -131,7 +131,6 @@ class InferenceServerConfig:
     service: InferenceEngineConfig = field(default_factory=InferenceEngineConfig)
 
     # Default generation parameters for API
-    max_new_tokens: int = 16
     temperature: float = 0.7
     seed: int = 42
 
@@ -380,9 +379,7 @@ class InferenceContext:
                 req_outputs = []
                 for _ in range(req.n_generations):
                     if output_idx < len(result.tokens):
-                        # Decode tokens to text, excluding prompt
-                        prompt_len = len(req.prompt_tokens)
-                        generated_tokens = result.tokens[output_idx][prompt_len:]
+                        generated_tokens = result.tokens[output_idx]
                         text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
                         # Extract logprobs if requested, logprobs are already only for generated tokens
@@ -396,7 +393,7 @@ class InferenceContext:
                                 text=text,
                                 tokens=result.tokens[output_idx],
                                 logprobs=result_logprobs,
-                                prompt_tokens=prompt_len,
+                                prompt_tokens=len(req.prompt_tokens),
                                 completion_tokens=len(generated_tokens),
                                 request_id=req.request_id,
                             )

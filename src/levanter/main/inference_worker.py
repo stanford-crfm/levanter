@@ -64,7 +64,7 @@ class InferenceWorker:
         logger.info("Starting InferenceWorker...")
 
         try:
-            server_task = asyncio.create_task(self.server.serve_async(host="0.0.0.0", port=8000))
+            server_task = asyncio.create_task(self.server.serve_async())
             monitor_task = asyncio.create_task(self._checkpoint_monitor_loop())
             await asyncio.gather(server_task, monitor_task)
         except asyncio.CancelledError:
