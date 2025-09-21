@@ -104,8 +104,6 @@ def test_kv_cache_copy_page():
     kv = dataclasses.replace(
         kv,
         kv_pages=kv.kv_pages.at["page", src_page].set(kv_pattern),
-        # k_pages=kv.k_pages.at["page", src_page].set(k_pattern),
-        # v_pages=kv.v_pages.at["page", src_page].set(v_pattern),
     )
 
     kv2 = kv.copy_page(src_page, dst_page)
