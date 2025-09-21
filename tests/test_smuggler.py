@@ -4,7 +4,8 @@
 import jax
 import jax.numpy as jnp
 
-from levanter.tracker import defer_tracker_for_jit, jit_log
+from levanter.tracker import current_tracker, defer_tracker_for_jit, jit_log
+from levanter.tracker.tracker import DictTracker
 from levanter.utils.smuggle import Smuggler
 
 
@@ -86,3 +87,20 @@ def test_defer_tracker_for_jit_collects_metrics():
 
     assert jnp.allclose(value, 5.0)
     assert jnp.allclose(metrics["foo"], 5.0)
+
+
+def test_defer_tracker_for_jit_uses_local_tracker():
+    tracker = DictTracker()
+
+    with current_tracker(tracker):
+
+        @jax.jit
+        def do_log(x):
+            with defer_tracker_for_jit() as captured:
+                jit_log({"foo": x})
+                return captured
+
+        metrics = do_log(jnp.array(7.0))
+
+        assert jnp.allclose(metrics["foo"], 7.0)
+        assert tracker.metrics == {}

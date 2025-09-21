@@ -18,6 +18,7 @@ from jaxtyping import Scalar
 from levanter.tracker import CompositeTracker, Tracker
 from levanter.tracker.helpers import hparams_to_dict
 from levanter.tracker.histogram import Histogram
+from levanter.tracker.tracker import DictTracker
 from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
@@ -162,14 +163,20 @@ def defer_tracker_for_jit():
         The context manager yields the metrics dictionary that metrics are logged into.
         You can log this dictionary directly to the global tracker after the context manager exits.
     """
-    global _should_use_callback
+    global _global_tracker, _should_use_callback
+    old_tracker = _global_tracker
     old_should_use_callback = _should_use_callback
     _should_use_callback = False
 
+    local_tracker = DictTracker()
+    _global_tracker = local_tracker
+
     try:
         with metrics_smuggler.activate() as payload:
+            local_tracker.metrics = payload
             yield payload
     finally:
+        _global_tracker = old_tracker
         _should_use_callback = old_should_use_callback
 
 
