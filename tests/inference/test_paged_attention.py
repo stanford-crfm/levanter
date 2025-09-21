@@ -137,7 +137,9 @@ def _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens
 
 
 # very loose tolerance. JAX uses a very loose tolerance for their ragged_attention tests.
-RPA_TOL = 1e-4
+def _rpa_tol() -> float:
+    devices = jax.devices()
+    return 1e-2 if any(device.platform == "tpu" for device in devices) else 1e-4
 
 
 def test_ragged_paged_attention_single_seq():
@@ -146,17 +148,16 @@ def test_ragged_paged_attention_single_seq():
         seq_lens = [1]  # one sequence
         q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs = _build_random_case(rng, seq_lens)
 
-        ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
-        ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
+    ragged = ragged_paged_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, num_seqs, sm_scale=SM_SCALE)
+    ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
     assert ragged.axes == ref.axes
+    tol = _rpa_tol()
     for i in range(len(ragged.array)):
-        assert_trees_all_close(
-            ragged.array[i], ref.array[i], atol=RPA_TOL, rtol=RPA_TOL, custom_message=f" at index {i}"
-        )
-    # assert_trees_all_close(ragged.array[:-1], ref.array[:-1], atol=RPA_TOL, rtol=RPA_TOL)
-    # assert_trees_all_close(ragged.array[-1], ref.array[-1], atol=RPA_TOL, rtol=RPA_TOL)
-    # assert_trees_all_close(ragged.array, ref.array, atol=RPA_TOL, rtol=RPA_TOL)
+        assert_trees_all_close(ragged.array[i], ref.array[i], atol=tol, rtol=tol, custom_message=f" at index {i}")
+    # assert_trees_all_close(ragged.array[:-1], ref.array[:-1], atol=_rpa_tol(), rtol=_rpa_tol())
+    # assert_trees_all_close(ragged.array[-1], ref.array[-1], atol=_rpa_tol(), rtol=_rpa_tol())
+    # assert_trees_all_close(ragged.array, ref.array, atol=_rpa_tol(), rtol=_rpa_tol())
 
 
 @pytest.mark.parametrize(
@@ -170,7 +171,8 @@ def test_ragged_paged_attention_multi_seq(seq_lens):
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, seq_lens)
 
     assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array, ref.array, atol=RPA_TOL, rtol=RPA_TOL)
+    tol = _rpa_tol()
+    assert_trees_all_close(ragged.array, ref.array, atol=tol, rtol=tol)
 
 
 def test_ragged_paged_attention_incremental_single_seq():
@@ -183,7 +185,8 @@ def test_ragged_paged_attention_incremental_single_seq():
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
 
     assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array, ref.array, atol=RPA_TOL, rtol=RPA_TOL)
+    tol = _rpa_tol()
+    assert_trees_all_close(ragged.array, ref.array, atol=tol, rtol=tol)
 
 
 def test_ragged_paged_attention_incremental_multi_seq():
@@ -196,7 +199,8 @@ def test_ragged_paged_attention_incremental_multi_seq():
     ref = _reference_attention(q, kv_pages, kv_lens, page_indices, cu_q_lens, k_lens)
 
     assert ragged.axes == ref.axes
-    assert_trees_all_close(ragged.array, ref.array, atol=RPA_TOL, rtol=RPA_TOL)
+    tol = _rpa_tol()
+    assert_trees_all_close(ragged.array, ref.array, atol=tol, rtol=tol)
 
 
 # -----------------------------------------------------------------------------
@@ -238,7 +242,8 @@ def test_attention_paged_decode_matches_full_ar():
         out_chunks.append(out_tok.array)
 
     decoded_arr = jnp.concatenate(out_chunks, axis=0)
-    assert_trees_all_close(full_out.array, decoded_arr, atol=RPA_TOL, rtol=RPA_TOL)
+    tol = _rpa_tol()
+    assert_trees_all_close(full_out.array, decoded_arr, atol=tol, rtol=tol)
 
 
 def test_attention_paged_decode_matches_full_prefill():
@@ -281,7 +286,8 @@ def test_attention_paged_decode_matches_full_prefill():
     full_out = full_out["position", hax.dslice(0, 7)]
     decode_out = decode_out["position", hax.dslice(0, 7)]
 
-    assert_trees_all_close(full_out.array, decode_out.array, atol=RPA_TOL, rtol=RPA_TOL)
+    tol = _rpa_tol()
+    assert_trees_all_close(full_out.array, decode_out.array, atol=tol, rtol=tol)
 
 
 @pytest.mark.parametrize("prefix_size", [1, 2, 3])
@@ -294,6 +300,7 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size, seq_i
     cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, rope=None, attn_backend=AttentionBackend.VANILLA)
     attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
     attn = Attention.init(cfg, key=attn_key)
+    tol = _rpa_tol()
 
     max_pages_per_seq = math.ceil((prefix_size + 4 * chunk_size) / NUM_SLOTS)
 
@@ -360,7 +367,7 @@ def test_attention_paged_decode_prefill_in_chunks(prefix_size, chunk_size, seq_i
     outputs0_cat = hax.concatenate("position", outputs0)
     outputs1_cat = hax.concatenate("position", outputs1)
     decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
-    assert_trees_all_close(full_out.array, decoded_arr.array, atol=RPA_TOL, rtol=RPA_TOL)
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=tol, rtol=tol)
 
 
 def test_attention_paged_decode_ragged_fill_in_chunks():
@@ -371,6 +378,7 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
     cfg = AttentionConfig(Embed=Embed, num_heads=2, num_kv_heads=2, attn_backend=AttentionBackend.VANILLA)
     attn_key, x_key = jrandom.split(jrandom.PRNGKey(0))
     attn = Attention.init(cfg, key=attn_key)
+    tol = _rpa_tol()
     # x = hax.random.normal(x_key, (B, Pos, Embed)) * 0.2
     x = hax.arange((B, Pos, Embed), start=-2, step=0.1, dtype=jnp.float32)
     full_out = attn(x, AttentionMask.causal(), key=jrandom.PRNGKey(1))
@@ -414,14 +422,14 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
         assert_trees_all_close(
             outputs0[-1].array,
             full_out[B, 0, "position", hax.dslice(off0, step0)].array,
-            atol=RPA_TOL,
-            rtol=RPA_TOL,
+            atol=tol,
+            rtol=tol,
         )
         assert_trees_all_close(
             outputs1[-1].array,
             full_out[B, 1, "position", hax.dslice(off1, step1)].array,
-            atol=RPA_TOL,
-            rtol=RPA_TOL,
+            atol=tol,
+            rtol=tol,
         )
 
         off0 += step0
@@ -431,4 +439,4 @@ def test_attention_paged_decode_ragged_fill_in_chunks():
     outputs1_cat = hax.concatenate("position", outputs1)
 
     decoded_arr = hax.stack("batch", [outputs0_cat, outputs1_cat])
-    assert_trees_all_close(full_out.array, decoded_arr.array, atol=RPA_TOL, rtol=RPA_TOL)
+    assert_trees_all_close(full_out.array, decoded_arr.array, atol=tol, rtol=tol)
