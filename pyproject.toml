@@ -7,7 +7,7 @@ name = "levanter"
 version = "1.2"
 description = "Scalable Training for Foundation Models with Named Tensors and JAX"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 authors = [
     { name = "David Hall", email = "dlwh@cs.stanford.edu" },
@@ -129,7 +129,7 @@ conflicts = [
 
 [tool.ruff]
 line-length = 119
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["scripts/"]
 
 [tool.ruff.lint]
@@ -139,10 +139,10 @@ ignore = [
 
 [tool.black]
 line-length = 119
-target-version = ["py310"]
+target-version = ["py311"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 mypy_path = ["src"]
 
 [tool.mypy-haliax.core]
