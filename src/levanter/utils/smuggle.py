@@ -39,8 +39,8 @@ import contextlib
 import copy
 import threading
 from collections.abc import Callable, Iterator
-from functools import wraps
-from typing import Any, Generic, Optional, TypeVar
+from functools import update_wrapper, wraps
+from typing import Any, Optional, TypeVar, Generic
 
 from typing_extensions import ParamSpec
 
@@ -57,6 +57,123 @@ P = ParamSpec("P")
 
 
 MergeFn = Callable[[T, T], Optional[T]]
+
+
+class _SmuggledCompiledFunction:
+    """Wraps compiled JAX functions so their calls apply smuggler postprocessing."""
+
+    def __init__(self, compiled: Any, postprocess: Callable[[Any], Any]) -> None:
+        self._compiled = compiled
+        self._postprocess = postprocess
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        output = self._compiled(*args, **kwargs)
+        return self._postprocess(output)
+
+    def call(self, *args: Any, **kwargs: Any) -> Any:
+        output = self._getattr("call")(*args, **kwargs)
+        return self._postprocess(output)
+
+    def unsafe_call(self, *args: Any, **kwargs: Any) -> Any:
+        output = self._getattr("unsafe_call")(*args, **kwargs)
+        return self._postprocess(output)
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._compiled, item)
+
+    def __dir__(self) -> list[str]:
+        return sorted({*dir(self._compiled), *type(self).__dict__.keys()})
+
+    def _getattr(self, name: str) -> Callable[..., Any]:
+        attr = getattr(self._compiled, name, None)
+        if attr is None:
+            raise AttributeError(name)
+        if not callable(attr):
+            raise TypeError(f"Attribute {name!r} is not callable on compiled object")
+        return attr
+
+
+class _SmuggledLowered:
+    """Wraps lowered JAX objects so their executions apply smuggler postprocessing."""
+
+    def __init__(self, lowered: Any, postprocess: Callable[[Any], Any]) -> None:
+        self._lowered = lowered
+        self._postprocess = postprocess
+
+    def call(self, *args: Any, **kwargs: Any) -> Any:
+        output = self._getattr("call")(*args, **kwargs)
+        return self._postprocess(output)
+
+    def compile(self, *args: Any, **kwargs: Any) -> _SmuggledCompiledFunction:
+        compiled = self._getattr("compile")(*args, **kwargs)
+        return _SmuggledCompiledFunction(compiled, self._postprocess)
+
+    def unsafe_call(self, *args: Any, **kwargs: Any) -> Any:
+        output = self._getattr("unsafe_call")(*args, **kwargs)
+        return self._postprocess(output)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        call = getattr(self._lowered, "__call__", None)
+        if call is None:
+            raise TypeError("Lowered object is not directly callable")
+        output = call(*args, **kwargs)
+        return self._postprocess(output)
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._lowered, item)
+
+    def __dir__(self) -> list[str]:
+        return sorted({*dir(self._lowered), *type(self).__dict__.keys()})
+
+    def _getattr(self, name: str) -> Callable[..., Any]:
+        attr = getattr(self._lowered, name, None)
+        if attr is None:
+            raise AttributeError(name)
+        if not callable(attr):
+            raise TypeError(f"Attribute {name!r} is not callable on lowered object")
+        return attr
+
+
+class _SmuggledWrappedFunction:
+    """Callable proxy that forwards attribute access to the transformed function."""
+
+    _forwarded_methods = {"lower"}
+
+    def __init__(
+        self,
+        original: Callable[P, Any],
+        transformed: Callable[P, Any],
+        postprocess: Callable[[Any], Any],
+    ) -> None:
+        self._original = original
+        self._transformed = transformed
+        self._postprocess = postprocess
+        update_wrapper(self, original)
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Any:
+        output = self._transformed(*args, **kwargs)
+        return self._postprocess(output)
+
+    def __getattr__(self, item: str) -> Any:
+        target = getattr(self._transformed, item)
+        if item in self._forwarded_methods and callable(target):
+            return self._wrap_forwarded_method(item, target)
+        return target
+
+    def __dir__(self) -> list[str]:
+        own_attrs = set(super().__dir__())
+        return sorted(own_attrs | set(dir(self._transformed)))
+
+    def _wrap_forwarded_method(self, name: str, method: Callable[..., Any]) -> Callable[..., Any]:
+        if name == "lower":
+
+            @wraps(method)
+            def lowered(*args: Any, **kwargs: Any) -> _SmuggledLowered:
+                result = method(*args, **kwargs)
+                return _SmuggledLowered(result, self._postprocess)
+
+            return lowered
+        return method
 
 
 class Smuggler(Generic[T]):
@@ -181,12 +298,7 @@ class Smuggler(Generic[T]):
             else:
                 current_postprocess = postprocess
 
-            @wraps(fn)
-            def wrapped(*args: P.args, **kwargs: P.kwargs) -> tuple[T, R]:
-                output = transformed(*args, **kwargs)
-                return current_postprocess(output)
-
-            return wrapped
+            return _SmuggledWrappedFunction(fn, transformed, current_postprocess)  # type: ignore[return-value]
 
         return decorator
 

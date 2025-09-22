@@ -54,6 +54,19 @@ def test_smuggle_grad_collects_metrics():
     assert jnp.allclose(metrics["loss"], 16.0)
 
 
+def test_smuggled_function_forwards_lower():
+    smuggler: Smuggler[dict[str, jnp.ndarray]] = Smuggler(dict)
+    wrapped = smuggler.smugglify(jax.jit)(lambda x: x)
+
+    lowered = wrapped.lower(jnp.array(1.0))
+    compiled = lowered.compile()
+
+    metrics, result = compiled(jnp.array(2.0))
+
+    assert jnp.allclose(result, 2.0)
+    assert metrics == {}
+
+
 def test_smuggle_value_and_grad_collects_metrics():
     smuggler: Smuggler[dict[str, jnp.ndarray]] = Smuggler(dict)
     smuggled_vg = smuggler.smugglify(
