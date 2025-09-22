@@ -14,7 +14,11 @@ from levanter.tracker.tracker_fns import (
     log_hyperparameters,
     log_metrics,
     log_summary,
+    metrics_smuggler,
     set_global_tracker,
+    smuggle_grad,
+    smuggle_jit,
+    smuggle_value_and_grad,
 )
 
 
@@ -37,4 +41,8 @@ __all__ = [
     "LoggableValue",
     "defer_tracker_for_jit",
     "NoopConfig",
+    "metrics_smuggler",
+    "smuggle_jit",
+    "smuggle_grad",
+    "smuggle_value_and_grad",
 ]

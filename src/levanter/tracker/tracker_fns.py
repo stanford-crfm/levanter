@@ -9,7 +9,7 @@ import tempfile
 import typing
 import warnings
 from contextlib import AbstractContextManager
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import draccus
 import jax
@@ -18,16 +18,41 @@ from jaxtyping import Scalar
 from levanter.tracker import CompositeTracker, Tracker
 from levanter.tracker.helpers import hparams_to_dict
 from levanter.tracker.histogram import Histogram
-from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.tracker import DictTracker
+from levanter.tracker.tensorboard import TensorboardTracker
 from levanter.tracker.wandb import WandbTracker
 from levanter.utils.jax_utils import is_inside_jit
+from levanter.utils.smuggle import Smuggler
 
 
 logger = logging.getLogger(__name__)
 
 _should_use_callback = True
 _global_tracker: Optional["Tracker"] = None
+
+
+metrics_smuggler: Smuggler[dict[str, Any]] = Smuggler(dict)
+
+
+SmuggledTransform = Callable[..., Callable[..., tuple[dict[str, Any], Any]]]
+
+smuggle_jit: SmuggledTransform = metrics_smuggler.smugglify(jax.jit)
+
+
+def _grad_postprocess(output):
+    grad, metrics = output
+    return metrics, grad
+
+
+def _value_and_grad_postprocess(output):
+    (value, metrics), grad = output
+    return metrics, (value, grad)
+
+
+smuggle_grad: SmuggledTransform = metrics_smuggler.smugglify(jax.grad, postprocess=_grad_postprocess, has_aux=True)
+smuggle_value_and_grad: SmuggledTransform = metrics_smuggler.smugglify(
+    jax.value_and_grad, postprocess=_value_and_grad_postprocess, has_aux=True
+)
 
 LoggableValue: typing.TypeAlias = Scalar | jax.Array | str | dict | Histogram
 
@@ -89,6 +114,14 @@ def jit_log(metrics, *, step=None):
 
     We strongly recommend using the first method, as it is much more performant.
     """
+    if metrics_smuggler.is_active:
+        payload = metrics_smuggler.get()
+        if step is not None:
+            payload[f"step_{step}"] = metrics
+        else:
+            payload.update(metrics)
+        return
+
     if _global_tracker is None:
         warnings.warn("No global tracker set")
         return
@@ -134,11 +167,14 @@ def defer_tracker_for_jit():
     old_tracker = _global_tracker
     old_should_use_callback = _should_use_callback
     _should_use_callback = False
+
     local_tracker = DictTracker()
     _global_tracker = local_tracker
 
     try:
-        yield local_tracker.metrics
+        with metrics_smuggler.activate() as payload:
+            local_tracker.metrics = payload
+            yield payload
     finally:
         _global_tracker = old_tracker
         _should_use_callback = old_should_use_callback

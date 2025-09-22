@@ -385,14 +385,15 @@ class Trainer:
 
         with capture_time() as step_time:
             if hooks_this_time:
-                loss, new_state, metrics, cb_states = self._maybe_save_jaxpr(
+                metrics, (loss, new_state, cb_states) = self._maybe_save_jaxpr(
                     "train_step", self._jit_train_step_fn, state, batch, batch_kwargs
                 )
                 # force the loss so timing numbers are accurate. laziness isn't going to help here (i think?)
             else:
-                loss, new_state, metrics, _ = self._maybe_save_jaxpr(
+                metrics, (loss, new_state, _) = self._maybe_save_jaxpr(
                     "train_step_hooks", self._jit_train_step_fn_no_hook, state, batch, batch_kwargs
                 )
+                cb_states = None
             loss = loss.item()  # type: ignore
 
             if self.config.crash_on_nan and jnp.isnan(loss):
@@ -533,26 +534,24 @@ class Trainer:
 
     @cached_property
     def _jit_train_step_fn(self):
-        return named_jit(
-            self._train_step,
+        return levanter.tracker.metrics_smuggler.smugglify(
+            named_jit,
             axis_resources=self.parameter_axis_mapping,
             out_axis_resources=self.parameter_axis_mapping,
             donate_args=(True,),
-        )
+        )(self._train_step)
 
     @cached_property
     def _jit_train_step_fn_no_hook(self):
-        return named_jit(
-            functools.partial(self._train_step, _no_hooks=True),
+        return levanter.tracker.metrics_smuggler.smugglify(
+            named_jit,
             axis_resources=self.parameter_axis_mapping,
             out_axis_resources=self.parameter_axis_mapping,
             donate_args=(True,),
-        )
+        )(functools.partial(self._train_step, _no_hooks=True))
 
-    def _train_step(
-        self, state: S, batch, batch_kwargs, _no_hooks=False
-    ) -> tuple[Scalar, S, dict[str, Any], Sequence[CBInfo] | None]:
-        with levanter.tracker.defer_tracker_for_jit() as metrics:
+    def _train_step(self, state: S, batch, batch_kwargs, _no_hooks=False) -> tuple[Scalar, S, Sequence[CBInfo] | None]:
+        with levanter.tracker.defer_tracker_for_jit():
             key, new_key = jax.random.split(state.training_key)
             model = inference_mode(state.model, False)
 
@@ -574,10 +573,9 @@ class Trainer:
                     hook_infos = self.hooks.run_jit_hooks(state, jit_info, force=False)
 
         if _no_hooks:
-            return hax.shard_with_axis_mapping((loss, new_state, metrics, None), self.parameter_axis_mapping)
+            return hax.shard_with_axis_mapping((loss, new_state, None), self.parameter_axis_mapping)
         else:
-            # return loss, new_state, metrics, hook_infos
-            return hax.shard_with_axis_mapping((loss, new_state, metrics, hook_infos), self.parameter_axis_mapping)
+            return hax.shard_with_axis_mapping((loss, new_state, hook_infos), self.parameter_axis_mapping)
 
     def _compute_gradients_microbatched(self, loss_fn, model: M, *batch, **batch_kwargs) -> tuple[Scalar, M]:
         Batch = _resolve_axis_in_tree((batch, batch_kwargs), self.config.batch_axis)

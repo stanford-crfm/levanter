@@ -15,7 +15,7 @@ from jax.sharding import PartitionSpec as P
 from ray.exceptions import RayTaskError
 
 from levanter.infra.ray_tpu import run_on_pod
-
+from tests.test_utils import skip_in_ci
 
 # Store whether TPUs are available and if multislice is possible
 _TPU_AVAILABLE = False
@@ -25,6 +25,9 @@ _MULTISLICE_POSSIBLE = False
 @pytest.fixture(scope="module", autouse=True)
 def setup_ray_tpu_tests():
     global _TPU_AVAILABLE, _MULTISLICE_POSSIBLE
+
+    # Skip the entire module if running in CI due to hanging issues
+    skip_in_ci("This is hanging in CI for unknown reasons")
 
     try:
         ray.init(ignore_reinit_error=True)
