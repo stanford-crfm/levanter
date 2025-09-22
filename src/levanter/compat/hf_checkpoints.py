@@ -13,7 +13,7 @@ import urllib.parse
 import warnings
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Generic, Optional, Tuple, Type, TypeVar, Union, cast
+from typing import Any, Dict, Generic, Iterable, Optional, Tuple, Type, TypeVar, Union, cast
 
 import draccus
 import equinox as eqx
@@ -37,7 +37,12 @@ from tqdm import tqdm
 import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceMapping
-from haliax.state_dict import from_torch_compatible_state_dict, save_state_dict, to_torch_compatible_state_dict
+from haliax.state_dict import (
+    from_torch_compatible_state_dict,
+    save_state_dict,
+    to_torch_compatible_state_dict,
+    flatten_modules_for_export,
+)
 
 from levanter.callbacks import StepInfo
 from levanter.models.asr_model import ASRMixin
@@ -748,36 +753,22 @@ class HFCheckpointConverter(Generic[LevConfig]):
         # Model
         index = None
         start_idx = 0
-        arr_leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
-        leaf_sizes = [int(x.size * x.dtype.itemsize) for x in arr_leaves]
 
-        groups, cur, cur_b = [], [], 0
-        for i, b in enumerate(leaf_sizes):
-            if cur and cur_b + b > int(max_shard_size):
-                groups.append(tuple(cur))
-                cur, cur_b = [i], b
-            else:
-                cur.append(i)
-                cur_b += b
-        if cur:
-            groups.append(tuple(cur))
+        flattened_model = flatten_modules_for_export(model)
+        flattened_model_with_paths = jax.tree.flatten_with_path(flattened_model, haliax.jax_utils.is_jax_array_like)[0]
 
-        def _mask_for(indices):
-            idx_set = set(indices)
-            counter = {"i": -1}
+        flattened_model_with_prefixes = {
+            ".".join([part.name for part in keys]): array for keys, array in flattened_model_with_paths
+        }
 
-            def mark(x):
-                if eqx.is_array(x):
-                    counter["i"] += 1
-                    return counter["i"] in idx_set
-                return False
+        def _groups(named_arrays: Dict[str, Any], num_groups: int = 10) -> Iterable[Dict[str, Any]]:
+            items = list(named_arrays.items())
+            n = len(items)
+            size = (n + num_groups - 1) // num_groups
+            for i in range(0, n, size):
+                yield dict(items[i : i + size])
 
-            return jax.tree_util.tree_map(mark, model)
-
-        prefixes = [_mask_for(ids) for ids in groups]
-
-        for prefix in prefixes:
-            sub_model, _ = eqx.partition(model, prefix)
+        for sub_model in _groups(flattened_model_with_prefixes):
             state_dict = to_torch_compatible_state_dict(sub_model)
 
             if dtype is not None:
@@ -794,7 +785,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 state_dict, max_shard_size, SAFE_TENSORS_MODEL, index=index, start_idx=start_idx
             )
             start_idx += len(shards)
-            if not len(prefixes) == 1:
+            if index is not None:
                 for k, v in shards.items():
                     save_state_dict(v, os.path.join(path, k))
 
