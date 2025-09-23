@@ -958,11 +958,9 @@ def _adjust_config(task_dict, fewshot_random_seed=0):
                 **adjusted_task_dict,
                 **{task_name: _adjust_config(task_obj, fewshot_random_seed=fewshot_random_seed)},
             }
-
         else:
             # fewshot_random_seed set for tasks, even with a default num_fewshot (e.g. in the YAML file)
             task_obj.set_fewshot_seed(seed=fewshot_random_seed)
-
             adjusted_task_dict[task_name] = task_obj
 
     return adjusted_task_dict
@@ -1010,6 +1008,10 @@ def _iterate_tokenized_requests(
                 completions[i] = str(completion)
 
     # Combine contexts and completions for full tokenization
+    for context, completion in zip(contexts, completions):
+        logger.info(f"Context: {context}")
+        logger.info(f"Completion: {completion}")
+        logger.info("-" * 100)
     combined_texts = [context + completion for context, completion in zip(contexts, completions)]
 
     # Batch tokenization for combined and context separately
