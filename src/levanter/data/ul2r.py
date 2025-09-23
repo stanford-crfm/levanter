@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from haliax import Axis
-from jax.experimental import checkify
 from jaxtyping import PRNGKeyArray
 from typing import Literal, Optional, Dict
 import dataclasses
@@ -15,7 +14,6 @@ import haliax as hax
 
 from levanter.data.dataset import MappedAsyncDataset
 from levanter.data.packing import GreedyPrepackedDataset
-from levanter.data.text import ProcessedChatDict
 from levanter.models.lm_model import LmExample
 from levanter.store.cache import TreeCache
 
@@ -80,6 +78,9 @@ class DenoisingConfig(draccus.ChoiceRegistry):
 
     def task_token_id(self) -> int:
         raise NotImplementedError("Not implemented")
+
+    def pad_token_id(self) -> int:
+        return 0
 
 
 @dataclass(frozen=True)
@@ -314,13 +315,17 @@ def noise_span_to_unique_sentinel_jax(
     segments = jnp.cumsum(first_noise_tokens.astype(jnp.int32)) - 1
     max_segments = jnp.max(segments) + 1  # Number of unique noise spans
 
-    checkify.checkify(
-        lambda: checkify.check(
-            max_segments <= len(sentinel_tokens),
-            f"Too many noise spans: {max_segments} > {len(sentinel_tokens)}",
-        ),
-        errors=checkify.index_checks,
-    )()
+    # If max_segments > len(sentinel_tokens) we will reuse sentinel tokens which
+    # isn't good. Ideally we'd log a warning but we can't do that inside of
+    # jax.jit.
+    # TODO Warn in the non-JIT wrapper?
+    # checkify.checkify(
+    #     lambda: checkify.check(
+    #         max_segments <= len(sentinel_tokens),
+    #         f"Too many noise spans: {max_segments} > {len(sentinel_tokens)}",
+    #     ),
+    #     errors=checkify.index_checks,
+    # )()
 
     def loop_body(read_pos, state):
         result_arr, write_pos = state
@@ -485,6 +490,9 @@ def to_ul2r_tokens(
     pad_token_id: int,
     # TODO maybe we don't actually need the truncation logic in
     # to_ul2r_rx_tokens given that we truncate while packing
+    # See slice_strategy.
+    # However that slices using offsets[stop] - offsets[start], which can be
+    # less than the manually-specified lenghts.
     max_length: int,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     task_idx = tokens[0]
@@ -610,6 +618,7 @@ class Ul2rDataset(MappedAsyncDataset[tuple[TokenizedDict, TokenizedDict], LmExam
 
         # Copied from GreedyPrepackedDataset.__init__
         # TODO factor out?
+        # TODO avoid reading store.offsets twice (here and in GreedyPrepackedDataset)
         offsets = jax.tree.map(
             lambda store: store.offsets[0 : store.num_rows + 1].read(), cache.store.tree
         )
@@ -622,29 +631,27 @@ class Ul2rDataset(MappedAsyncDataset[tuple[TokenizedDict, TokenizedDict], LmExam
             return offsets[1:] - offsets[:-1]
 
         lengths = jnp.array(jax.tree.map(diff_offsets, offsets))
+        n_docs = lengths.shape[0]
 
         task_items = [
             (config, task_probs[name]) for name, config in task_configs.items()
         ]
+        n_tasks = len(task_items)
         task_probs_arr = jnp.array([prob for _, prob in task_items])
         task_indices_key, key = jax.random.split(key)
         task_indices = jax.random.choice(
-            task_indices_key,
-            len(task_items),
-            shape=(lengths.shape[0],),
-            p=task_probs_arr,
+            task_indices_key, n_tasks, shape=(n_docs,), p=task_probs_arr
         )
 
-        # shape (len(task_items), A)
+        # shape (n_tasks, A)
         # where A = max(num_args(to_ul2r_rx_tokens), num_args(to_ul2r_s_tokens))
         task_params = jnp.array(
             [task.to_parameter_tensor() for task, _prob in task_items]
         )
 
         # We compute the length of the tokens after denoising because we want
-        # the packed/batched size to respect `max_length`. Otherwise, because
-        # after denoising examples become larger, the batches that we actually
-        # send to the LLM would be too big.
+        # to turn each input batch into a denoising batch while still staying
+        # under the max sequence length for the model.
         def compute_denoising_length(
             length: jnp.ndarray, task_index: jnp.ndarray
         ) -> jnp.ndarray:
@@ -668,26 +675,23 @@ class Ul2rDataset(MappedAsyncDataset[tuple[TokenizedDict, TokenizedDict], LmExam
 
         denoising_lengths = jax.vmap(compute_denoising_length)(lengths, task_indices)
 
-        # NB the GreedyPackedDataset returns a tuple, where the first has the packed leaves
-        # and the second has the segment ids
+        # NB the GreedyPackedDataset returns a tuple, where the first has the
+        # packed leaves and the second has the segment ids
         self.packed: GreedyPrepackedDataset[TokenizedDict] = GreedyPrepackedDataset(
             cache.store.tree,
             Pos.size,
             max_segments_per_example=max_segments_per_example,
             slice_strategy=slice_strategy,
             # TODO avoid converting back to numpy
-            lengths=denoising_lengths.__array__(),
+            lengths_for_packing=denoising_lengths.__array__(),
         )
         self.Pos = Pos
 
         sharding = jax.sharding.SingleDeviceSharding(
             jax.local_devices(backend="cpu")[0]
         )
-        # self.mask_user_turns = mask_user_turns
 
-        task_tokens = jnp.array(
-            [task.task_token_id() for task in task_configs.values()]
-        )
+        task_tokens = jnp.array([t.task_token_id() for t in task_configs.values()])
 
         # TODO is the type wrong here
         @functools.partial(
@@ -695,24 +699,30 @@ class Ul2rDataset(MappedAsyncDataset[tuple[TokenizedDict, TokenizedDict], LmExam
         )  # pyright: ignore[reportCallIssue]
         def _create_lm_example(e: tuple[TokenizedDict, TokenizedDict]) -> LmExample:
             example, seg_ids = e
-            input_seg_ids = seg_ids["input_ids"]
+            tokens = hax.named(example["input_ids"], self.Pos)
+            segment_ids = hax.named(seg_ids["input_ids"], self.Pos)
+
             unique_seg_ids = jnp.unique(
-                input_seg_ids, size=max_segments_per_example, fill_value=-1
+                segment_ids.array, size=max_segments_per_example, fill_value=-1
             )
 
-            tokens = hax.named(example["input_ids"], self.Pos)
-
             def process_segment(seg_id: int) -> jnp.ndarray:
-                segment_indices = jnp.where(
-                    input_seg_ids == seg_id,
-                    jnp.arange(len(input_seg_ids), len(input_seg_ids)),
+                task_idx = task_indices[seg_id]
+
+                mask = (segment_ids.array == seg_id)
+                n = mask.shape[0]
+                idx = jnp.arange(n)
+
+                segment_start = jnp.min(jnp.where(mask, idx, n))
+                segment_end = jnp.max(jnp.where(mask, idx + 1, 0))
+                length = segment_end - segment_start
+
+                segment = jnp.roll(tokens.array, -segment_start)
+
+                inputs_len, denoising_tokens = to_ul2r_tokens(
+                    key, task_tokens, task_params, segment, length, pad_token_id, Pos.size
                 )
-                segment_indices = typing.cast(jnp.ndarray, segment_indices)
-                segment_start = jnp.min(segment_indices, len(input_seg_ids))
-                # TODO roll segment_start to 0, process it using to_ul2r_tokens, roll back
-                # TODO how do we get the index that this segment corresponded to?
-                # GreedyPrepackedDataset currently uses global_doc_idx
-                # task_idx = task_indices[index]
+                segment = jnp.roll(segment, segment_start)
                 pass
 
             segments = jax.vmap(process_segment)(unique_seg_ids)
@@ -721,16 +731,12 @@ class Ul2rDataset(MappedAsyncDataset[tuple[TokenizedDict, TokenizedDict], LmExam
             # construct input mask too for loss mask? or do inside process_segment?
 
             # max_length = tokens.shape[self.Pos.name]
-            # inputs_len, denoising_tokens = to_ul2r_tokens(
-            #     key, task_tokens, task_params, tokens, length, pad_token_id, max_length
-            # )
 
             # task_and_inputs_len = 1 + inputs_len
             # input_mask = jnp.arange(max_length) < task_and_inputs_len
 
             # loss_mask = ul2r_loss_mask(input_mask, seg_ids, tokens, pad_token_id)
 
-            segment_ids = hax.named(seg_ids["input_ids"], self.Pos)
             return LmExample.causal(
                 tokens=tokens, loss_mask=loss_mask, segment_ids=segment_ids
             )

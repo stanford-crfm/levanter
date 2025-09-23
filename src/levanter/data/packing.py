@@ -423,7 +423,7 @@ def pack_documents(
 
 class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
     """
-    Prepacks a dataset into a new dataset where examples are packed into a single example.
+    Prepacks a dataset into a new dataset where a contiguous range of examples is packed into a single example.
 
     As per usual, I can't help but make this generic.
 
@@ -445,6 +445,7 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         max_segments_per_example: int | None = None,
         pad_with_zeros: bool = True,
         slice_strategy: Literal["left", "right", "raise"] = "raise",
+        lengths_for_packing: PyTree[np.ndarray] | None = None,
     ):
         """
         Args:
@@ -453,6 +454,15 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
             max_segments_per_example: Maximum number of documents that can be packed into a single example.
             pad_with_zeros: If True, pad examples to max_length with zeros. If False, return examples as-is.
             slice_strategy: One of "left", "right", or "raise". Determines how to handle examples that exceed max_length.
+            lengths_for_packing: An (optional) PyTree of numpy arrays. Each array should be of
+                length `n_docs`, the number of documents.
+                When packing documents into a batch, the i-th document in leaf j will be considered
+                to have length `lengths_for_packing[j][i]`, i.e. the sum of the values from `lengths_for_packing[j]`
+                for the documents in a batch will not exceed `max_length[j]` for any leaf j.
+                If None, we just use the true lengths computed from `offsets`.
+                This was added for UL2R because when we construct denoising data, the lengths of
+                each example increases by an independent amount. But for simplicity we want to
+                turn one batch of original to data into one batch of denoising data.
         """
         super().__init__()
 
@@ -469,8 +479,8 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
         self._offsets = jax.tree.map(lambda fut: fut.result(), _offsets)
 
 
-        if lengths is not None:
-            self._lengths = lengths
+        if lengths_for_packing is not None:
+            self._lengths = lengths_for_packing
         else:
             def diff_offsets(offsets: np.ndarray):
                 # fine to mutate since we have a copy
@@ -509,6 +519,8 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
 
         Returns a list of tuples (data, segment_ids), where each is a PyTree (with the same structure as self.dataset),
         and each leaf is a numpy array representing the data or segment IDs for that packed example.
+
+        Segment IDs index into the original `dataset`.
         """
 
         pack_doc_ranges = [self._pack_indices[i] for i in indices]
@@ -538,17 +550,6 @@ class GreedyPrepackedDataset(AsyncDataset[tuple[T, T]]):
                                 f"{list(dr)}. Consider using a different slice_strategy or increasing max_length."
                             )
                     # Read the slice from the underlying data.
-                    # TODO need to pad end up to length here the size of each
-                    # example will differ, but the that way the output size of
-                    # denoing will be correct
-                    #
-                    # or... maybe we identify the starts of segments using
-                    # seg_ids then we roll & call on each of the rolled parts
-                    # Then this tensor is actually smaller than max_length?
-                    #
-                    # hm no more convenient if all tensors size of max_length.
-                    # eventually would be nice if get_batch wrapper gets maximum
-                    # segment length and uses that
                     out_data.append(store.data[token_start:token_end].read())
 
                     # Create segment IDs for this pack
