@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import dataclasses
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Type, Union
@@ -155,6 +158,7 @@ class Olmo2Config(HFCompatConfig):
             rope_scaling=rope_scaling,
             vocab_size=vocab_size,
             pad_token_id=None,
+            _attn_implementation="eager",
             **config_overrides,
         )
 

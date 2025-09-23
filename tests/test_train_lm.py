@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 import tempfile
 
@@ -20,9 +23,10 @@ def test_train_lm():
         try:
             config = train_lm.TrainLmConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
+                model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
+                    num_kv_heads=2,
                     seq_len=64,
                     hidden_dim=32,
                     attn_backend=None,  # use default for platform
@@ -52,9 +56,10 @@ def test_train_lm_fp8():
         try:
             config = train_lm.TrainLmConfig(
                 data=data_config,
-                model=train_lm.Gpt2Config(
+                model=train_lm.LlamaConfig(
                     num_layers=2,
                     num_heads=2,
+                    num_kv_heads=2,
                     seq_len=64,
                     hidden_dim=32,
                     attn_backend=None,  # use default for platform

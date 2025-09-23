@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import dataclasses
 import math
 from dataclasses import dataclass
@@ -321,7 +324,7 @@ class Gpt2Embeddings(ModuleWithStateDictSerialization, eqx.Module):
     @staticmethod
     def init(Vocab: Axis, config: Gpt2Config, *, key) -> "Gpt2Embeddings":
         token_embeddings = hnn.Embedding.init(
-            Vocab, config.Embed, key=key, initializer_range=config.initializer_range
+            Vocab, config.Embed, key=key, init_scale=config.initializer_range
         )
         dropout = hnn.Dropout(pdrop=config.embed_pdrop)
 

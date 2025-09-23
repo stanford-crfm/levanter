@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import atexit
 import itertools
 import logging
@@ -346,7 +349,7 @@ class DistributedConfig:
             )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RayConfig:
     address: Optional[str] = None
     start_workers: bool = True

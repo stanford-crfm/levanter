@@ -1,16 +1,17 @@
 data:
-  cache_dir: /scr-ssd/sampark/levanter/data_cache/wiki_mixed
-  configs:
-    wikiA:
-      id: dlwh/wikitext_103_detokenized
-    dolma-stackexchange:
-      train_urls:
-        - gs://marin-us-central2/raw/dolma/v1.7/stackexchange-{0000..0001}.json.gz
-  train_weights:
+  #cache_dir: /scr-ssd/sampark/levanter/data_cache/wiki_mixed
+  #configs:
+    #wikiA:
+      #id: dlwh/wikitext_103_detokenized
+    #   dolma-stackexchange:
+      #train_urls:
+      #  - gs://marin-us-central2/raw/dolma/v1.7/stackexchange-{0000..0001}.json.gz
+  #train_weights:
     # sampling proportion comes from https://huggingface.co/datasets/allenai/dolma
-    wikiA: 1.0 # 12.6 * 1.0
-    dolma-stackexchange: 1.0 # 28.0 * 1.0
-  shuffle: false
+    # wikiA: 1.0 # 12.6 * 1.0
+    # dolma-stackexchange: 1.0 # 28.0 * 1.0
+  #shuffle: false
+  id: dlwh/wikitext_103_detokenized
 
 model:
   type: gpt2

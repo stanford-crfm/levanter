@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import abc
 import asyncio
 import dataclasses
@@ -448,7 +451,7 @@ class SupervisedLmDatasetFormat(LmDatasetFormatBase):
     mask_inputs: bool = True
 
 
-@dataclass
+@dataclass(frozen=True)
 class LmDatasetSourceConfigBase(abc.ABC):
     """This class represents a dataset source with URLs or hf name/id."""
 
@@ -471,7 +474,7 @@ class LmDatasetSourceConfigBase(abc.ABC):
         return load_lm_dataset_cache(os.path.join(base_cache, split), self.format, tokenizer, enforce_eos=enforce_eos)
 
 
-@dataclass
+@dataclass(frozen=True)
 class HfDatasetSourceConfig(LmDatasetSourceConfigBase):
     """
     This class represents a dataset source with hf id and optional name.
@@ -499,7 +502,7 @@ class HfDatasetSourceConfig(LmDatasetSourceConfigBase):
             return ds
 
 
-@dataclass
+@dataclass(frozen=True)
 class UrlDatasetSourceConfig(LmDatasetSourceConfigBase):
     train_urls: list[str] = ()  # type: ignore
     validation_urls: list[str] = ()  # type:ignore
@@ -529,7 +532,7 @@ class UrlDatasetSourceConfig(LmDatasetSourceConfigBase):
         return urls
 
 
-@dataclass
+@dataclass(frozen=True)
 class LMTaskConfig(abc.ABC):
     tokenizer: str = "gpt2"
     vocab_size: Optional[int] = None  # if using the passthrough tokenizer, this is required
@@ -996,7 +999,7 @@ def mk_chat_sft_dataset(
     return cached_dataset.map_batches(lambda ex: _prepare_supervised_examples(ex, tokenizer, Pos))
 
 
-@dataclass
+@dataclass(frozen=True)
 class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
     """This class supports loading data both from HF Datasets and from a raw dataset of jsonl urls"""
 
@@ -1123,12 +1126,12 @@ class SingleDatasetLMConfigBase(LmDatasetSourceConfigBase, LMTaskConfig):
         return build_lm_dataset_cache(cache_dir, source, format, tokenizer, options, enforce_eos, monitors)
 
 
-@dataclass
+@dataclass(frozen=True)
 class UrlSingleDatasetLMConfig(SingleDatasetLMConfigBase, UrlDatasetSourceConfig):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class HfSingleDatasetLMConfig(SingleDatasetLMConfigBase, HfDatasetSourceConfig):
     pass
 
@@ -1137,7 +1140,7 @@ SingleDatasetLMConfig: TypeAlias = UrlSingleDatasetLMConfig | HfSingleDatasetLMC
 LMDatasetSourceConfig: TypeAlias = UrlDatasetSourceConfig | HfDatasetSourceConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class LMMixtureDatasetConfig(LMTaskConfig):
     """A mixture of language model datasets that supports dynamic weight changes during training.
 

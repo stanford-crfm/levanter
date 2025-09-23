@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 __all__ = [
     # adam_mini
     "MiniConfig",
@@ -31,6 +34,11 @@ __all__ = [
     "ScaleBySophiaState",
     "SophiaHConfig",
     "scale_by_sophia_h",
+    # skipstep
+    "SkipStepConfig",
+    # model averaging
+    "EmaModelAveragingConfig",
+    "EmaDecaySqrtConfig",
 ]
 
 from .adam_mini import MiniConfig, ScaleByMiniState
@@ -47,4 +55,9 @@ from .sophia import (  # SophiaGConfig,; SophiaGObjective,; scale_by_sophia_g,
     ScaleBySophiaState,
     SophiaHConfig,
     scale_by_sophia_h,
+)
+from .skipstep import SkipStepConfig
+from .model_averaging import (
+    EmaDecaySqrtConfig,
+    EmaModelAveragingConfig,
 )

@@ -13,6 +13,8 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * **Playbooks.** Sometimes, there are repeatable tasks (e.g. porting models) for which we follow a standard set of steps.
   Please reference `.playbooks/` to see what playbooks are available, or see the list below. If you want to add a playbook
   write a markdown doc named e.g. `.playbooks/port-models.md` and add a pointer to it in the list below.
+* **Make a plan before giving up.** When a request seems too large to complete in one go, create a markdown file in `.agents/projects/` that outlines a step-by-step plan. Break the work into agent-sized checklist items.
+  If later asked to continue the task, read the file, complete an item, and mark it off. If you can't finish a step, split it into smaller tasks and update the checklist accordingly.
 
 ## Playbooks
 
@@ -21,7 +23,7 @@ repository. Follow these notes when implementing new features or fixing bugs.
 
 ## Code Style
 
-* **Python version**: the project targets Python >=3.10.
+* **Python version**: the project targets Python >=3.11.
 * **Formatting and Linting**: We use `ruff` via `pre-commit`.
 * **Typing**: the code base uses `mypy` for static type checking. `mypy` is run by pre‑commit and the
   configuration is found in `pyproject.toml`.
@@ -45,7 +47,7 @@ repository. Follow these notes when implementing new features or fixing bugs.
 ## Testing
 
 * Tests are executed with `pytest`. The default workflow runs
-  `pytest tests -m "not entry and not slow and not ray"`.
+  `uv run pytest tests -m "not entry and not slow and not ray"`.
 * In general, never relax tolerances in floating point tests unless specifically discussed with the
   team. Use `assert_allclose` with appropriate tolerances for numerical comparisons. We typically use
   1e-4 for more complex modules, and 1e-5 for simpler ones.
@@ -53,6 +55,9 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * Always mark tests that depend on pytorch with `@skip_if_no_torch` to ensure they are skipped
   when PyTorch is not available. This is particularly important for tests that require PyTorch-specific
   functionality.
+* **CI Best Practice**: Use `astral-sh/setup-uv` to install `uv` in workflows and run `uv python install`
+  before installing dependencies with `uv sync` or `uv pip`. This ensures the expected Python
+  version is available during testing.
 
 
 ## Design Preferences
@@ -72,6 +77,16 @@ repository. Follow these notes when implementing new features or fixing bugs.
 * **Reproducibility**: Levanter aims for deterministic training where possible. Avoid sources of
   nondeterminism unless explicitly required.
 * Prefer Stacked with fold or scan over writing custom loops, for better compile times and gradient checkpointing support
+
+## JIT Safety
+
+* Avoid data-dependent Python control flow inside jitted code.
+* Do not rely on dynamic shapes.
+* Do not use dynamic lengths when indexing.
+* Use `debug.print` if you need to inspect values.
+* Use jit-safe versions of `jnp.where`, `hax.where`, or similar operations where the number of returns depends on data.
+
+Any method inside an `equinox.Module`, any function decorated with `jax.jit` or one of its variants (e.g. `eqx.filter_jit` or `jax.named_jit`), and any helpers they call must follow these jit-safety rules.
 
 ## Additional Tips
 

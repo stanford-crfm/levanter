@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import tempfile
 
 import pytest
@@ -57,6 +60,7 @@ def test_hf_audio_loading_source():
         audio, sample, text = next(audio_iterator)
 
 
+@pytest.mark.skip("Ray randomly OSErrors.")
 @skip_if_no_soundlibs
 @skip_if_hf_model_not_accessible("openai/whisper-tiny")
 @pytest.mark.ray

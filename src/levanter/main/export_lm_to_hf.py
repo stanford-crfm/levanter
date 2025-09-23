@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import logging
 from dataclasses import dataclass
 from functools import cached_property
@@ -12,7 +15,7 @@ from haliax import Axis
 import levanter
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer
-from levanter.models.gpt2 import Gpt2Config
+from levanter.models.llama import LlamaConfig
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.utils.jax_utils import is_inexact_arrayish, use_cpu_device
 
@@ -26,7 +29,7 @@ class ConvertLmConfig:
     output_dir: str
     upload_to_hf: Optional[RepoRef] = None  # if specified, attempt to upload this checkpoint to the hf hub
 
-    model: LmConfig = Gpt2Config()
+    model: LmConfig = LlamaConfig()
     save_tokenizer: bool = True  # if True, save the tokenizer to the output directory
     tokenizer: str = "gpt2"
     override_vocab_size: Optional[int] = None  # if specified, override the vocab size in the config

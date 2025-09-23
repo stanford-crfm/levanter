@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import dataclasses
 from dataclasses import dataclass
 from typing import Union
@@ -45,7 +48,7 @@ from transformers import PretrainedConfig as HfConfig  # noqa: E402
 
 
 @LayerNormConfigBase.register_subclass("gemma")
-@dataclass
+@dataclass(frozen=True)
 class GemmaNormConfig(LayerNormConfigBase):
     """Configuration for Gemma's custom RMS normalization."""
 
@@ -200,6 +203,7 @@ class GemmaConfig(HFCompatConfig):
             vocab_size=vocab_size,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
+            _attn_implementation="eager",
             **config_overrides,
         )
         return config
@@ -526,6 +530,7 @@ class Gemma2Config(GemmaConfig):
         # Merge user-overrides last so callers can tweak anything.
         cfg = _HFGemma2Config(
             **common_args,
+            _attn_implementation="eager",
             **config_overrides,
         )
 
@@ -855,6 +860,7 @@ class Gemma3Config(Gemma2Config):
 
         cfg = _HFGemma3Config(
             **common_args,
+            _attn_implementation="eager",
             **config_overrides,
         )
         return cfg
