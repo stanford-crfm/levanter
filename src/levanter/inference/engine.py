@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 import equinox as eqx
-
 import haliax as hax
 import haliax.haxtyping as ht
 import jax
@@ -786,7 +785,7 @@ class InferenceEngine:
         finished_locals = [i for i, f in enumerate(finished_mask) if bool(f)]
         if not finished_locals:
             return
-        logger.info(f"Releasing finished sequences: locals={finished_locals}")
+        logger.debug(f"Releasing finished sequences: locals={finished_locals}")
         # Maintain request/child mappings and slot counts on host
         for local_slot in finished_locals:
             info = self.local_map.pop(local_slot, None)
@@ -1086,7 +1085,7 @@ class InferenceEngine:
         if decode_outputs:
             _ = self._ingest_outputs(decode_outputs)
         initial_prefill_out = time.time()
-        logger.info(f"Initial prefill and extraction took {initial_prefill_out - time_in:.3f}s")
+        logger.debug(f"Initial prefill and extraction took {initial_prefill_out - time_in:.3f}s")
 
         # Autoregressive generation loop with periodic extraction
         def _all_done() -> bool:
@@ -1151,7 +1150,7 @@ class InferenceEngine:
             submit_time = submit_done - submit_start
             if iter_time > 0:
                 tps_total = new_tokens / iter_time
-                logger.info(
+                logger.debug(
                     f"Decode iter: total {iter_time:.3f}s (device {device_time:.3f}s, host {host_time:.3f}s, "
                     f"submit {submit_time:.3f}s), "
                     f"fake_submit {fake_submit_done - fake_submit_start:.3f}s, "
@@ -1192,7 +1191,7 @@ class InferenceEngine:
         total_generated = sum(len(seq_outputs) for seq_outputs in outputs_list)
         total_time = time.time() - time_in
         tps_overall = (total_generated / total_time) if total_time > 0 else 0.0
-        logger.info(f"Batch generated in {total_time:.2f}s, {total_generated} tokens, {tps_overall:.2f} tok/s")
+        logger.debug(f"Batch generated in {total_time:.2f}s, {total_generated} tokens, {tps_overall:.2f} tok/s")
         # Clear results for these requests now that we've assembled outputs
         for rid in call_rids:
             if rid in self.results:
@@ -1243,7 +1242,7 @@ class InferenceEngine:
             dr.done = True
 
         num_finished = int(fins.sum()) if hasattr(fins, "sum") else 0
-        logger.info(f"extract: appended={appended} (drained={n}) unmapped={unmapped} finished_count={num_finished}")
+        logger.debug(f"extract: appended={appended} (drained={n}) unmapped={unmapped} finished_count={num_finished}")
 
         return appended
 

@@ -220,6 +220,14 @@ class InferenceContext:
         self.inference_thread.join(timeout=1)
         self.batch_thread.join(timeout=1)
 
+    def unload(self):
+        """Unload the inference model to free up resources."""
+        logger.info("Unloading inference model...")
+        with self.model_lock:
+            self.model = None
+            self.engine = None
+        logger.info("Inference model unloaded.")
+
     def reload(self, weight_callback: WeightSource):
         """Reload the inference model using the given weight callback.
 
@@ -337,6 +345,9 @@ class InferenceContext:
     def _execute_batch(self, requests: InferenceBatch):
         """Execute a batch of inference requests"""
         service_requests = []
+
+        if not self.engine:
+            raise RuntimeError("Inference engine is not initialized.")
 
         for i, req in enumerate(requests):
             # Create stop tokens if specified
@@ -710,6 +721,10 @@ class InferenceServer:
             return await _create_chat_completion(inference_context, request)
 
         return app
+
+    def unload(self):
+        """Unload the inference model to free up resources."""
+        self.inference_context.unload()
 
     def reload(self, weight_callback: WeightSource):
         """Reload the model weights using the provided callback.
