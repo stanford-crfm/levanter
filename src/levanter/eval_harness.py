@@ -960,6 +960,25 @@ def _iterate_tokenized_requests(
 
     completions = [request.args[1] for request in requests]
 
+    # Debug: Check types of completions
+    for i, completion in enumerate(completions):
+        if not isinstance(completion, str):
+            logger.warning(f"Completion {i} is not a string: {type(completion)} = {completion}")
+            # Convert to string if it's a dict or other type
+            if isinstance(completion, dict):
+                # Try to extract text from common dict keys
+                if 'text' in completion:
+                    completions[i] = completion['text']
+                elif 'content' in completion:
+                    completions[i] = completion['content']
+                elif 'completion' in completion:
+                    completions[i] = completion['completion']
+                else:
+                    # Fallback: convert to string representation
+                    completions[i] = str(completion)
+            else:
+                completions[i] = str(completion)
+
     # Combine contexts and completions for full tokenization
     combined_texts = [context + completion for context, completion in zip(contexts, completions)]
 
