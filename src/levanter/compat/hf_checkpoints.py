@@ -698,6 +698,57 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         return lev_model
 
+    def _resolve_save_reference_code(self, save_reference_code: Optional[bool]) -> bool:
+        """Determine whether reference code should be bundled with the checkpoint."""
+        #  the way we determine this is if the config class is in the HF package or not
+        if save_reference_code is None:
+            return not self.HfConfigClass.__module__.startswith("transformers.")
+
+        return save_reference_code
+
+    def _build_hf_config_dict(self, model: ModelWithHfSerializationMixin) -> dict:
+        """Construct the Hugging Face config dictionary for the provided model."""
+        config = model.config.to_hf_config(model.Vocab.size)
+        dict_config = config.to_dict()
+
+        try:
+            for k in KEYS_TO_COPY_FROM_BASE_CONFIG:
+                attr = getattr(self.default_hf_config, k, None)
+                if attr is not None:
+                    dict_config[k] = attr
+        except Exception as e:  # noqa: BLE001
+            if isinstance(e, GatedRepoError) or isinstance(e.__cause__, GatedRepoError):
+                warnings.warn("Could not copy keys from base config because the repo is gated. Making assumptions.")
+                dict_config["auto_map"] = {
+                    "AutoModelForCausalLM": self.HFAutoModelClass(AutoModelForCausalLM).__qualname__,
+                    "AutoConfig": self.HfConfigClass.__qualname__,
+                }
+                dict_config["architectures"] = [self.HFAutoModelClass(AutoModelForCausalLM).__name__]
+            else:
+                raise
+
+        if self.tokenizer:
+            tokenizer_dependent_config = {}
+            suppress_tokens = []
+            if self.tokenizer.pad_token_id is not None:
+                tokenizer_dependent_config["pad_token_id"] = self.tokenizer.pad_token_id
+                suppress_tokens.append(self.tokenizer.pad_token_id)
+            if self.tokenizer.eos_token_id is not None:
+                tokenizer_dependent_config["eos_token_id"] = self.tokenizer.eos_token_id
+                suppress_tokens.append(self.tokenizer.eos_token_id)
+            if self.tokenizer.bos_token_id is not None:
+                tokenizer_dependent_config["bos_token_id"] = self.tokenizer.bos_token_id
+                tokenizer_dependent_config["decoder_start_token_id"] = self.tokenizer.bos_token_id
+                suppress_tokens.append(self.tokenizer.bos_token_id)
+            if len(suppress_tokens) > 0:
+                tokenizer_dependent_config["begin_suppress_tokens"] = list(set(suppress_tokens))
+            dict_config = mergedeep.merge({}, dict_config, tokenizer_dependent_config)
+
+        if self.config_overrides:
+            dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
+
+        return dict_config
+
     def _save_pretrained_local(
         self,
         model: ModelWithHfSerializationMixin,
@@ -720,9 +771,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
         os.makedirs(path, exist_ok=True)
 
         # if save_reference_code is None, we save code for models that aren't in the HF repo.
-        if save_reference_code is None:
-            #  the way we determine this is if the config class is in the HF package or not
-            save_reference_code = not self.HfConfigClass.__module__.startswith("transformers.")
+        save_reference_code = self._resolve_save_reference_code(save_reference_code)
 
         # save code first because we'll likely be overwriting it
         if save_reference_code:
@@ -738,54 +787,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
             self.feature_extractor.save_pretrained(path)
 
         # Config
-        config = model.config.to_hf_config(model.Vocab.size)
-        dict_config = config.to_dict()
-
-        # copy over the default keys
-        try:
-            for k in KEYS_TO_COPY_FROM_BASE_CONFIG:
-                attr = getattr(self.default_hf_config, k, None)
-                if attr is not None:
-                    dict_config[k] = attr
-        # except GatedRepoError:
-        #     warnings.warn("Could not copy keys from base config because the repo is gated. Making assumptions.")
-        except Exception as e:  # noqa
-            if isinstance(e, GatedRepoError) or isinstance(e.__cause__, GatedRepoError):
-                warnings.warn("Could not copy keys from base config because the repo is gated. Making assumptions.")
-
-                # this is probably llama, but in general we just need to set the auto_map and architectures
-                dict_config["auto_map"] = {
-                    "AutoModelForCausalLM": self.HFAutoModelClass(AutoModelForCausalLM).__qualname__,
-                    "AutoConfig": self.HfConfigClass.__qualname__,
-                }
-
-                dict_config["architectures"] = [self.HFAutoModelClass(AutoModelForCausalLM).__name__]
-            else:
-                raise
-
-        if self.tokenizer:
-            tokenizer_dependent_config = {}
-            suppress_tokens = []
-            if self.tokenizer.pad_token_id is not None:
-                tokenizer_dependent_config["pad_token_id"] = self.tokenizer.pad_token_id
-                suppress_tokens.append(self.tokenizer.pad_token_id)
-            if self.tokenizer.eos_token_id is not None:
-                tokenizer_dependent_config["eos_token_id"] = self.tokenizer.eos_token_id
-                suppress_tokens.append(self.tokenizer.eos_token_id)
-            if self.tokenizer.bos_token_id is not None:
-                tokenizer_dependent_config["bos_token_id"] = self.tokenizer.bos_token_id
-                tokenizer_dependent_config["decoder_start_token_id"] = self.tokenizer.bos_token_id
-                suppress_tokens.append(self.tokenizer.bos_token_id)
-            if len(suppress_tokens) > 0:
-                tokenizer_dependent_config["begin_suppress_tokens"] = list(set(suppress_tokens))
-            dict_config = mergedeep.merge(
-                {},
-                dict_config,
-                tokenizer_dependent_config,
-            )
-
-        if self.config_overrides:
-            dict_config = mergedeep.merge({}, dict_config, self.config_overrides)
+        dict_config = self._build_hf_config_dict(model)
 
         with open(os.path.join(path, "config.json"), "w") as f:
             json.dump(dict_config, f, cls=ConfigJSONEncoder)
@@ -847,30 +849,146 @@ class HFCheckpointConverter(Generic[LevConfig]):
         architecture code being present (using trust_remote_code=True). "Code" here means anything not stored in LFS.
         If None, will save code for models that aren't in the HF repo.
         """
+        logger.info(f"Saving HF-compatible checkpoint to {path}")
+
+        save_reference_code_flag = self._resolve_save_reference_code(save_reference_code)
+        dict_config = self._build_hf_config_dict(model)
+
+        if not _is_url_like(path):
+            os.makedirs(path, exist_ok=True)
+
+        hf_repo_ref: Optional[RepoRef] = None
+        if upload_to_hf is True:
+            if self.reference_checkpoint is None:
+                raise ValueError("No reference checkpoint provided, so no repo name to upload to")
+            upload_to_hf = self.reference_checkpoint
+
+        if not isinstance(upload_to_hf, bool):
+            repo_ref = _coerce_to_rr(upload_to_hf)
+            if not repo_exists(repo_ref.model_name_or_path, repo_type="model"):
+                api = HfApi()
+                api.create_repo(repo_id=repo_ref.model_name_or_path, repo_type="model", exist_ok=True, private=True)
+            hf_repo_ref = repo_ref
+
+        state_dict_shape = eqx.filter_eval_shape(_to_state_dict_with_dtype, model, dtype, None)
+        shards, index = _shard_hf_checkpoint(state_dict_shape, max_shard_size, SAFE_TENSORS_MODEL)
+
+        shard_specs = [(shard_name, tuple(weight_map.keys())) for shard_name, weight_map in shards.items()]
+
+        def _maybe_upload(
+            local_dir: str,
+            *,
+            files: Optional[list[str]] = None,
+            commit_message: Optional[str] = None,
+            source_is_temp: bool,
+        ):
+            if hf_repo_ref is None:
+                return
+
+            upload_kwargs = hf_upload_kwargs.copy()
+            if commit_message is not None and "commit_message" not in upload_kwargs:
+                upload_kwargs["commit_message"] = commit_message
+
+            if files is not None and len(files) == 0:
+                return
+
+            if files is None or source_is_temp:
+                upload_to_hub(local_dir, hf_repo_ref, **upload_kwargs)
+                return
+
+            # if we're not sure source_is_temp, we have to be more careful to only upload the files we want
+
+            repo_type = upload_kwargs.pop("repo_type", "model")
+            token = upload_kwargs.pop("token", None)
+            revision = upload_kwargs.pop("revision", hf_repo_ref.revision)
+            create_pr = upload_kwargs.pop("create_pr", False)
+            commit_message_arg = upload_kwargs.pop("commit_message", None) or commit_message
+
+            for relative_path in files:
+                file_path = os.path.join(local_dir, relative_path)
+                huggingface_hub.upload_file(
+                    path_or_fileobj=file_path,
+                    path_in_repo=relative_path,
+                    repo_id=hf_repo_ref.model_name_or_path,
+                    repo_type=repo_type,
+                    token=token,
+                    revision=revision,
+                    commit_message=commit_message_arg,
+                    create_pr=create_pr,
+                )
+
+        def _list_relative_files(directory: str) -> set[str]:
+            rel_files: set[str] = set()
+            for root, _, filenames in os.walk(directory):
+                for filename in filenames:
+                    full_path = os.path.join(root, filename)
+                    rel_files.add(os.path.relpath(full_path, directory))
+            return rel_files
+
+        for shard_name, subset_keys in shard_specs:
+            with temp_dir_before_upload(path) as local_path:
+                if path != local_path:
+                    logger.info(f"Saving shard {shard_name} to {path} via temp path {local_path}")
+
+                os.makedirs(local_path, exist_ok=True)
+                subset_arg: Optional[tuple[str, ...]]
+                if len(subset_keys) == 0:
+                    subset_arg = None
+                else:
+                    subset_arg = subset_keys
+
+                shard_weights = _to_state_dict_with_dtype(model, dtype, subset_arg)
+                shard_numpy = {k: np.asarray(v) for k, v in shard_weights.items()}
+                save_state_dict(shard_numpy, os.path.join(local_path, shard_name))
+
+                _maybe_upload(
+                    local_path,
+                    files=[shard_name],
+                    commit_message=f"Upload shard {shard_name} from Levanter",
+                    source_is_temp=path != local_path,
+                )
+
+        if index is not None:
+            logger.info(f"Saved a sharded checkpoint with {len(shard_specs)} shards, max size {max_shard_size} bytes")
+
         with temp_dir_before_upload(path) as local_path:
             if path != local_path:
-                logger.info(f"Saving model to {path} via temp path {local_path}")
+                logger.info(f"Saving metadata to {path} via temp path {local_path}")
 
-            self._save_pretrained_local(
-                model,
+            os.makedirs(local_path, exist_ok=True)
+
+            files_before = _list_relative_files(local_path)
+
+            if save_reference_code_flag:
+                logger.info(f"Copying reference code from {self.reference_checkpoint}")
+                self._save_code_local(local_path)
+
+            if save_tokenizer:
+                logger.info("Saving tokenizer")
+                self.tokenizer.save_pretrained(local_path)
+
+            if save_feature_extractor and self.feature_extractor is not None:
+                logger.info("Saving feature extractor")
+                self.feature_extractor.save_pretrained(local_path)
+
+            with open(os.path.join(local_path, "config.json"), "w") as f:
+                json.dump(dict_config, f, cls=ConfigJSONEncoder)
+
+            if index is not None:
+                with open(os.path.join(local_path, SAFE_TENSORS_INDEX_NAME), "w") as f:
+                    json.dump(index, f)
+
+            files_after = _list_relative_files(local_path)
+            new_files = sorted(files_after - files_before)
+
+            _maybe_upload(
                 local_path,
-                save_reference_code=save_reference_code,
-                save_tokenizer=save_tokenizer,
-                save_feature_extractor=save_feature_extractor,
-                max_shard_size=max_shard_size,
-                dtype=dtype,
+                files=new_files,
+                commit_message="Upload config and metadata from Levanter",
+                source_is_temp=path != local_path,
             )
 
-            if upload_to_hf is True:
-                if self.reference_checkpoint is None:
-                    raise ValueError("No reference checkpoint provided, so no repo name to upload to")
-                upload_to_hf = self.reference_checkpoint
-            if not isinstance(upload_to_hf, bool):
-                assert isinstance(upload_to_hf, (str, RepoRef))
-                if isinstance(upload_to_hf, str) and not repo_exists(upload_to_hf, repo_type="model"):
-                    api = HfApi()
-                    api.create_repo(repo_id=upload_to_hf, repo_type="model", exist_ok=True, private=True)
-                upload_to_hub(local_path, upload_to_hf, **hf_upload_kwargs)
+        logger.info(f"Finished saving HF-compatible checkpoint to {path}")
 
     def _save_code_local(self, path):
         if self.reference_checkpoint is None:
