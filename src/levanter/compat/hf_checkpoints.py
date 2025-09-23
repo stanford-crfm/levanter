@@ -22,13 +22,18 @@ import huggingface_hub
 import jax
 import jax.numpy as jnp
 import mergedeep
+import numpy as np
 import safetensors
 import safetensors.numpy
 import transformers.utils.hub
 from fsspec import AbstractFileSystem
+from haliax._src.state_dict import flatten_modules_for_export, to_state_dict
+from haliax.jax_utils import is_jax_array_like
+from haliax.state_dict import StateDict
 from huggingface_hub import HfApi, hf_hub_download, repo_exists, snapshot_download
 from huggingface_hub.file_download import repo_folder_name
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError, RepositoryNotFoundError
+from jax import ShapeDtypeStruct
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array, PRNGKeyArray
@@ -37,7 +42,7 @@ from tqdm import tqdm
 import haliax
 from haliax import Axis
 from haliax.partitioning import ResourceMapping
-from haliax.state_dict import from_torch_compatible_state_dict, save_state_dict, to_torch_compatible_state_dict
+from haliax.state_dict import from_torch_compatible_state_dict, save_state_dict
 
 from levanter.callbacks import StepInfo
 from levanter.models.asr_model import ASRMixin
@@ -208,6 +213,46 @@ def _load_safe_tensors(path, dtype):
             d[key] = _maybe_shard_best_effort(tensor_slice, dtype)
 
     return d
+
+
+# NB: for large models this will be jitted several times (once for each unique subset of keys at least)
+# but it means we get to benefit from dead code elimination and other goodness
+@eqx.filter_jit
+def _to_state_dict_with_dtype(
+    model: ModelWithHfSerializationMixin, dtype, subset: tuple[str, ...] | None
+) -> StateDict:
+    """
+    Convert a model to a torch-compatible state dict, optionally converting floating-point arrays to a given dtype
+    and optionally subsetting to a given set of keys.
+    """
+    # We don't want to directly use to_torch_compatible_state_dict because it will convert everything to numpy.
+    # we don't want to do that here because we want to keep things as jax arrays so we can eval_shape and control
+    # sharding
+
+    # state_dict = to_torch_compatible_state_dict(model)
+    # to_torch_compatible_state_dict is mostly these three steps (except it also converts to numpy)
+    model = eqx.filter(model, is_jax_array_like)
+    model = flatten_modules_for_export(model)
+    state_dict = to_state_dict(model)
+
+    if subset is not None:
+        out = {}
+        for k in subset:
+            out[k] = state_dict[k]
+        state_dict = out
+
+    if dtype is not None:
+        logger.info(f"Converting floating-point arrays in state_dict to {dtype}")
+        for k, v in state_dict.items():
+            if jnp.issubdtype(v.dtype, jnp.floating):
+                state_dict[k] = v.astype(dtype)
+            else:
+                logger.debug(f"Skipping dtype conversion for non-floating point array {k} with dtype {v.dtype}")
+
+    # deshard. We could be smarter here and use a process mesh or host offloading, but this is simpler for now
+    state_dict = haliax.shard(state_dict, mapping={})
+
+    return state_dict
 
 
 @dataclass_with_default_init(frozen=True)
@@ -746,22 +791,25 @@ class HFCheckpointConverter(Generic[LevConfig]):
             json.dump(dict_config, f, cls=ConfigJSONEncoder)
 
         # Model
-        state_dict = to_torch_compatible_state_dict(model)
 
-        if dtype is not None:
-            logger.info(f"Converting floating-point arrays in state_dict to {dtype}")
-            for k, v in state_dict.items():
-                if jnp.issubdtype(v.dtype, jnp.floating):
-                    state_dict[k] = v.astype(dtype)
-                else:
-                    logger.debug(f"Skipping dtype conversion for non-floating point array {k} with dtype {v.dtype}")
-
-        shards, index = _shard_hf_checkpoint(state_dict, max_shard_size, SAFE_TENSORS_MODEL)
+        # ok so we don't want to have to make a full copy of all of the weights at once.
+        # (It's not a big deal for small models < 10B or so, but it is for large models)
+        # instead we do this fairly sneaky process where we:
+        # 1. get the shape of the state dict
+        state_dict_shape = eqx.filter_eval_shape(_to_state_dict_with_dtype, model, dtype, None)
+        # 2. get the shards and index we would use to shard it
+        shards, index = _shard_hf_checkpoint(state_dict_shape, max_shard_size, SAFE_TENSORS_MODEL)
+        # 3. for each shard, we materialize only the weights in that shard just in time
         if index is None:
+            state_dict = _to_state_dict_with_dtype(model, dtype, None)
+            state_dict = {k: np.asarray(v) for k, v in state_dict.items()}
             save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
         else:
-            for k, v in shards.items():
-                save_state_dict(v, os.path.join(path, k))
+            for k, shard_weights in shards.items():
+                subset = shard_weights.keys()
+                shard_weights = _to_state_dict_with_dtype(model, dtype, tuple(subset))
+                shard_weights = {k: np.asarray(a) for k, a in shard_weights.items()}
+                save_state_dict(shard_weights, os.path.join(path, k))
             with open(os.path.join(path, SAFE_TENSORS_INDEX_NAME), "w") as f:
                 json.dump(index, f)
 
@@ -1026,10 +1074,10 @@ def _patch_missing_buffers_for_deser(lev_model, lm_model_cls, Vocab, config, key
 
 
 def _shard_hf_checkpoint(
-    state_dict: dict[str, Array],
+    state_dict: dict[str, Array | ShapeDtypeStruct],
     max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
     weights_name: str = SAFE_TENSORS_MODEL,
-):
+) -> tuple[dict[str, dict[str, Array]], dict | None]:
     """
     Splits a model state dictionary in sub-checkpoints so that the final size of each sub-checkpoint does not exceed a
     given size.
@@ -1065,7 +1113,7 @@ def _shard_hf_checkpoint(
     total_size = 0
 
     for key, weight in state_dict.items():
-        weight_size = weight.size * weight.itemsize
+        weight_size = weight.size * weight.dtype.itemsize
 
         # If this weight is going to tip up over the maximal size, we split, but only if we have put at least one
         # weight in the current shard.
@@ -1083,7 +1131,7 @@ def _shard_hf_checkpoint(
 
     # Otherwise, let's build the index
     weight_map = {}
-    shards = {}
+    shards: dict[str, dict[str, Array]] = {}
     for idx, shard in enumerate(sharded_state_dicts):
         # NOTE(dlwh): this is how it is in the HF code. it hurts me
         shard_file = weights_name.replace(".bin", f"-{idx + 1:05d}-of-{len(sharded_state_dicts):05d}.bin")
