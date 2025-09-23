@@ -945,12 +945,16 @@ def _iterate_tokenized_requests(
     Tokenize the requests and yield them as PromptCompletions, for packing into LmExamples.
     """
     if apply_chat_template:
-        contexts = [
-            tokenizer.apply_chat_template(
+        contexts = []
+        for request in requests:
+            context = tokenizer.apply_chat_template(
                 [{"role": "user", "content": request.args[0]}], tokenize=False, add_generation_prompt=True
             )
-            for request in requests
-        ]
+            if context is None:
+                # Fallback to original context if chat template fails
+                logger.warning(f"Chat template returned None for request, using original context")
+                context = request.args[0]
+            contexts.append(context)
     else:
         contexts = [request.args[0] for request in requests]
 
