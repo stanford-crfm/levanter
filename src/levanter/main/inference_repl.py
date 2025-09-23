@@ -15,8 +15,10 @@ CLI Usage:
 """
 
 import asyncio
+import json
 import logging
 import shlex
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -86,7 +88,7 @@ class InferenceReplConfig:
     model: LlamaConfig = field(default_factory=LlamaConfig)
     service: InferenceEngineConfig = field(
         default_factory=lambda: InferenceEngineConfig(
-            max_seqs=2, page_size=8, max_pages_per_seq=16, max_queued_tokens=8
+            max_seqs=4, page_size=8, max_pages_per_seq=16, max_queued_tokens=8
         )
     )
 
@@ -265,10 +267,6 @@ class Commands:
             console.print("[red]No model loaded[/red]")
             return
 
-        # Parse batch input
-        import json
-        from pathlib import Path
-
         try:
             # Try to load as file first
             if Path(batch_input).exists():
@@ -287,8 +285,6 @@ class Commands:
 
         # Submit all requests concurrently
         console.print(f"[cyan]Submitting batch of {len(batch_data)} requests...[/cyan]")
-
-        import time
 
         start_time = time.time()
 

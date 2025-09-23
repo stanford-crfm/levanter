@@ -293,18 +293,25 @@ class InferenceContext:
         logger.info("Inference thread started")
 
         while not self.shutdown_event.is_set():
-            requests = _fetch_all_from_queue(self.request_queue, self.config.batch_timeout)
+            requests: list[InferenceRequest] = _fetch_all_from_queue(self.request_queue, self.config.batch_timeout)
             if not requests:
                 continue
 
             batch = InferenceBatch()
             max_tokens_per_seq = self.engine.config.max_pages_per_seq * self.engine.config.page_size
-            max_tokens_per_batch = self.engine.config.max_pages * self.engine.config.page_size
+            max_tokens_per_batch = self.engine.config.imputed_max_pages * self.engine.config.page_size
+            logger.info(f"Max tokens per seq: {max_tokens_per_seq}, per batch: {max_tokens_per_batch}")
 
             for r in requests:
-                if len(r.tokens) > max_tokens_per_seq:
+                if len(r.prompt_tokens) > max_tokens_per_seq:
                     # slice down requests that are too long
-                    r.tokens = r.tokens[-max_tokens_per_seq:]
+                    logger.warning(
+                        "Request %s prompt too long (%d tokens), truncating to last %d tokens",
+                        r.request_id,
+                        len(r.prompt_tokens),
+                        max_tokens_per_seq,
+                    )
+                    r.prompt_tokens = r.prompt_tokens[-max_tokens_per_seq:]
 
                 if r.n_generations > self.engine.config.max_seqs:
                     # fail requests that are too large
