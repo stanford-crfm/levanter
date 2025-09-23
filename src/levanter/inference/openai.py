@@ -169,9 +169,11 @@ class InferenceResponse:
 
 
 class InferenceBatch(list):
-    @property
     def num_seqs(self) -> int:
         return sum(req.n_generations for req in self)
+
+    def total_tokens(self) -> int:
+        return sum(len(req.prompt_tokens) + req.max_tokens for req in self)
 
 
 # A callback which replaces the current model.
@@ -296,7 +298,14 @@ class InferenceContext:
                 continue
 
             batch = InferenceBatch()
+            max_tokens_per_seq = self.engine.config.max_pages_per_seq * self.engine.config.page_size
+            max_tokens_per_batch = self.engine.config.max_pages * self.engine.config.page_size
+
             for r in requests:
+                if len(r.tokens) > max_tokens_per_seq:
+                    # slice down requests that are too long
+                    r.tokens = r.tokens[-max_tokens_per_seq:]
+
                 if r.n_generations > self.engine.config.max_seqs:
                     # fail requests that are too large
                     error_msg = (
@@ -305,12 +314,14 @@ class InferenceContext:
                     )
                     logger.error(error_msg)
                     r.future.get_loop().call_soon_threadsafe(r.future.set_exception, ValueError(error_msg))
-                elif batch.num_seqs + r.n_generations <= self.engine.config.max_seqs:
+                elif (
+                    batch.num_seqs() + r.n_generations <= self.engine.config.max_seqs
+                    and batch.total_tokens() + (len(r.prompt_tokens) + r.max_tokens) <= max_tokens_per_batch
+                ):
                     batch.append(r)
                 else:
                     self.batch_queue.put(batch)
                     batch = InferenceBatch([r])
-
             if batch:
                 self.batch_queue.put(batch)
 
