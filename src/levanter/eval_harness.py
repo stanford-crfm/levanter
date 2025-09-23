@@ -300,6 +300,54 @@ def _get_padding_count(batch, pad_token_id):
     return padding_count, total_tokens
 
 
+class LoglikelihoodResultProcessor:
+    """Result processor for loglikelihood operations."""
+    
+    def initialize(self, num_requests):
+        """Initialize result arrays for loglikelihood."""
+        result_probs = np.zeros(num_requests)
+        result_greedy = np.zeros(num_requests)
+        covered_points = np.zeros(num_requests, dtype=bool)
+        return (result_probs, result_greedy), covered_points
+    
+    def process_batch_results(self, out_ids, out_data, valid_indices, result_arrays, covered_points):
+        """Process batch results for loglikelihood."""
+        out_lls, out_correct = out_data
+        result_probs, result_greedy = result_arrays
+        
+        result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
+        result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
+        covered_points[out_ids[valid_indices]] = True
+    
+    def finalize(self, result_arrays, num_requests):
+        """Finalize loglikelihood results."""
+        result_probs, result_greedy = result_arrays
+        return list(zip(result_probs, result_greedy))
+
+
+class GenerateUntilResultProcessor:
+    """Result processor for generate_until operations."""
+    
+    def initialize(self, num_requests):
+        """Initialize result arrays for generate_until."""
+        result_tokens = np.zeros(num_requests, dtype=np.int32)
+        covered_points = np.zeros(num_requests, dtype=bool)
+        return (result_tokens,), covered_points
+    
+    def process_batch_results(self, out_ids, out_data, valid_indices, result_arrays, covered_points):
+        """Process batch results for generate_until."""
+        out_tokens, = out_data
+        result_tokens, = result_arrays
+        
+        result_tokens[out_ids[valid_indices]] = out_tokens[valid_indices]
+        covered_points[out_ids[valid_indices]] = True
+    
+    def finalize(self, result_arrays, num_requests):
+        """Finalize generate_until results."""
+        result_tokens, = result_arrays
+        return result_tokens
+
+
 class LevanterHarnessLM(LM):
     def __init__(self, leader: _LmEvalHarnessWorker):
         super().__init__()
@@ -309,11 +357,24 @@ class LevanterHarnessLM(LM):
     EvalBatch = property(lambda self: self.leader.EvalBatch)
     EvalPos = property(lambda self: self.leader.EvalPos)
 
-    def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
+    def _process_requests_batch(
+        self, 
+        requests: list[Instance], 
+        dispatch_func, 
+        result_processor,
+        operation_name: str
+    ):
         """
-        Compute log-likelihood of generating a continuation from a context.
-        Downstream tasks should attempt to use loglikelihood instead of other
-        LM calls whenever possible.
+        Common batch processing logic for loglikelihood and generate_until.
+        
+        Args:
+            requests: List of evaluation requests
+            dispatch_func: Function to dispatch batch processing (e.g., self.leader.dispatch_loglikelihood)
+            result_processor: Function to process results and update result arrays
+            operation_name: Name for progress bar (e.g., "loglikelihood", "generate_until")
+        
+        Returns:
+            Processed results
         """
         if self.tokenizer.pad_token_id is None:
             logger.warning("No pad token set. Setting to eos token.")
@@ -325,15 +386,15 @@ class LevanterHarnessLM(LM):
         packed_iterator = stack_batches(iter(packed), self.EvalPos, self.EvalBatch)
         packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
-        result_probs = np.zeros(len(requests))
-        result_greedy = np.zeros(len(requests))
-        covered_points = np.zeros(len(requests), dtype=bool)
+        # Initialize result tracking
+        result_arrays, covered_points = result_processor.initialize(len(requests))
 
         total_tokens_expected = len(packed) * self.EvalPos.size
 
         total_padding = 0
         total_tokens_seen = 0
-        pbar = tqdm(total=total_tokens_expected, desc="loglikelihood", unit="tok")
+        pbar = tqdm(total=total_tokens_expected, desc=operation_name, unit="tok")
+        
         for q, batch in enumerate(packed_iterator):
             segments_this_batch = _get_segments_this_batch(
                 batch, self.leader.max_packed_segments * self.EvalBatch.size
@@ -341,11 +402,13 @@ class LevanterHarnessLM(LM):
 
             padding_count, batch_tokens = _get_padding_count(batch, self.tokenizer.pad_token_id)
 
-            out_ids, out_lls, out_correct = self.leader.dispatch_loglikelihood(batch)
+            # Dispatch the batch processing
+            dispatch_results = dispatch_func(batch)
 
-            out_ids = np.array(out_ids.array)
-            out_lls = np.array(out_lls.array)
-            out_correct = np.array(out_correct.array)
+            # Convert results to numpy arrays
+            out_ids = np.array(dispatch_results[0].array)
+            out_data = [np.array(result.array) for result in dispatch_results[1:]]
+            
             # -1's are going to be where we had too few sequences to fill a batch
             valid_indices = out_ids != -1
 
@@ -356,9 +419,10 @@ class LevanterHarnessLM(LM):
             assert len(missing_ids) == 0, f"Missing segments: {missing_ids}"
             assert len(extra_ids) == 0, f"Extra segments: {extra_ids}"
 
-            result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
-            result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
-            covered_points[out_ids[valid_indices]] = True
+            # Process results using the provided processor
+            result_processor.process_batch_results(
+                out_ids, out_data, valid_indices, result_arrays, covered_points
+            )
 
             total_padding += padding_count
             total_tokens_seen += batch_tokens
@@ -372,10 +436,24 @@ class LevanterHarnessLM(LM):
         missing_points = np.where(~covered_points)[0]
         assert len(missing_points) == 0, f"Missing points: {missing_points}"
 
-        result = list(zip(result_probs, result_greedy))
-        logger.info(f"Finished running {len(requests)} loglikelihoods.")
+        # Finalize results
+        final_result = result_processor.finalize(result_arrays, len(requests))
+        logger.info(f"Finished running {len(requests)} {operation_name} operations.")
 
-        return result
+        return final_result
+
+    def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
+        """
+        Compute log-likelihood of generating a continuation from a context.
+        Downstream tasks should attempt to use loglikelihood instead of other
+        LM calls whenever possible.
+        """
+        return self._process_requests_batch(
+            requests,
+            self.leader.dispatch_loglikelihood,
+            LoglikelihoodResultProcessor(),
+            "loglikelihood"
+        )
 
     def loglikelihood_rolling(self, requests) -> List[Tuple[float]]:
         raise NotImplementedError()
@@ -385,59 +463,12 @@ class LevanterHarnessLM(LM):
         Generate text until stop conditions are met.
         For now, this is a simple implementation that generates one token per request.
         """
-        if self.tokenizer.pad_token_id is None:
-            logger.warning("No pad token set. Setting to eos token.")
-            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
-
-        packed = _pack_requests(
-            requests, self.tokenizer, self.EvalPos, self.leader.max_packed_segments, self.leader.apply_chat_template
+        result_tokens = self._process_requests_batch(
+            requests,
+            self.leader.dispatch_generate,
+            GenerateUntilResultProcessor(),
+            "generate_until"
         )
-        packed_iterator = stack_batches(iter(packed), self.EvalPos, self.EvalBatch)
-        packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
-
-        result_tokens = np.zeros(len(requests), dtype=np.int32)
-        covered_points = np.zeros(len(requests), dtype=bool)
-
-        total_tokens_expected = len(packed) * self.EvalPos.size
-
-        total_padding = 0
-        total_tokens_seen = 0
-        pbar = tqdm(total=total_tokens_expected, desc="generate_until", unit="tok")
-        for q, batch in enumerate(packed_iterator):
-            segments_this_batch = _get_segments_this_batch(
-                batch, self.leader.max_packed_segments * self.EvalBatch.size
-            )
-
-            padding_count, batch_tokens = _get_padding_count(batch, self.tokenizer.pad_token_id)
-
-            out_ids, out_tokens = self.leader.dispatch_generate(batch)
-
-            out_ids = np.array(out_ids.array)
-            out_tokens = np.array(out_tokens.array)
-            # -1's are going to be where we had too few sequences to fill a batch
-            valid_indices = out_ids != -1
-
-            out_ids_this_batch = out_ids[valid_indices].tolist()
-
-            missing_ids = set(segments_this_batch) - set(out_ids_this_batch)
-            extra_ids = set(out_ids_this_batch) - set(segments_this_batch)
-            assert len(missing_ids) == 0, f"Missing segments: {missing_ids}"
-            assert len(extra_ids) == 0, f"Extra segments: {extra_ids}"
-
-            result_tokens[out_ids[valid_indices]] = out_tokens[valid_indices]
-            covered_points[out_ids[valid_indices]] = True
-
-            total_padding += padding_count
-            total_tokens_seen += batch_tokens
-
-            pbar.set_postfix(
-                padding=f"{total_padding}/{total_tokens_seen} = {(total_padding) / (total_tokens_seen):.2f}",
-                this_padding=f"{padding_count}/{batch_tokens}= {padding_count / batch_tokens:.2f}",
-            )
-            pbar.update(batch_tokens)
-
-        missing_points = np.where(~covered_points)[0]
-        assert len(missing_points) == 0, f"Missing points: {missing_points}"
 
         # Convert token IDs to strings
         result_strings = []
@@ -447,7 +478,6 @@ class LevanterHarnessLM(LM):
             else:
                 result_strings.append(self.tokenizer.decode([token_id]))
 
-        logger.info(f"Finished running {len(requests)} generations.")
         return result_strings
 
 
