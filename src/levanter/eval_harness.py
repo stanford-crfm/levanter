@@ -32,6 +32,7 @@ from typing import Iterator, List, Optional, Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.random as jrandom
 import jmp
 import numpy as np
 from jax.sharding import PartitionSpec
@@ -45,7 +46,6 @@ from levanter.data.packing import (
     PromptCompletion,
     greedy_pack_prompt_completions,
     per_segment_correct,
-    per_segment_generate,
     per_segment_loss,
 )
 from levanter.models.gpt2 import Gpt2Config
@@ -53,6 +53,8 @@ from levanter.models.loss import next_token_loss
 from levanter.utils.background_iterable import BackgroundIterator
 from levanter.utils.hf_utils import HfTokenizer
 from levanter.utils.py_utils import set_global_rng_seeds
+from levanter.inference.engine import InferenceEngine, InferenceEngineConfig, Request as GenRequest
+from levanter.inference.jit_scheduler import SeqDecodingParams
 
 
 try:
@@ -170,45 +172,6 @@ class _LmEvalHarnessWorker:
             _eval_loglikelihood, axis_resources=axis_resources, out_axis_resources={}
         )
 
-        def _eval_generate(
-            model: LmHeadModel, packed_example: LmExample
-        ) -> tuple[NamedArray, NamedArray]:
-            """
-            Returns:
-                - segments: The segment IDs of the completions. (shape: (Segments,))
-                - generated_tokens: The generated token IDs. (shape: (Segments,))
-            """
-
-            if self.mp is not None:
-                model = self.mp.cast_to_compute(model)
-
-            logits = model(packed_example.tokens, attn_mask=packed_example.attn_mask)
-            logits = logits.astype(jnp.float32)
-            Pos = logits.resolve_axis(self.EvalPos.name)
-
-            # Get the last token's logits for each sequence
-            last_token_logits = hax.take(logits, -1, axis=Pos)
-            
-            # Use argmax to get the most likely next token
-            generated_tokens = hax.argmax(last_token_logits, axis=model.Vocab)
-
-            # we need + 1 because we use -1 as a padding value for segments
-            max_Segments = hax.Axis("Segments", size=self.max_packed_segments + 1)
-
-            batched_segment_ids, batched_generated_tokens = hax.vmap(per_segment_generate, self.EvalBatch)(
-                packed_example, generated_tokens, max_Segments
-            )
-
-            segments = hax.flatten(batched_segment_ids, "segment")
-            generated = hax.flatten(batched_generated_tokens, "segment")
-
-            return segments, generated
-
-        # no sharded outputs
-        self._jit_generate = hax.named_jit(
-            _eval_generate, axis_resources=axis_resources, out_axis_resources={}
-        )
-
     def make_harness_lm(self, apply_chat_template: bool = False):
         if jax.process_index() == 0:
             return LevanterHarnessLM(self)
@@ -224,9 +187,6 @@ class _LmEvalHarnessWorker:
             elif message == _Message.LOGLIKELIHOOD:
                 payload = self._receive_payload()
                 self.process_loglikelihood(payload)
-            elif message == _Message.GENERATE:
-                payload = self._receive_payload()
-                self.process_generate(payload)
             else:
                 raise ValueError(f"Unknown message type: {message}")
 
@@ -263,15 +223,6 @@ class _LmEvalHarnessWorker:
         self._send_payload(packed_request)
         return self.process_loglikelihood(packed_request)
 
-    def dispatch_generate(self, packed_request):
-        self._send_message(_Message.GENERATE)
-        self._send_payload(packed_request)
-        return self.process_generate(packed_request)
-
-    def process_generate(self, packed_request):
-        out = self._jit_generate(self.model, packed_request)
-        return out
-
     def stop(self):
         self._send_message(_Message.STOP)
 
@@ -279,7 +230,6 @@ class _LmEvalHarnessWorker:
 class _Message:
     STOP = 0
     LOGLIKELIHOOD = 1
-    GENERATE = 2
 
 
 def _get_segments_this_batch(batch, max_segments_per_ex):
@@ -300,54 +250,6 @@ def _get_padding_count(batch, pad_token_id):
     return padding_count, total_tokens
 
 
-class LoglikelihoodResultProcessor:
-    """Result processor for loglikelihood operations."""
-    
-    def initialize(self, num_requests):
-        """Initialize result arrays for loglikelihood."""
-        result_probs = np.zeros(num_requests)
-        result_greedy = np.zeros(num_requests)
-        covered_points = np.zeros(num_requests, dtype=bool)
-        return (result_probs, result_greedy), covered_points
-    
-    def process_batch_results(self, out_ids, out_data, valid_indices, result_arrays, covered_points):
-        """Process batch results for loglikelihood."""
-        out_lls, out_correct = out_data
-        result_probs, result_greedy = result_arrays
-        
-        result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
-        result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
-        covered_points[out_ids[valid_indices]] = True
-    
-    def finalize(self, result_arrays, num_requests):
-        """Finalize loglikelihood results."""
-        result_probs, result_greedy = result_arrays
-        return list(zip(result_probs, result_greedy))
-
-
-class GenerateUntilResultProcessor:
-    """Result processor for generate_until operations."""
-    
-    def initialize(self, num_requests):
-        """Initialize result arrays for generate_until."""
-        result_tokens = np.zeros(num_requests, dtype=np.int32)
-        covered_points = np.zeros(num_requests, dtype=bool)
-        return (result_tokens,), covered_points
-    
-    def process_batch_results(self, out_ids, out_data, valid_indices, result_arrays, covered_points):
-        """Process batch results for generate_until."""
-        out_tokens, = out_data
-        result_tokens, = result_arrays
-        
-        result_tokens[out_ids[valid_indices]] = out_tokens[valid_indices]
-        covered_points[out_ids[valid_indices]] = True
-    
-    def finalize(self, result_arrays, num_requests):
-        """Finalize generate_until results."""
-        result_tokens, = result_arrays
-        return result_tokens
-
-
 class LevanterHarnessLM(LM):
     def __init__(self, leader: _LmEvalHarnessWorker):
         super().__init__()
@@ -357,24 +259,11 @@ class LevanterHarnessLM(LM):
     EvalBatch = property(lambda self: self.leader.EvalBatch)
     EvalPos = property(lambda self: self.leader.EvalPos)
 
-    def _process_requests_batch(
-        self, 
-        requests: list[Instance], 
-        dispatch_func, 
-        result_processor,
-        operation_name: str
-    ):
+    def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
         """
-        Common batch processing logic for loglikelihood and generate_until.
-        
-        Args:
-            requests: List of evaluation requests
-            dispatch_func: Function to dispatch batch processing (e.g., self.leader.dispatch_loglikelihood)
-            result_processor: Function to process results and update result arrays
-            operation_name: Name for progress bar (e.g., "loglikelihood", "generate_until")
-        
-        Returns:
-            Processed results
+        Compute log-likelihood of generating a continuation from a context.
+        Downstream tasks should attempt to use loglikelihood instead of other
+        LM calls whenever possible.
         """
         if self.tokenizer.pad_token_id is None:
             logger.warning("No pad token set. Setting to eos token.")
@@ -386,15 +275,15 @@ class LevanterHarnessLM(LM):
         packed_iterator = stack_batches(iter(packed), self.EvalPos, self.EvalBatch)
         packed_iterator = BackgroundIterator(packed_iterator, max_capacity=1024)
 
-        # Initialize result tracking
-        result_arrays, covered_points = result_processor.initialize(len(requests))
+        result_probs = np.zeros(len(requests))
+        result_greedy = np.zeros(len(requests))
+        covered_points = np.zeros(len(requests), dtype=bool)
 
         total_tokens_expected = len(packed) * self.EvalPos.size
 
         total_padding = 0
         total_tokens_seen = 0
-        pbar = tqdm(total=total_tokens_expected, desc=operation_name, unit="tok")
-        
+        pbar = tqdm(total=total_tokens_expected, desc="loglikelihood", unit="tok")
         for q, batch in enumerate(packed_iterator):
             segments_this_batch = _get_segments_this_batch(
                 batch, self.leader.max_packed_segments * self.EvalBatch.size
@@ -402,13 +291,11 @@ class LevanterHarnessLM(LM):
 
             padding_count, batch_tokens = _get_padding_count(batch, self.tokenizer.pad_token_id)
 
-            # Dispatch the batch processing
-            dispatch_results = dispatch_func(batch)
+            out_ids, out_lls, out_correct = self.leader.dispatch_loglikelihood(batch)
 
-            # Convert results to numpy arrays
-            out_ids = np.array(dispatch_results[0].array)
-            out_data = [np.array(result.array) for result in dispatch_results[1:]]
-            
+            out_ids = np.array(out_ids.array)
+            out_lls = np.array(out_lls.array)
+            out_correct = np.array(out_correct.array)
             # -1's are going to be where we had too few sequences to fill a batch
             valid_indices = out_ids != -1
 
@@ -419,10 +306,9 @@ class LevanterHarnessLM(LM):
             assert len(missing_ids) == 0, f"Missing segments: {missing_ids}"
             assert len(extra_ids) == 0, f"Extra segments: {extra_ids}"
 
-            # Process results using the provided processor
-            result_processor.process_batch_results(
-                out_ids, out_data, valid_indices, result_arrays, covered_points
-            )
+            result_probs[out_ids[valid_indices]] = out_lls[valid_indices]
+            result_greedy[out_ids[valid_indices]] = out_correct[valid_indices]
+            covered_points[out_ids[valid_indices]] = True
 
             total_padding += padding_count
             total_tokens_seen += batch_tokens
@@ -436,49 +322,165 @@ class LevanterHarnessLM(LM):
         missing_points = np.where(~covered_points)[0]
         assert len(missing_points) == 0, f"Missing points: {missing_points}"
 
-        # Finalize results
-        final_result = result_processor.finalize(result_arrays, len(requests))
-        logger.info(f"Finished running {len(requests)} {operation_name} operations.")
+        result = list(zip(result_probs, result_greedy))
+        logger.info(f"Finished running {len(requests)} loglikelihoods.")
 
-        return final_result
-
-    def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
-        """
-        Compute log-likelihood of generating a continuation from a context.
-        Downstream tasks should attempt to use loglikelihood instead of other
-        LM calls whenever possible.
-        """
-        return self._process_requests_batch(
-            requests,
-            self.leader.dispatch_loglikelihood,
-            LoglikelihoodResultProcessor(),
-            "loglikelihood"
-        )
+        return result
 
     def loglikelihood_rolling(self, requests) -> List[Tuple[float]]:
         raise NotImplementedError()
 
     def generate_until(self, requests) -> List[str]:
-        """
-        Generate text until stop conditions are met.
-        For now, this is a simple implementation that generates one token per request.
-        """
-        result_tokens = self._process_requests_batch(
-            requests,
-            self.leader.dispatch_generate,
-            GenerateUntilResultProcessor(),
-            "generate_until"
+        # print(f'len(requests)={len(requests)}')
+
+        # Implement simple generation using InferenceEngine.
+        # requests: list[Instance] where args[0] = prompt, args[1] may be stop strings (list[str])
+        # kwargs may include max_gen_toks, temperature, n (n_generations), seed
+        if self.tokenizer.pad_token_id is None:
+            logger.warning("No pad token set. Setting to eos token.")
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+        # Require a model with paged decode support
+        if not hasattr(self.leader.model, "initial_cache") or not hasattr(self.leader.model, "decode"):
+            raise NotImplementedError(
+                "generate_until requires a model with paged decode support (initial_cache/decode)."
+            )
+
+        # Extract prompts and per-request params
+        prompts: list[str] = []
+        until_lists: list[list[str] | None] = []
+        max_new_tokens_list: list[int] = []
+        temperature_list: list[float] = []
+        n_generations_list: list[int] = []
+        seeds: list[int | None] = []
+
+        for req in requests:
+            # prompt
+            if self.leader.apply_chat_template:
+                context = self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": req.args[0]}], tokenize=False, add_generation_prompt=True
+                )
+            else:
+                context = req.args[0]
+            prompts.append(context)
+
+            # until (stop sequences)
+            until = None
+            if hasattr(req, "kwargs") and req.kwargs is not None:
+                until = req.kwargs.get("until")
+            if until is None and len(req.args) > 1 and isinstance(req.args[1], list):
+                until = req.args[1]
+            until_lists.append(until)
+
+            # max tokens
+            max_gen = 128
+            if hasattr(req, "kwargs") and req.kwargs is not None and req.kwargs.get("max_gen_toks") is not None:
+                max_gen = int(req.kwargs.get("max_gen_toks"))
+            elif len(req.args) > 2 and isinstance(req.args[2], int):
+                max_gen = int(req.args[2])
+            max_new_tokens_list.append(max_gen)
+
+            # temperature
+            temp = 0.0
+            if hasattr(req, "kwargs") and req.kwargs is not None and req.kwargs.get("temperature") is not None:
+                temp = float(req.kwargs.get("temperature"))
+            temperature_list.append(temp)
+
+            # n generations
+            n_gens = 1
+            if hasattr(req, "kwargs") and req.kwargs is not None and req.kwargs.get("n") is not None:
+                n_gens = int(req.kwargs.get("n"))
+            n_generations_list.append(n_gens)
+
+            # seed
+            seed = None
+            if hasattr(req, "kwargs") and req.kwargs is not None and req.kwargs.get("seed") is not None:
+                seed = int(req.kwargs.get("seed"))
+            seeds.append(seed)
+
+        # Tokenize prompts and compute capacity needs
+        # print(f'{prompts=}')
+        enc = self.tokenizer(prompts, add_special_tokens=False)
+        prompt_token_lists: list[list[int]] = enc["input_ids"]
+
+        # Truncate from left if needed to fit model eval length
+        max_eval_len = self.EvalPos.size
+        for i, toks in enumerate(prompt_token_lists):
+            if len(toks) > max_eval_len:
+                overflow = len(toks) - max_eval_len
+                logger.warning(f"Prompt {i} too long ({len(toks)}). Truncating left by {overflow}.")
+                prompt_token_lists[i] = toks[-max_eval_len:]
+
+        # Build stop tokens (support first stop sequence if provided)
+        stop_ids = None
+        # If any request has until, prefer the first provided sequence across the batch
+        first_until = None
+        for u in until_lists:
+            if u:
+                first_until = u[0] if isinstance(u, list) else u
+                break
+        if first_until:
+            stop_ids_list = self.tokenizer(first_until, add_special_tokens=False)["input_ids"]
+            if len(stop_ids_list) > 0:
+                stop_ids = haliax.named(jnp.asarray(stop_ids_list, dtype=jnp.int32), axis="position").broadcast_axis(
+                    {"stop_seq": 1}
+                )
+
+        # Taken from: config/sampler/sample_llama8b.yaml
+        engine_cfg = InferenceEngineConfig(
+            max_pages=16384,
+            max_seqs=256,
+            page_size=8,
+            max_pages_per_seq=512,
+            compute_dtype=jnp.bfloat16,
+            max_queued_tokens=256,
+            max_seqs_in_prefill=16,
+            max_prefill_size=max_eval_len,
         )
 
-        # Convert token IDs to strings
-        result_strings = []
-        for token_id in result_tokens:
-            if token_id == self.tokenizer.pad_token_id:
-                result_strings.append("")
-            else:
-                result_strings.append(self.tokenizer.decode([token_id]))
+        engine = InferenceEngine.from_model_with_config(
+            model=self.leader.model, tokenizer=self.tokenizer, config=engine_cfg
+        )
 
-        return result_strings
+        # Build generation requests
+        base_key = jrandom.PRNGKey(engine_cfg.seed)
+        gen_requests: list[GenRequest] = []
+        for i, toks in enumerate(prompt_token_lists):
+            seq_params = SeqDecodingParams(
+                max_num_tokens=jnp.array(len(toks) + max_new_tokens_list[i], dtype=jnp.int32),
+                stop_tokens=stop_ids,
+                temperature=jnp.array(temperature_list[i], dtype=jnp.float32),
+                key=jrandom.fold_in(base_key if seeds[i] is None else jrandom.PRNGKey(seeds[i]), i),
+            )
+            gen_requests.append(
+                GenRequest(
+                    prompt_tokens=list(map(int, toks)),
+                    request_id=i,
+                    decode_params=seq_params,
+                    n_generations=int(n_generations_list[i]),
+                    enable_logprobs=False,
+                )
+            )
+
+        result = engine.generate(gen_requests)
+
+        # Decode first generation per request (LM Harness expects one string per request)
+        outputs: list[str] = []
+        output_idx = 0
+        for i, toks in enumerate(prompt_token_lists):
+            # Consume one sequence output per request
+            if output_idx < len(result.tokens):
+                full_tokens = result.tokens[output_idx]
+                # Engine tokens are generated tokens only (prompt not included)
+                text = self.tokenizer.decode(full_tokens, skip_special_tokens=True)
+                outputs.append(text)
+                output_idx += 1  # consume one generation per request
+            else:
+                outputs.append("")
+        
+        # print(f'{outputs=}')
+
+        return outputs
 
 
 @dataclass(frozen=True)
@@ -958,9 +960,11 @@ def _adjust_config(task_dict, fewshot_random_seed=0):
                 **adjusted_task_dict,
                 **{task_name: _adjust_config(task_obj, fewshot_random_seed=fewshot_random_seed)},
             }
+
         else:
             # fewshot_random_seed set for tasks, even with a default num_fewshot (e.g. in the YAML file)
             task_obj.set_fewshot_seed(seed=fewshot_random_seed)
+
             adjusted_task_dict[task_name] = task_obj
 
     return adjusted_task_dict
@@ -973,45 +977,18 @@ def _iterate_tokenized_requests(
     Tokenize the requests and yield them as PromptCompletions, for packing into LmExamples.
     """
     if apply_chat_template:
-        contexts = []
-        for request in requests:
-            context = tokenizer.apply_chat_template(
+        contexts = [
+            tokenizer.apply_chat_template(
                 [{"role": "user", "content": request.args[0]}], tokenize=False, add_generation_prompt=True
             )
-            if context is None:
-                # Fallback to original context if chat template fails
-                logger.warning(f"Chat template returned None for request, using original context")
-                context = request.args[0]
-            contexts.append(context)
+            for request in requests
+        ]
     else:
         contexts = [request.args[0] for request in requests]
 
     completions = [request.args[1] for request in requests]
 
-    # Debug: Check types of completions
-    for i, completion in enumerate(completions):
-        if not isinstance(completion, str):
-            logger.warning(f"Completion {i} is not a string: {type(completion)} = {completion}")
-            # Convert to string if it's a dict or other type
-            if isinstance(completion, dict):
-                # Try to extract text from common dict keys
-                if 'text' in completion:
-                    completions[i] = completion['text']
-                elif 'content' in completion:
-                    completions[i] = completion['content']
-                elif 'completion' in completion:
-                    completions[i] = completion['completion']
-                else:
-                    # Fallback: convert to string representation
-                    completions[i] = str(completion)
-            else:
-                completions[i] = str(completion)
-
     # Combine contexts and completions for full tokenization
-    for context, completion in zip(contexts, completions):
-        logger.info(f"Context: {context}")
-        logger.info(f"Completion: {completion}")
-        logger.info("-" * 100)
     combined_texts = [context + completion for context, completion in zip(contexts, completions)]
 
     # Batch tokenization for combined and context separately
@@ -1073,3 +1050,4 @@ def _make_dummy_batch(EvalBatch, EvalPos):
 if __name__ == "__main__":
     levanter.config.main(run_eval_harness_main)()
     print("Done", flush=True)
+
