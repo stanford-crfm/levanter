@@ -19,6 +19,7 @@ import draccus
 import equinox as eqx
 import fsspec
 import huggingface_hub
+import humanfriendly
 import jax
 import jax.numpy as jnp
 import mergedeep
@@ -870,10 +871,29 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 api.create_repo(repo_id=repo_ref.model_name_or_path, repo_type="model", exist_ok=True, private=True)
             hf_repo_ref = repo_ref
 
+        if hf_repo_ref is None:
+            logger.info(f"Saving checkpoint to {path}")
+        else:
+            logger.info(f"Uploading checkpoint to {hf_repo_ref} from {path}")
+
         state_dict_shape = eqx.filter_eval_shape(_to_state_dict_with_dtype, model, dtype, None)
+        model_size = sum(v.size * v.dtype.itemsize for v in state_dict_shape.values())
+        pbar = tqdm(
+            total=model_size,
+            unit="B",
+            unit_scale=True,
+            desc="Checkpoint size",
+        )
+
         shards, index = _shard_hf_checkpoint(state_dict_shape, max_shard_size, SAFE_TENSORS_MODEL)
 
         shard_specs = [(shard_name, tuple(weight_map.keys())) for shard_name, weight_map in shards.items()]
+        this_max_shard_size = max(
+            sum(v.size * v.dtype.itemsize for v in shards[shard_name].values()) for shard_name in shards.keys()
+        )
+        logger.info(
+            "Will save %d shards with max size %s", len(shard_specs), humanfriendly.format_size(this_max_shard_size)
+        )
 
         def _maybe_upload(
             local_dir: str,
@@ -939,6 +959,13 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
                 shard_weights = _to_state_dict_with_dtype(model, dtype, subset_arg)
                 shard_numpy = {k: np.asarray(v) for k, v in shard_weights.items()}
+                bytes_this_time = sum(v.nbytes for v in shard_numpy.values())
+                logger.info(
+                    "Saving shard %s (%s, %.2f%% of model)",
+                    shard_name,
+                    humanfriendly.format_size(bytes_this_time),
+                    100 * bytes_this_time / model_size,
+                )
                 save_state_dict(shard_numpy, os.path.join(local_path, shard_name))
 
                 _maybe_upload(
@@ -947,6 +974,7 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     commit_message=f"Upload shard {shard_name} from Levanter",
                     source_is_temp=path != local_path,
                 )
+                pbar.update(bytes_this_time)
 
         if index is not None:
             logger.info(f"Saved a sharded checkpoint with {len(shard_specs)} shards, max size {max_shard_size} bytes")
