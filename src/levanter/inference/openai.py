@@ -152,7 +152,6 @@ class InferenceRequest:
     seed: int | None
     future: asyncio.Future
     n_generations: int = 1
-    original_prompt: str = ""
     enable_logprobs: bool = False
 
 
@@ -263,7 +262,6 @@ class InferenceContext:
         seed: int | None,
         future: asyncio.Future,
         n_generations: int = 1,
-        original_prompt: str = "",
         enable_logprobs: bool = False,
     ) -> str:
         """Submit a request to the inference queue"""
@@ -280,7 +278,6 @@ class InferenceContext:
             seed=seed,
             future=future,
             n_generations=n_generations,
-            original_prompt=original_prompt,
             enable_logprobs=enable_logprobs,
         )
 
@@ -500,7 +497,6 @@ async def _create_completion(ctx: InferenceContext, request: CompletionRequest) 
                 seed=request.seed,
                 future=future,
                 n_generations=request.n or 1,
-                original_prompt=prompt,
                 enable_logprobs=bool(request.logprobs),
             )
 
@@ -699,6 +695,7 @@ class InferenceServer:
         vocab_size = len(tokenizer)
         logger.info(f"Loaded tokenizer with vocab size {vocab_size} from {tokenizer_path}")
 
+        # N.B. I don't know what the difference between compute and parameter axis mapping is
         with (
             config.trainer.device_mesh,
             hax.axis_mapping(config.trainer.compute_axis_mapping),
@@ -707,18 +704,18 @@ class InferenceServer:
             model = _load_model(config, Vocab, key=key)
             assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
 
-            service = InferenceEngine.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
+        service = InferenceEngine.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
 
-            # Create and start inference thread
-            inference_context = InferenceContext(model, tokenizer, service, config)
-            inference_context.start()
+        # Create and start inference thread
+        inference_context = InferenceContext(model, tokenizer, service, config)
+        inference_context.start()
 
-            logger.info("Inference service initialized and ready")
+        logger.info("Inference service initialized and ready")
 
-            # Create FastAPI app with initialized context
-            app = InferenceServer._create_app(inference_context)
+        # Create FastAPI app with initialized context
+        app = InferenceServer._create_app(inference_context)
 
-            return InferenceServer(config, inference_context, app)
+        return InferenceServer(config, inference_context, app)
 
     @staticmethod
     def _create_app(inference_context: InferenceContext) -> FastAPI:
@@ -795,7 +792,20 @@ def _load_model(config: InferenceServerConfig, Vocab: Axis, *, key) -> LmHeadMod
         converter = converter.replaced(
             reference_checkpoint=config.hf_checkpoint, tokenizer=load_tokenizer(config.tokenizer)
         )
+        logger.info(
+            f"Loading model from HF checkpoint {config.hf_checkpoint} "
+            + f"type={config.model.model_type}, "
+            + f"vocab_size={Vocab.size}, "
+            + f"dtype={config.trainer.mp.compute_dtype}"
+        )
+
+        logger.info(f"Param mapping: {config.trainer.parameter_axis_mapping}")
+        logger.info(f"Compute mapping: {config.trainer.compute_axis_mapping}")
+
         model = converter.load_pretrained(
-            config.model.model_type, ref=config.hf_checkpoint, dtype=config.trainer.mp.compute_dtype
+            config.model.model_type,
+            ref=config.hf_checkpoint,
+            dtype=config.trainer.mp.compute_dtype,
+            axis_mapping=config.trainer.parameter_axis_mapping,
         )
         return model

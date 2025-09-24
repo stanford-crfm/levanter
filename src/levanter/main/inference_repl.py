@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import equinox as eqx
-import haliax as hax
 import jax.random as jrandom
 from haliax import Axis
 from haliax.partitioning import round_axis_for_partitioning
@@ -41,13 +40,11 @@ from levanter.inference.engine import InferenceEngineConfig
 from levanter.inference.openai import (
     ChatCompletionRequest,
     ChatMessage,
-    CompletionRequest,
     InferenceServer,
     InferenceServerConfig,
     _create_chat_completion,
-    _create_completion,
 )
-from levanter.models.llama import LlamaConfig
+from levanter.models.lm_model import LmConfig
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
 
@@ -61,34 +58,45 @@ model_name: Optional[str] = None
 
 
 def weight_loader(server, server_config, current_model):
-
-    with (
-        server_config.trainer.device_mesh,
-        hax.axis_mapping(server_config.trainer.compute_axis_mapping),
-    ):
-        with use_cpu_device():
-            key = jrandom.PRNGKey(server_config.seed)
-            vocab_size = len(server.inference_context.tokenizer)
-            Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), server_config.trainer.compute_axis_mapping)
-            model = eqx.filter_eval_shape(server_config.model.build, Vocab, key=key)
-            model = load_checkpoint(model, model, subpath="model")
-            model = server_config.trainer.mp.cast_to_compute(model)
-        return model
+    with use_cpu_device():
+        key = jrandom.PRNGKey(server_config.seed)
+        vocab_size = len(server.inference_context.tokenizer)
+        Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), server_config.trainer.param_axis_mapping)
+        model = eqx.filter_eval_shape(server_config.model.build, Vocab, key=key)
+        model = load_checkpoint(model, model, subpath="model")
+        model = server_config.trainer.mp.cast_to_compute(model)
+    return model
 
 
 @dataclass
 class InferenceReplConfig:
     """Configuration for the inference REPL."""
 
-    checkpoint: Optional[str] = None
+    # Model and training configuration
+    checkpoint: str
+
+    model: LmConfig
     tokenizer: Optional[str] = None
 
-    # Model and training configuration
-    trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    model: LlamaConfig = field(default_factory=LlamaConfig)
+    trainer: TrainerConfig = field(
+        default_factory=lambda: TrainerConfig(
+            model_axis_size=1,
+            tensor_parallel_axes=["mlp", "kv_head"],
+            fsdp_axis="embed",
+            batch_axis="batch",
+        )
+    )
     service: InferenceEngineConfig = field(
         default_factory=lambda: InferenceEngineConfig(
-            max_seqs=4, page_size=8, max_pages_per_seq=16, max_queued_tokens=8
+            max_pages=32,
+            max_seqs=2,
+            page_size=8,
+            max_pages_per_seq=8,
+            max_queued_tokens=4,
+            max_seqs_in_prefill=2,
+            max_prefill_size=64,
+            max_tokens_per_round=16,
+            max_rounds=8,
         )
     )
 
@@ -111,7 +119,6 @@ class Commands:
             "load": self.load_model,
             "unload": self.unload_model,
             "chat": self.chat,
-            "complete": self.complete,
             "batch": self.batch,
             "reload": self.reload,
             "config": self.show_config,
@@ -192,12 +199,9 @@ class Commands:
             return
 
         if message:
-            # Single message mode
             messages = [ChatMessage(role="user", content=message)]
-            response = self._run_chat_completion(messages)
-            self._print_completion_response(response)
+            self._run_chat_completion(messages)
         else:
-            # Interactive chat session
             self._run_chat_session()
 
     def _run_chat_session(self):
@@ -234,28 +238,6 @@ class Commands:
 
             except (KeyboardInterrupt, EOFError):
                 break
-
-    def complete(self, prompt_text: str):
-        """Complete a text prompt."""
-        if not server:
-            console.print("[red]No model loaded[/red]")
-            return
-
-        request = CompletionRequest(
-            model=model_name or "model",
-            prompt=prompt_text,
-            max_tokens=self.config.max_tokens,
-            temperature=server_config.temperature,
-        )
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            response = loop.run_until_complete(_create_completion(server.inference_context, request))
-
-            self._print_completion_response(response)
-        finally:
-            loop.close()
 
     def batch(self, batch_input: str):
         """Submit a batch of chat completion requests from JSON.
@@ -330,7 +312,7 @@ class Commands:
             console.print(f"Successful: {success_count}")
             console.print(f"Failed: {error_count}")
             console.print(f"Time: {elapsed:.2f}s")
-            console.print(f"Throughput: {len(batch_data)/elapsed:.2f} req/s")
+            console.print(f"Throughput: {len(batch_data) / elapsed:.2f} req/s")
 
             # Show all responses and errors
             console.print("\n[cyan]Results:[/cyan]")
@@ -472,7 +454,7 @@ def repl_mode(config: InferenceReplConfig, commands: Commands):
     """Run interactive REPL."""
     console.print(
         Panel.fit(
-            "[bold blue]Levanter Inference REPL[/bold blue]\n" "Type [bold]help[/bold] for commands",
+            "[bold blue]Levanter Inference REPL[/bold blue]\nType [bold]help[/bold] for commands",
             border_style="blue",
         )
     )
