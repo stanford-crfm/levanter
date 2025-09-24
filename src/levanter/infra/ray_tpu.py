@@ -97,24 +97,27 @@ from levanter.utils.ray_utils import ser_exc_info
 #
 # We define a mapping to handle these oddities.
 # TPU configuration table: tpu_type -> (chips_per_vm, chips_to_vms_fn)
+# See docs here: https://cloud.google.com/tpu/docs/v6e
+#
+# Note that even more confusingly, Google sometimes refers to TPU cores
+# as chips and vice-versa.
 TPU_CONFIGURATIONS = {
     "v4": (4, lambda chips: max(1, chips // 4)),
+    # v5p always uses VMs = Hosts, with 4 chips per host.
     "v5p": (4, lambda chips: max(1, chips // 4)),
-    # v5litepod series: special handling for small sizes
-    "v5litepod-1": (1, lambda _: 1),  # 1 chips on 1 VM
-    "v5litepod-2": (2, lambda _: 1),  # 2 chips on 1 VM
-    "v5litepod-4": (4, lambda _: 1),  # 4 chips on 1 VM
-    "v5litepod-8": (8, lambda _: 1),  # 8 chips on 1 VM for serving
-    "v5litepod": (4, lambda chips: max(1, chips // 4)),  # 4 chips per VM for larger sizes
-    # v6e series: special handling for v6e-8
-    "v6e-1": (1, lambda _: 1),  # 1 chips on 1 VM
-    "v6e-2": (2, lambda _: 1),  # 2 chips on 1 VM
-    "v6e-4": (4, lambda _: 1),  # 3 chips on 1 VM
-    "v6e-8": (8, lambda _: 1),  # 8 chips on 1 VM
-    "v6e": (
-        4,
-        lambda chips: chips // 4 * 2,
-    ),  # v6e uses half-host VMs (2 VMs per host, 4 chips per VM)
+    # v5 and v6 transition from 8 chips per VM for "serving" instances
+    # to 4 chips per VM for larger pods. The number of chips per host
+    # remains 8 in all cases.
+    "v5litepod-1": (1, lambda _: 1),
+    "v5litepod-2": (2, lambda _: 1),
+    "v5litepod-4": (4, lambda _: 1),
+    "v5litepod-8": (8, lambda _: 1),
+    "v5litepod": (4, lambda chips: max(1, chips // 4)),
+    "v6e-1": (1, lambda _: 1),
+    "v6e-2": (2, lambda _: 1),
+    "v6e-4": (4, lambda _: 1),
+    "v6e-8": (8, lambda _: 1),
+    "v6e": (4, lambda chips: max(1, chips // 4)),
 }
 
 logger = logging.getLogger("ray")
