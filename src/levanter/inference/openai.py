@@ -42,7 +42,6 @@ from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import HFCheckpointConverter, RepoRef, load_tokenizer
 from levanter.inference.engine import InferenceEngine, InferenceEngineConfig, Request
 from levanter.inference.jit_scheduler import SeqDecodingParams
-from levanter.models.llama import LlamaConfig, LlamaLMHeadModel
 from levanter.models.lm_model import LmConfig, LmHeadModel
 from levanter.trainer import TrainerConfig
 from levanter.utils.jax_utils import use_cpu_device
@@ -123,7 +122,7 @@ class InferenceServerConfig:
     hf_checkpoint: Optional[RepoRef] = None
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    model: LmConfig = field(default_factory=LlamaConfig)
+    model: LmConfig = field(default_factory=LmConfig)
 
     tokenizer: str | None = None
 
@@ -702,7 +701,6 @@ class InferenceServer:
         ):
             Vocab = round_axis_for_partitioning(Axis("vocab", vocab_size), config.trainer.compute_axis_mapping)
             model = _load_model(config, Vocab, key=key)
-            assert isinstance(model, LlamaLMHeadModel), "Only LlamaLMHeadModel supported"
 
         service = InferenceEngine.from_model_with_config(model=model, tokenizer=tokenizer, config=config.service)
 

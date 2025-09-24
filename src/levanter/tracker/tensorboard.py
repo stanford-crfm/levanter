@@ -35,6 +35,10 @@ class TensorboardTracker(Tracker):
         self.writer.add_hparams(hparams, {"dummy": 0})
 
     def log(self, metrics: typing.Mapping[str, Any], *, step, commit=None):
+        # Don't log metrics from non-primary workers.
+        if jax.process_index() != 0:
+            return
+
         del commit
         metrics = _flatten_nested_dict(metrics)
         for k, value in metrics.items():
