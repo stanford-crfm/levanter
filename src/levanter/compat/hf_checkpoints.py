@@ -35,6 +35,7 @@ from huggingface_hub import HfApi, hf_hub_download, repo_exists, snapshot_downlo
 from huggingface_hub.file_download import repo_folder_name
 from huggingface_hub.utils import EntryNotFoundError, GatedRepoError, HFValidationError, RepositoryNotFoundError
 from jax import ShapeDtypeStruct
+from jax._src.partition_spec import PartitionSpec
 from jax.experimental.multihost_utils import sync_global_devices
 from jax.random import PRNGKey
 from jaxtyping import Array, PRNGKeyArray
@@ -251,7 +252,7 @@ def _to_state_dict_with_dtype(
                 logger.debug(f"Skipping dtype conversion for non-floating point array {k} with dtype {v.dtype}")
 
     # deshard. We could be smarter here and use a process mesh or host offloading, but this is simpler for now
-    state_dict = haliax.shard(state_dict, mapping={})
+    state_dict = jax.lax.with_sharding_constraint(state_dict, PartitionSpec())
 
     return state_dict
 
@@ -750,76 +751,6 @@ class HFCheckpointConverter(Generic[LevConfig]):
 
         return dict_config
 
-    def _save_pretrained_local(
-        self,
-        model: ModelWithHfSerializationMixin,
-        path: str,
-        save_tokenizer: bool,
-        save_reference_code: Optional[bool],
-        max_shard_size: int,
-        save_feature_extractor: bool = False,
-        dtype: Optional[jnp.dtype] = None,
-    ):
-        """
-        Saves a HF-compatible checkpoint to a local path.
-        :param model: The model to convert and save
-        :param path: The path to save the output to
-        :param save_tokenizer: Save the tokenizer to the checkpoint
-        :param save_reference_code: Save any code from the reference checkpoint
-        :return:
-        """
-        logger.info(f"Saving HF-compatible checkpoint to {path}")
-        os.makedirs(path, exist_ok=True)
-
-        # if save_reference_code is None, we save code for models that aren't in the HF repo.
-        save_reference_code = self._resolve_save_reference_code(save_reference_code)
-
-        # save code first because we'll likely be overwriting it
-        if save_reference_code:
-            logger.info(f"Copying reference code from {self.reference_checkpoint}")
-            self._save_code_local(path)
-
-        if save_tokenizer:
-            logger.info("Saving tokenizer")
-            self.tokenizer.save_pretrained(path)
-
-        if save_feature_extractor and self.feature_extractor is not None:
-            logger.info("Saving feature extractor")
-            self.feature_extractor.save_pretrained(path)
-
-        # Config
-        dict_config = self._build_hf_config_dict(model)
-
-        with open(os.path.join(path, "config.json"), "w") as f:
-            json.dump(dict_config, f, cls=ConfigJSONEncoder)
-
-        # Model
-
-        # ok so we don't want to have to make a full copy of all of the weights at once.
-        # (It's not a big deal for small models < 10B or so, but it is for large models)
-        # instead we do this fairly sneaky process where we:
-        # 1. get the shape of the state dict
-        state_dict_shape = eqx.filter_eval_shape(_to_state_dict_with_dtype, model, dtype, None)
-        # 2. get the shards and index we would use to shard it
-        shards, index = _shard_hf_checkpoint(state_dict_shape, max_shard_size, SAFE_TENSORS_MODEL)
-        # 3. for each shard, we materialize only the weights in that shard just in time
-        if index is None:
-            state_dict = _to_state_dict_with_dtype(model, dtype, None)
-            state_dict = {k: np.asarray(v) for k, v in state_dict.items()}
-            save_state_dict(state_dict, os.path.join(path, SAFE_TENSORS_MODEL))
-        else:
-            for k, shard_weights in shards.items():
-                subset = shard_weights.keys()
-                shard_weights = _to_state_dict_with_dtype(model, dtype, tuple(subset))
-                shard_weights = {k: np.asarray(a) for k, a in shard_weights.items()}
-                save_state_dict(shard_weights, os.path.join(path, k))
-            with open(os.path.join(path, SAFE_TENSORS_INDEX_NAME), "w") as f:
-                json.dump(index, f)
-
-            logger.info(f"Saved a sharded checkpoint with {len(shards)} shards, max size {max_shard_size} bytes")
-
-        logger.info(f"Finished saving HF-compatible checkpoint to {path}")
-
     def save_pretrained(
         self,
         model: ModelWithHfSerializationMixin,
@@ -958,6 +889,8 @@ class HFCheckpointConverter(Generic[LevConfig]):
                     subset_arg = subset_keys
 
                 shard_weights = _to_state_dict_with_dtype(model, dtype, subset_arg)
+                for k, v in shard_weights.items():
+                    print(v.is_fully_addressable)
                 shard_numpy = {k: np.asarray(v) for k, v in shard_weights.items()}
                 bytes_this_time = sum(v.nbytes for v in shard_numpy.values())
                 logger.info(
@@ -977,7 +910,9 @@ class HFCheckpointConverter(Generic[LevConfig]):
                 pbar.update(bytes_this_time)
 
         if index is not None:
-            logger.info(f"Saved a sharded checkpoint with {len(shard_specs)} shards, max size {max_shard_size} bytes")
+            logger.info(
+                f"Saved a sharded checkpoint with {len(shard_specs)} shards, max size {humanfriendly.format_size(this_max_shard_size)}"
+            )
 
         with temp_dir_before_upload(path) as local_path:
             if path != local_path:
