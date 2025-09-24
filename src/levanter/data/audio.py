@@ -466,10 +466,9 @@ class AudioTextDataset(MappedAsyncDataset[AudioTextDict, AudioTextExample]):
         def _convert_example(inputs: AudioTextDict) -> "AudioTextExample":
             tokens = hax.named(inputs["input_ids"], self.TextPos)
             audio_features = hax.named(inputs["input_features"], self.AudioPos)
-            out =  AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
+            out = AudioTextExample.init(audio_features, tokens, ignore_id=self.ignore_id)
             out = jax.lax.with_sharding_constraint(out, sharding)
             return out
-
 
         super().__init__(self.dataset, _convert_example)
 
