@@ -4,7 +4,6 @@
 import os
 import tempfile
 import uuid
-from contextlib import contextmanager
 
 import equinox as eqx
 import fsspec
@@ -16,7 +15,6 @@ import safetensors
 import numpy as np
 from chex import assert_trees_all_close, assert_trees_all_equal
 from jax.random import PRNGKey
-from jax.sharding import Mesh
 
 from haliax import Axis
 from haliax.state_dict import ModuleWithStateDictSerialization, to_torch_compatible_state_dict
@@ -28,19 +26,7 @@ from levanter.compat.hf_checkpoints import (
     _convert_to_jnp,
 )
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
-from test_utils import skip_if_no_torch
-
-
-@contextmanager
-def maybe_mesh():
-    devices = jax.devices()
-    if not devices:
-        yield
-        return
-
-    mesh = Mesh(np.array(devices).reshape((len(devices),)), ("_device",))
-    with mesh:
-        yield
+from test_utils import skip_if_no_torch, maybe_mesh
 
 
 @skip_if_no_torch
