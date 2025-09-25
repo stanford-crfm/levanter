@@ -35,6 +35,7 @@ from ray.exceptions import (
 from ray.remote_function import RemoteFunction
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+from levanter.distributed import ensure_ray_initialized
 from levanter.infra.docker import make_docker_run_command
 from levanter.utils.ray_utils import ser_exc_info
 
@@ -630,6 +631,7 @@ def run_on_pod(
     """
 
     _validate_num_slices(num_slices)
+    ensure_ray_initialized()
 
     return ray.get(run_on_pod_ray.remote(remote_fn, tpu_type, num_slices, max_retries_preemption, max_retries_failure))
 
@@ -1079,6 +1081,7 @@ def run_docker_on_pod(
             logger.exception("Failed to run docker command")
             raise e
 
+    ensure_ray_initialized()
     run_on_pod(
         ray.remote(max_calls=1)(run_docker),
         tpu_type=tpu_type,

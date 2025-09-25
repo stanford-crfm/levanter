@@ -34,6 +34,7 @@ from tqdm_loggable.auto import tqdm
 
 from levanter.data import batched
 from levanter.data.dataset import AsyncDataset
+from levanter.distributed import ensure_ray_initialized
 
 from ..data._preprocessor import BatchProcessor, BatchResult, dict_from_record_batch
 from ..data.metrics_monitor import InProgressCacheMetrics, LoggerMetricsMonitor, MetricsMonitor
@@ -200,6 +201,7 @@ class TreeCache(AsyncDataset[T_co]):
         # assert _broker is None
 
         if self._builder is not None:
+            ensure_ray_initialized()
             self._monitor_thread = threading.Thread(target=self._monitor_metrics, daemon=True)
             self._monitor_thread.start()
         else:
@@ -253,6 +255,7 @@ class TreeCache(AsyncDataset[T_co]):
 
     async def _wait_for_len(self, needed_len: int):
         if self._builder is not None:
+            ensure_ray_initialized()
             while needed_len > await self.current_len():
                 new_ledger: CacheLedger = await self._builder.updated_ledger.remote()
 
@@ -273,6 +276,7 @@ class TreeCache(AsyncDataset[T_co]):
         time_in = time.time()
         t_max = time_in + (timeout or 1e6)
         if self._builder is not None:
+            ensure_ray_initialized()
             while needed_len > len(self.store):
                 cur_time = time.time()
                 if cur_time > t_max:
@@ -334,6 +338,7 @@ class TreeCache(AsyncDataset[T_co]):
             return TreeCache(cache_dir=cache_dir, exemplar=processor.output_exemplar, ledger=None, _broker=broker)
 
     def finished_sentinel(self):
+        ensure_ray_initialized()
         """Returns a Ray-awaitable object that will be set when the cache is finished"""
         if self._builder is None:
             return ray.remote(num_cpus=0)(lambda: None).remote()
@@ -398,6 +403,7 @@ class TreeCache(AsyncDataset[T_co]):
     def await_finished(self, timeout: Optional[float] = None, await_cleanup: bool = False):
         if self._builder is None:
             return
+        ensure_ray_initialized()
         x = ray.get(self.finished_sentinel(), timeout=timeout)
         if await_cleanup:
             ray.get(self._builder.await_cleanup.remote(), timeout=timeout)
@@ -420,6 +426,7 @@ class TreeCache(AsyncDataset[T_co]):
             store = TreeStore.open(self._exemplar, self.cache_dir, mode="r", cache_metadata=cache_metadata)
         except FileNotFoundError:
             assert self._builder is not None
+            ensure_ray_initialized()
             ledger = ray.get(self._builder.current_ledger.remote())
             metrics = _ledger_to_metrics(ledger)
             if metrics.rows_finished == 0 and metrics.is_finished:
@@ -442,6 +449,7 @@ class TreeCache(AsyncDataset[T_co]):
         self._metrics_monitors.append(monitor)
 
     def _monitor_metrics(self):
+        ensure_ray_initialized()
         while not self._stop:
             try:
                 try:
@@ -816,6 +824,7 @@ class _TreeStoreCacheBuilder(SnitchRecipient):
 
 
 def _get_builder_actor(cache_dir, shard_source, processor, options=CacheOptions.default()):
+    ensure_ray_initialized()
     name = f"lev_cache_manager::{cache_dir}"
     path_for_name = os.path.join(*os.path.split(cache_dir)[-2:])
     name_for_display = f"builder::{path_for_name}"
