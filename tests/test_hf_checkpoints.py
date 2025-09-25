@@ -12,7 +12,6 @@ import jax.numpy as jnp
 import jmp
 import pytest
 import safetensors
-import numpy as np
 from chex import assert_trees_all_close, assert_trees_all_equal
 from jax.random import PRNGKey
 
