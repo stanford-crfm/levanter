@@ -9,12 +9,10 @@ from typing import Optional
 import equinox as eqx
 import haliax
 import jax
-from jax.sharding import Mesh
 
 from haliax import Axis
 
 import levanter
-from levanter import trainer
 from levanter.checkpoint import load_checkpoint
 from levanter.compat.hf_checkpoints import RepoRef, load_tokenizer, HFCompatConfig
 from levanter.models.llama import LlamaConfig
