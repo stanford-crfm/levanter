@@ -45,12 +45,9 @@ class SampleLmConfig:
 
     prompts: list[str] | str | tuple[str, ...] = (
         "Four score and seven years ago, our",
-        "On the first day of Christmas, my true love gave to me",
+        # "On the first day of Christmas, my true love gave to me",
         "In a hole in the ground there lived a hobbit, not a nasty, dirty, wet hole",
-        "To be, or not to be, that is the question:",
-        "Once upon a time",
-        "A screaming comes across the sky, a shape with",
-    )
+    ) * 5
     stop_sequence: str | None = "."
     "Stop sequences. Currently only does whole token sequences."
     max_new_tokens: int = 192
