@@ -4,6 +4,7 @@
 import os
 import tempfile
 import uuid
+from contextlib import contextmanager
 
 import equinox as eqx
 import fsspec
@@ -12,8 +13,10 @@ import jax.numpy as jnp
 import jmp
 import pytest
 import safetensors
+import numpy as np
 from chex import assert_trees_all_close, assert_trees_all_equal
 from jax.random import PRNGKey
+from jax.sharding import Mesh
 
 from haliax import Axis
 from haliax.state_dict import ModuleWithStateDictSerialization, to_torch_compatible_state_dict
@@ -26,6 +29,18 @@ from levanter.compat.hf_checkpoints import (
 )
 from levanter.models.gpt2 import Gpt2Config, Gpt2LMHeadModel
 from test_utils import skip_if_no_torch
+
+
+@contextmanager
+def maybe_mesh():
+    devices = jax.devices()
+    if not devices:
+        yield
+        return
+
+    mesh = Mesh(np.array(devices).reshape((len(devices),)), ("_device",))
+    with mesh:
+        yield
 
 
 @skip_if_no_torch
@@ -52,16 +67,18 @@ def test_save_sharded_checkpoints():
     nano_model = mp.cast_to_param(nano_model)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        converter.save_pretrained(nano_model, tmpdir, max_shard_size=1024)
+        with maybe_mesh():
+            converter.save_pretrained(nano_model, tmpdir, max_shard_size=1024)
 
         # make sure we saved a few different files
         import glob
 
         assert len(glob.glob(tmpdir + "/*.safetensors")) > 1
 
-        loaded_model = converter.load_pretrained(
-            Gpt2LMHeadModel, ref=tmpdir, config=nano_model.config, dtype=mp.param_dtype
-        )
+        with maybe_mesh():
+            loaded_model = converter.load_pretrained(
+                Gpt2LMHeadModel, ref=tmpdir, config=nano_model.config, dtype=mp.param_dtype
+            )
 
         assert loaded_model.config == nano_model.config
         assert loaded_model.Vocab == nano_model.Vocab
@@ -128,14 +145,15 @@ def test_save_pretrained_with_custom_dtype():
     with tempfile.TemporaryDirectory() as tmpdir:
         os.makedirs(tmpdir, exist_ok=True)
 
-        converter.save_pretrained(
-            wrapped_model,
-            tmpdir,
-            save_tokenizer=False,
-            save_reference_code=False,
-            max_shard_size=int(10e9),
-            dtype=jnp.bfloat16,
-        )
+        with maybe_mesh():
+            converter.save_pretrained(
+                wrapped_model,
+                tmpdir,
+                save_tokenizer=False,
+                save_reference_code=False,
+                max_shard_size=int(10e9),
+                dtype=jnp.bfloat16,
+            )
 
         saved_file = os.path.join(tmpdir, SAFE_TENSORS_MODEL)
         assert os.path.exists(saved_file)
@@ -184,13 +202,14 @@ def test_save_pretrained_default_dtype():
         # Save the wrapped_model without passing dtype
         # Similar to the above test, using _save_pretrained_local for direct testing.
 
-        converter.save_pretrained(
-            wrapped_model,
-            tmpdir,
-            save_tokenizer=False,
-            save_reference_code=False,
-            max_shard_size=int(10e9),
-        )  # No dtype override
+        with maybe_mesh():
+            converter.save_pretrained(
+                wrapped_model,
+                tmpdir,
+                save_tokenizer=False,
+                save_reference_code=False,
+                max_shard_size=int(10e9),
+            )  # No dtype override
 
         saved_file = os.path.join(tmpdir, SAFE_TENSORS_MODEL)
         assert os.path.exists(saved_file)
@@ -217,14 +236,15 @@ def test_save_pretrained_to_memory_fs():
     except FileNotFoundError:
         pass
 
-    converter.save_pretrained(
-        model,
-        path,
-        max_shard_size=128,
-        save_tokenizer=False,
-        save_reference_code=False,
-        save_feature_extractor=False,
-    )
+    with maybe_mesh():
+        converter.save_pretrained(
+            model,
+            path,
+            max_shard_size=128,
+            save_tokenizer=False,
+            save_reference_code=False,
+            save_feature_extractor=False,
+        )
 
     stored_files = {fs._strip_protocol(file) for file in fs.find(path)}
     base_path = fs._strip_protocol(path)
@@ -242,7 +262,8 @@ def test_save_pretrained_to_memory_fs():
         local_path = os.path.join(tmpdir, "model")
         fs.get(f"{base_path}/", local_path, recursive=True)
 
-        reloaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=local_path, config=gpt2_config)
+        with maybe_mesh():
+            reloaded_model = converter.load_pretrained(Gpt2LMHeadModel, ref=local_path, config=gpt2_config)
 
         original_state = to_torch_compatible_state_dict(model)
         reloaded_state = to_torch_compatible_state_dict(reloaded_model)
