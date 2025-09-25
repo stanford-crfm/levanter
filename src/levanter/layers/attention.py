@@ -4,12 +4,11 @@
 import dataclasses
 import functools
 import logging
-
 import math
 import warnings
 from dataclasses import dataclass
-from numbers import Integral
 from enum import Enum
+from numbers import Integral
 from typing import Optional, Union, overload
 
 import equinox as eqx
@@ -23,27 +22,27 @@ try:
     from jax.experimental.pallas.ops.tpu.ragged_paged_attention import (
         ragged_paged_attention as tpu_ragged_paged_attention,
     )
+
+    raise ImportError("Disabling TPU ragged paged attention until bugs are fixed.")
 except Exception:  # pragma: no cover - optional dep
     tpu_ragged_paged_attention = None
 
-from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
-from jax.experimental.shard_map import shard_map
-from jax.sharding import PartitionSpec
-from jaxtyping import PRNGKeyArray
-
 import haliax
 import haliax as hax
-import haliax.nn as hnn
 import haliax.haxtyping as ht
+import haliax.nn as hnn
 from haliax import Axis, AxisSelection, AxisSelector, NamedArray, axis_name
 from haliax.jax_utils import maybe_rng_split, named_call
 from haliax.nn.attention import causal_mask, combine_masks_and, combine_masks_or
 from haliax.nn.normalization import LayerNormBase
 from haliax.partitioning import pspec_for_axis
 from haliax.types import PrecisionLike
+from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds
+from jax.experimental.shard_map import shard_map
+from jax.sharding import PartitionSpec
+from jaxtyping import PRNGKeyArray
 
 from ..inference.page_table import PageBatchInfo, PageTable
-
 from .normalization import LayerNormConfigBase
 from .rotary import RotaryEmbeddings, RotaryEmbeddingsConfig
 
@@ -475,8 +474,12 @@ def _te_flash_attention(
     scaling_factor: float,
     logits_soft_cap: Optional[float] = None,
 ):
-    from transformer_engine.jax.attention import fused_attn  # noqa: F401
-    from transformer_engine.jax.attention import AttnBiasType, AttnMaskType, QKVLayout  # noqa: F401
+    from transformer_engine.jax.attention import (  # noqa: F401
+        AttnBiasType,
+        AttnMaskType,
+        QKVLayout,
+        fused_attn,  # noqa: F401
+    )
 
     if logits_soft_cap is not None:
         raise NotImplementedError(
@@ -1140,7 +1143,10 @@ def _tpu_splash_attention(
     scaling_factor: float,
     logits_soft_cap: float | None = None,
 ) -> Optional[NamedArray]:
-    from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
+    from jax.experimental.pallas.ops.tpu.splash_attention import (
+        splash_attention_kernel,
+        splash_attention_mask,
+    )
 
     # Splash attention requires BHSD format
     # We need to reshape the input to match this format
@@ -1582,8 +1588,7 @@ class Attention(eqx.Module):
 
         attn_tokens = ragged_paged_attention(
             q,
-            kv_cache.k_pages,
-            kv_cache.v_pages,
+            kv_cache.kv_pages,
             batch_info.seq_lens,
             batch_info.page_indices,
             batch_info.cu_q_lens,
@@ -1639,8 +1644,7 @@ class KvPageCache(eqx.Module):
     with an accompanying PageTable.
     """
 
-    k_pages: NamedArray  # [Page, Slot, KVHeads, HeadDim]
-    v_pages: NamedArray  # [Page, Slot, KVHeads, HeadDim]
+    kv_pages: NamedArray  # [Page, Slot, 2 * KVHeads, Embed]
 
     @staticmethod
     def init(page_table: PageTable, kv_heads: Axis, head_size: Axis, dtype=jnp.float32) -> "KvPageCache":
@@ -1653,15 +1657,16 @@ class KvPageCache(eqx.Module):
             head_size: Axis for head size.
             dtype: Data type for the cache.
         """
-        shape = {
-            "page": page_table.num_pages,
-            "slot": page_table.page_size,
-            kv_heads.name: kv_heads.size,
-            head_size.name: head_size.size,
-        }
-        k_pages = hax.zeros(shape, dtype=dtype)
-        v_pages = hax.zeros(shape, dtype=dtype)
-        return KvPageCache(k_pages, v_pages)
+        kv_pages = hax.zeros(
+            {
+                "page": page_table.num_pages,
+                "slot": page_table.page_size,
+                "kv_head": 2 * kv_heads.size,
+                head_size.name: head_size.size,
+            },
+            dtype=dtype,
+        )
+        return KvPageCache(kv_pages)
 
     def update(
         self,
@@ -1671,7 +1676,7 @@ class KvPageCache(eqx.Module):
     ) -> "KvPageCache":
         """Append keys and values to the paged cache using *batch_info* to locate pages."""
 
-        page_size = self.k_pages.array.shape[1]
+        page_size = self.kv_pages.array.shape[1]
 
         assert page_size == batch_info.page_size, (
             f"Page size mismatch: {page_size} != {batch_info.page_size}. "
@@ -1683,32 +1688,28 @@ class KvPageCache(eqx.Module):
         # jax.debug.print("Updating kv_pages at pages {t_pages} and slots {t_slots}",
         #                 t_pages=t_pages, t_slots=t_slots)
 
-        new_k = new_k.astype(self.k_pages.dtype)
-        new_v = new_v.astype(self.v_pages.dtype)
-        k_pages = eqx.error_if(self.k_pages, hax.any(hax.isnan(self.k_pages)).scalar(), "NaN in k_pages pre")
-        v_pages = eqx.error_if(self.v_pages, hax.any(hax.isnan(self.v_pages)).scalar(), "NaN in v_pages pre")
-        k_pages = k_pages.at["page", t_pages, "slot", t_slots].set(new_k, mode="drop")
-        v_pages = v_pages.at["page", t_pages, "slot", t_slots].set(new_v, mode="drop")
+        new_k = new_k.astype(self.kv_pages.dtype)
+        new_v = new_v.astype(self.kv_pages.dtype)
+        kv_pages = eqx.error_if(self.kv_pages, hax.any(hax.isnan(self.kv_pages)).scalar(), "NaN in kv_pages pre")
+        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 0::2].set(new_k, mode="drop")
+        kv_pages = kv_pages.at["page", t_pages, "slot", t_slots, "kv_head", 1::2].set(new_v, mode="drop")
 
-        k_pages = eqx.error_if(k_pages, hax.any(hax.isnan(k_pages)).scalar(), "NaN in k_pages")
-        v_pages = eqx.error_if(v_pages, hax.any(hax.isnan(v_pages)).scalar(), "NaN in v_pages")
+        kv_pages = eqx.error_if(kv_pages, hax.any(hax.isnan(kv_pages)).scalar(), "NaN in kv_pages")
 
-        return dataclasses.replace(self, k_pages=k_pages, v_pages=v_pages)
+        return dataclasses.replace(self, kv_pages=kv_pages)
 
     def copy_page(self, src_page: int, dst_page: int) -> "KvPageCache":
         """Copy the entire contents of page ``src_page`` into ``dst_page``.
 
         This is used when creating clones that should have an identical last partial page, but mapped to a fresh page.
         """
-        new_k = self.k_pages.at["page", dst_page].set(self.k_pages["page", src_page])
-        new_v = self.v_pages.at["page", dst_page].set(self.v_pages["page", src_page])
-        return dataclasses.replace(self, k_pages=new_k, v_pages=new_v)
+        new_k = self.kv_pages.at["page", dst_page].set(self.kv_pages["page", src_page])
+        return dataclasses.replace(self, kv_pages=new_k)
 
 
 def ragged_paged_attention(
     q: NamedArray,  # [Tok, KVHeads, QHeadsPerGroup, HeadSize]
-    k_pages: NamedArray,  # [Page, PageSize, KVHeads, HeadDim]
-    v_pages: NamedArray,  # [Page, PageSize, KVHeads, HeadDim]
+    kv_pages: NamedArray,  # [Page, PageSize, 2 * KVHeads, HeadDim]
     kv_lens: NamedArray,  # i32[Seq]
     page_indices: NamedArray,  # i32[Seq, PagePerSeq]
     cu_q_lens: NamedArray,  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
@@ -1734,17 +1735,15 @@ def ragged_paged_attention(
 
     if _tpu_rpa_available():
         try:
-            if soft_cap is not None:
-                raise NotImplementedError("soft_cap is not supported in TPU ragged paged attention")
             out = _do_tpu_ragged_paged_attention(
                 q,
-                k_pages,
-                v_pages,
+                kv_pages,
                 kv_lens,
                 page_indices,
                 cu_q_lens,
                 num_seqs,
                 sm_scale=sm_scale,
+                soft_cap=soft_cap,
             )
             return out
         except Exception:  # pragma: no cover - fall back if kernel fails
@@ -1753,8 +1752,7 @@ def ragged_paged_attention(
 
     return default_ragged_paged_attention(
         q,
-        k_pages,
-        v_pages,
+        kv_pages,
         kv_lens,
         page_indices,
         cu_q_lens.array,
@@ -1766,13 +1764,13 @@ def ragged_paged_attention(
 
 def _do_tpu_ragged_paged_attention(
     q: ht.Float[NamedArray, "position kv_head q_heads_per_group head_size"],
-    k_pages: ht.Float[NamedArray, "page page_size kv_head head_size"],
-    v_pages: ht.Float[NamedArray, "page page_size kv_head head_size"],
+    kv_pages: ht.Float[NamedArray, "page page_size kv_head head_size"],
     kv_lens: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
     page_indices: ht.i32[NamedArray, "seq page"],
     cu_q_lens: ht.i32[NamedArray, " seq"],  # type: ignore[name-defined]
     num_seqs: jnp.ndarray,  # scalar int32
     sm_scale: float = 1.0,
+    soft_cap: float | None = None,
 ) -> NamedArray:
     # Usual shardmap dance
     # The TPU kernel expects the second dimension of the query tensor to be the total number of query heads.
@@ -1782,18 +1780,17 @@ def _do_tpu_ragged_paged_attention(
     else:
         this_num_seqs = num_seqs
 
-    # see if the INVALIDs make the TPU sad. mask them with 0:
+    # the INVALIDs make the TPU sad. mask them with 0:
     this_num_seqs = jnp.where(this_num_seqs < 0, 0, this_num_seqs)
     page_indices = hax.where(~is_valid(page_indices), 0, page_indices)
     kv_lens = hax.where(~is_valid(kv_lens), 0, kv_lens)
 
     o = shard_map(
-        functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale),
+        functools.partial(tpu_ragged_paged_attention, sm_scale=sm_scale, soft_cap=soft_cap),
         haliax.partitioning._get_mesh(),
         in_specs=(
             haliax.partitioning.pspec_for_axis(q_flat.axes),
-            haliax.partitioning.pspec_for_axis(k_pages.axes),
-            haliax.partitioning.pspec_for_axis(v_pages.axes),
+            haliax.partitioning.pspec_for_axis(kv_pages.axes),
             haliax.partitioning.pspec_for_axis(kv_lens.axes),
             haliax.partitioning.pspec_for_axis(page_indices.axes),
             haliax.partitioning.pspec_for_axis(cu_q_lens.axes),
@@ -1810,8 +1807,7 @@ def _do_tpu_ragged_paged_attention(
         check_rep=False,
     )(
         q_flat.array,
-        k_pages.array,
-        v_pages.array,
+        kv_pages.array,
         kv_lens.array,
         page_indices.array,
         cu_q_lens.array,
@@ -1835,8 +1831,7 @@ def _do_tpu_ragged_paged_attention(
 
 def default_ragged_paged_attention(
     q: NamedArray,  # [tok, KVHeads, QHeadsPerGroup, HeadSize]
-    k_pages: NamedArray,  # [Page, PageSize, KVHeads, HeadDim]
-    v_pages: NamedArray,  # [Page, PageSize, KVHeads, HeadDim]
+    kv_pages: NamedArray,  # [Page, PageSize, 2 * KVHeads, HeadDim]
     kv_lens: NamedArray,  # i32[Seq]
     page_indices: NamedArray,  # i32[Seq, PagePerSeq]
     cu_q_lens: jnp.ndarray,  # i32[Seq + 1] <-- cumulative lengths for the sequences, including new tokens
@@ -1859,7 +1854,7 @@ def default_ragged_paged_attention(
 
     D = q.resolve_axis("head_size")
 
-    page_size = k_pages.array.shape[1]
+    page_size = kv_pages.array.shape[1]
 
     q = q * sm_scale
 
@@ -1917,12 +1912,12 @@ def default_ragged_paged_attention(
 
                 kv_pos_start = kv_page_start * page_size
 
-                k_slots = k_pages["page", block_page_idx, "slot", :]
-                v_slots = v_pages["page", block_page_idx, "slot", :]
-                k_block = k_slots.flatten_axes(("page", "slot"), "kv_position")
-                v_block = v_slots.flatten_axes(("page", "slot"), "kv_position")
+                slots = kv_pages["page", block_page_idx, "slot", :]
+                kv_block = slots.flatten_axes(("page", "slot"), "kv_position")
 
-                kv_tok = hax.arange(k_block.resolve_axis("kv_position"), start=kv_pos_start)
+                kv_tok = hax.arange(kv_block.resolve_axis("kv_position"), start=kv_pos_start)
+                k_block = kv_block["kv_head", 0::2]
+                v_block = kv_block["kv_head", 1::2]
 
                 attn_b = hax.dot(q_block, k_block, axis=(D,))
 
