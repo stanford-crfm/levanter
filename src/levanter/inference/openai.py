@@ -695,6 +695,7 @@ class InferenceServer:
         logger.info(f"Loaded tokenizer with vocab size {vocab_size} from {tokenizer_path}")
 
         # N.B. I don't know what the difference between compute and parameter axis mapping is
+        # `compute_axis_mapping` shards across tensor-parallel dimensions (?)
         with (
             config.trainer.device_mesh,
             hax.axis_mapping(config.trainer.compute_axis_mapping),
@@ -785,17 +786,17 @@ def _load_model(config: InferenceServerConfig, Vocab: Axis, *, key) -> LmHeadMod
             model = mp.cast_to_compute(model)
         return model
     else:
-        assert hasattr(config.model, "hf_checkpoint_converter"), "model config lacks HF loader"
-        converter: HFCheckpointConverter = config.model.hf_checkpoint_converter()
-        converter = converter.replaced(
-            reference_checkpoint=config.hf_checkpoint, tokenizer=load_tokenizer(config.tokenizer)
-        )
+        assert config.hf_checkpoint
         logger.info(
             f"Loading model from HF checkpoint {config.hf_checkpoint} "
             + f"type={config.model.model_type}, "
             + f"vocab_size={Vocab.size}, "
             + f"dtype={config.trainer.mp.compute_dtype}"
         )
+        converter: HFCheckpointConverter = HFCheckpointConverter.from_hf(config.hf_checkpoint)
+        converter = converter.replaced(reference_checkpoint=config.hf_checkpoint)
+        if config.tokenizer is not None:
+            converter = converter.replaced(tokenizer=load_tokenizer(config.tokenizer))
 
         logger.info(f"Param mapping: {config.trainer.parameter_axis_mapping}")
         logger.info(f"Compute mapping: {config.trainer.compute_axis_mapping}")
