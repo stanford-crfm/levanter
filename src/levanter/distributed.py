@@ -375,6 +375,7 @@ def ensure_ray_initialized() -> None:
         _pending_auto_ray_cluster_initializer = None
 
 
+@dataclass(frozen=True)
 class DistributedConfig:
     coordinator_address: Optional[str] = None  # if None, we'll use the default coordinator address (for TPU or GPU)
     num_processes: Optional[int] = None
