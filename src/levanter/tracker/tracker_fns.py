@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import contextlib
 import dataclasses
 import logging
@@ -197,7 +200,7 @@ def log_configuration(hparams: Any, config_name: Optional[str] = None):
                     name = config_name or "config.yaml"
                     _global_tracker.log_artifact(config_path, name=name, type="config")
             except Exception:  # noqa
-                logger.warning("Failed to dump config to yaml. Skipping logging as artifact.")
+                logger.warning("Failed to dump config to yaml. Skipping logging as artifact.", exc_info=True)
 
 
 def set_global_tracker(tracker: Tracker):
@@ -225,8 +228,7 @@ def set_global_tracker(tracker: Tracker):
 
 
 @typing.overload
-def current_tracker() -> "Tracker":
-    ...
+def current_tracker() -> "Tracker": ...
 
 
 @typing.overload
@@ -266,23 +268,19 @@ def current_tracker(
 
 
 @typing.overload
-def get_tracker(name: Literal["wandb"]) -> WandbTracker:
-    ...
+def get_tracker(name: Literal["wandb"]) -> WandbTracker: ...
 
 
 @typing.overload
-def get_tracker(name: Literal["tensorboard"]) -> TensorboardTracker:
-    ...
+def get_tracker(name: Literal["tensorboard"]) -> TensorboardTracker: ...
 
 
 @typing.overload
-def get_tracker(name: Literal["trackio"]) -> TrackioTracker:
-    ...
+def get_tracker(name: Literal["trackio"]) -> TrackioTracker: ...
 
 
 @typing.overload
-def get_tracker(name: str) -> Tracker:
-    ...
+def get_tracker(name: str) -> Tracker: ...
 
 
 def get_tracker(name: str) -> Tracker:

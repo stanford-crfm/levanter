@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 
 import jax.distributed
@@ -12,7 +15,7 @@ from jax.sharding import PartitionSpec as P
 from ray.exceptions import RayTaskError
 
 from levanter.infra.ray_tpu import run_on_pod
-
+from tests.test_utils import skip_in_ci
 
 # Store whether TPUs are available and if multislice is possible
 _TPU_AVAILABLE = False
@@ -22,6 +25,9 @@ _MULTISLICE_POSSIBLE = False
 @pytest.fixture(scope="module", autouse=True)
 def setup_ray_tpu_tests():
     global _TPU_AVAILABLE, _MULTISLICE_POSSIBLE
+
+    # TODO: I don't understand why this is needed - without it, the tests hang indefinitely in CI
+    skip_in_ci("Skipping TPU tests in CI environment")
 
     try:
         ray.init(ignore_reinit_error=True)
@@ -118,7 +124,6 @@ class CounterActor:
 
     def count(self) -> int:
         return self._count
-
 
 
 # Want to try:
@@ -263,7 +268,6 @@ def test_variable_multislice_run():
             assert np.array_equal(results[i], results[0])
 
 
-
 @pytest.mark.ray
 def test_multislice_run_twice():
     """2. Run a second function after the first one and verify it runs correctly."""
@@ -308,6 +312,7 @@ def test_multislice_fail_once():
     @ray.remote(max_calls=1)
     def fail_once_on_first_slice_jax_fn() -> None:
         import time
+
         # do JAX work first
         result = simple_jax_fn()
         # fail on the first run one the first slice

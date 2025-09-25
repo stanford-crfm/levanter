@@ -1,3 +1,6 @@
+# Copyright 2025 The Levanter Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """
 This module contains code for running the [EleutherAI LM Evaluation Harness](https://github.com/EleutherAI/lm-evaluation-harness)
 inside Levanter runs. The EleutherAI LM Evaluation Harness is a tool for evaluating language models on a variety of tasks.
@@ -227,7 +230,7 @@ class _Message:
 
 
 def _get_segments_this_batch(batch, max_segments_per_ex):
-    unique_segs = np.unique(batch.attn_mask.segment_ids.array).tolist()
+    unique_segs = np.unique(batch.attn_mask.segment_ids[0].array).tolist()
     # + 1 because we use -1 as a padding value for segments and allow that
     if len(unique_segs) > max_segments_per_ex + 1:
         raise ValueError(f"Too many segments in batch: {len(unique_segs)}")
