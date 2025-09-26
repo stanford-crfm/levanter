@@ -102,7 +102,7 @@ from levanter.utils.ray_utils import ser_exc_info
 # Note that even more confusingly, Google sometimes refers to TPU cores
 # as chips and vice-versa.
 TPU_CONFIGURATIONS = {
-    "v4": (4, lambda chips: max(1, (chips // 4) if chips < 512 else (chips // 8))),
+    "v4": (4, lambda chips: max(1, chips // 4)),
     # v5p always uses VMs = Hosts, with 4 chips per host.
     "v5p": (4, lambda chips: max(1, chips // 4)),
     # v5 and v6 transition from 8 chips per VM for "serving" instances
@@ -135,7 +135,7 @@ def _parse_tpu_type(tpe: str) -> tuple[str, int]:
     except ValueError:
         raise ValueError(f"Invalid chip count in TPU type: {tpe}")
 
-    return family, chip_count
+    return family, chip_count / 2
 
 
 def _get_tpu_config(tpe: str, family: str) -> tuple[int, Callable[[int], int]]:
