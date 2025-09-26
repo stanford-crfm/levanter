@@ -127,6 +127,7 @@ TPU_CONFIGS: List[TPUConfig] = [
     TPUConfig("v4-4096", 2048, 512, 512, 4),
     # https://cloud.google.com/tpu/docs/v5e
     TPUConfig("v5litepod-1", 1, 1, 1, 1),
+    TPUConfig("v5litepod-2", 2, 1, 1, 2),
     TPUConfig("v5litepod-4", 4, 1, 1, 4),
     TPUConfig("v5litepod-8", 8, 1, 1, 8),
     TPUConfig("v5litepod-16", 16, 2, 4, 4),
