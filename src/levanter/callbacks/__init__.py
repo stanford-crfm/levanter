@@ -18,6 +18,7 @@ from levanter.callbacks._metrics import (
     log_epoch_progress,
     log_performance_stats,
     log_step_info,
+    log_dataset_token_counts,
     logger,
     pbar_logger,
 )
@@ -267,5 +268,6 @@ __all__ = [
     "log_epoch_progress",
     "log_performance_stats",
     "log_step_info",
+    "log_dataset_token_counts",
     "pbar_logger",
 ]
